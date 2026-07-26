@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="${1:-.}"
+scan=()
+for dir in runtime systemd config projects; do
+  [[ -d "$root/$dir" ]] && scan+=("$root/$dir")
+done
+[[ ${#scan[@]} -eq 0 ]] && exit 0
+failed=0
+if rg -n --hidden --glob '!*.md' --glob '!*.txt' '(^|[^[:alnum:]_])sfizz_jack([^[:alnum:]_]|$)' "${scan[@]}"; then
+  echo 'FEHLER: sfizz_jack ist in produktiven Audioflächen verboten.' >&2
+  failed=1
+fi
+if rg -n --hidden --glob '!*.md' --glob '!*.txt' '>>[^#\n]*\.log([[:space:]]|$)' "${scan[@]}"; then
+  echo 'FEHLER: unbeschränkte append-Umleitung in Logdateien ist verboten.' >&2
+  failed=1
+fi
+if rg -n --hidden --glob '!*.md' --glob '!*.txt' 'session\.log' "${scan[@]}"; then
+  echo 'FEHLER: unverwaltete session.log-Verträge sind verboten.' >&2
+  failed=1
+fi
+exit "$failed"

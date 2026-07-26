@@ -1,0 +1,32 @@
+# Secrets and local overrides
+.env
+.env.*
+!.env.example
+secrets/
+
+# Runtime state and logs
+state/
+run/
+*.pid
+*.log
+*.journal
+
+# Recordings, samples and generated audio
+*.wav
+*.flac
+*.aiff
+*.aif
+*.ogg
+*.mp3
+*.m4a
+*.webm
+*.sf2
+*.sf3
+*.gig
+
+# Tooling
+.venv/
+__pycache__/
+.pytest_cache/
+target/
+.DS_Store

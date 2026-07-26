@@ -1,0 +1,18 @@
+name: Validate
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Run safety negative controls
+        run: bash tests/test-audio-safety.sh
+      - name: Check repository audio surfaces
+        run: bash scripts/check-audio-safety .
