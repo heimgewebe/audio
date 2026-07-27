@@ -23,8 +23,10 @@ gehaltene Taste ist das aktuelle Tonziel einer einzigen Stimme.
   die Stimme zur zuvor gehaltenen Taste zurück.
 - **Abgesetzte neue Taste:** Sobald keine Taste mehr gehalten und das Pedal frei
   ist, wird der alte Restklang mit eingefrorener alter Hüllkurve über sechs
-  Millisekunden auf null ausgeblendet; erst anschließend beginnt die Attack des
-  nächsten Anschlags als neue Phrase.
+  Millisekunden bis zu einem exakt nullwertigen letzten Altsample ausgeblendet;
+  erst anschließend beginnt die Attack des nächsten Anschlags als neue Phrase.
+  Weitere Anschläge ändern währenddessen nur das Ziel und verstärken den alten
+  Restklang nicht erneut.
 - **CC64 / Haltepedal:** Hält eine Phrase nach dem Loslassen der letzten Taste.
   Beim Freigeben beginnt ein von Haltezeit und Pedalwert abhängiger Ausklang.
 - **CC1:** optional zusätzliche Rauheit und schnelleres Flattern.
@@ -32,7 +34,8 @@ gehaltene Taste ist das aktuelle Tonziel einer einzigen Stimme.
 - **CC67 / Soft-Pedal:** Entfernung beziehungsweise Tiefe.
 - **CC120 / All Sound Off:** sofortige, harte Stummschaltung für MIDI-Panic.
 - **CC123 / All Notes Off:** beendet alle gehaltenen Noten mit dem normalen
-  Ausklang.
+  Ausklang. Ein laufender Retrigger-Fade wird pegelkontinuierlich in diesen
+  Ausklang überführt.
 
 ## Nutzung der 88 Tasten
 
@@ -95,16 +98,16 @@ Es gibt kein `sfizz_jack` und keine reguläre unbeschränkte Logdatei.
   laut lokaler `pw-cat --help`-Schnittstelle als direkte Samplezahl interpretiert
 - PCM-Zuleitung auf die nächste Zweierpotenz aus 4-KiB-Seiten begrenzt; auf dem
   aktuellen Host sind es bei 128 Frames 4.096 Byte beziehungsweise 512 Frames
-- Systeme mit Speicherseiten über 4.096 Byte werden für diesen Niedriglatenzmodus
-  fail-closed abgewiesen
+- Systeme mit Speicherseiten über 4.096 Byte werden bereits vom Doctor und
+  anschließend auch vom Livepfad fail-closed abgewiesen
 - nichtblockierende, alle 50 ms abbrechbare PCM-Schreibschleife; zwei Sekunden
   ohne Fortschritt gelten als gestörter Audioverbraucher
 - monotone Echtzeittaktung verhindert schneller-als-Echtzeit-Pufferung und setzt
   bereits bei genau einem Block Verspätung zurück, ohne Aufhol-Burst
 - Standard-Master-Gain: 0,16
 - harter Maximalwert für Master-Gain und Samples: 0,25
-- Standardausgabe: aktuelles PipeWire-Ziel; für Referenzbetrieb soll dies das
-  MOTU M2 sein
+- Standardausgabe: aktuelles PipeWire-Ziel; ein explizites `--target` kann es
+  überschreiben; für Referenzbetrieb soll das Ziel das MOTU M2 sein
 
 Der aktuelle globale PipeWire-Quantum von 1.024 Frames ist nicht freigegeben.
 Vor einer Latenzfreigabe bleiben Loopback- und XRun-Messung erforderlich.
@@ -116,7 +119,13 @@ Vor einer Latenzfreigabe bleiben Loopback- und XRun-Messung erforderlich.
 - Synthese und MIDI-Gestenparser kompilieren ohne Zusatzpakete.
 - 88-Tasten-Abbildung, Halten, Legato, Rückkehr zur vorherigen Taste, CC64,
   deterministische Ausgabe und Pegelgrenze sind automatisiert getestet.
-- 12-Sekunden-Demo bei 48 kHz Stereo: Median-Renderzeit 1,538 Sekunden aus
+- Doctor und Livepfad verwenden denselben 4-KiB-Seitengrößenvertrag; größere
+  Systemseiten blockieren bereits die Bereitschaftsmeldung.
+- CC123 überführt auch einen laufenden Retrigger-Fade pegelkontinuierlich in den
+  natürlichen Release; der nächste Anschlag verstärkt den alten Tail nicht.
+- Analytisch beschleunigte Sechs-Stunden-Konturphasen decken alle 7.656
+  möglichen Tastenwechsel ab; maximale ereignisbedingte Abweichung 0,00000476.
+- 12-Sekunden-Demo bei 48 kHz Stereo: Median-Renderzeit 1,590 Sekunden aus
   drei Läufen.
 - Peak −19,977 dBFS; RMS −31,134 dBFS je Kanal; 0 Clipping-Samples.
 

@@ -1,4 +1,5 @@
 import copy
+import json
 import math
 import pathlib
 import sys
@@ -161,6 +162,7 @@ class WhaleVoiceTests(unittest.TestCase):
             ),
             0.01,
         )
+        self.assertEqual(transition[-1], 0.0)
         self.assertTrue(voice.gate)
         self.assertEqual(voice.retrigger_fade_remaining, 0)
         self.assertEqual(voice.note_age_frames, 0)
@@ -219,15 +221,29 @@ class WhaleVoiceTests(unittest.TestCase):
         self.assertGreater(voice.envelope, 0.0)
         self.assertLess(abs(onset), 0.01)
 
-    def test_six_hour_legato_contours_use_integrated_phases(self):
+    def test_six_hour_contour_phase_states_cover_all_legato_pairs(self):
+        runtime_seconds = 21_600
         maximum_delta = 0.0
         worst_pair = None
         for old_note in range(self.config.min_note, self.config.max_note + 1):
             base = engine.WhaleVoice(self.config, seed=1234)
             base.note_on(old_note, 127)
             base.render(self.config.sample_rate)
-            base.note_age_frames = self.config.sample_rate * 21_600
+            register = base.target_register
+            base.current_register = register
+            base.current_frequency = base.target_frequency
+            base.velocity = base.target_velocity
+            base.note_age_frames = self.config.sample_rate * runtime_seconds
             base.hold_frames = base.note_age_frames
+            base.slow_arc_phase = (
+                0.7 + math.tau * (0.071 + register * 0.023) * runtime_seconds
+            ) % math.tau
+            base.second_arc_phase = (
+                2.1 + math.tau * (0.193 - register * 0.041) * runtime_seconds
+            ) % math.tau
+            base.flutter_phase = (
+                math.tau * (1.7 + register * 2.8) * runtime_seconds
+            ) % math.tau
             baseline_next = copy.deepcopy(base).render(1)[0]
 
             for new_note in range(self.config.min_note, self.config.max_note + 1):
@@ -302,6 +318,30 @@ class WhaleVoiceTests(unittest.TestCase):
         self.assertFalse(release.gate)
         self.assertGreater(release.envelope, 0.0)
         self.assertGreater(max(abs(sample) for sample in release.render(128)), 0.0)
+
+        during_fade = engine.WhaleVoice(self.config, seed=1234)
+        during_fade.note_on(45, 100)
+        during_fade.render(self.config.sample_rate // 2)
+        during_fade.note_off(45)
+        during_fade.render(self.config.sample_rate // 20)
+        during_fade.note_on(69, 100)
+        during_fade.render(max(1, during_fade.retrigger_fade_remaining // 4))
+        self.assertGreater(during_fade.retrigger_fade_remaining, 0)
+        baseline_next = copy.deepcopy(during_fade).render(1)[0]
+        during_fade.control_change(123, 0)
+        released_next = during_fade.render(1)[0]
+        self.assertEqual(during_fade.retrigger_fade_remaining, 0)
+        self.assertFalse(during_fade.gate)
+        self.assertIsNone(during_fade.active_note)
+        self.assertGreater(during_fade.envelope, 0.0)
+        self.assertLess(abs(released_next - baseline_next), 0.005)
+        self.assertGreater(max(abs(sample) for sample in during_fade.render(128)), 0.0)
+
+        baseline_after_release = copy.deepcopy(during_fade).render(1)[0]
+        during_fade.note_on(80, 100)
+        restarted = during_fade.render(1)[0]
+        self.assertGreater(during_fade.retrigger_fade_remaining, 0)
+        self.assertLess(abs(restarted - baseline_after_release), 0.005)
 
     def test_releasing_latest_legato_note_returns_to_previous_held_note(self):
         voice = engine.WhaleVoice(self.config)
@@ -526,6 +566,40 @@ class WhaleRuntimeTests(unittest.TestCase):
         self.assertEqual(command[-1], "-")
         with self.assertRaises(ValueError):
             whale_live.build_pw_cat_command(target=None, latency_frames=8)
+
+    def test_doctor_rejects_unsupported_system_page_size(self):
+        completed = mock.Mock(returncode=0, stdout="active\n", stderr="")
+        port = whale_live.MidiPort(
+            "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
+        )
+        with (
+            mock.patch.object(whale_live.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(whale_live, "list_midi_ports", return_value=[port]),
+            mock.patch.object(whale_live, "run_capture", return_value=completed),
+            mock.patch.object(whale_live.os, "sysconf", return_value=65_536),
+        ):
+            report = whale_live.runtime_doctor()
+
+        self.assertFalse(report["ready"])
+        self.assertIn("pcm-pipe-contract-unavailable", report["blocking_reasons"])
+        self.assertEqual(report["system_page_size_bytes"], 65_536)
+        self.assertIsNone(report["pcm_pipe_capacity_bytes"])
+        self.assertIn("65536 > 4096", report["pcm_pipe_error"])
+
+    def test_profile_sink_policy_matches_runtime_default_target(self):
+        profile = json.loads(
+            (ROOT / "profiles/buckelwal-live-voice-v1.json").read_text()
+        )
+        audio = profile["audio"]
+        command = whale_live.build_pw_cat_command(target=None, latency_frames=128)
+
+        self.assertNotIn("default_sink", audio)
+        self.assertEqual(
+            audio["default_sink_policy"],
+            "current-pipewire-default-unless-explicit-target",
+        )
+        self.assertEqual(audio["reference_sink"], "motu-m2")
+        self.assertNotIn("--target", command)
 
     def test_doctor_reports_missing_roland_without_claiming_readiness(self):
         completed = mock.Mock(returncode=0, stdout="active\n", stderr="")

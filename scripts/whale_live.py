@@ -20,6 +20,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from whale_live_engine import (
+    DEFAULT_BLOCK_FRAMES,
     MAX_MASTER_GAIN,
     MAX_OFFLINE_DURATION_SECONDS,
     MidiEvent,
@@ -138,6 +139,16 @@ def runtime_doctor() -> dict[str, object]:
     if port_error:
         blocking_reasons.append(port_error)
 
+    system_page_size_bytes: int | None = None
+    pcm_pipe_capacity_bytes: int | None = None
+    pcm_pipe_error: str | None = None
+    try:
+        system_page_size_bytes = int(os.sysconf("SC_PAGESIZE"))
+        pcm_pipe_capacity_bytes = pcm_pipe_size_bytes(DEFAULT_BLOCK_FRAMES)
+    except (OSError, RuntimeError, ValueError) as error:
+        pcm_pipe_error = str(error)
+        blocking_reasons.append("pcm-pipe-contract-unavailable")
+
     pipewire_active = False
     if commands["systemctl"]:
         try:
@@ -157,6 +168,9 @@ def runtime_doctor() -> dict[str, object]:
         "kind": "buckelwal_live_voice_doctor",
         "software": {name: bool(path) for name, path in commands.items()},
         "pipewire_active": pipewire_active,
+        "system_page_size_bytes": system_page_size_bytes,
+        "pcm_pipe_capacity_bytes": pcm_pipe_capacity_bytes,
+        "pcm_pipe_error": pcm_pipe_error,
         "midi_ports": [asdict(port) for port in ports],
         "roland_midi_port": asdict(roland_port) if roland_port else None,
         "ready": not blocking_reasons,
@@ -166,7 +180,8 @@ def runtime_doctor() -> dict[str, object]:
             "sample_rate_hz": 48_000,
             "channels": 2,
             "format": "f32",
-            "latency_frames": 128,
+            "latency_frames": DEFAULT_BLOCK_FRAMES,
+            "maximum_supported_page_size_bytes": MAX_LOW_LATENCY_PAGE_BYTES,
             "maximum_master_gain": MAX_MASTER_GAIN,
         },
     }

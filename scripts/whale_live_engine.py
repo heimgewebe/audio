@@ -221,6 +221,10 @@ class WhaleVoice:
         self.gate = True
         if not phrase_continues:
             self.glide_seconds = 0.02
+            if self.retrigger_fade_remaining > 0:
+                # A later target may replace the pending target, but the currently
+                # audible old phrase keeps its existing effective fade level.
+                return
             if self.envelope > 1e-5:
                 # Preserve the current sample, then fade the old phrase to zero before
                 # resetting oscillator, register and envelope state for the new onset.
@@ -309,7 +313,28 @@ class WhaleVoice:
         self.flutter_phase = 0.0
         self.retrigger_fade_remaining = 0
 
+    def _current_retrigger_gain(self) -> float:
+        if self.retrigger_fade_remaining <= 0:
+            return 1.0
+        if self.retrigger_fade_total <= 1:
+            return 0.0
+        return clamp(
+            (self.retrigger_fade_remaining - 1) / (self.retrigger_fade_total - 1),
+            0.0,
+            1.0,
+        )
+
     def _begin_release(self, pedal_value: int | None = None) -> None:
+        if self.retrigger_fade_remaining > 0:
+            # Convert the currently audible faded old phrase into a normal release.
+            # Scaling the envelope by the next fade gain preserves the output level
+            # without letting a later note restore the tail to full amplitude.
+            self.envelope *= self._current_retrigger_gain()
+            self.retrigger_fade_remaining = 0
+            self.target_frequency = self.current_frequency
+            self.target_register = self.current_register
+            self.target_velocity = self.velocity
+            self.active_note = None
         self.gate = False
         held_seconds = self.hold_frames / self.config.sample_rate
         effective_pedal = self.sustain if pedal_value is None else pedal_value
@@ -432,11 +457,14 @@ class WhaleVoice:
             phrase_breath = 0.82 + 0.12 * slow_arc + 0.045 * second_arc
             velocity_gain = 0.22 + 0.78 * velocity**1.35
             distance_gain = 1.0 - 0.48 * self.distance
-            retrigger_gain = (
-                retrigger_fade_remaining / self.retrigger_fade_total
-                if fading_old_phrase
-                else 1.0
-            )
+            if fading_old_phrase:
+                retrigger_gain = (
+                    (retrigger_fade_remaining - 1) / (self.retrigger_fade_total - 1)
+                    if self.retrigger_fade_total > 1
+                    else 0.0
+                )
+            else:
+                retrigger_gain = 1.0
             raw = (
                 tone
                 * phrase_breath

@@ -72,7 +72,8 @@
     "block_frames": 128,
     "default_master_gain": 0.16,
     "maximum_master_gain": 0.25,
-    "default_sink": "motu-m2",
+    "default_sink_policy": "current-pipewire-default-unless-explicit-target",
+    "reference_sink": "motu-m2",
     "pcm_transport": {
       "maximum_supported_page_size_bytes": 4096,
       "capacity_formula": "next-power-of-two-pages-covering-one-block",
