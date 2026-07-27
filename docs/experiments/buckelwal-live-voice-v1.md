@@ -22,8 +22,9 @@ gehaltene Taste ist das aktuelle Tonziel einer einzigen Stimme.
   Hüllkurven-Neustart zum neuen Ziel. Wird die neueste Taste losgelassen, kehrt
   die Stimme zur zuvor gehaltenen Taste zurück.
 - **Abgesetzte neue Taste:** Sobald keine Taste mehr gehalten und das Pedal frei
-  ist, wird der alte Restklang über sechs Millisekunden auf null ausgeblendet;
-  anschließend beginnt der nächste Anschlag als neue Phrase.
+  ist, wird der alte Restklang mit eingefrorener alter Hüllkurve über sechs
+  Millisekunden auf null ausgeblendet; erst anschließend beginnt die Attack des
+  nächsten Anschlags als neue Phrase.
 - **CC64 / Haltepedal:** Hält eine Phrase nach dem Loslassen der letzten Taste.
   Beim Freigeben beginnt ein von Haltezeit und Pedalwert abhängiger Ausklang.
 - **CC1:** optional zusätzliche Rauheit und schnelleres Flattern.
@@ -49,9 +50,10 @@ im tiefen Bereich weiter aufgefächert.
 
 Die Grenzen sind weich. Registerposition verändert gleichzeitig
 Grundfrequenz, Subanteil, Formantgewicht, Pfeifanteil und Geräuschspektrum.
-Fractionale Formantmodulation und der leicht verstimmte Anteil besitzen eigene
-integrierte Phasenakkumulatoren; lange Holds und Phasen-Wraps erzeugen dadurch
-keine altersabhängigen Sprünge.
+Fractionale Formantmodulation, verstimmter Anteil sowie langsame Tonkontur und
+Flutter besitzen eigene integrierte Phasenakkumulatoren. Registerwechsel nach
+langen Holds ändern damit nur die momentane Modulationsgeschwindigkeit, nicht
+rückwirkend die gesamte bisherige Phase.
 
 ## Bedienung
 
@@ -114,9 +116,9 @@ Vor einer Latenzfreigabe bleiben Loopback- und XRun-Messung erforderlich.
 - Synthese und MIDI-Gestenparser kompilieren ohne Zusatzpakete.
 - 88-Tasten-Abbildung, Halten, Legato, Rückkehr zur vorherigen Taste, CC64,
   deterministische Ausgabe und Pegelgrenze sind automatisiert getestet.
-- 12-Sekunden-Demo bei 48 kHz Stereo: Median-Renderzeit 1,514 Sekunden aus
+- 12-Sekunden-Demo bei 48 kHz Stereo: Median-Renderzeit 1,538 Sekunden aus
   drei Läufen.
-- Peak −20,387 dBFS; RMS −31,163 dBFS je Kanal; 0 Clipping-Samples.
+- Peak −19,977 dBFS; RMS −31,134 dBFS je Kanal; 0 Clipping-Samples.
 
 ### Blockiert
 

@@ -199,6 +199,49 @@ class WhaleVoiceTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         self.assertEqual(chunked.__dict__, whole.__dict__)
 
+    def test_low_release_tail_does_not_reattack_during_retrigger_fade(self):
+        voice = engine.WhaleVoice(self.config, seed=1234)
+        voice.note_on(45, 70)
+        voice.render(self.config.sample_rate // 2)
+        voice.note_off(45)
+        voice.render(self.config.sample_rate // 20)
+        voice.envelope = 2e-5
+
+        voice.note_on(69, 90)
+        first_chunk = voice.render(17)
+        self.assertEqual(voice.envelope, 2e-5)
+        second_chunk = voice.render(voice.retrigger_fade_remaining)
+
+        self.assertLess(max(abs(sample) for sample in first_chunk + second_chunk), 1e-4)
+        self.assertEqual(voice.retrigger_fade_remaining, 0)
+        self.assertEqual(voice.envelope, 0.0)
+        onset = voice.render(1)[0]
+        self.assertGreater(voice.envelope, 0.0)
+        self.assertLess(abs(onset), 0.01)
+
+    def test_six_hour_legato_contours_use_integrated_phases(self):
+        maximum_delta = 0.0
+        worst_pair = None
+        for old_note in range(self.config.min_note, self.config.max_note + 1):
+            base = engine.WhaleVoice(self.config, seed=1234)
+            base.note_on(old_note, 127)
+            base.render(self.config.sample_rate)
+            base.note_age_frames = self.config.sample_rate * 21_600
+            base.hold_frames = base.note_age_frames
+            baseline_next = copy.deepcopy(base).render(1)[0]
+
+            for new_note in range(self.config.min_note, self.config.max_note + 1):
+                if new_note == old_note:
+                    continue
+                changed = copy.deepcopy(base)
+                changed.note_on(new_note, 127)
+                delta = abs(changed.render(1)[0] - baseline_next)
+                if delta > maximum_delta:
+                    maximum_delta = delta
+                    worst_pair = (old_note, new_note)
+
+        self.assertLess(maximum_delta, 0.005, worst_pair)
+
     def test_fractional_formant_modulator_uses_its_own_integrated_phase(self):
         voice = engine.WhaleVoice(self.config, seed=1234)
         voice.note_on(60, 80)

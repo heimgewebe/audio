@@ -178,6 +178,9 @@ class WhaleVoice:
         self.carrier_mod_phase = 0.0
         self.pulse_phase = 0.0
         self.detuned_phase = 0.0
+        self.slow_arc_phase = 0.7
+        self.second_arc_phase = 2.1
+        self.flutter_phase = 0.0
         self.noise_state = seed & 0xFFFFFFFF
         self.noise_lowpass = 0.0
 
@@ -283,6 +286,9 @@ class WhaleVoice:
         self.carrier_mod_phase = 0.0
         self.pulse_phase = 0.0
         self.detuned_phase = 0.0
+        self.slow_arc_phase = 0.7
+        self.second_arc_phase = 2.1
+        self.flutter_phase = 0.0
         self.noise_lowpass = 0.0
 
     def _reset_phrase_to_target(self) -> None:
@@ -298,6 +304,9 @@ class WhaleVoice:
         self.carrier_mod_phase = 0.0
         self.pulse_phase = 0.0
         self.detuned_phase = 0.0
+        self.slow_arc_phase = 0.7
+        self.second_arc_phase = 2.1
+        self.flutter_phase = 0.0
         self.retrigger_fade_remaining = 0
 
     def _begin_release(self, pedal_value: int | None = None) -> None:
@@ -325,6 +334,9 @@ class WhaleVoice:
         carrier_mod_phase = self.carrier_mod_phase
         pulse_phase = self.pulse_phase
         detuned_phase = self.detuned_phase
+        slow_arc_phase = self.slow_arc_phase
+        second_arc_phase = self.second_arc_phase
+        flutter_phase = self.flutter_phase
         noise_state = self.noise_state
         noise_lowpass = self.noise_lowpass
         note_age_frames = self.note_age_frames
@@ -354,22 +366,31 @@ class WhaleVoice:
                     self.target_register - current_register
                 ) * glide_alpha
                 velocity += (self.target_velocity - velocity) * velocity_alpha
-            if self.gate:
-                envelope += (1.0 - envelope) * attack_alpha
-            else:
-                envelope += (0.0 - envelope) * release_alpha
+            if not fading_old_phrase:
+                if self.gate:
+                    envelope += (1.0 - envelope) * attack_alpha
+                else:
+                    envelope += (0.0 - envelope) * release_alpha
 
-            age = note_age_frames / sample_rate
             register = clamp(current_register, 0.0, 1.0)
             body_weight = 0.78 - 0.42 * register
             formant_weight = 0.18 + 0.38 * (1.0 - abs(register - 0.48) * 1.55)
             whistle_weight = 0.06 + 0.52 * register**1.45
             noise_cut = 0.018 + 0.11 * register
 
-            # Slow non-repeating contours keep a held key alive instead of looping.
-            slow_arc = math.sin(two_pi * (0.071 + register * 0.023) * age + 0.7)
-            second_arc = math.sin(two_pi * (0.193 - register * 0.041) * age + 2.1)
-            flutter = math.sin(two_pi * (1.7 + register * 2.8) * age)
+            # Integrated contour phases remain continuous while register glides.
+            slow_arc = math.sin(slow_arc_phase)
+            second_arc = math.sin(second_arc_phase)
+            flutter = math.sin(flutter_phase)
+            slow_arc_phase = (
+                slow_arc_phase + two_pi * (0.071 + register * 0.023) / sample_rate
+            ) % two_pi
+            second_arc_phase = (
+                second_arc_phase + two_pi * (0.193 - register * 0.041) / sample_rate
+            ) % two_pi
+            flutter_phase = (
+                flutter_phase + two_pi * (1.7 + register * 2.8) / sample_rate
+            ) % two_pi
             contour_cents = (
                 (18.0 + 46.0 * register) * slow_arc
                 + (7.0 + 13.0 * register) * second_arc
@@ -443,6 +464,9 @@ class WhaleVoice:
                     carrier_mod_phase = 0.0
                     pulse_phase = 0.0
                     detuned_phase = 0.0
+                    slow_arc_phase = 0.7
+                    second_arc_phase = 2.1
+                    flutter_phase = 0.0
                     note_age_frames = 0
                     hold_frames = 0
                     continue
@@ -460,6 +484,9 @@ class WhaleVoice:
         self.carrier_mod_phase = carrier_mod_phase
         self.pulse_phase = pulse_phase
         self.detuned_phase = detuned_phase
+        self.slow_arc_phase = slow_arc_phase
+        self.second_arc_phase = second_arc_phase
+        self.flutter_phase = flutter_phase
         self.noise_state = noise_state
         self.noise_lowpass = noise_lowpass
         self.note_age_frames = note_age_frames

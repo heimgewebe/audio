@@ -55,10 +55,13 @@
       "release-tail"
     ],
     "overlap": "continuous-pitch-register-and-formant-glide",
-    "detached_retrigger": "six-millisecond-fade-out-then-new-attack",
+    "detached_retrigger": "freeze-old-envelope-six-millisecond-fade-out-then-new-attack",
     "oscillator_phase_contract": {
       "fractional_formant_modulator": "dedicated-integrated-phase",
-      "detuned_partial": "dedicated-integrated-phase"
+      "detuned_partial": "dedicated-integrated-phase",
+      "slow_arc": "dedicated-integrated-phase",
+      "second_arc": "dedicated-integrated-phase",
+      "flutter": "dedicated-integrated-phase"
     },
     "simultaneous_notes": "one-voice-no-piano-chord"
   },
