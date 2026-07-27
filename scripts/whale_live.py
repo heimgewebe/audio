@@ -13,6 +13,7 @@ import re
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -41,6 +42,9 @@ BYTES_PER_STEREO_F32_FRAME = 8
 MAX_LOW_LATENCY_PAGE_BYTES = 4_096
 PCM_WRITE_POLL_SECONDS = 0.05
 PCM_WRITE_STALL_SECONDS = 2.0
+LIVE_INITIALIZATION_SECONDS = 0.1
+MANAGED_NOTIFY_REQUIRED_ENV = "AUDIO_BUCKELWAL_REQUIRE_NOTIFY"
+SERVICE_START_TIMEOUT_SECONDS = 15
 
 
 @dataclass(frozen=True)
@@ -54,13 +58,15 @@ class MidiPort:
         return f"{self.client_name} {self.port_name}".strip()
 
 
-def run_capture(argv: list[str]) -> subprocess.CompletedProcess[str]:
+def run_capture(
+    argv: list[str], *, timeout: float = 10
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
         check=False,
         text=True,
         capture_output=True,
-        timeout=10,
+        timeout=timeout,
     )
 
 
@@ -229,6 +235,15 @@ def pcm_pipe_size_bytes(block_frames: int) -> int:
     return page_size * rounded_pages
 
 
+def live_initialization_block_count(sample_rate: int, block_frames: int) -> int:
+    if sample_rate <= 0 or block_frames <= 0:
+        raise ValueError("sample_rate and block_frames must be positive")
+    initialization_frames = max(
+        block_frames, round(sample_rate * LIVE_INITIALIZATION_SECONDS)
+    )
+    return (initialization_frames + block_frames - 1) // block_frames
+
+
 class RealtimeBlockPacer:
     """Clock one rendered block per real audio block without catch-up bursts."""
 
@@ -347,6 +362,45 @@ def terminate_process(process: subprocess.Popen[object] | None) -> None:
         process.wait(timeout=2)
 
 
+def notify_systemd_ready(status: str) -> bool:
+    if "\n" in status or "\r" in status:
+        raise ValueError("systemd readiness status must be one line")
+    address = os.environ.get("NOTIFY_SOCKET")
+    if not address:
+        return False
+    if address.startswith("@"):
+        address = "\0" + address[1:]
+    payload = f"READY=1\nSTATUS={status}".encode("utf-8")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notifier:
+        sent = notifier.sendto(payload, address)
+    if sent != len(payload):
+        raise RuntimeError("systemd readiness notification was truncated")
+    return True
+
+
+def _dispatch_pending_events(
+    voice: WhaleVoice,
+    event_queue: queue.SimpleQueue[MidiEvent | BaseException],
+) -> None:
+    while True:
+        try:
+            item = event_queue.get_nowait()
+        except queue.Empty:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        voice.dispatch(item)
+
+
+def _require_live_children(
+    midi_process: subprocess.Popen[str], audio_process: subprocess.Popen[bytes]
+) -> None:
+    if midi_process.poll() is not None:
+        raise RuntimeError(f"aseqdump exited with status {midi_process.returncode}")
+    if audio_process.poll() is not None:
+        raise RuntimeError(f"pw-cat exited with status {audio_process.returncode}")
+
+
 def run_live(
     *,
     midi_port: str,
@@ -398,6 +452,31 @@ def run_live(
             daemon=True,
         )
         reader.start()
+
+        required_initialization_blocks = live_initialization_block_count(
+            config.sample_rate, config.block_frames
+        )
+        initialization_blocks = 0
+        for _block in range(required_initialization_blocks):
+            if stop_event.is_set():
+                raise RuntimeError("live initialization stopped before readiness")
+            _dispatch_pending_events(voice, event_queue)
+            _require_live_children(midi_process, audio_process)
+            payload = voice.render_f32_stereo(config.block_frames)
+            if not write_pcm_block(
+                audio_process.stdin, payload, stop_event, audio_process
+            ):
+                raise RuntimeError("live initialization stopped before readiness")
+            initialization_blocks += 1
+            pacer.wait()
+        _dispatch_pending_events(voice, event_queue)
+        _require_live_children(midi_process, audio_process)
+
+        notify_required = os.environ.get(MANAGED_NOTIFY_REQUIRED_ENV) == "1"
+        if notify_required and not notify_systemd_ready(
+            "Buckelwal Live Voice MIDI and PipeWire initialized"
+        ):
+            raise RuntimeError("managed runtime has no systemd notification socket")
         print(
             json.dumps(
                 {
@@ -407,6 +486,7 @@ def run_live(
                     "block_frames": config.block_frames,
                     "master_gain": config.master_gain,
                     "pcm_pipe_capacity_bytes": pipe_capacity_bytes,
+                    "initialization_blocks": initialization_blocks,
                     "realtime_pacing": True,
                 },
                 sort_keys=True,
@@ -415,22 +495,8 @@ def run_live(
         )
 
         while not stop_event.is_set():
-            while True:
-                try:
-                    item = event_queue.get_nowait()
-                except queue.Empty:
-                    break
-                if isinstance(item, BaseException):
-                    raise item
-                voice.dispatch(item)
-            if midi_process.poll() is not None:
-                raise RuntimeError(
-                    f"aseqdump exited with status {midi_process.returncode}"
-                )
-            if audio_process.poll() is not None:
-                raise RuntimeError(
-                    f"pw-cat exited with status {audio_process.returncode}"
-                )
+            _dispatch_pending_events(voice, event_queue)
+            _require_live_children(midi_process, audio_process)
             payload = voice.render_f32_stereo(config.block_frames)
             if not write_pcm_block(
                 audio_process.stdin, payload, stop_event, audio_process
@@ -463,6 +529,14 @@ def service_active() -> bool:
     raise RuntimeError(f"unknown systemd active state: {active_state}")
 
 
+def service_ready(status: dict[str, object]) -> bool:
+    return (
+        status.get("load_state") == "loaded"
+        and status.get("active_state") == "active"
+        and status.get("sub_state") == "running"
+    )
+
+
 def start_service(args: argparse.Namespace) -> int:
     if service_active():
         raise RuntimeError(f"{UNIT_NAME} is already active")
@@ -473,12 +547,20 @@ def start_service(args: argparse.Namespace) -> int:
         "--user",
         "--collect",
         "--quiet",
+        "--service-type",
+        "notify",
+        "--setenv",
+        f"{MANAGED_NOTIFY_REQUIRED_ENV}=1",
         "--unit",
         UNIT_NAME.removesuffix(".service"),
         "--property",
         "Description=Buckelwal Live Voice v1",
         "--property",
         "Restart=no",
+        "--property",
+        "NotifyAccess=main",
+        "--property",
+        "TimeoutStartSec=10s",
         "--property",
         "MemoryMax=268435456",
         "--property",
@@ -503,23 +585,27 @@ def start_service(args: argparse.Namespace) -> int:
     ]
     if args.target:
         command.extend(["--target", args.target])
-    result = run_capture(command)
+    result = run_capture(command, timeout=SERVICE_START_TIMEOUT_SECONDS)
     if result.returncode != 0:
         raise RuntimeError(
             result.stderr.strip() or result.stdout.strip() or "systemd-run failed"
         )
+    last_status: dict[str, object] | None = None
     for _attempt in range(20):
-        if service_active():
+        last_status = service_status()
+        if service_ready(last_status):
             print(
                 json.dumps(
-                    {"state": "active", "unit": UNIT_NAME, "midi_port": port.address}
+                    {"state": "ready", "unit": UNIT_NAME, "midi_port": port.address}
                 )
             )
             return 0
+        if last_status["active_state"] in {"failed", "inactive"}:
+            break
         time.sleep(0.05)
-    status = service_status()
     raise RuntimeError(
-        "service did not become active: " + json.dumps(status, sort_keys=True)
+        "service did not report runtime readiness: "
+        + json.dumps(last_status or {}, sort_keys=True)
     )
 
 

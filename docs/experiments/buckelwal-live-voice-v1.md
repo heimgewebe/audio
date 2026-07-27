@@ -86,9 +86,12 @@ python3 scripts/whale_live.py stop
 ```
 
 Der Start erzeugt die transiente User-Systemd-Unit
-`audio-buckelwal-live-voice-v1.service` mit maximal sechs Stunden Laufzeit,
-256 MiB Speichergrenze, 80 Prozent CPU-Quote, 32 Tasks und begrenzter
-Journalrate. MIDI-Ereignisse werden nicht protokolliert.
+`audio-buckelwal-live-voice-v1.service` als `Type=notify` mit maximal sechs
+Stunden Laufzeit, 256 MiB Speichergrenze, 80 Prozent CPU-Quote, 32 Tasks und
+begrenzter Journalrate. `start` meldet erst `ready`, nachdem MIDI- und
+PipeWire-Kindprozess mindestens 100 Millisekunden leben und der begrenzte
+PCM-Pfad getaktet Daten verbraucht. Bloßes `activating` gilt nicht als Erfolg.
+MIDI-Ereignisse werden nicht protokolliert.
 Es gibt kein `sfizz_jack` und keine reguläre unbeschränkte Logdatei.
 
 ## Audiovertrag
@@ -121,6 +124,10 @@ Vor einer Latenzfreigabe bleiben Loopback- und XRun-Messung erforderlich.
   deterministische Ausgabe und Pegelgrenze sind automatisiert getestet.
 - Doctor und Livepfad verwenden denselben 4-KiB-Seitengrößenvertrag; größere
   Systemseiten blockieren bereits die Bereitschaftsmeldung.
+- Der verwaltete Start ist an ein Systemd-READY-Signal nach erfolgreicher
+  MIDI-/PipeWire-Initialisierung gebunden; `activating` reicht nicht aus. Die
+  positive User-Systemd-Probe erreichte `Started`; die Gegenprobe ohne READY
+  endete nach 500 Millisekunden mit `start operation timed out`.
 - CC123 überführt auch einen laufenden Retrigger-Fade pegelkontinuierlich in den
   natürlichen Release; der nächste Anschlag verstärkt den alten Tail nicht.
 - Analytisch beschleunigte Sechs-Stunden-Konturphasen decken alle 7.656

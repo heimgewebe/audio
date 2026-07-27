@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import math
 import pathlib
 import sys
@@ -487,6 +488,18 @@ class WhaleRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "exceeds configured maximum"):
                 whale_live.verified_pipe_capacity_bytes(stream, 4_096)
 
+    def test_live_initialization_exceeds_the_bounded_pcm_pipe(self):
+        blocks = whale_live.live_initialization_block_count(48_000, 128)
+        with mock.patch.object(whale_live.os, "sysconf", return_value=4_096):
+            pipe_bytes = whale_live.pcm_pipe_size_bytes(128)
+
+        self.assertEqual(blocks, 38)
+        self.assertGreater(
+            blocks * 128 * whale_live.BYTES_PER_STEREO_F32_FRAME, pipe_bytes
+        )
+        with self.assertRaises(ValueError):
+            whale_live.live_initialization_block_count(0, 128)
+
     def test_realtime_pacer_waits_and_drops_catch_up_bursts(self):
         now = [0]
         sleeps = []
@@ -540,6 +553,107 @@ class WhaleRuntimeTests(unittest.TestCase):
             self.assertTrue(
                 whale_live.write_pcm_block(stream, b"audio", stop_event, process)
             )
+
+    def test_systemd_notify_ready_supports_abstract_socket(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(
+                whale_live.notify_systemd_ready("Buckelwal Live Voice initialized")
+            )
+
+        notifier = mock.MagicMock()
+        notifier.__enter__.return_value = notifier
+        notifier.sendto.return_value = len(
+            b"READY=1\nSTATUS=Buckelwal Live Voice initialized"
+        )
+        with (
+            mock.patch.dict(os.environ, {"NOTIFY_SOCKET": "@buckelwal-ready"}),
+            mock.patch.object(whale_live.socket, "socket", return_value=notifier),
+        ):
+            self.assertTrue(
+                whale_live.notify_systemd_ready("Buckelwal Live Voice initialized")
+            )
+
+        notifier.sendto.assert_called_once_with(
+            b"READY=1\nSTATUS=Buckelwal Live Voice initialized",
+            "\0buckelwal-ready",
+        )
+
+    def test_start_service_waits_for_notify_readiness(self):
+        args = mock.Mock(
+            midi_port="auto",
+            target=None,
+            gain=0.16,
+            latency_frames=128,
+            runtime_max_seconds=3600,
+        )
+        port = whale_live.MidiPort(
+            "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
+        )
+        activating = {
+            "unit": whale_live.UNIT_NAME,
+            "load_state": "loaded",
+            "active_state": "activating",
+            "sub_state": "start",
+            "result": "success",
+            "exec_main_status": "0",
+        }
+        ready = {
+            **activating,
+            "active_state": "active",
+            "sub_state": "running",
+        }
+        launched = mock.Mock(returncode=0, stdout="", stderr="")
+        with (
+            mock.patch.object(whale_live, "service_active", return_value=False),
+            mock.patch.object(whale_live, "resolve_midi_port", return_value=port),
+            mock.patch.object(whale_live, "run_capture", return_value=launched) as run,
+            mock.patch.object(
+                whale_live, "service_status", side_effect=[activating, ready]
+            ),
+            mock.patch.object(whale_live.time, "sleep"),
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(whale_live.start_service(args), 0)
+
+        command = run.call_args.args[0]
+        self.assertIn("--service-type", command)
+        self.assertIn("notify", command)
+        self.assertIn("NotifyAccess=main", command)
+        self.assertIn("TimeoutStartSec=10s", command)
+        self.assertIn(f"{whale_live.MANAGED_NOTIFY_REQUIRED_ENV}=1", command)
+        self.assertEqual(
+            run.call_args.kwargs["timeout"],
+            whale_live.SERVICE_START_TIMEOUT_SECONDS,
+        )
+
+    def test_start_service_fails_if_unit_dies_before_ready(self):
+        args = mock.Mock(
+            midi_port="auto",
+            target=None,
+            gain=0.16,
+            latency_frames=128,
+            runtime_max_seconds=3600,
+        )
+        port = whale_live.MidiPort(
+            "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
+        )
+        failed = {
+            "unit": whale_live.UNIT_NAME,
+            "load_state": "loaded",
+            "active_state": "failed",
+            "sub_state": "failed",
+            "result": "exit-code",
+            "exec_main_status": "2",
+        }
+        launched = mock.Mock(returncode=0, stdout="", stderr="")
+        with (
+            mock.patch.object(whale_live, "service_active", return_value=False),
+            mock.patch.object(whale_live, "resolve_midi_port", return_value=port),
+            mock.patch.object(whale_live, "run_capture", return_value=launched),
+            mock.patch.object(whale_live, "service_status", return_value=failed),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "runtime readiness"):
+                whale_live.start_service(args)
 
     def test_service_status_fails_closed_on_systemctl_error(self):
         failed = mock.Mock(returncode=1, stdout="", stderr="bus unavailable")

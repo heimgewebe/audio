@@ -88,6 +88,15 @@
   "runtime": {
     "manager": "transient-systemd-user-service",
     "unit": "audio-buckelwal-live-voice-v1.service",
+    "readiness": {
+      "systemd_service_type": "notify",
+      "minimum_initialization_seconds": 0.1,
+      "requires": [
+        "midi-process-alive",
+        "pipewire-process-alive",
+        "bounded-pcm-consumption"
+      ]
+    },
     "maximum_runtime_seconds": 21600,
     "memory_max_bytes": 268435456,
     "cpu_quota_percent": 80,
