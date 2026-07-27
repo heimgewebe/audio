@@ -21,3 +21,18 @@ calibration-pack pack output:
 
 level wav:
     ./scripts/analyze-audio-level "{{wav}}"
+
+whale-doctor:
+    python3 scripts/whale_live.py doctor
+
+whale-demo output="/tmp/buckelwal-live-voice-v1-demo.wav":
+    python3 scripts/whale_live.py demo "{{output}}"
+
+whale-start:
+    python3 scripts/whale_live.py start
+
+whale-status:
+    python3 scripts/whale_live.py status
+
+whale-stop:
+    python3 scripts/whale_live.py stop
