@@ -60,7 +60,13 @@
     "block_frames": 128,
     "default_master_gain": 0.16,
     "maximum_master_gain": 0.25,
-    "default_sink": "motu-m2"
+    "default_sink": "motu-m2",
+    "pcm_transport": {
+      "maximum_pipe_bytes_at_default_block": 4096,
+      "maximum_buffered_frames_at_default_block": 512,
+      "realtime_pacing": true,
+      "catch_up_bursts": false
+    }
   },
   "runtime": {
     "manager": "transient-systemd-user-service",

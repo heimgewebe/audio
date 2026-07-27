@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import pathlib
 import queue
 import re
@@ -33,6 +35,7 @@ UNIT_NAME = "audio-buckelwal-live-voice-v1.service"
 ROLAND_PATTERN = re.compile(r"roland|digital\s+piano|fp[- ]?30", re.IGNORECASE)
 PORT_LINE_RE = re.compile(r"^\s*(\d+):(\d+)\s{2,}(.+?)\s{2,}(.+?)\s*$")
 MAX_MANAGED_RUNTIME_SECONDS = 21_600
+BYTES_PER_STEREO_F32_FRAME = 8
 
 
 @dataclass(frozen=True)
@@ -192,6 +195,57 @@ def build_pw_cat_command(*, target: str | None, latency_frames: int) -> list[str
     return command
 
 
+def pcm_pipe_size_bytes(block_frames: int) -> int:
+    if not 16 <= block_frames <= 4_096:
+        raise ValueError("block_frames must be between 16 and 4096")
+    page_size = int(os.sysconf("SC_PAGESIZE"))
+    minimum_bytes = max(page_size, block_frames * BYTES_PER_STEREO_F32_FRAME)
+    required_pages = (minimum_bytes + page_size - 1) // page_size
+    rounded_pages = 1 << (required_pages - 1).bit_length()
+    return page_size * rounded_pages
+
+
+class RealtimeBlockPacer:
+    """Clock one rendered block per real audio block without catch-up bursts."""
+
+    def __init__(
+        self,
+        sample_rate: int,
+        block_frames: int,
+        *,
+        now_ns=time.monotonic_ns,
+        sleeper=time.sleep,
+    ) -> None:
+        if sample_rate <= 0 or block_frames <= 0:
+            raise ValueError("sample_rate and block_frames must be positive")
+        self.block_duration_ns = round(block_frames * 1_000_000_000 / sample_rate)
+        self._now_ns = now_ns
+        self._sleeper = sleeper
+        self.next_deadline_ns = now_ns() + self.block_duration_ns
+
+    def wait(self) -> None:
+        now = self._now_ns()
+        if now < self.next_deadline_ns:
+            self._sleeper((self.next_deadline_ns - now) / 1_000_000_000)
+            now = self._now_ns()
+        if now - self.next_deadline_ns > self.block_duration_ns:
+            self.next_deadline_ns = now + self.block_duration_ns
+        else:
+            self.next_deadline_ns += self.block_duration_ns
+
+
+def verified_pipe_capacity_bytes(stream: object, maximum_bytes: int) -> int:
+    fileno = getattr(stream, "fileno", None)
+    if not callable(fileno):
+        raise RuntimeError("PCM pipe has no file descriptor")
+    capacity = int(fcntl.fcntl(fileno(), fcntl.F_GETPIPE_SZ))
+    if capacity > maximum_bytes:
+        raise RuntimeError(
+            f"PCM pipe capacity {capacity} exceeds configured maximum {maximum_bytes}"
+        )
+    return capacity
+
+
 def _midi_reader(
     process: subprocess.Popen[str],
     event_queue: queue.SimpleQueue[MidiEvent | BaseException],
@@ -251,13 +305,20 @@ def run_live(
             text=True,
             bufsize=1,
         )
+        maximum_pipe_bytes = pcm_pipe_size_bytes(config.block_frames)
         audio_process = subprocess.Popen(
             build_pw_cat_command(target=target, latency_frames=latency_frames),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=None,
             bufsize=0,
+            pipesize=maximum_pipe_bytes,
         )
+        assert audio_process.stdin is not None
+        pipe_capacity_bytes = verified_pipe_capacity_bytes(
+            audio_process.stdin, maximum_pipe_bytes
+        )
+        pacer = RealtimeBlockPacer(config.sample_rate, config.block_frames)
         reader = threading.Thread(
             target=_midi_reader,
             args=(midi_process, event_queue, stop_event),
@@ -273,13 +334,14 @@ def run_live(
                     "sample_rate_hz": config.sample_rate,
                     "block_frames": config.block_frames,
                     "master_gain": config.master_gain,
+                    "pcm_pipe_capacity_bytes": pipe_capacity_bytes,
+                    "realtime_pacing": True,
                 },
                 sort_keys=True,
             ),
             flush=True,
         )
 
-        assert audio_process.stdin is not None
         while not stop_event.is_set():
             while True:
                 try:
@@ -298,6 +360,7 @@ def run_live(
                     f"pw-cat exited with status {audio_process.returncode}"
                 )
             audio_process.stdin.write(voice.render_f32_stereo(config.block_frames))
+            pacer.wait()
         return 0
     except BrokenPipeError as error:
         raise RuntimeError("PipeWire audio stream closed unexpectedly") from error

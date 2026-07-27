@@ -82,6 +82,10 @@ Es gibt kein `sfizz_jack` und keine reguläre unbeschränkte Logdatei.
 - 48.000 Hz, Stereo, Float32 an `pw-cat`
 - Standardblock: 128 Frames; der einheitenlose `pw-cat --latency`-Wert wird
   laut lokaler `pw-cat --help`-Schnittstelle als direkte Samplezahl interpretiert
+- PCM-Zuleitung auf maximal einen Block beziehungsweise das Kernel-Minimum von
+  4.096 Byte begrenzt; bei 128 Frames sind höchstens 512 Frames im Rohr
+- monotone Echtzeittaktung verhindert schneller-als-Echtzeit-Pufferung und
+  verwirft Aufhol-Bursts nach Scheduler-Verzögerungen
 - Standard-Master-Gain: 0,16
 - harter Maximalwert für Master-Gain und Samples: 0,25
 - Standardausgabe: aktuelles PipeWire-Ziel; für Referenzbetrieb soll dies das

@@ -234,6 +234,46 @@ class WhaleRuntimeTests(unittest.TestCase):
             ):
                 whale_live.resolve_midi_port("auto")
 
+    def test_pcm_pipe_is_page_and_power_of_two_bounded(self):
+        with mock.patch.object(whale_live.os, "sysconf", return_value=4_096):
+            self.assertEqual(whale_live.pcm_pipe_size_bytes(128), 4_096)
+            self.assertEqual(whale_live.pcm_pipe_size_bytes(1_000), 8_192)
+            self.assertEqual(whale_live.pcm_pipe_size_bytes(2_048), 16_384)
+        with self.assertRaises(ValueError):
+            whale_live.pcm_pipe_size_bytes(8)
+
+    def test_pipe_capacity_readback_is_fail_closed(self):
+        stream = mock.Mock()
+        stream.fileno.return_value = 7
+        with mock.patch.object(whale_live.fcntl, "fcntl", return_value=4_096):
+            self.assertEqual(
+                whale_live.verified_pipe_capacity_bytes(stream, 4_096), 4_096
+            )
+        with mock.patch.object(whale_live.fcntl, "fcntl", return_value=65_536):
+            with self.assertRaisesRegex(RuntimeError, "exceeds configured maximum"):
+                whale_live.verified_pipe_capacity_bytes(stream, 4_096)
+
+    def test_realtime_pacer_waits_and_drops_catch_up_bursts(self):
+        now = [0]
+        sleeps = []
+
+        def fake_sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += round(seconds * 1_000_000_000)
+
+        pacer = whale_live.RealtimeBlockPacer(
+            48_000, 128, now_ns=lambda: now[0], sleeper=fake_sleep
+        )
+        block_ns = pacer.block_duration_ns
+        pacer.wait()
+        self.assertEqual(sleeps, [block_ns / 1_000_000_000])
+        self.assertEqual(pacer.next_deadline_ns, block_ns * 2)
+
+        now[0] += block_ns * 4
+        pacer.wait()
+        self.assertEqual(pacer.next_deadline_ns, now[0] + block_ns)
+        self.assertEqual(len(sleeps), 1)
+
     def test_pw_cat_command_is_explicit_and_bounded(self):
         command = whale_live.build_pw_cat_command(
             target="alsa_output.test", latency_frames=128
