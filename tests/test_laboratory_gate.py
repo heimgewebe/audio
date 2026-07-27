@@ -233,6 +233,34 @@ class LaboratoryGateTests(unittest.TestCase):
             "xrun-stability-test", {**base, "xrun_delta": 0}
         )
 
+    def test_rejects_zero_delay_or_identical_loopback_sources(self):
+        evidence = {
+            "schema_version": 1,
+            "kind": "audio_loopback_latency_evidence",
+            "gate": "loopback-latency-measurement",
+            "result": "pass",
+            "measured_at": "2026-07-27T12:00:00+00:00",
+            "physical_state_sha256": "0" * 64,
+            "quantum_frames": 128,
+            "graph_fingerprint": "1" * 64,
+            "reference_wav": {"sha256": "a" * 64, "bytes": 100},
+            "recorded_wav": {"sha256": "a" * 64, "bytes": 100},
+            "analysis": {
+                "kind": "audio_loopback_latency_result",
+                "sample_rate_hz": 48000,
+                "delay_samples": 0,
+                "round_trip_latency_ms": 0.0,
+                "peak_snr_db": 40.0,
+                "peak_detection_confidence": 1.0,
+            },
+        }
+        with self.assertRaises(ValueError):
+            MODULE.validate_evidence("loopback-latency-measurement", evidence)
+        evidence["analysis"]["delay_samples"] = 480
+        evidence["analysis"]["round_trip_latency_ms"] = 10.0
+        with self.assertRaisesRegex(ValueError, "different bytes"):
+            MODULE.validate_evidence("loopback-latency-measurement", evidence)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -116,6 +116,23 @@ class MeasurementEvidenceTests(unittest.TestCase):
                 hashlib.sha256(source.read_bytes()).hexdigest(),
             )
 
+    def test_identical_loopback_sources_do_not_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            physical = self.physical_state(root)
+            source = root / "same.wav"
+            samples = [0] * 2000
+            samples[10] = 12000
+            self.write_wave(source, samples)
+            evidence = MODULE.loopback_latency_evidence(
+                source, source, physical, 100.0, 128, "d" * 64
+            )
+            self.assertEqual(evidence["result"], "fail")
+            with self.assertRaises(ValueError):
+                MODULE.LAB.validate_evidence(
+                    "loopback-latency-measurement", evidence
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

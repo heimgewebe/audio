@@ -35,8 +35,10 @@ graph_fingerprint=$(./scripts/audio-plan piano-software-live \
 
 `create-audio-evidence loopback-latency` verwendet den bestehenden
 Impulsanalysator. Ein positiver Beleg verlangt mindestens 0,8
-Erkennungskonfidenz und 20 dB Peak-SNR. Der Beleg wird zusätzlich an Samplerate,
-Quantum und den geplanten Graph-Fingerprint gebunden; ein Profil akzeptiert ihn
+Erkennungskonfidenz und 20 dB Peak-SNR. Referenz und Aufnahme müssen
+unterschiedliche Bytes besitzen, und die erkannte Verzögerung muss mindestens
+ein Sample betragen. Der Beleg wird zusätzlich an Samplerate, Quantum und den
+geplanten Graph-Fingerprint gebunden; ein Profil akzeptiert ihn
 nur bei Übereinstimmung mit seinem Zielkontext. Dasselbe gilt für XRun-Belege.
 Stimmpegelbelege müssen zur Ziel-Samplerate des Profils passen.
 

@@ -151,7 +151,14 @@ def loopback_latency_evidence(
     confidence = float(analysis["peak_detection_confidence"])
     snr = float(analysis["peak_snr_db"])
     latency = float(analysis["round_trip_latency_ms"])
-    passed = confidence >= 0.8 and snr >= 20.0 and 0.0 <= latency <= 500.0
+    distinct_sources = reference_binding["sha256"] != recorded_binding["sha256"]
+    passed = (
+        confidence >= 0.8
+        and snr >= 20.0
+        and 0.0 < latency <= 500.0
+        and int(analysis["delay_samples"]) > 0
+        and distinct_sources
+    )
     return {
         "schema_version": 1,
         "kind": "audio_loopback_latency_evidence",
@@ -167,7 +174,9 @@ def loopback_latency_evidence(
         "criteria": {
             "minimum_peak_detection_confidence": 0.8,
             "minimum_peak_snr_db": 20.0,
+            "minimum_delay_samples": 1,
             "maximum_round_trip_latency_ms": 500.0,
+            "reference_and_recording_must_differ": True,
         },
         "does_not_establish": [
             "latency-distribution",

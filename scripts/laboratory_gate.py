@@ -197,10 +197,10 @@ def validate_loopback_latency(evidence: dict[str, Any]) -> None:
         analysis.get("peak_detection_confidence"), "peak_detection_confidence"
     )
     snr = _number(analysis.get("peak_snr_db"), "peak_snr_db")
-    if latency < 0 or latency > 500:
-        raise ValueError("round-trip latency is outside the accepted measurement range")
+    if latency <= 0 or latency > 500:
+        raise ValueError("round-trip latency must be positive and at most 500 ms")
     sample_rate = _positive_int(analysis.get("sample_rate_hz"), "sample_rate_hz")
-    delay_samples = _nonnegative_int(analysis.get("delay_samples"), "delay_samples")
+    delay_samples = _positive_int(analysis.get("delay_samples"), "delay_samples")
     expected_latency = round(delay_samples / sample_rate * 1000, 3)
     if abs(latency - expected_latency) > 0.0005:
         raise ValueError("round-trip latency contradicts delay samples and sample rate")
@@ -210,12 +210,15 @@ def validate_loopback_latency(evidence: dict[str, Any]) -> None:
         raise ValueError("loopback detection confidence is below 0.8")
     if snr < 20:
         raise ValueError("loopback peak SNR is below 20 dB")
+    source_hashes: dict[str, str] = {}
     for key in ("reference_wav", "recorded_wav"):
         source = evidence.get(key)
         if not isinstance(source, dict):
             raise ValueError(f"loopback evidence has no {key} binding")
-        _sha256(source.get("sha256"), f"{key} SHA-256")
+        source_hashes[key] = _sha256(source.get("sha256"), f"{key} SHA-256")
         _positive_int(source.get("bytes"), f"{key} bytes")
+    if source_hashes["reference_wav"] == source_hashes["recorded_wav"]:
+        raise ValueError("reference and recorded WAV must contain different bytes")
 
 
 def validate_xrun_observation(evidence: dict[str, Any]) -> None:
