@@ -29,6 +29,9 @@ gehaltene Taste ist das aktuelle Tonziel einer einzigen Stimme.
 - **CC1:** optional zusätzliche Rauheit und schnelleres Flattern.
 - **CC11:** Expression.
 - **CC67 / Soft-Pedal:** Entfernung beziehungsweise Tiefe.
+- **CC120 / All Sound Off:** sofortige, harte Stummschaltung für MIDI-Panic.
+- **CC123 / All Notes Off:** beendet alle gehaltenen Noten mit dem normalen
+  Ausklang.
 
 ## Nutzung der 88 Tasten
 
@@ -46,6 +49,9 @@ im tiefen Bereich weiter aufgefächert.
 
 Die Grenzen sind weich. Registerposition verändert gleichzeitig
 Grundfrequenz, Subanteil, Formantgewicht, Pfeifanteil und Geräuschspektrum.
+Fractionale Formantmodulation und der leicht verstimmte Anteil besitzen eigene
+integrierte Phasenakkumulatoren; lange Holds und Phasen-Wraps erzeugen dadurch
+keine altersabhängigen Sprünge.
 
 ## Bedienung
 
@@ -108,8 +114,9 @@ Vor einer Latenzfreigabe bleiben Loopback- und XRun-Messung erforderlich.
 - Synthese und MIDI-Gestenparser kompilieren ohne Zusatzpakete.
 - 88-Tasten-Abbildung, Halten, Legato, Rückkehr zur vorherigen Taste, CC64,
   deterministische Ausgabe und Pegelgrenze sind automatisiert getestet.
-- 12-Sekunden-Demo bei 48 kHz Stereo: Renderzeit 1,537 Sekunden.
-- Peak −20,201 dBFS; RMS −31,183 dBFS je Kanal; 0 Clipping-Samples.
+- 12-Sekunden-Demo bei 48 kHz Stereo: Median-Renderzeit 1,514 Sekunden aus
+  drei Läufen.
+- Peak −20,387 dBFS; RMS −31,163 dBFS je Kanal; 0 Clipping-Samples.
 
 ### Blockiert
 

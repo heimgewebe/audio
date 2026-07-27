@@ -176,6 +176,90 @@ class WhaleVoiceTests(unittest.TestCase):
         self.assertGreater(voice.envelope, 0.0)
         self.assertLess(abs(onset_sample), 0.01)
 
+    def test_detached_retrigger_is_chunk_invariant(self):
+        def prepared_voice():
+            voice = engine.WhaleVoice(self.config, seed=1234)
+            voice.note_on(45, 90)
+            voice.render(self.config.sample_rate // 2)
+            voice.note_off(45)
+            voice.render(self.config.sample_rate // 20)
+            voice.note_on(69, 100)
+            return voice
+
+        whole = prepared_voice()
+        total_frames = whole.retrigger_fade_total + 257
+        expected = whole.render(total_frames)
+
+        chunked = prepared_voice()
+        actual = []
+        fixed_chunks = (17, 31, 3, 64)
+        for frames in (*fixed_chunks, total_frames - sum(fixed_chunks)):
+            actual.extend(chunked.render(frames))
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(chunked.__dict__, whole.__dict__)
+
+    def test_fractional_formant_modulator_uses_its_own_integrated_phase(self):
+        voice = engine.WhaleVoice(self.config, seed=1234)
+        voice.note_on(60, 80)
+        voice.render(64)
+        voice.formant_phase = math.tau - 1e-6
+        voice.carrier_mod_phase = 1.25
+        before = voice.carrier_mod_phase
+
+        voice.render(1)
+
+        delta = (voice.carrier_mod_phase - before) % math.tau
+        self.assertGreater(delta, 0.0)
+        self.assertLess(delta, 0.5)
+
+    def test_detuned_partial_phase_is_integrated_after_a_long_hold(self):
+        voice = engine.WhaleVoice(self.config, seed=1234)
+        voice.note_on(45, 100)
+        voice.render(self.config.sample_rate)
+        voice.note_age_frames = self.config.sample_rate * 3_600
+        voice.hold_frames = voice.note_age_frames
+        baseline_next = copy.deepcopy(voice).render(1)[0]
+        phase_before = voice.detuned_phase
+
+        voice.note_on(84, 100)
+        changed_next = voice.render(1)[0]
+
+        self.assertLess(abs(changed_next - baseline_next), 0.005)
+        self.assertNotEqual(voice.detuned_phase, phase_before)
+
+    def test_cc120_is_immediate_silence_while_cc123_releases(self):
+        panic = engine.WhaleVoice(self.config)
+        panic.note_on(55, 100)
+        panic.render(self.config.sample_rate * 2)
+        panic.control_change(120, 0)
+
+        self.assertFalse(panic.active)
+        self.assertFalse(panic.gate)
+        self.assertFalse(panic.held_notes)
+        self.assertIsNone(panic.active_note)
+        self.assertEqual(panic.envelope, 0.0)
+        self.assertEqual(panic.render(128), [0.0] * 128)
+
+        fading = engine.WhaleVoice(self.config)
+        fading.note_on(45, 90)
+        fading.render(self.config.sample_rate // 2)
+        fading.note_off(45)
+        fading.render(self.config.sample_rate // 20)
+        fading.note_on(69, 100)
+        self.assertGreater(fading.retrigger_fade_remaining, 0)
+        fading.control_change(120, 0)
+        self.assertEqual(fading.retrigger_fade_remaining, 0)
+        self.assertEqual(fading.render(128), [0.0] * 128)
+
+        release = engine.WhaleVoice(self.config)
+        release.note_on(55, 100)
+        release.render(self.config.sample_rate * 2)
+        release.control_change(123, 0)
+        self.assertFalse(release.gate)
+        self.assertGreater(release.envelope, 0.0)
+        self.assertGreater(max(abs(sample) for sample in release.render(128)), 0.0)
+
     def test_releasing_latest_legato_note_returns_to_previous_held_note(self):
         voice = engine.WhaleVoice(self.config)
         voice.note_on(40, 50)

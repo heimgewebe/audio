@@ -175,7 +175,9 @@ class WhaleVoice:
         self.phase = 0.0
         self.sub_phase = 0.0
         self.formant_phase = 0.0
+        self.carrier_mod_phase = 0.0
         self.pulse_phase = 0.0
+        self.detuned_phase = 0.0
         self.noise_state = seed & 0xFFFFFFFF
         self.noise_lowpass = 0.0
 
@@ -254,7 +256,9 @@ class WhaleVoice:
             self.expression = value / 127.0
         elif controller == 67:  # soft pedal: distance/depth
             self.distance = value / 127.0
-        elif controller in (120, 123):
+        elif controller == 120:  # all sound off: MIDI panic must be immediate
+            self._silence_immediately()
+        elif controller == 123:  # all notes off: preserve the natural release
             self.held_notes.clear()
             self.sustain = 0
             self._begin_release()
@@ -263,6 +267,23 @@ class WhaleVoice:
         # aseqdump reports ALSA pitch bend around zero. Keep the range narrow.
         bounded = clamp(value, -8192, 8191)
         self.pitch_bend_cents = 180.0 * bounded / 8192.0
+
+    def _silence_immediately(self) -> None:
+        self.held_notes.clear()
+        self.active_note = None
+        self.gate = False
+        self.sustain = 0
+        self.envelope = 0.0
+        self.note_age_frames = 0
+        self.hold_frames = 0
+        self.retrigger_fade_remaining = 0
+        self.phase = 0.0
+        self.sub_phase = 0.0
+        self.formant_phase = 0.0
+        self.carrier_mod_phase = 0.0
+        self.pulse_phase = 0.0
+        self.detuned_phase = 0.0
+        self.noise_lowpass = 0.0
 
     def _reset_phrase_to_target(self) -> None:
         self.note_age_frames = 0
@@ -274,7 +295,9 @@ class WhaleVoice:
         self.phase = 0.0
         self.sub_phase = 0.0
         self.formant_phase = 0.0
+        self.carrier_mod_phase = 0.0
         self.pulse_phase = 0.0
+        self.detuned_phase = 0.0
         self.retrigger_fade_remaining = 0
 
     def _begin_release(self, pedal_value: int | None = None) -> None:
@@ -299,7 +322,9 @@ class WhaleVoice:
         phase = self.phase
         sub_phase = self.sub_phase
         formant_phase = self.formant_phase
+        carrier_mod_phase = self.carrier_mod_phase
         pulse_phase = self.pulse_phase
+        detuned_phase = self.detuned_phase
         noise_state = self.noise_state
         noise_lowpass = self.noise_lowpass
         note_age_frames = self.note_age_frames
@@ -355,18 +380,19 @@ class WhaleVoice:
             phase_increment = two_pi * frequency / sample_rate
             phase = (phase + phase_increment) % two_pi
             sub_phase = (sub_phase + phase_increment * 0.502) % two_pi
-            formant_phase = (
-                formant_phase + phase_increment * (1.92 + 0.28 * slow_arc)
-            ) % two_pi
+            formant_increment = phase_increment * (1.92 + 0.28 * slow_arc)
+            formant_phase = (formant_phase + formant_increment) % two_pi
+            carrier_mod_phase = (carrier_mod_phase + formant_increment * 0.23) % two_pi
             pulse_phase = (
                 pulse_phase + phase_increment * (2.87 + 0.07 * second_arc)
             ) % two_pi
+            detuned_phase = (detuned_phase + phase_increment * 1.0065) % two_pi
 
-            carrier = math.sin(phase + 0.24 * math.sin(formant_phase * 0.23))
+            carrier = math.sin(phase + 0.24 * math.sin(carrier_mod_phase))
             sub = math.sin(sub_phase)
             formant = math.sin(formant_phase + 0.37 * slow_arc)
             whistle = math.sin(pulse_phase + 0.18 * flutter)
-            detuned = math.sin(phase + two_pi * 0.0065 * frequency * age)
+            detuned = math.sin(detuned_phase)
 
             noise_state = (1_664_525 * noise_state + 1_013_904_223) & 0xFFFFFFFF
             white = (noise_state / 2_147_483_648.0) - 1.0
@@ -414,7 +440,9 @@ class WhaleVoice:
                     phase = 0.0
                     sub_phase = 0.0
                     formant_phase = 0.0
+                    carrier_mod_phase = 0.0
                     pulse_phase = 0.0
+                    detuned_phase = 0.0
                     note_age_frames = 0
                     hold_frames = 0
                     continue
@@ -429,7 +457,9 @@ class WhaleVoice:
         self.phase = phase
         self.sub_phase = sub_phase
         self.formant_phase = formant_phase
+        self.carrier_mod_phase = carrier_mod_phase
         self.pulse_phase = pulse_phase
+        self.detuned_phase = detuned_phase
         self.noise_state = noise_state
         self.noise_lowpass = noise_lowpass
         self.note_age_frames = note_age_frames

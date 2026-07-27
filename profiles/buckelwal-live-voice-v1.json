@@ -12,6 +12,10 @@
       "1": "roughness-and-flutter",
       "11": "expression",
       "67": "distance-and-depth"
+    },
+    "panic_controllers": {
+      "120": "immediate-all-sound-off",
+      "123": "all-notes-off-with-natural-release"
     }
   },
   "mapping": {
@@ -52,6 +56,10 @@
     ],
     "overlap": "continuous-pitch-register-and-formant-glide",
     "detached_retrigger": "six-millisecond-fade-out-then-new-attack",
+    "oscillator_phase_contract": {
+      "fractional_formant_modulator": "dedicated-integrated-phase",
+      "detuned_partial": "dedicated-integrated-phase"
+    },
     "simultaneous_notes": "one-voice-no-piano-chord"
   },
   "audio": {
