@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "kind": "audio_reference_level_contract",
+  "digital": {
+    "calibration_tone_dbfs": -20.0,
+    "maximum_generated_test_signal_dbfs": -12.0,
+    "software_playback_reference": "unity unless a profile explicitly documents attenuation",
+    "prohibit_full_scale_test_tones": true
+  },
+  "recording": {
+    "voice_typical_average_dbfs_range": [-24.0, -18.0],
+    "voice_peak_dbfs_range": [-12.0, -6.0],
+    "instrument_peak_dbfs_range": [-12.0, -6.0],
+    "clipping_limit_dbfs": 0.0,
+    "rule": "set analog gain from the loudest realistic performance, not from quiet speech or playing"
+  },
+  "analog": {
+    "startup_rule": "headphone amplifier and receiver volume start at minimum before a test signal is routed",
+    "calibration_rule": "raise one analog control at a time using a -20 dBFS signal",
+    "unknown_positions_are_not_defaults": true
+  },
+  "microphone": {
+    "phantom_required_for_rode_nt1a": true,
+    "phantom_verification": "physical-only",
+    "safe_sequence": [
+      "mute or lower monitoring",
+      "set input gain low",
+      "connect XLR cable and microphone",
+      "enable 48 V",
+      "wait before raising gain",
+      "set gain from loudest expected source"
+    ]
+  }
+}
