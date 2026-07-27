@@ -47,6 +47,18 @@ class LevelAnalyzerTests(unittest.TestCase):
             self.assertEqual(result["channels_analysis"][0]["clipped_samples"], 2)
             self.assertEqual(result["voice_target"]["status"], "high")
 
+    def test_rejects_truncated_24_bit_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "truncated-24bit.wav"
+            with wave.open(str(path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(3)
+                handle.setframerate(48000)
+                handle.writeframes(b"\x00\x00\x00" * 4)
+            path.write_bytes(path.read_bytes()[:-1])
+            with self.assertRaisesRegex(ValueError, "truncated"):
+                MODULE.analyze(path)
+
     def test_total_sample_bound(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "bounded.wav"

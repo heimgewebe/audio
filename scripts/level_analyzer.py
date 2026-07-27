@@ -53,9 +53,12 @@ def analyze(path: pathlib.Path) -> dict[str, object]:
                 f"WAV exceeds the {MAX_TOTAL_SAMPLES}-sample analysis limit"
             )
         raw = handle.readframes(frames)
+    expected_bytes = frames * channels * width
+    if len(raw) != expected_bytes:
+        raise ValueError("WAV payload is truncated")
     samples = decode_samples(raw, width)
     if len(samples) != frames * channels:
-        raise ValueError("WAV payload is truncated")
+        raise ValueError("decoded WAV sample count does not match header")
     full_scale = 1 << (width * 8 - 1)
     maximum_positive = full_scale - 1
     minimum_negative = -full_scale
