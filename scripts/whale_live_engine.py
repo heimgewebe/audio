@@ -192,7 +192,7 @@ class WhaleVoice:
     def note_on(self, note: int, velocity: int) -> None:
         note = int(clamp(note, self.config.min_note, self.config.max_note))
         velocity = int(clamp(velocity, 1, 127))
-        was_active = self.active
+        phrase_continues = self.gate or bool(self.held_notes)
         old_frequency = max(self.current_frequency, 1.0)
 
         self._order += 1
@@ -209,11 +209,13 @@ class WhaleVoice:
         )
         self.attack_seconds = clamp(0.085 - 0.06 * self.target_velocity, 0.018, 0.085)
         self.gate = True
-        if not was_active:
+        if not phrase_continues:
             self.note_age_frames = 0
             self.hold_frames = 0
             self.current_frequency = self.target_frequency
             self.glide_seconds = 0.02
+            # A detached note is a new phrase even while the old release is audible.
+            self.envelope = min(self.envelope, 0.12)
 
     def note_off(self, note: int) -> None:
         self.held_notes.pop(note, None)

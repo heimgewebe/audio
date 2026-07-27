@@ -21,6 +21,9 @@ gehaltene Taste ist das aktuelle Tonziel einer einzigen Stimme.
 - **Überlappte Tasten:** Die Stimme gleitet ohne Hüllkurven-Neustart zum neuen
   Ziel. Wird die neueste Taste losgelassen, kehrt sie zur zuvor gehaltenen Taste
   zurück.
+- **Abgesetzte neue Taste:** Sobald keine Taste mehr gehalten und das Pedal frei
+  ist, beginnt der nächste Anschlag eine neue Phrase – auch während der alte
+  Ausklang noch hörbar ist.
 - **CC64 / Haltepedal:** Hält eine Phrase nach dem Loslassen der letzten Taste.
   Beim Freigeben beginnt ein von Haltezeit und Pedalwert abhängiger Ausklang.
 - **CC1:** optional zusätzliche Rauheit und schnelleres Flattern.

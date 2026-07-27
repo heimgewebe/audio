@@ -126,6 +126,25 @@ class WhaleVoiceTests(unittest.TestCase):
         self.assertEqual(voice.active_note, 69)
         self.assertEqual(len(voice.held_notes), 2)
 
+    def test_detached_note_retriggers_during_previous_release_tail(self):
+        voice = engine.WhaleVoice(self.config)
+        voice.note_on(45, 70)
+        voice.render(self.config.sample_rate // 2)
+        voice.note_off(45)
+        voice.render(self.config.sample_rate // 20)
+        self.assertGreater(voice.envelope, 0.12)
+        self.assertFalse(voice.gate)
+        self.assertFalse(voice.held_notes)
+
+        voice.note_on(69, 90)
+
+        self.assertTrue(voice.gate)
+        self.assertEqual(voice.note_age_frames, 0)
+        self.assertEqual(voice.hold_frames, 0)
+        self.assertAlmostEqual(voice.current_frequency, voice.target_frequency)
+        self.assertEqual(voice.glide_seconds, 0.02)
+        self.assertLessEqual(voice.envelope, 0.12)
+
     def test_releasing_latest_legato_note_returns_to_previous_held_note(self):
         voice = engine.WhaleVoice(self.config)
         voice.note_on(40, 50)
