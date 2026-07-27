@@ -29,6 +29,8 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
+- [Read-only Baselines](docs/baselines/README.md)
+- [Aktuelle Heim-PC-Baseline](baselines/heim-pc/2026-07-27/README.md)
 
 ## Prüfung
 
