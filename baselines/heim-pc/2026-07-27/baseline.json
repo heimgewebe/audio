@@ -1,0 +1,120 @@
+{
+  "captured_at": "2026-07-27T05:12:31.275250+00:00",
+  "config_manifest": {
+    "aggregate_sha256": "86c38ecf60cbbd5e6a486c54a56cfa2490208048c0cf29fc956cc8a0151a85cd",
+    "file_count": 139
+  },
+  "does_not_establish": [
+    "audio_redesign_applied",
+    "physical_signal_path_verified",
+    "bit_perfect_qobuz",
+    "round_trip_latency",
+    "xrun_free_live_performance",
+    "motu_usb_root_cause"
+  ],
+  "findings": [
+    {
+      "message": "WirePlumber erwartet das Roland als Standardaufnahmequelle, das Gerät ist aktuell aber abwesend.",
+      "severity": "medium"
+    },
+    {
+      "message": "Mopidy/Qobuz nutzt den gemischten Pulse-Pfad; Bitgenauigkeit ist damit nicht belegt.",
+      "severity": "medium"
+    },
+    {
+      "message": "Das aktuelle globale Quantum 1024 priorisiert Robustheit, nicht niedrige Live-Latenz.",
+      "severity": "info"
+    },
+    {
+      "message": "Roland FP-30X war bei der Baseline nicht digital erkennbar.",
+      "severity": "high"
+    }
+  ],
+  "hardware": {
+    "motu_m2": true,
+    "roland_fp_30x": false
+  },
+  "kind": "heim_pc_audio_baseline_public",
+  "log_projection": {
+    "kernel_audio_lines": 2,
+    "user_audio_lines": 0
+  },
+  "physical_signal_path": {
+    "known_components": [
+      "Rode NT1-A",
+      "MOTU M2",
+      "Lake People G111 Mk 2",
+      "Focal Clear MG",
+      "Pioneer VSX-830-K",
+      "1MII B03 Pro"
+    ],
+    "software_observable": false,
+    "unresolved": [
+      "cabling",
+      "gain positions",
+      "phantom power state",
+      "receiver input and mode",
+      "bluetooth codec"
+    ]
+  },
+  "pipewire": {
+    "configured_default_sink": "motu-m2",
+    "configured_default_source": "roland-fp-30x",
+    "default_sink": "motu-m2",
+    "default_source": "motu-m2",
+    "force_quantum": 1024,
+    "force_rate": 48000,
+    "relevant_object_count": 10
+  },
+  "private_receipt_sha256": "91959b9fc4871ae46aa9b398e7d2b193fdb50a9077afc6f3c418489993920420",
+  "qobuz": {
+    "mopidy_audio_output": "pulse-mixed",
+    "mopidy_present": true
+  },
+  "read_only_contract": true,
+  "schema_version": 1,
+  "services": {
+    "easyeffects": "inactive",
+    "mopidy": "active",
+    "pipewire": "active",
+    "pipewire-pulse": "active",
+    "wireplumber": "active"
+  },
+  "software_versions": {
+    "alsa-base": "1.0.25+dfsg-0ubuntu7",
+    "alsa-topology-conf": "1.2.5.1-2",
+    "alsa-ucm-conf": "1.2.8-1pop1~1709769747~22.04~16ff971",
+    "alsa-utils": "1.2.8-1pop1~1676755497~22.04~a0d6eed",
+    "ardour": "1:6.9.0+ds0-1build1",
+    "ardour-data": "1:6.9.0+ds0-1build1",
+    "ardour-lv2-plugins": "1:6.9.0+ds0-1build1",
+    "ardour-video-timeline": "1:6.9.0+ds0-1build1",
+    "carla": "2.4.2-0ubuntu2",
+    "carla-data": "2.4.2-0ubuntu2",
+    "carla-lv2": "2.4.2-0ubuntu2",
+    "carla-vst": "2.4.2-0ubuntu2",
+    "fluidsynth": "2.2.5-1",
+    "gstreamer1.0-alsa:amd64": "1.20.1-1ubuntu0.6",
+    "gstreamer1.0-pipewire:amd64": "1.0.2~1707732619~22.04~b8b871b",
+    "gstreamer1.0-pulseaudio:amd64": "1.20.3-0ubuntu1.6",
+    "libfluidsynth3:amd64": "2.2.5-1",
+    "libjack-jackd2-0:amd64": "1.9.20~dfsg-1",
+    "libpipewire-0.3-0:amd64": "1.0.2~1707732619~22.04~b8b871b",
+    "libpipewire-0.3-common": "1.0.2~1707732619~22.04~b8b871b",
+    "libpipewire-0.3-modules:amd64": "1.0.2~1707732619~22.04~b8b871b",
+    "libspa-0.2-jack:amd64": "1.0.2~1707732619~22.04~b8b871b",
+    "libwireplumber-0.4-0:amd64": "0.4.17~1701792620~22.04~e8b4d60",
+    "lsp-plugins-jack": "1.1.31-1ubuntu1",
+    "pipewire-alsa:amd64": "1.0.2~1707732619~22.04~b8b871b",
+    "pipewire-audio-client-libraries": "1.0.2~1707732619~22.04~b8b871b",
+    "pipewire-avb": "1.0.2~1707732619~22.04~b8b871b",
+    "pipewire-bin": "1.0.2~1707732619~22.04~b8b871b",
+    "pipewire-jack:amd64": "1.0.2~1707732619~22.04~b8b871b",
+    "pipewire-pulse": "1.0.2~1707732619~22.04~b8b871b",
+    "pipewire:amd64": "1.0.2~1707732619~22.04~b8b871b",
+    "pop-pipewire": "2.0.0~1722298299~22.04~4746943",
+    "pulseaudio-utils": "1:15.99.1+dfsg1-1ubuntu2.2",
+    "qsynth": "0.9.6-1",
+    "wireplumber": "0.4.17~1701792620~22.04~e8b4d60"
+  }
+}

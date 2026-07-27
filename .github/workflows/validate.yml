@@ -16,3 +16,7 @@ jobs:
         run: bash tests/test-audio-safety.sh
       - name: Check repository audio surfaces
         run: bash scripts/check-audio-safety .
+      - name: Test read-only baseline capture
+        run: python3 -m unittest discover -s tests -v
+      - name: Compile Python sources
+        run: python3 -m compileall -q scripts tests
