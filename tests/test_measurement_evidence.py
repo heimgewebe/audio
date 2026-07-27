@@ -4,6 +4,7 @@ import struct
 import tempfile
 import unittest
 import wave
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -58,13 +59,14 @@ class MeasurementEvidenceTests(unittest.TestCase):
             self.write_wave(reference, ref)
             self.write_wave(recorded, rec)
             evidence = MODULE.loopback_latency_evidence(
-                reference, recorded, physical, 100.0, 128
+                reference, recorded, physical, 100.0, 128, "d" * 64
             )
             self.assertEqual(evidence["result"], "pass")
             self.assertEqual(
                 evidence["analysis"]["round_trip_latency_ms"], 10.0
             )
             self.assertEqual(evidence["quantum_frames"], 128)
+            self.assertEqual(evidence["graph_fingerprint"], "d" * 64)
             MODULE.LAB.validate_evidence(
                 "loopback-latency-measurement", evidence
             )
@@ -87,6 +89,32 @@ class MeasurementEvidenceTests(unittest.TestCase):
             link.symlink_to(target)
             with self.assertRaises(ValueError):
                 MODULE.file_binding(link)
+
+    def test_voice_analysis_and_hash_use_same_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            physical = self.physical_state(root)
+            source = root / "voice.wav"
+            self.write_wave(source, [0, 10000, -10000, 0] * 100)
+            original_bytes = source.read_bytes()
+            original_analyze = MODULE.LEVEL.analyze
+
+            def mutate_original(snapshot):
+                source.write_bytes(b"changed-after-snapshot")
+                return original_analyze(snapshot)
+
+            with mock.patch.object(MODULE.LEVEL, "analyze", side_effect=mutate_original):
+                evidence = MODULE.voice_level_evidence(source, physical)
+            import hashlib
+
+            self.assertEqual(
+                evidence["source_wav"]["sha256"],
+                hashlib.sha256(original_bytes).hexdigest(),
+            )
+            self.assertNotEqual(
+                evidence["source_wav"]["sha256"],
+                hashlib.sha256(source.read_bytes()).hexdigest(),
+            )
 
 
 if __name__ == "__main__":

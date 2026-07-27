@@ -76,6 +76,10 @@ class LaboratoryProfileIntegrationTests(unittest.TestCase):
             MODULE.PHYSICAL.atomic_write_private(physical, physical_state)
             physical_sha = MODULE.LABORATORY.sha256_file(physical)
             state = MODULE.LABORATORY.empty_state()
+            planned_graph = MODULE.planned_graph_context(
+                self.doctor()["graph"],
+                MODULE.load_profiles()["piano-software-live"]["desired"],
+            )
             loopback = {
                 "schema_version": 1,
                 "kind": "audio_loopback_latency_evidence",
@@ -84,6 +88,9 @@ class LaboratoryProfileIntegrationTests(unittest.TestCase):
                 "measured_at": "2026-07-27T12:00:00+00:00",
                 "physical_state_sha256": physical_sha,
                 "quantum_frames": 256,
+                "graph_fingerprint": MODULE.LABORATORY.graph_fingerprint(
+                    planned_graph
+                ),
                 "reference_wav": {"sha256": "a" * 64, "bytes": 100},
                 "recorded_wav": {"sha256": "b" * 64, "bytes": 200},
                 "analysis": {
@@ -106,7 +113,9 @@ class LaboratoryProfileIntegrationTests(unittest.TestCase):
                 "xrun_delta": 0,
                 "rate_hz": 48000,
                 "quantum_frames": 128,
-                "graph_fingerprint": "c" * 64,
+                "graph_fingerprint": MODULE.LABORATORY.graph_fingerprint(
+                    planned_graph
+                ),
             }
             MODULE.LABORATORY.record_gate(
                 state, "loopback-latency-measurement", loopback, physical
@@ -131,6 +140,51 @@ class LaboratoryProfileIntegrationTests(unittest.TestCase):
                 result["unresolved_laboratory_gates"],
                 ["loopback-latency-measurement"],
             )
+
+    def test_xrun_gate_rejects_unrelated_graph(self):
+        desired = MODULE.load_profiles()["piano-software-live"]["desired"]
+        planned = MODULE.planned_graph_context(self.doctor()["graph"], desired)
+        receipt = {
+            "evidence": {
+                "rate_hz": 48000,
+                "quantum_frames": 128,
+                "graph_fingerprint": "f" * 64,
+            }
+        }
+        mismatch = MODULE.laboratory_gate_parameter_mismatch(
+            "xrun-stability-test",
+            receipt,
+            desired,
+            MODULE.LABORATORY.graph_fingerprint(planned),
+        )
+        self.assertEqual(mismatch["reason"], "planned-graph-mismatch")
+
+    def test_qobuz_gate_requires_current_track_and_graph(self):
+        desired = MODULE.load_profiles()["qobuz-exclusive"]["desired"]
+        planned = MODULE.planned_graph_context(
+            self.doctor()["graph"], desired, qobuz_track_rate_hz=96000
+        )
+        graph_fingerprint = MODULE.LABORATORY.graph_fingerprint(planned)
+        receipt = {
+            "evidence": {
+                "track_fingerprint": "a" * 64,
+                "track_rate_hz": 96000,
+                "graph_fingerprint": graph_fingerprint,
+            }
+        }
+        missing = MODULE.laboratory_gate_parameter_mismatch(
+            "qobuz-rate-proof", receipt, desired, graph_fingerprint
+        )
+        self.assertEqual(missing["reason"], "current-track-context-missing")
+        accepted = MODULE.laboratory_gate_parameter_mismatch(
+            "qobuz-rate-proof",
+            receipt,
+            desired,
+            graph_fingerprint,
+            qobuz_track_fingerprint="a" * 64,
+            qobuz_track_rate_hz=96000,
+        )
+        self.assertIsNone(accepted)
 
 
 if __name__ == "__main__":

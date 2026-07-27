@@ -62,6 +62,24 @@ def canonical_sha256(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+GRAPH_CONTEXT_FIELDS = (
+    "default_sink",
+    "default_source",
+    "force_rate_hz",
+    "force_quantum_frames",
+)
+
+
+def graph_context(graph: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(graph, dict):
+        raise ValueError("audio graph context must be an object")
+    return {field: graph.get(field) for field in GRAPH_CONTEXT_FIELDS}
+
+
+def graph_fingerprint(graph: dict[str, Any]) -> str:
+    return canonical_sha256(graph_context(graph))
+
+
 def parse_timestamp(raw: Any, label: str) -> dt.datetime:
     if not isinstance(raw, str) or not raw:
         raise ValueError(f"{label} is missing")
@@ -181,9 +199,13 @@ def validate_loopback_latency(evidence: dict[str, Any]) -> None:
     snr = _number(analysis.get("peak_snr_db"), "peak_snr_db")
     if latency < 0 or latency > 500:
         raise ValueError("round-trip latency is outside the accepted measurement range")
-    _positive_int(analysis.get("sample_rate_hz"), "sample_rate_hz")
-    _nonnegative_int(analysis.get("delay_samples"), "delay_samples")
+    sample_rate = _positive_int(analysis.get("sample_rate_hz"), "sample_rate_hz")
+    delay_samples = _nonnegative_int(analysis.get("delay_samples"), "delay_samples")
+    expected_latency = round(delay_samples / sample_rate * 1000, 3)
+    if abs(latency - expected_latency) > 0.0005:
+        raise ValueError("round-trip latency contradicts delay samples and sample rate")
     _positive_int(evidence.get("quantum_frames"), "quantum_frames")
+    _sha256(evidence.get("graph_fingerprint"), "graph_fingerprint")
     if confidence < 0.8:
         raise ValueError("loopback detection confidence is below 0.8")
     if snr < 20:
@@ -214,6 +236,7 @@ def validate_policy_decision(evidence: dict[str, Any]) -> None:
 
 def validate_qobuz_rate(evidence: dict[str, Any]) -> None:
     _positive_int(evidence.get("track_rate_hz"), "track_rate_hz")
+    _sha256(evidence.get("track_fingerprint"), "track_fingerprint")
     _positive_int(evidence.get("graph_rate_hz"), "graph_rate_hz")
     _positive_int(evidence.get("endpoint_rate_hz"), "endpoint_rate_hz")
     resampling = evidence.get("resampling_observed")

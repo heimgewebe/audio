@@ -44,8 +44,36 @@ def load_profiles() -> dict[str, Any]:
     return profiles
 
 
+def planned_graph_context(
+    observed: dict[str, Any],
+    desired: dict[str, Any],
+    *,
+    qobuz_track_rate_hz: int | None = None,
+) -> dict[str, Any]:
+    graph = LABORATORY.graph_context(observed)
+    if "default_sink" in desired:
+        graph["default_sink"] = desired["default_sink"]
+    if "default_source" in desired:
+        graph["default_source"] = desired["default_source"]
+    if "rate_hz" in desired:
+        graph["force_rate_hz"] = desired["rate_hz"]
+    elif qobuz_track_rate_hz is not None:
+        graph["force_rate_hz"] = qobuz_track_rate_hz
+    if "quantum_candidate_frames" in desired:
+        graph["force_quantum_frames"] = desired["quantum_candidate_frames"]
+    elif "quantum_frames" in desired:
+        graph["force_quantum_frames"] = desired["quantum_frames"]
+    return graph
+
+
 def laboratory_gate_parameter_mismatch(
-    gate: str, receipt: dict[str, Any], desired: dict[str, Any]
+    gate: str,
+    receipt: dict[str, Any],
+    desired: dict[str, Any],
+    planned_graph_fingerprint: str,
+    *,
+    qobuz_track_fingerprint: str | None = None,
+    qobuz_track_rate_hz: int | None = None,
 ) -> dict[str, Any] | None:
     evidence = receipt.get("evidence", {})
     expected_rate = desired.get("rate_hz")
@@ -78,6 +106,13 @@ def laboratory_gate_parameter_mismatch(
                 "expected": expected_quantum,
                 "observed": observed_quantum,
             }
+        if evidence.get("graph_fingerprint") != planned_graph_fingerprint:
+            return {
+                "reason": "planned-graph-mismatch",
+                "field": "graph_fingerprint",
+                "expected": planned_graph_fingerprint,
+                "observed": evidence.get("graph_fingerprint"),
+            }
     if gate == "xrun-stability-test":
         observed_rate = evidence.get("rate_hz")
         observed_quantum = evidence.get("quantum_frames")
@@ -95,6 +130,42 @@ def laboratory_gate_parameter_mismatch(
                 "expected": expected_quantum,
                 "observed": observed_quantum,
             }
+        if evidence.get("graph_fingerprint") != planned_graph_fingerprint:
+            return {
+                "reason": "planned-graph-mismatch",
+                "field": "graph_fingerprint",
+                "expected": planned_graph_fingerprint,
+                "observed": evidence.get("graph_fingerprint"),
+            }
+    if gate == "qobuz-rate-proof":
+        if qobuz_track_fingerprint is None or qobuz_track_rate_hz is None:
+            return {
+                "reason": "current-track-context-missing",
+                "field": "qobuz_track_context",
+                "expected": "track fingerprint and rate",
+                "observed": None,
+            }
+        if evidence.get("track_fingerprint") != qobuz_track_fingerprint:
+            return {
+                "reason": "track-mismatch",
+                "field": "track_fingerprint",
+                "expected": qobuz_track_fingerprint,
+                "observed": evidence.get("track_fingerprint"),
+            }
+        if evidence.get("track_rate_hz") != qobuz_track_rate_hz:
+            return {
+                "reason": "track-mismatch",
+                "field": "track_rate_hz",
+                "expected": qobuz_track_rate_hz,
+                "observed": evidence.get("track_rate_hz"),
+            }
+        if evidence.get("graph_fingerprint") != planned_graph_fingerprint:
+            return {
+                "reason": "planned-graph-mismatch",
+                "field": "graph_fingerprint",
+                "expected": planned_graph_fingerprint,
+                "observed": evidence.get("graph_fingerprint"),
+            }
     return None
 
 
@@ -102,6 +173,9 @@ def plan(
     profile: str,
     state_path: pathlib.Path,
     gate_state_path: pathlib.Path = LABORATORY.DEFAULT_STATE,
+    *,
+    qobuz_track_fingerprint: str | None = None,
+    qobuz_track_rate_hz: int | None = None,
 ) -> dict[str, Any]:
     catalog = load_profiles()
     if profile not in catalog:
@@ -134,12 +208,22 @@ def plan(
     )
     required_laboratory_gates = list(spec.get("required_laboratory_gates", []))
     desired = spec.get("desired", {})
+    observed = doctor.get("graph", {})
+    planned_graph = planned_graph_context(
+        observed, desired, qobuz_track_rate_hz=qobuz_track_rate_hz
+    )
+    planned_graph_fingerprint = LABORATORY.graph_fingerprint(planned_graph)
     incompatible_laboratory_gates: dict[str, dict[str, Any]] = {}
     for gate in required_laboratory_gates:
         if gate not in resolved_gate_names:
             continue
         mismatch = laboratory_gate_parameter_mismatch(
-            gate, laboratory_state["gates"][gate], desired
+            gate,
+            laboratory_state["gates"][gate],
+            desired,
+            planned_graph_fingerprint,
+            qobuz_track_fingerprint=qobuz_track_fingerprint,
+            qobuz_track_rate_hz=qobuz_track_rate_hz,
         )
         if mismatch is not None:
             incompatible_laboratory_gates[gate] = mismatch
@@ -153,7 +237,6 @@ def plan(
         for gate in required_laboratory_gates
         if gate not in resolved_laboratory_gates
     ]
-    observed = doctor.get("graph", {})
     proposed_changes: list[dict[str, Any]] = []
     observed_keys = {
         "default_sink": "default_sink",
@@ -199,6 +282,8 @@ def plan(
         },
         "incompatible_laboratory_gates": incompatible_laboratory_gates,
         "observed_graph": observed,
+        "planned_graph": planned_graph,
+        "planned_graph_fingerprint": planned_graph_fingerprint,
         "desired": desired,
         "proposed_changes": proposed_changes,
         "does_not_establish": [
@@ -216,10 +301,18 @@ def main() -> int:
     parser.add_argument(
         "--gates", type=pathlib.Path, default=LABORATORY.DEFAULT_STATE
     )
+    parser.add_argument("--qobuz-track-fingerprint")
+    parser.add_argument("--qobuz-track-rate-hz", type=int)
     args = parser.parse_args()
     print(
         json.dumps(
-            plan(args.profile, args.state, args.gates),
+            plan(
+                args.profile,
+                args.state,
+                args.gates,
+                qobuz_track_fingerprint=args.qobuz_track_fingerprint,
+                qobuz_track_rate_hz=args.qobuz_track_rate_hz,
+            ),
             ensure_ascii=False,
             indent=2,
         )

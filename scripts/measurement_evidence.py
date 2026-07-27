@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import importlib.util
 import json
 import pathlib
+import os
+import stat
+import tempfile
 import sys
 from typing import Any
 
@@ -33,23 +37,62 @@ LATENCY = load_module("latency_analyzer_for_evidence", LATENCY_PATH)
 LAB = load_module("laboratory_gate_for_evidence", LAB_PATH)
 
 
+@contextlib.contextmanager
+def stable_source_copy(path: pathlib.Path):
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"source file cannot be opened safely: {path}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"source file is not regular: {path}")
+        if before.st_size < 1 or before.st_size > MAX_SOURCE_BYTES:
+            raise ValueError(
+                f"source file must contain 1 to {MAX_SOURCE_BYTES} bytes"
+            )
+        with tempfile.TemporaryDirectory(prefix="audio-evidence-") as directory:
+            snapshot = pathlib.Path(directory) / "source.wav"
+            digest = hashlib.sha256()
+            total = 0
+            with os.fdopen(os.dup(descriptor), "rb", closefd=True) as source, snapshot.open(
+                "wb"
+            ) as target:
+                while chunk := source.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_SOURCE_BYTES:
+                        raise ValueError("source file grew beyond the evidence limit")
+                    digest.update(chunk)
+                    target.write(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+            snapshot.chmod(0o600)
+            after = os.fstat(descriptor)
+            stable_fields = (
+                "st_dev",
+                "st_ino",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+            if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+                raise ValueError("source file changed while the evidence snapshot was created")
+            if total != before.st_size:
+                raise ValueError("source file byte count changed during snapshot")
+            binding = {
+                "name": path.name,
+                "sha256": digest.hexdigest(),
+                "bytes": total,
+            }
+            yield snapshot, binding
+    finally:
+        os.close(descriptor)
+
+
 def file_binding(path: pathlib.Path) -> dict[str, object]:
-    if path.is_symlink():
-        raise ValueError(f"source file must not be a symbolic link: {path}")
-    if not path.is_file():
-        raise ValueError(f"source file does not exist: {path}")
-    size = path.stat().st_size
-    if size < 1 or size > MAX_SOURCE_BYTES:
-        raise ValueError(f"source file must contain 1 to {MAX_SOURCE_BYTES} bytes")
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return {
-        "name": path.name,
-        "sha256": digest.hexdigest(),
-        "bytes": size,
-    }
+    with stable_source_copy(path) as (_, binding):
+        return binding
 
 
 def measured_at() -> str:
@@ -63,7 +106,8 @@ def physical_sha(path: pathlib.Path) -> str:
 def voice_level_evidence(
     wav: pathlib.Path, physical_state: pathlib.Path
 ) -> dict[str, Any]:
-    analysis = LEVEL.analyze(wav)
+    with stable_source_copy(wav) as (snapshot, binding):
+        analysis = LEVEL.analyze(snapshot)
     channels = analysis.get("channels_analysis", [])
     no_clipping = bool(channels) and all(
         isinstance(item, dict) and item.get("clipped_samples") == 0
@@ -77,7 +121,7 @@ def voice_level_evidence(
         "result": "pass" if passed else "fail",
         "measured_at": measured_at(),
         "physical_state_sha256": physical_sha(physical_state),
-        "source_wav": file_binding(wav),
+        "source_wav": binding,
         "analysis": analysis,
         "criteria": {
             "peak_dbfs_range": [-12.0, -6.0],
@@ -97,8 +141,13 @@ def loopback_latency_evidence(
     physical_state: pathlib.Path,
     max_ms: float,
     quantum_frames: int,
+    graph_fingerprint: str,
 ) -> dict[str, Any]:
-    analysis = LATENCY.analyze(reference, recorded, max_ms)
+    with stable_source_copy(reference) as (reference_snapshot, reference_binding):
+        with stable_source_copy(recorded) as (recorded_snapshot, recorded_binding):
+            analysis = LATENCY.analyze(
+                reference_snapshot, recorded_snapshot, max_ms
+            )
     confidence = float(analysis["peak_detection_confidence"])
     snr = float(analysis["peak_snr_db"])
     latency = float(analysis["round_trip_latency_ms"])
@@ -111,8 +160,9 @@ def loopback_latency_evidence(
         "measured_at": measured_at(),
         "physical_state_sha256": physical_sha(physical_state),
         "quantum_frames": quantum_frames,
-        "reference_wav": file_binding(reference),
-        "recorded_wav": file_binding(recorded),
+        "graph_fingerprint": graph_fingerprint,
+        "reference_wav": reference_binding,
+        "recorded_wav": recorded_binding,
         "analysis": analysis,
         "criteria": {
             "minimum_peak_detection_confidence": 0.8,
@@ -167,6 +217,7 @@ def main() -> int:
     loopback.add_argument("recorded", type=pathlib.Path)
     loopback.add_argument("--max-ms", type=float, default=500.0)
     loopback.add_argument("--quantum-frames", type=int, required=True)
+    loopback.add_argument("--graph-fingerprint", required=True)
     loopback.add_argument(
         "--physical-state", type=pathlib.Path, default=LAB.PHYSICAL.DEFAULT_STATE
     )
@@ -188,6 +239,7 @@ def main() -> int:
             args.physical_state,
             args.max_ms,
             args.quantum_frames,
+            args.graph_fingerprint,
         )
     else:
         result = policy_decision_evidence(

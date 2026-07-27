@@ -49,3 +49,21 @@ an. XRun-, Qobuz- und Plugin-Host-Gates akzeptieren nur ihre streng typisierten
 Belegformate. Das Qobuz-Gate wird nur bei übereinstimmender Track-, Graph- und
 Endpunktrate ohne beobachtetes Resampling erfüllt. Passende aktive Beobachter
 bleiben separate Arbeitsschritte.
+
+
+## Graph- und Trackbindung
+
+Der Profilplaner bildet aus Standardziel, Standardquelle, geplanter Samplerate
+und geplantem Quantum einen kanonischen Graph-Fingerprint. Loopback- und
+XRun-Belege werden nur akzeptiert, wenn ihr Fingerprint genau zu diesem
+geplanten Kontext passt.
+
+Ein Qobuz-Beleg enthält zusätzlich den SHA-256-Fingerprint einer stabilen
+Track-Identität und die Track-Samplerate. `audio-plan qobuz-exclusive` verlangt
+deshalb `--qobuz-track-fingerprint` und `--qobuz-track-rate-hz`; ohne aktuellen
+Trackkontext bleibt das Gate blockiert. Damit kann ein Beleg weder auf einen
+anderen Graphen noch auf einen anderen Titel übertragen werden.
+
+WAV-Dateien werden vor der Analyse in eine private Momentaufnahme kopiert. Hash
+und Analyse beziehen sich auf exakt dieselben Bytes. Ändert sich die Quelle
+während der Momentaufnahme, wird kein Beleg erzeugt.
