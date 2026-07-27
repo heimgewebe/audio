@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "kind": "buckelwal_live_voice_profile",
+  "name": "Buckelwal Live Voice v1",
+  "voice_model": "monophonic-last-note-priority",
+  "input": {
+    "device": "roland-fp-30x",
+    "transport": "alsa-sequencer-via-aseqdump",
+    "note_range": [21, 108],
+    "sustain_controller": 64,
+    "optional_controllers": {
+      "1": "roughness-and-flutter",
+      "11": "expression",
+      "67": "distance-and-depth"
+    },
+    "panic_controllers": {
+      "120": "immediate-all-sound-off",
+      "123": "all-notes-off-with-natural-release"
+    }
+  },
+  "mapping": {
+    "frequency_range_hz": [34.0, 1850.0],
+    "zones": [
+      {
+        "notes": [21, 35],
+        "role": "body-resonance-and-groan"
+      },
+      {
+        "notes": [36, 59],
+        "role": "dark-moans-and-pulses"
+      },
+      {
+        "notes": [60, 83],
+        "role": "central-wails-and-sweeps"
+      },
+      {
+        "notes": [84, 95],
+        "role": "bright-calls"
+      },
+      {
+        "notes": [96, 108],
+        "role": "squeals-and-flourishes"
+      }
+    ],
+    "velocity": [
+      "amplitude",
+      "attack-time",
+      "roughness",
+      "overtone-density"
+    ],
+    "hold_time": [
+      "continuous-voice-duration",
+      "slow-pitch-contour",
+      "formant-evolution",
+      "release-tail"
+    ],
+    "overlap": "continuous-pitch-register-and-formant-glide",
+    "detached_retrigger": "freeze-old-envelope-six-millisecond-fade-out-then-new-attack",
+    "oscillator_phase_contract": {
+      "fractional_formant_modulator": "dedicated-integrated-phase",
+      "detuned_partial": "dedicated-integrated-phase",
+      "slow_arc": "dedicated-integrated-phase",
+      "second_arc": "dedicated-integrated-phase",
+      "flutter": "dedicated-integrated-phase"
+    },
+    "simultaneous_notes": "one-voice-no-piano-chord"
+  },
+  "audio": {
+    "sample_rate_hz": 48000,
+    "channels": 2,
+    "format": "f32",
+    "block_frames": 128,
+    "default_master_gain": 0.16,
+    "maximum_master_gain": 0.25,
+    "default_sink_policy": "current-pipewire-default-unless-explicit-target",
+    "reference_sink": "motu-m2",
+    "pcm_transport": {
+      "maximum_supported_page_size_bytes": 4096,
+      "capacity_formula": "next-power-of-two-pages-covering-one-block",
+      "observed_pipe_bytes_at_default_block": 4096,
+      "observed_buffered_frames_at_default_block": 512,
+      "realtime_pacing": true,
+      "catch_up_bursts": false,
+      "blocking_write": false,
+      "stall_timeout_seconds": 2.0
+    }
+  },
+  "runtime": {
+    "manager": "transient-systemd-user-service",
+    "unit": "audio-buckelwal-live-voice-v1.service",
+    "readiness": {
+      "systemd_service_type": "notify",
+      "minimum_initialization_seconds": 0.1,
+      "requires": [
+        "midi-process-alive",
+        "pipewire-process-alive",
+        "bounded-pcm-consumption"
+      ]
+    },
+    "maximum_runtime_seconds": 21600,
+    "memory_max_bytes": 268435456,
+    "cpu_quota_percent": 80,
+    "tasks_max": 32,
+    "journal_rate_limit": {
+      "interval_seconds": 30,
+      "burst": 100
+    },
+    "event_logging": false,
+    "standalone_sfizz_jack": false
+  },
+  "truth_boundary": {
+    "current_backend": "deterministic-synthetic-scaffold",
+    "biological_realism_claim": false,
+    "future_backend": "licensed-humpback-samples-plus-resynthesis",
+    "stable_contract": "roland-gesture-semantics"
+  }
+}

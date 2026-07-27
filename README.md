@@ -12,6 +12,11 @@ Der Altbestand `heimgewebe/hausKI-audio` bleibt zunächst unverändert und dient
 nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 übernommen; seine Historie wird nicht blind zur Grundlage des neuen Systems.
 
+Als erstes ausführbares Klangexperiment enthält das Repository
+**Buckelwal Live Voice v1**: eine abhängigkeitsfreie, verwaltet startbare
+Roland-Gestenengine mit sicherer Offline-Demo. Der aktuelle Syntheseklang ist
+noch kein biologisch realistisches Walmodell.
+
 ## Bereiche
 
 - reproduzierbare Audio- und MIDI-Profile
@@ -26,6 +31,7 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
 - [sfizz-Störfall](docs/incidents/2026-07-26-sfizz-stdin-eof-loop.md)
+- [Buckelwal Live Voice v1](docs/experiments/buckelwal-live-voice-v1.md)
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
@@ -43,7 +49,10 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 ```bash
 bash tests/test-audio-safety.sh
 bash scripts/check-audio-safety .
+python3 -m unittest discover -s tests -v
 ./scripts/audio-doctor --pretty
 ./scripts/audio-physical status
 ./scripts/audio-plan desktop-mixed
+python3 scripts/whale_live.py doctor
+python3 scripts/whale_live.py demo /tmp/buckelwal-live-voice-v1-demo.wav
 ```
