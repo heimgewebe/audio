@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "kind": "audio_profile_catalog",
+  "profiles": {
+    "desktop-mixed": {
+      "purpose": "Browser, Systemton und Qobuz im gemeinsamen PipeWire-Graphen",
+      "required_hardware": [
+        "motu_m2"
+      ],
+      "required_physical_facts": [],
+      "desired": {
+        "default_sink": "motu-m2",
+        "rate_hz": 48000,
+        "quantum_frames": 1024,
+        "resampling": "allowed"
+      },
+      "apply_authority": "future-profile-engine",
+      "required_laboratory_gates": []
+    },
+    "reference-listening": {
+      "purpose": "Focal Clear MG über MOTU und Lake People ohne unbelegten DSP",
+      "required_hardware": [
+        "motu_m2"
+      ],
+      "required_physical_facts": [
+        "motu_output_to_lake_people",
+        "lake_people_gain_setting",
+        "lake_people_volume_reference",
+        "focal_connected_output"
+      ],
+      "desired": {
+        "default_sink": "motu-m2",
+        "rate_policy": "measure-before-decision",
+        "quantum_frames": 1024,
+        "dsp": "bypass"
+      },
+      "apply_authority": "blocked-until-rate-and-physical-gates",
+      "required_laboratory_gates": [
+        "rate-policy-decision"
+      ]
+    },
+    "voice-recording": {
+      "purpose": "Rode NT1-A über MOTU mit reproduzierbarem Headroom",
+      "required_hardware": [
+        "motu_m2"
+      ],
+      "required_physical_facts": [
+        "rode_nt1a_connected",
+        "rode_nt1a_motu_input",
+        "motu_phantom_48v",
+        "motu_input_gain_reference"
+      ],
+      "required_fact_values": {
+        "rode_nt1a_connected": true,
+        "motu_phantom_48v": "on"
+      },
+      "desired": {
+        "default_sink": "motu-m2",
+        "default_source": "motu-m2",
+        "rate_hz": 48000,
+        "quantum_candidate_frames": 512,
+        "recording_peak_dbfs": [
+          -12,
+          -6
+        ]
+      },
+      "apply_authority": "blocked-until-level-measurement",
+      "required_laboratory_gates": [
+        "voice-level-measurement"
+      ]
+    },
+    "piano-digital-recording": {
+      "purpose": "Roland-Audio und MIDI reproduzierbar erfassen",
+      "required_hardware": [
+        "motu_m2",
+        "roland_fp_30x"
+      ],
+      "required_physical_facts": [],
+      "desired": {
+        "default_sink": "motu-m2",
+        "rate_hz": 48000,
+        "quantum_candidate_frames": 512,
+        "roland_audio_rate_hz": 44100
+      },
+      "apply_authority": "blocked-until-resampling-decision",
+      "required_laboratory_gates": [
+        "resampling-decision"
+      ]
+    },
+    "piano-software-live": {
+      "purpose": "Roland als Controller für Softwareinstrumente mit niedriger Latenz",
+      "required_hardware": [
+        "motu_m2",
+        "roland_fp_30x"
+      ],
+      "required_physical_facts": [
+        "focal_connected_output"
+      ],
+      "desired": {
+        "default_sink": "motu-m2",
+        "rate_hz": 48000,
+        "quantum_candidate_frames": 128,
+        "xrun_target": 0
+      },
+      "apply_authority": "blocked-until-loopback-and-xrun-test",
+      "required_laboratory_gates": [
+        "loopback-latency-measurement",
+        "xrun-stability-test"
+      ]
+    },
+    "receiver": {
+      "purpose": "Definierte Ausgabe an den Pioneer VSX-830-K",
+      "required_hardware": [],
+      "required_physical_facts": [
+        "pioneer_pc_connection",
+        "pioneer_selected_input",
+        "pioneer_listening_mode",
+        "pioneer_reference_volume"
+      ],
+      "desired": {
+        "channel_contract": "stereo-until-surround-tested",
+        "reference_level": "measured"
+      },
+      "apply_authority": "blocked-until-physical-gates",
+      "required_laboratory_gates": []
+    },
+    "bluetooth-convenience": {
+      "purpose": "Komfortausgabe über 1MII, ausdrücklich nicht Referenz",
+      "required_hardware": [],
+      "required_physical_facts": [
+        "transmitter_input",
+        "transmitter_tx_mode",
+        "transmitter_codec",
+        "transmitter_paired_target"
+      ],
+      "required_fact_values": {
+        "transmitter_tx_mode": "tx"
+      },
+      "desired": {
+        "quality_class": "convenience",
+        "latency_claim": "none"
+      },
+      "apply_authority": "blocked-until-physical-gates",
+      "required_laboratory_gates": []
+    },
+    "qobuz-exclusive": {
+      "purpose": "Exklusive Qobuz-Wiedergabe ohne unbelegtes Resampling",
+      "required_hardware": [
+        "motu_m2"
+      ],
+      "required_physical_facts": [
+        "motu_output_to_lake_people",
+        "focal_connected_output"
+      ],
+      "desired": {
+        "rate_policy": "track-native-if-proven",
+        "parallel_mixing": "forbidden"
+      },
+      "apply_authority": "blocked-until-qobuz-rate-proof",
+      "required_laboratory_gates": [
+        "qobuz-rate-proof"
+      ]
+    },
+    "experimental": {
+      "purpose": "Isolierte Klangexperimente mit Ressourcen- und Loggrenzen",
+      "required_hardware": [
+        "motu_m2",
+        "roland_fp_30x"
+      ],
+      "required_physical_facts": [],
+      "desired": {
+        "runtime": "managed-plugin-host",
+        "unbounded_logs": false,
+        "standalone_sfizz_jack": false
+      },
+      "apply_authority": "future-managed-host",
+      "required_laboratory_gates": [
+        "managed-plugin-host-proof"
+      ]
+    }
+  }
+}

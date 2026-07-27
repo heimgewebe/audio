@@ -33,6 +33,9 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 - [Signalweg und physische Wahrheit](docs/signal-path.md)
 - [Referenzpegel](docs/reference-levels.md)
 - [Round-Trip-Latenz](docs/latency.md)
+- [Physische Verifikation](docs/physical-verification-workflow.md)
+- [Kalibrier- und Messworkflow](docs/calibration-workflow.md)
+- [Read-only Profilplanung](docs/profile-planning.md)
 - [Aktuelle Heim-PC-Baseline](baselines/heim-pc/2026-07-27/README.md)
 
 ## Prüfung
@@ -41,4 +44,6 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 bash tests/test-audio-safety.sh
 bash scripts/check-audio-safety .
 ./scripts/audio-doctor --pretty
+./scripts/audio-physical status
+./scripts/audio-plan desktop-mixed
 ```
