@@ -211,6 +211,28 @@ class LaboratoryGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "contradicts"):
             MODULE.validate_evidence("loopback-latency-measurement", evidence)
 
+    def test_rejects_boolean_and_float_xrun_delta(self):
+        base = {
+            "schema_version": 1,
+            "kind": "pipewire_xrun_observation",
+            "gate": "xrun-stability-test",
+            "result": "pass",
+            "measured_at": "2026-07-27T12:00:00+00:00",
+            "physical_state_sha256": None,
+            "duration_seconds": 60,
+            "rate_hz": 48000,
+            "quantum_frames": 128,
+            "graph_fingerprint": "c" * 64,
+        }
+        for malformed in (False, 0.0, True, 1.0):
+            with self.subTest(xrun_delta=malformed):
+                evidence = {**base, "xrun_delta": malformed}
+                with self.assertRaises(ValueError):
+                    MODULE.validate_evidence("xrun-stability-test", evidence)
+        MODULE.validate_evidence(
+            "xrun-stability-test", {**base, "xrun_delta": 0}
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

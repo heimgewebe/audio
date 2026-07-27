@@ -222,7 +222,8 @@ def validate_xrun_observation(evidence: dict[str, Any]) -> None:
     duration = _number(evidence.get("duration_seconds"), "duration_seconds")
     if duration < 60 or duration > 86_400:
         raise ValueError("XRun observation must cover 60 to 86400 seconds")
-    if evidence.get("xrun_delta") != 0:
+    xrun_delta = _nonnegative_int(evidence.get("xrun_delta"), "xrun_delta")
+    if xrun_delta != 0:
         raise ValueError("XRun observation contains new XRuns")
     _positive_int(evidence.get("rate_hz"), "rate_hz")
     _positive_int(evidence.get("quantum_frames"), "quantum_frames")
