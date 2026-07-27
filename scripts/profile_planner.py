@@ -14,6 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "profiles" / "audio-profiles.v1.json"
 PHYSICAL_SCRIPT = ROOT / "scripts" / "physical_verification.py"
 DOCTOR_SCRIPT = ROOT / "scripts" / "audio_doctor.py"
+LABORATORY_SCRIPT = ROOT / "scripts" / "laboratory_gate.py"
 
 
 def load_module(name: str, path: pathlib.Path):
@@ -27,6 +28,7 @@ def load_module(name: str, path: pathlib.Path):
 
 PHYSICAL = load_module("physical_verification", PHYSICAL_SCRIPT)
 DOCTOR = load_module("audio_doctor", DOCTOR_SCRIPT)
+LABORATORY = load_module("laboratory_gate_for_planner", LABORATORY_SCRIPT)
 
 
 def doctor_report() -> dict[str, Any]:
@@ -42,7 +44,11 @@ def load_profiles() -> dict[str, Any]:
     return profiles
 
 
-def plan(profile: str, state_path: pathlib.Path) -> dict[str, Any]:
+def plan(
+    profile: str,
+    state_path: pathlib.Path,
+    gate_state_path: pathlib.Path = LABORATORY.DEFAULT_STATE,
+) -> dict[str, Any]:
     catalog = load_profiles()
     if profile not in catalog:
         raise ValueError(f"unknown profile: {profile}")
@@ -68,7 +74,17 @@ def plan(profile: str, state_path: pathlib.Path) -> dict[str, Any]:
             mismatched_facts.append(
                 {"fact": key, "expected": expected, "observed": facts[key]}
             )
-    unresolved_laboratory_gates = list(spec.get("required_laboratory_gates", []))
+    laboratory_state = LABORATORY.read_state(gate_state_path)
+    resolved_gate_names, invalidated_laboratory_gates = (
+        LABORATORY.gate_resolution(laboratory_state, state_path)
+    )
+    required_laboratory_gates = list(spec.get("required_laboratory_gates", []))
+    resolved_laboratory_gates = [
+        gate for gate in required_laboratory_gates if gate in resolved_gate_names
+    ]
+    unresolved_laboratory_gates = [
+        gate for gate in required_laboratory_gates if gate not in resolved_gate_names
+    ]
     desired = spec.get("desired", {})
     observed = doctor.get("graph", {})
     proposed_changes: list[dict[str, Any]] = []
@@ -106,7 +122,14 @@ def plan(profile: str, state_path: pathlib.Path) -> dict[str, Any]:
         "missing_hardware": missing_hardware,
         "missing_physical_facts": missing_facts,
         "mismatched_physical_facts": mismatched_facts,
+        "laboratory_gate_state_path": str(gate_state_path),
+        "resolved_laboratory_gates": resolved_laboratory_gates,
         "unresolved_laboratory_gates": unresolved_laboratory_gates,
+        "invalidated_laboratory_gates": {
+            gate: reason
+            for gate, reason in invalidated_laboratory_gates.items()
+            if gate in required_laboratory_gates
+        },
         "observed_graph": observed,
         "desired": desired,
         "proposed_changes": proposed_changes,
@@ -122,8 +145,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("profile")
     parser.add_argument("--state", type=pathlib.Path, default=PHYSICAL.DEFAULT_STATE)
+    parser.add_argument(
+        "--gates", type=pathlib.Path, default=LABORATORY.DEFAULT_STATE
+    )
     args = parser.parse_args()
-    print(json.dumps(plan(args.profile, args.state), ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            plan(args.profile, args.state, args.gates),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
