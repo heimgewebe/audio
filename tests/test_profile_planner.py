@@ -30,7 +30,9 @@ class ProfilePlannerTests(unittest.TestCase):
             MODULE, "doctor_report", self.doctor
         ):
             state = pathlib.Path(directory) / "state.json"
-            result = MODULE.plan("voice-recording", state)
+            result = MODULE.plan(
+                "voice-recording", state, pathlib.Path(directory) / "gates.json"
+            )
             self.assertFalse(result["ready_for_laboratory_apply"])
             self.assertIn("motu_phantom_48v", result["missing_physical_facts"])
             self.assertEqual(
@@ -50,7 +52,9 @@ class ProfilePlannerTests(unittest.TestCase):
             MODULE, "doctor_report", self.doctor
         ):
             result = MODULE.plan(
-                "desktop-mixed", pathlib.Path(directory) / "state.json"
+                "desktop-mixed",
+                pathlib.Path(directory) / "state.json",
+                pathlib.Path(directory) / "gates.json",
             )
             self.assertTrue(result["ready_for_laboratory_apply"])
             self.assertEqual(result["proposed_changes"], [])
@@ -68,7 +72,11 @@ class ProfilePlannerTests(unittest.TestCase):
                 state, "transmitter_paired_target", "Testgerät", "visual"
             )
             MODULE.PHYSICAL.atomic_write_private(state_path, state)
-            result = MODULE.plan("bluetooth-convenience", state_path)
+            result = MODULE.plan(
+                "bluetooth-convenience",
+                state_path,
+                pathlib.Path(directory) / "gates.json",
+            )
             self.assertFalse(result["ready_for_laboratory_apply"])
             self.assertEqual(
                 result["mismatched_physical_facts"][0]["expected"], "tx"
@@ -79,7 +87,9 @@ class ProfilePlannerTests(unittest.TestCase):
             MODULE, "doctor_report", self.doctor
         ):
             result = MODULE.plan(
-                "piano-digital-recording", pathlib.Path(directory) / "state.json"
+                "piano-digital-recording",
+                pathlib.Path(directory) / "state.json",
+                pathlib.Path(directory) / "gates.json",
             )
             self.assertFalse(result["ready_for_laboratory_apply"])
             self.assertEqual(result["missing_physical_facts"], [])

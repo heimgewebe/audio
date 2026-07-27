@@ -14,6 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PROFILE_PATH = ROOT / "profiles" / "audio-profiles.v1.json"
 PHYSICAL_SCRIPT = ROOT / "scripts" / "physical_verification.py"
 DOCTOR_SCRIPT = ROOT / "scripts" / "audio_doctor.py"
+LABORATORY_SCRIPT = ROOT / "scripts" / "laboratory_gate.py"
 
 
 def load_module(name: str, path: pathlib.Path):
@@ -27,6 +28,7 @@ def load_module(name: str, path: pathlib.Path):
 
 PHYSICAL = load_module("physical_verification", PHYSICAL_SCRIPT)
 DOCTOR = load_module("audio_doctor", DOCTOR_SCRIPT)
+LABORATORY = load_module("laboratory_gate_for_planner", LABORATORY_SCRIPT)
 
 
 def doctor_report() -> dict[str, Any]:
@@ -42,7 +44,139 @@ def load_profiles() -> dict[str, Any]:
     return profiles
 
 
-def plan(profile: str, state_path: pathlib.Path) -> dict[str, Any]:
+def planned_graph_context(
+    observed: dict[str, Any],
+    desired: dict[str, Any],
+    *,
+    qobuz_track_rate_hz: int | None = None,
+) -> dict[str, Any]:
+    graph = LABORATORY.graph_context(observed)
+    if "default_sink" in desired:
+        graph["default_sink"] = desired["default_sink"]
+    if "default_source" in desired:
+        graph["default_source"] = desired["default_source"]
+    if "rate_hz" in desired:
+        graph["force_rate_hz"] = desired["rate_hz"]
+    elif qobuz_track_rate_hz is not None:
+        graph["force_rate_hz"] = qobuz_track_rate_hz
+    if "quantum_candidate_frames" in desired:
+        graph["force_quantum_frames"] = desired["quantum_candidate_frames"]
+    elif "quantum_frames" in desired:
+        graph["force_quantum_frames"] = desired["quantum_frames"]
+    return graph
+
+
+def laboratory_gate_parameter_mismatch(
+    gate: str,
+    receipt: dict[str, Any],
+    desired: dict[str, Any],
+    planned_graph_fingerprint: str,
+    *,
+    qobuz_track_fingerprint: str | None = None,
+    qobuz_track_rate_hz: int | None = None,
+) -> dict[str, Any] | None:
+    evidence = receipt.get("evidence", {})
+    expected_rate = desired.get("rate_hz")
+    expected_quantum = desired.get(
+        "quantum_candidate_frames", desired.get("quantum_frames")
+    )
+    if gate == "voice-level-measurement" and expected_rate is not None:
+        observed_rate = evidence.get("analysis", {}).get("sample_rate_hz")
+        if observed_rate != expected_rate:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "sample_rate_hz",
+                "expected": expected_rate,
+                "observed": observed_rate,
+            }
+    if gate == "loopback-latency-measurement":
+        observed_rate = evidence.get("analysis", {}).get("sample_rate_hz")
+        observed_quantum = evidence.get("quantum_frames")
+        if expected_rate is not None and observed_rate != expected_rate:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "sample_rate_hz",
+                "expected": expected_rate,
+                "observed": observed_rate,
+            }
+        if expected_quantum is not None and observed_quantum != expected_quantum:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "quantum_frames",
+                "expected": expected_quantum,
+                "observed": observed_quantum,
+            }
+        if evidence.get("graph_fingerprint") != planned_graph_fingerprint:
+            return {
+                "reason": "planned-graph-mismatch",
+                "field": "graph_fingerprint",
+                "expected": planned_graph_fingerprint,
+                "observed": evidence.get("graph_fingerprint"),
+            }
+    if gate == "xrun-stability-test":
+        observed_rate = evidence.get("rate_hz")
+        observed_quantum = evidence.get("quantum_frames")
+        if expected_rate is not None and observed_rate != expected_rate:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "rate_hz",
+                "expected": expected_rate,
+                "observed": observed_rate,
+            }
+        if expected_quantum is not None and observed_quantum != expected_quantum:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "quantum_frames",
+                "expected": expected_quantum,
+                "observed": observed_quantum,
+            }
+        if evidence.get("graph_fingerprint") != planned_graph_fingerprint:
+            return {
+                "reason": "planned-graph-mismatch",
+                "field": "graph_fingerprint",
+                "expected": planned_graph_fingerprint,
+                "observed": evidence.get("graph_fingerprint"),
+            }
+    if gate == "qobuz-rate-proof":
+        if qobuz_track_fingerprint is None or qobuz_track_rate_hz is None:
+            return {
+                "reason": "current-track-context-missing",
+                "field": "qobuz_track_context",
+                "expected": "track fingerprint and rate",
+                "observed": None,
+            }
+        if evidence.get("track_fingerprint") != qobuz_track_fingerprint:
+            return {
+                "reason": "track-mismatch",
+                "field": "track_fingerprint",
+                "expected": qobuz_track_fingerprint,
+                "observed": evidence.get("track_fingerprint"),
+            }
+        if evidence.get("track_rate_hz") != qobuz_track_rate_hz:
+            return {
+                "reason": "track-mismatch",
+                "field": "track_rate_hz",
+                "expected": qobuz_track_rate_hz,
+                "observed": evidence.get("track_rate_hz"),
+            }
+        if evidence.get("graph_fingerprint") != planned_graph_fingerprint:
+            return {
+                "reason": "planned-graph-mismatch",
+                "field": "graph_fingerprint",
+                "expected": planned_graph_fingerprint,
+                "observed": evidence.get("graph_fingerprint"),
+            }
+    return None
+
+
+def plan(
+    profile: str,
+    state_path: pathlib.Path,
+    gate_state_path: pathlib.Path = LABORATORY.DEFAULT_STATE,
+    *,
+    qobuz_track_fingerprint: str | None = None,
+    qobuz_track_rate_hz: int | None = None,
+) -> dict[str, Any]:
     catalog = load_profiles()
     if profile not in catalog:
         raise ValueError(f"unknown profile: {profile}")
@@ -68,9 +202,41 @@ def plan(profile: str, state_path: pathlib.Path) -> dict[str, Any]:
             mismatched_facts.append(
                 {"fact": key, "expected": expected, "observed": facts[key]}
             )
-    unresolved_laboratory_gates = list(spec.get("required_laboratory_gates", []))
+    laboratory_state = LABORATORY.read_state(gate_state_path)
+    resolved_gate_names, invalidated_laboratory_gates = (
+        LABORATORY.gate_resolution(laboratory_state, state_path)
+    )
+    required_laboratory_gates = list(spec.get("required_laboratory_gates", []))
     desired = spec.get("desired", {})
     observed = doctor.get("graph", {})
+    planned_graph = planned_graph_context(
+        observed, desired, qobuz_track_rate_hz=qobuz_track_rate_hz
+    )
+    planned_graph_fingerprint = LABORATORY.graph_fingerprint(planned_graph)
+    incompatible_laboratory_gates: dict[str, dict[str, Any]] = {}
+    for gate in required_laboratory_gates:
+        if gate not in resolved_gate_names:
+            continue
+        mismatch = laboratory_gate_parameter_mismatch(
+            gate,
+            laboratory_state["gates"][gate],
+            desired,
+            planned_graph_fingerprint,
+            qobuz_track_fingerprint=qobuz_track_fingerprint,
+            qobuz_track_rate_hz=qobuz_track_rate_hz,
+        )
+        if mismatch is not None:
+            incompatible_laboratory_gates[gate] = mismatch
+    resolved_laboratory_gates = [
+        gate
+        for gate in required_laboratory_gates
+        if gate in resolved_gate_names and gate not in incompatible_laboratory_gates
+    ]
+    unresolved_laboratory_gates = [
+        gate
+        for gate in required_laboratory_gates
+        if gate not in resolved_laboratory_gates
+    ]
     proposed_changes: list[dict[str, Any]] = []
     observed_keys = {
         "default_sink": "default_sink",
@@ -106,8 +272,18 @@ def plan(profile: str, state_path: pathlib.Path) -> dict[str, Any]:
         "missing_hardware": missing_hardware,
         "missing_physical_facts": missing_facts,
         "mismatched_physical_facts": mismatched_facts,
+        "laboratory_gate_state_path": str(gate_state_path),
+        "resolved_laboratory_gates": resolved_laboratory_gates,
         "unresolved_laboratory_gates": unresolved_laboratory_gates,
+        "invalidated_laboratory_gates": {
+            gate: reason
+            for gate, reason in invalidated_laboratory_gates.items()
+            if gate in required_laboratory_gates
+        },
+        "incompatible_laboratory_gates": incompatible_laboratory_gates,
         "observed_graph": observed,
+        "planned_graph": planned_graph,
+        "planned_graph_fingerprint": planned_graph_fingerprint,
         "desired": desired,
         "proposed_changes": proposed_changes,
         "does_not_establish": [
@@ -122,8 +298,25 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("profile")
     parser.add_argument("--state", type=pathlib.Path, default=PHYSICAL.DEFAULT_STATE)
+    parser.add_argument(
+        "--gates", type=pathlib.Path, default=LABORATORY.DEFAULT_STATE
+    )
+    parser.add_argument("--qobuz-track-fingerprint")
+    parser.add_argument("--qobuz-track-rate-hz", type=int)
     args = parser.parse_args()
-    print(json.dumps(plan(args.profile, args.state), ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            plan(
+                args.profile,
+                args.state,
+                args.gates,
+                qobuz_track_fingerprint=args.qobuz_track_fingerprint,
+                qobuz_track_rate_hz=args.qobuz_track_rate_hz,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

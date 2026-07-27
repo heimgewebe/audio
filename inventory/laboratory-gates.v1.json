@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "kind": "audio_laboratory_gate_catalog",
+  "gates": {
+    "voice-level-measurement": {"evidence_kind": "audio_level_measurement_evidence", "validator": "voice_level", "binds_physical_state": true, "purpose": "Belegt einen clipfreien Stimmpegel mit Spitzen zwischen -12 und -6 dBFS."},
+    "loopback-latency-measurement": {"evidence_kind": "audio_loopback_latency_evidence", "validator": "loopback_latency", "binds_physical_state": true, "purpose": "Belegt eine physisch aufgezeichnete Round-Trip-Latenz mit belastbarer Impulserkennung."},
+    "xrun-stability-test": {"evidence_kind": "pipewire_xrun_observation", "validator": "xrun_observation", "binds_physical_state": false, "purpose": "Belegt mindestens 60 Sekunden Betrieb ohne neue XRuns bei dokumentierter Rate und Quantum."},
+    "resampling-decision": {"evidence_kind": "audio_policy_decision", "validator": "policy_decision", "binds_physical_state": false, "purpose": "Dokumentiert die bewusste Entscheidung zum Roland-44,1-kHz-Pfad im 48-kHz-Graphen."},
+    "rate-policy-decision": {"evidence_kind": "audio_policy_decision", "validator": "policy_decision", "binds_physical_state": false, "purpose": "Dokumentiert die gewählte Sampleratenpolitik für Referenzwiedergabe."},
+    "qobuz-rate-proof": {"evidence_kind": "qobuz_rate_observation", "validator": "qobuz_rate", "binds_physical_state": false, "purpose": "Belegt die reale Rate von Track, Graph und Endpunkt sowie beobachtetes Resampling."},
+    "managed-plugin-host-proof": {"evidence_kind": "managed_plugin_host_validation", "validator": "managed_plugin_host", "binds_physical_state": false, "purpose": "Belegt einen verwalteten, begrenzten Plugin-Host ohne unkontrollierten sfizz/JACK-Standalone-Betrieb."}
+  },
+  "rules": [
+    "a gate is resolved only by validated evidence",
+    "evidence is stored privately outside the repository",
+    "physical-state-bound evidence is invalid after the physical state file changes",
+    "recording evidence never applies an audio profile or starts playback"
+  ]
+}
