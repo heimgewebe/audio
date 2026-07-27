@@ -153,6 +153,7 @@ def validate_voice_level(evidence: dict[str, Any]) -> None:
     analysis = evidence.get("analysis")
     if not isinstance(analysis, dict) or analysis.get("kind") != "audio_level_analysis":
         raise ValueError("voice evidence has no audio-level analysis")
+    _positive_int(analysis.get("sample_rate_hz"), "sample_rate_hz")
     peak = _number(analysis.get("maximum_peak_dbfs"), "maximum_peak_dbfs")
     if peak < -12.0 or peak > -6.0:
         raise ValueError("voice peak is outside -12 to -6 dBFS")
@@ -182,6 +183,7 @@ def validate_loopback_latency(evidence: dict[str, Any]) -> None:
         raise ValueError("round-trip latency is outside the accepted measurement range")
     _positive_int(analysis.get("sample_rate_hz"), "sample_rate_hz")
     _nonnegative_int(analysis.get("delay_samples"), "delay_samples")
+    _positive_int(evidence.get("quantum_frames"), "quantum_frames")
     if confidence < 0.8:
         raise ValueError("loopback detection confidence is below 0.8")
     if snr < 20:
@@ -291,6 +293,8 @@ def validate_state(path: pathlib.Path, state: dict[str, Any]) -> None:
     for gate, receipt in gates.items():
         if not isinstance(receipt, dict):
             raise ValueError(f"laboratory receipt is not an object: {gate}")
+        if receipt.get("status") != "passed":
+            raise ValueError(f"laboratory receipt is not passed: {gate}")
         evidence = receipt.get("evidence")
         if not isinstance(evidence, dict):
             raise ValueError(f"laboratory receipt has no evidence: {gate}")

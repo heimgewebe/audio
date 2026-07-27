@@ -30,6 +30,7 @@ class LaboratoryGateTests(unittest.TestCase):
             "source_wav": {"sha256": "a" * 64, "bytes": 100},
             "analysis": {
                 "kind": "audio_level_analysis",
+                "sample_rate_hz": 48000,
                 "maximum_peak_dbfs": -9.0,
                 "channels_analysis": [{"channel": 1, "clipped_samples": 0}],
             },
@@ -161,6 +162,7 @@ class LaboratoryGateTests(unittest.TestCase):
             "source_wav": {"sha256": "z" * 64, "bytes": 100},
             "analysis": {
                 "kind": "audio_level_analysis",
+                "sample_rate_hz": 48000,
                 "maximum_peak_dbfs": -9.0,
                 "channels_analysis": [{"channel": 1, "clipped_samples": 0}],
             },

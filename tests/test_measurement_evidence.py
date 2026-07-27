@@ -58,12 +58,13 @@ class MeasurementEvidenceTests(unittest.TestCase):
             self.write_wave(reference, ref)
             self.write_wave(recorded, rec)
             evidence = MODULE.loopback_latency_evidence(
-                reference, recorded, physical, 100.0
+                reference, recorded, physical, 100.0, 128
             )
             self.assertEqual(evidence["result"], "pass")
             self.assertEqual(
                 evidence["analysis"]["round_trip_latency_ms"], 10.0
             )
+            self.assertEqual(evidence["quantum_frames"], 128)
             MODULE.LAB.validate_evidence(
                 "loopback-latency-measurement", evidence
             )

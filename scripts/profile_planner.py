@@ -44,6 +44,60 @@ def load_profiles() -> dict[str, Any]:
     return profiles
 
 
+def laboratory_gate_parameter_mismatch(
+    gate: str, receipt: dict[str, Any], desired: dict[str, Any]
+) -> dict[str, Any] | None:
+    evidence = receipt.get("evidence", {})
+    expected_rate = desired.get("rate_hz")
+    expected_quantum = desired.get(
+        "quantum_candidate_frames", desired.get("quantum_frames")
+    )
+    if gate == "voice-level-measurement" and expected_rate is not None:
+        observed_rate = evidence.get("analysis", {}).get("sample_rate_hz")
+        if observed_rate != expected_rate:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "sample_rate_hz",
+                "expected": expected_rate,
+                "observed": observed_rate,
+            }
+    if gate == "loopback-latency-measurement":
+        observed_rate = evidence.get("analysis", {}).get("sample_rate_hz")
+        observed_quantum = evidence.get("quantum_frames")
+        if expected_rate is not None and observed_rate != expected_rate:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "sample_rate_hz",
+                "expected": expected_rate,
+                "observed": observed_rate,
+            }
+        if expected_quantum is not None and observed_quantum != expected_quantum:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "quantum_frames",
+                "expected": expected_quantum,
+                "observed": observed_quantum,
+            }
+    if gate == "xrun-stability-test":
+        observed_rate = evidence.get("rate_hz")
+        observed_quantum = evidence.get("quantum_frames")
+        if expected_rate is not None and observed_rate != expected_rate:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "rate_hz",
+                "expected": expected_rate,
+                "observed": observed_rate,
+            }
+        if expected_quantum is not None and observed_quantum != expected_quantum:
+            return {
+                "reason": "profile-parameter-mismatch",
+                "field": "quantum_frames",
+                "expected": expected_quantum,
+                "observed": observed_quantum,
+            }
+    return None
+
+
 def plan(
     profile: str,
     state_path: pathlib.Path,
@@ -79,13 +133,26 @@ def plan(
         LABORATORY.gate_resolution(laboratory_state, state_path)
     )
     required_laboratory_gates = list(spec.get("required_laboratory_gates", []))
+    desired = spec.get("desired", {})
+    incompatible_laboratory_gates: dict[str, dict[str, Any]] = {}
+    for gate in required_laboratory_gates:
+        if gate not in resolved_gate_names:
+            continue
+        mismatch = laboratory_gate_parameter_mismatch(
+            gate, laboratory_state["gates"][gate], desired
+        )
+        if mismatch is not None:
+            incompatible_laboratory_gates[gate] = mismatch
     resolved_laboratory_gates = [
-        gate for gate in required_laboratory_gates if gate in resolved_gate_names
+        gate
+        for gate in required_laboratory_gates
+        if gate in resolved_gate_names and gate not in incompatible_laboratory_gates
     ]
     unresolved_laboratory_gates = [
-        gate for gate in required_laboratory_gates if gate not in resolved_gate_names
+        gate
+        for gate in required_laboratory_gates
+        if gate not in resolved_laboratory_gates
     ]
-    desired = spec.get("desired", {})
     observed = doctor.get("graph", {})
     proposed_changes: list[dict[str, Any]] = []
     observed_keys = {
@@ -130,6 +197,7 @@ def plan(
             for gate, reason in invalidated_laboratory_gates.items()
             if gate in required_laboratory_gates
         },
+        "incompatible_laboratory_gates": incompatible_laboratory_gates,
         "observed_graph": observed,
         "desired": desired,
         "proposed_changes": proposed_changes,

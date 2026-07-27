@@ -96,6 +96,7 @@ def loopback_latency_evidence(
     recorded: pathlib.Path,
     physical_state: pathlib.Path,
     max_ms: float,
+    quantum_frames: int,
 ) -> dict[str, Any]:
     analysis = LATENCY.analyze(reference, recorded, max_ms)
     confidence = float(analysis["peak_detection_confidence"])
@@ -109,6 +110,7 @@ def loopback_latency_evidence(
         "result": "pass" if passed else "fail",
         "measured_at": measured_at(),
         "physical_state_sha256": physical_sha(physical_state),
+        "quantum_frames": quantum_frames,
         "reference_wav": file_binding(reference),
         "recorded_wav": file_binding(recorded),
         "analysis": analysis,
@@ -164,6 +166,7 @@ def main() -> int:
     loopback.add_argument("reference", type=pathlib.Path)
     loopback.add_argument("recorded", type=pathlib.Path)
     loopback.add_argument("--max-ms", type=float, default=500.0)
+    loopback.add_argument("--quantum-frames", type=int, required=True)
     loopback.add_argument(
         "--physical-state", type=pathlib.Path, default=LAB.PHYSICAL.DEFAULT_STATE
     )
@@ -180,7 +183,11 @@ def main() -> int:
         result = voice_level_evidence(args.wav, args.physical_state)
     elif args.command == "loopback-latency":
         result = loopback_latency_evidence(
-            args.reference, args.recorded, args.physical_state, args.max_ms
+            args.reference,
+            args.recorded,
+            args.physical_state,
+            args.max_ms,
+            args.quantum_frames,
         )
     else:
         result = policy_decision_evidence(

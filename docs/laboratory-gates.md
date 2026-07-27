@@ -22,9 +22,12 @@ werden die betreffenden Gates automatisch als ungültig ausgewiesen.
 WAV-Datei. Ein positiver Beleg verlangt Spitzen zwischen -12 und -6 dBFS und
 null geclippte Samples.
 
-`create-audio-evidence loopback-latency REFERENZ.wav AUFNAHME.wav` verwendet
-den bestehenden Impulsanalysator. Ein positiver Beleg verlangt mindestens 0,8
-Erkennungskonfidenz und 20 dB Peak-SNR.
+`create-audio-evidence loopback-latency REFERENZ.wav AUFNAHME.wav
+--quantum-frames 128` verwendet den bestehenden Impulsanalysator. Ein positiver
+Beleg verlangt mindestens 0,8 Erkennungskonfidenz und 20 dB Peak-SNR. Der Beleg
+wird zusätzlich an Samplerate und Quantum gebunden; ein Profil akzeptiert ihn
+nur bei Übereinstimmung mit seinen Zielparametern. Dasselbe gilt für
+XRun-Belege. Stimmpegelbelege müssen zur Ziel-Samplerate des Profils passen.
 
 Sampleratenentscheidungen werden mit `policy-decision` als ausdrückliche
 Operatorentscheidung dokumentiert. Eine Entscheidung belegt weder
