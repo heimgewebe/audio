@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "kind": "physical_audio_fact_catalog",
+  "facts": {
+    "rode_nt1a_connected": {
+      "type": "boolean",
+      "prompt": "Ist das Rode NT1-A per XLR verbunden?",
+      "allowed_evidence": [
+        "visual"
+      ]
+    },
+    "rode_nt1a_motu_input": {
+      "type": "enum",
+      "values": [
+        "input-1",
+        "input-2"
+      ],
+      "prompt": "An welchem MOTU-Eingang ist das Rode angeschlossen?",
+      "allowed_evidence": [
+        "visual"
+      ]
+    },
+    "motu_phantom_48v": {
+      "type": "enum",
+      "values": [
+        "on",
+        "off"
+      ],
+      "prompt": "Welche 48-V-Anzeige ist für den ausgewählten MOTU-Eingang sichtbar?",
+      "allowed_evidence": [
+        "visual"
+      ]
+    },
+    "motu_input_gain_reference": {
+      "type": "string",
+      "max_length": 120,
+      "prompt": "Welche reproduzierbare Gain-Referenz gilt?",
+      "allowed_evidence": [
+        "visual",
+        "measured"
+      ]
+    },
+    "motu_output_to_lake_people": {
+      "type": "string",
+      "prompt": "Welcher MOTU-Ausgang führt zum Lake People?",
+      "allowed_evidence": [
+        "visual"
+      ],
+      "max_length": 120
+    },
+    "lake_people_gain_setting": {
+      "type": "string",
+      "max_length": 120,
+      "prompt": "Welche Gain-Einstellung ist am Lake People gesetzt?",
+      "allowed_evidence": [
+        "visual"
+      ]
+    },
+    "lake_people_volume_reference": {
+      "type": "string",
+      "max_length": 120,
+      "prompt": "Welche reproduzierbare Lautstärkereferenz gilt?",
+      "allowed_evidence": [
+        "visual",
+        "measured"
+      ]
+    },
+    "focal_connected_output": {
+      "type": "string",
+      "prompt": "An welchem Ausgang ist der Focal angeschlossen?",
+      "allowed_evidence": [
+        "visual"
+      ],
+      "max_length": 120
+    },
+    "pioneer_pc_connection": {
+      "type": "string",
+      "prompt": "Wie ist der PC mit dem Pioneer verbunden?",
+      "allowed_evidence": [
+        "visual"
+      ],
+      "max_length": 120
+    },
+    "pioneer_selected_input": {
+      "type": "string",
+      "max_length": 120,
+      "prompt": "Welcher Pioneer-Eingang ist ausgewählt?",
+      "allowed_evidence": [
+        "visual"
+      ]
+    },
+    "pioneer_listening_mode": {
+      "type": "string",
+      "max_length": 120,
+      "prompt": "Welcher Hörmodus ist aktiv?",
+      "allowed_evidence": [
+        "visual"
+      ]
+    },
+    "pioneer_reference_volume": {
+      "type": "string",
+      "max_length": 120,
+      "prompt": "Welche reproduzierbare Receiver-Lautstärke gilt?",
+      "allowed_evidence": [
+        "visual",
+        "measured"
+      ]
+    },
+    "transmitter_input": {
+      "type": "string",
+      "prompt": "Welchen Eingang nutzt der 1MII-Sender?",
+      "allowed_evidence": [
+        "visual"
+      ],
+      "max_length": 120
+    },
+    "transmitter_tx_mode": {
+      "type": "enum",
+      "values": [
+        "tx",
+        "rx",
+        "bypass",
+        "off"
+      ],
+      "prompt": "Welcher Betriebsmodus ist am 1MII eingestellt?",
+      "allowed_evidence": [
+        "visual"
+      ]
+    },
+    "transmitter_codec": {
+      "type": "enum",
+      "values": [
+        "sbc",
+        "aac",
+        "aptx",
+        "aptx-hd",
+        "aptx-ll",
+        "aptx-adaptive",
+        "ldac",
+        "unknown-indicator"
+      ],
+      "prompt": "Welcher Codec wird angezeigt oder anderweitig belegt?",
+      "allowed_evidence": [
+        "visual",
+        "measured"
+      ]
+    },
+    "transmitter_paired_target": {
+      "type": "string",
+      "max_length": 120,
+      "prompt": "Welches Zielgerät ist gekoppelt?",
+      "allowed_evidence": [
+        "visual"
+      ]
+    }
+  },
+  "rules": [
+    "facts are stored outside the repository with mode 0600",
+    "every fact requires an explicit evidence kind",
+    "software observation is not accepted for analog switches or knobs",
+    "free-text values are bounded and control characters are rejected"
+  ]
+}
