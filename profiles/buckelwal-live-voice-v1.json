@@ -62,10 +62,14 @@
     "maximum_master_gain": 0.25,
     "default_sink": "motu-m2",
     "pcm_transport": {
-      "maximum_pipe_bytes_at_default_block": 4096,
-      "maximum_buffered_frames_at_default_block": 512,
+      "maximum_supported_page_size_bytes": 4096,
+      "capacity_formula": "next-power-of-two-pages-covering-one-block",
+      "observed_pipe_bytes_at_default_block": 4096,
+      "observed_buffered_frames_at_default_block": 512,
       "realtime_pacing": true,
-      "catch_up_bursts": false
+      "catch_up_bursts": false,
+      "blocking_write": false,
+      "stall_timeout_seconds": 2.0
     }
   },
   "runtime": {

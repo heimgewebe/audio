@@ -10,6 +10,7 @@ import os
 import pathlib
 import queue
 import re
+import select
 import shutil
 import signal
 import subprocess
@@ -32,10 +33,13 @@ from whale_live_engine import (
 )
 
 UNIT_NAME = "audio-buckelwal-live-voice-v1.service"
-ROLAND_PATTERN = re.compile(r"roland|digital\s+piano|fp[- ]?30", re.IGNORECASE)
+ROLAND_PATTERN = re.compile(r"\broland\b|\bfp[- ]?30x?\b", re.IGNORECASE)
 PORT_LINE_RE = re.compile(r"^\s*(\d+):(\d+)\s{2,}(.+?)\s{2,}(.+?)\s*$")
 MAX_MANAGED_RUNTIME_SECONDS = 21_600
 BYTES_PER_STEREO_F32_FRAME = 8
+MAX_LOW_LATENCY_PAGE_BYTES = 4_096
+PCM_WRITE_POLL_SECONDS = 0.05
+PCM_WRITE_STALL_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -199,6 +203,11 @@ def pcm_pipe_size_bytes(block_frames: int) -> int:
     if not 16 <= block_frames <= 4_096:
         raise ValueError("block_frames must be between 16 and 4096")
     page_size = int(os.sysconf("SC_PAGESIZE"))
+    if page_size <= 0 or page_size > MAX_LOW_LATENCY_PAGE_BYTES:
+        raise RuntimeError(
+            "system page size exceeds the low-latency PCM pipe contract: "
+            f"{page_size} > {MAX_LOW_LATENCY_PAGE_BYTES}"
+        )
     minimum_bytes = max(page_size, block_frames * BYTES_PER_STEREO_F32_FRAME)
     required_pages = (minimum_bytes + page_size - 1) // page_size
     rounded_pages = 1 << (required_pages - 1).bit_length()
@@ -228,7 +237,7 @@ class RealtimeBlockPacer:
         if now < self.next_deadline_ns:
             self._sleeper((self.next_deadline_ns - now) / 1_000_000_000)
             now = self._now_ns()
-        if now - self.next_deadline_ns > self.block_duration_ns:
+        if now - self.next_deadline_ns >= self.block_duration_ns:
             self.next_deadline_ns = now + self.block_duration_ns
         else:
             self.next_deadline_ns += self.block_duration_ns
@@ -244,6 +253,53 @@ def verified_pipe_capacity_bytes(stream: object, maximum_bytes: int) -> int:
             f"PCM pipe capacity {capacity} exceeds configured maximum {maximum_bytes}"
         )
     return capacity
+
+
+def write_pcm_block(
+    stream: object,
+    payload: bytes,
+    stop_event: threading.Event,
+    process: subprocess.Popen[bytes],
+    *,
+    stall_timeout_seconds: float = PCM_WRITE_STALL_SECONDS,
+    now=time.monotonic,
+    wait_for_write=select.select,
+) -> bool:
+    """Write one PCM block without hiding shutdown behind a full pipe."""
+
+    fileno = getattr(stream, "fileno", None)
+    if not callable(fileno):
+        raise RuntimeError("PCM pipe has no file descriptor")
+    if stall_timeout_seconds <= 0:
+        raise ValueError("stall_timeout_seconds must be positive")
+    descriptor = fileno()
+    view = memoryview(payload)
+    offset = 0
+    last_progress = now()
+    while offset < len(view):
+        if stop_event.is_set():
+            return False
+        if process.poll() is not None:
+            raise RuntimeError(f"pw-cat exited with status {process.returncode}")
+        try:
+            written = os.write(descriptor, view[offset:])
+        except BlockingIOError:
+            written = 0
+        except BrokenPipeError as error:
+            raise RuntimeError("PipeWire audio stream closed unexpectedly") from error
+        current = now()
+        if written > 0:
+            offset += written
+            last_progress = current
+            continue
+        remaining = stall_timeout_seconds - (current - last_progress)
+        if remaining <= 0:
+            raise RuntimeError("PCM pipe stalled without consuming audio")
+        try:
+            wait_for_write([], [descriptor], [], min(PCM_WRITE_POLL_SECONDS, remaining))
+        except InterruptedError:
+            continue
+    return True
 
 
 def _midi_reader(
@@ -318,6 +374,7 @@ def run_live(
         pipe_capacity_bytes = verified_pipe_capacity_bytes(
             audio_process.stdin, maximum_pipe_bytes
         )
+        os.set_blocking(audio_process.stdin.fileno(), False)
         pacer = RealtimeBlockPacer(config.sample_rate, config.block_frames)
         reader = threading.Thread(
             target=_midi_reader,
@@ -359,11 +416,13 @@ def run_live(
                 raise RuntimeError(
                     f"pw-cat exited with status {audio_process.returncode}"
                 )
-            audio_process.stdin.write(voice.render_f32_stereo(config.block_frames))
+            payload = voice.render_f32_stereo(config.block_frames)
+            if not write_pcm_block(
+                audio_process.stdin, payload, stop_event, audio_process
+            ):
+                break
             pacer.wait()
         return 0
-    except BrokenPipeError as error:
-        raise RuntimeError("PipeWire audio stream closed unexpectedly") from error
     finally:
         stop_event.set()
         if audio_process and audio_process.stdin:
@@ -378,8 +437,15 @@ def run_live(
 
 
 def service_active() -> bool:
-    result = run_capture(["systemctl", "--user", "is-active", UNIT_NAME])
-    return result.returncode == 0 and result.stdout.strip() == "active"
+    status = service_status()
+    if status["load_state"] == "not-found":
+        return False
+    active_state = status["active_state"]
+    if active_state in {"active", "activating", "reloading"}:
+        return True
+    if active_state in {"inactive", "failed", "deactivating"}:
+        return False
+    raise RuntimeError(f"unknown systemd active state: {active_state}")
 
 
 def start_service(args: argparse.Namespace) -> int:
@@ -472,6 +538,13 @@ def service_status() -> dict[str, object]:
         if "=" in line:
             key, value = line.split("=", 1)
             values[key] = value
+    if result.returncode != 0 and values.get("LoadState") != "not-found":
+        detail = (
+            result.stderr.strip() or result.stdout.strip() or str(result.returncode)
+        )
+        raise RuntimeError(f"systemctl show failed: {detail}")
+    if "LoadState" not in values or "ActiveState" not in values:
+        raise RuntimeError("systemctl show returned incomplete service state")
     return {
         "unit": UNIT_NAME,
         "load_state": values.get("LoadState", "unknown"),
@@ -486,7 +559,8 @@ def create_demo(
     path: pathlib.Path, duration_seconds: float, gain: float
 ) -> dict[str, object]:
     config = WhaleVoiceConfig(master_gain=gain)
-    samples = render_timeline(default_demo_events(), duration_seconds, config)
+    events = [event for event in default_demo_events() if event[0] <= duration_seconds]
+    samples = render_timeline(events, duration_seconds, config)
     write_stereo_wav(path, samples, config.sample_rate)
     metrics = signal_metrics(samples)
     return {

@@ -2,6 +2,7 @@ import math
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
 import wave
 from unittest import mock
@@ -216,6 +217,19 @@ class WhaleRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "is not Roland-like"):
                 whale_live.resolve_midi_port("14:0")
 
+    def test_generic_digital_pianos_are_not_roland_like(self):
+        ports = [
+            whale_live.MidiPort("24:0", "Yamaha Digital Piano", "MIDI 1"),
+            whale_live.MidiPort("25:0", "Kawai Digital Piano", "MIDI 2"),
+        ]
+        with mock.patch.object(whale_live, "list_midi_ports", return_value=ports):
+            with self.assertRaisesRegex(
+                RuntimeError, "Roland FP-30X MIDI port not found"
+            ):
+                whale_live.resolve_midi_port("auto")
+            with self.assertRaisesRegex(RuntimeError, "is not Roland-like"):
+                whale_live.resolve_midi_port("24:0")
+
     def test_explicit_port_resolution_accepts_roland_port(self):
         expected = whale_live.MidiPort(
             "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
@@ -241,6 +255,9 @@ class WhaleRuntimeTests(unittest.TestCase):
             self.assertEqual(whale_live.pcm_pipe_size_bytes(2_048), 16_384)
         with self.assertRaises(ValueError):
             whale_live.pcm_pipe_size_bytes(8)
+        with mock.patch.object(whale_live.os, "sysconf", return_value=65_536):
+            with self.assertRaisesRegex(RuntimeError, "page size exceeds"):
+                whale_live.pcm_pipe_size_bytes(128)
 
     def test_pipe_capacity_readback_is_fail_closed(self):
         stream = mock.Mock()
@@ -269,10 +286,57 @@ class WhaleRuntimeTests(unittest.TestCase):
         self.assertEqual(sleeps, [block_ns / 1_000_000_000])
         self.assertEqual(pacer.next_deadline_ns, block_ns * 2)
 
-        now[0] += block_ns * 4
+        now[0] = pacer.next_deadline_ns + block_ns
         pacer.wait()
         self.assertEqual(pacer.next_deadline_ns, now[0] + block_ns)
         self.assertEqual(len(sleeps), 1)
+
+    def test_pcm_write_can_be_cancelled_while_pipe_is_full(self):
+        stop_event = threading.Event()
+        process = mock.Mock(returncode=None)
+        process.poll.return_value = None
+        stream = mock.Mock()
+        stream.fileno.return_value = 7
+
+        def stop_during_wait(*_args):
+            stop_event.set()
+            return ([], [], [])
+
+        with mock.patch.object(whale_live.os, "write", side_effect=BlockingIOError):
+            self.assertFalse(
+                whale_live.write_pcm_block(
+                    stream,
+                    b"audio",
+                    stop_event,
+                    process,
+                    wait_for_write=stop_during_wait,
+                )
+            )
+
+    def test_pcm_write_handles_partial_nonblocking_writes(self):
+        stop_event = threading.Event()
+        process = mock.Mock(returncode=None)
+        process.poll.return_value = None
+        stream = mock.Mock()
+        stream.fileno.return_value = 7
+        with mock.patch.object(whale_live.os, "write", side_effect=[2, 3]):
+            self.assertTrue(
+                whale_live.write_pcm_block(stream, b"audio", stop_event, process)
+            )
+
+    def test_service_status_fails_closed_on_systemctl_error(self):
+        failed = mock.Mock(returncode=1, stdout="", stderr="bus unavailable")
+        with mock.patch.object(whale_live, "run_capture", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, "systemctl show failed"):
+                whale_live.service_status()
+            with self.assertRaisesRegex(RuntimeError, "systemctl show failed"):
+                whale_live.stop_service()
+
+    def test_short_demo_truncates_the_fixed_phrase(self):
+        with mock.patch.object(whale_live, "write_stereo_wav") as writer:
+            result = whale_live.create_demo(pathlib.Path("unused.wav"), 1.0, 0.16)
+        self.assertEqual(result["frames"], 48_000)
+        writer.assert_called_once()
 
     def test_pw_cat_command_is_explicit_and_bounded(self):
         command = whale_live.build_pw_cat_command(
