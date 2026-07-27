@@ -210,6 +210,19 @@ class WhaleRuntimeTests(unittest.TestCase):
             ):
                 whale_live.resolve_midi_port("auto")
 
+    def test_explicit_port_resolution_rejects_non_roland_port(self):
+        ports = [whale_live.MidiPort("14:0", "Midi Through", "Port-0")]
+        with mock.patch.object(whale_live, "list_midi_ports", return_value=ports):
+            with self.assertRaisesRegex(RuntimeError, "is not Roland-like"):
+                whale_live.resolve_midi_port("14:0")
+
+    def test_explicit_port_resolution_accepts_roland_port(self):
+        expected = whale_live.MidiPort(
+            "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
+        )
+        with mock.patch.object(whale_live, "list_midi_ports", return_value=[expected]):
+            self.assertEqual(whale_live.resolve_midi_port("24:0"), expected)
+
     def test_auto_port_resolution_rejects_ambiguity(self):
         ports = [
             whale_live.MidiPort("24:0", "Roland Digital Piano", "MIDI 1"),

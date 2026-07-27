@@ -54,7 +54,8 @@ python3 scripts/whale_live.py doctor
 
 Der Doctor verlangt PipeWire, `aseqdump`, `pw-cat`, `systemctl`, `systemd-run`
 und genau einen Roland-artigen ALSA-MIDI-Eingang. Null oder mehrere passende
-Ports blockieren den Start. Es wird niemals auf `Midi Through` ausgewichen.
+Ports blockieren den Start. Auch eine explizite Portnummer muss zu einem
+Roland-artigen Port gehören; es wird niemals auf `Midi Through` ausgewichen.
 
 Offline-Demo erzeugen, ohne etwas abzuspielen:
 
@@ -79,7 +80,8 @@ Es gibt kein `sfizz_jack` und keine reguläre unbeschränkte Logdatei.
 ## Audiovertrag
 
 - 48.000 Hz, Stereo, Float32 an `pw-cat`
-- Standardblock: 128 Frames
+- Standardblock: 128 Frames; der einheitenlose `pw-cat --latency`-Wert wird
+  laut lokaler `pw-cat --help`-Schnittstelle als direkte Samplezahl interpretiert
 - Standard-Master-Gain: 0,16
 - harter Maximalwert für Master-Gain und Samples: 0,25
 - Standardausgabe: aktuelles PipeWire-Ziel; für Referenzbetrieb soll dies das

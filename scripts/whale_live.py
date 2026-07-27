@@ -80,8 +80,13 @@ def resolve_midi_port(requested: str) -> MidiPort:
     ports = list_midi_ports()
     if requested != "auto":
         for port in ports:
-            if port.address == requested:
-                return port
+            if port.address != requested:
+                continue
+            if not ROLAND_PATTERN.search(port.label):
+                raise RuntimeError(
+                    f"requested MIDI port {requested!r} is not Roland-like: {port.label}"
+                )
+            return port
         raise RuntimeError(f"requested MIDI port {requested!r} is not present")
     matches = [port for port in ports if ROLAND_PATTERN.search(port.label)]
     if not matches:
@@ -176,6 +181,7 @@ def build_pw_cat_command(*, target: str | None, latency_frames: int) -> list[str
         "--format",
         "f32",
         "--latency",
+        # pw-cat accepts a unitless value as direct samples; this is not milliseconds.
         str(latency_frames),
         "--media-role",
         "Music",
