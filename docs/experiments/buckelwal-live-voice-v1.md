@@ -18,12 +18,12 @@ gehaltene Taste ist das aktuelle Tonziel einer einzigen Stimme.
 - **Anschlagstärke:** Lautheit, Einsatz, Rauheit und Obertöne.
 - **Haltezeit:** Der Laut läuft weiter und verändert Tonkontur und Formanten;
   es gibt keine kurze feste Samplelänge.
-- **Überlappte Tasten:** Die Stimme gleitet ohne Hüllkurven-Neustart zum neuen
-  Ziel. Wird die neueste Taste losgelassen, kehrt sie zur zuvor gehaltenen Taste
-  zurück.
+- **Überlappte Tasten:** Tonhöhe, Register und Timbre gleiten sampleweise ohne
+  Hüllkurven-Neustart zum neuen Ziel. Wird die neueste Taste losgelassen, kehrt
+  die Stimme zur zuvor gehaltenen Taste zurück.
 - **Abgesetzte neue Taste:** Sobald keine Taste mehr gehalten und das Pedal frei
-  ist, beginnt der nächste Anschlag eine neue Phrase – auch während der alte
-  Ausklang noch hörbar ist.
+  ist, wird der alte Restklang über sechs Millisekunden auf null ausgeblendet;
+  anschließend beginnt der nächste Anschlag als neue Phrase.
 - **CC64 / Haltepedal:** Hält eine Phrase nach dem Loslassen der letzten Taste.
   Beim Freigeben beginnt ein von Haltezeit und Pedalwert abhängiger Ausklang.
 - **CC1:** optional zusätzliche Rauheit und schnelleres Flattern.
@@ -108,8 +108,8 @@ Vor einer Latenzfreigabe bleiben Loopback- und XRun-Messung erforderlich.
 - Synthese und MIDI-Gestenparser kompilieren ohne Zusatzpakete.
 - 88-Tasten-Abbildung, Halten, Legato, Rückkehr zur vorherigen Taste, CC64,
   deterministische Ausgabe und Pegelgrenze sind automatisiert getestet.
-- 12-Sekunden-Demo bei 48 kHz Stereo: Renderzeit 1,343 Sekunden.
-- Peak −20,282 dBFS; RMS −31,173 dBFS je Kanal; 0 Clipping-Samples.
+- 12-Sekunden-Demo bei 48 kHz Stereo: Renderzeit 1,537 Sekunden.
+- Peak −20,201 dBFS; RMS −31,183 dBFS je Kanal; 0 Clipping-Samples.
 
 ### Blockiert
 

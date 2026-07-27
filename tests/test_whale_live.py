@@ -1,3 +1,4 @@
+import copy
 import math
 import pathlib
 import sys
@@ -109,41 +110,71 @@ class WhaleVoiceTests(unittest.TestCase):
         self.assertGreater(early, late * 4)
         self.assertLess(late, 0.001)
 
-    def test_legato_glides_one_voice_without_retriggering_from_zero(self):
-        voice = engine.WhaleVoice(self.config)
+    def test_legato_glides_pitch_and_timbre_without_sample_jump(self):
+        voice = engine.WhaleVoice(self.config, seed=1234)
         voice.note_on(45, 55)
         voice.render(self.config.sample_rate // 2)
         envelope_before = voice.envelope
         old_frequency = voice.current_frequency
+        old_register = voice.current_register
+        baseline_next = copy.deepcopy(voice).render(1)[0]
 
         voice.note_on(69, 90)
-        target = voice.target_frequency
-        voice.render(self.config.block_frames)
+        target_frequency = voice.target_frequency
+        target_register = voice.target_register
+        changed_next = voice.render(1)[0]
+        voice.render(self.config.block_frames - 1)
 
+        self.assertLess(abs(changed_next - baseline_next), 0.005)
         self.assertGreater(voice.envelope, envelope_before * 0.95)
         self.assertGreater(voice.current_frequency, old_frequency)
-        self.assertLess(voice.current_frequency, target)
+        self.assertLess(voice.current_frequency, target_frequency)
+        self.assertGreater(voice.current_register, old_register)
+        self.assertLess(voice.current_register, target_register)
         self.assertEqual(voice.active_note, 69)
         self.assertEqual(len(voice.held_notes), 2)
 
-    def test_detached_note_retriggers_during_previous_release_tail(self):
-        voice = engine.WhaleVoice(self.config)
+    def test_detached_note_crossfades_before_new_phrase_onset(self):
+        voice = engine.WhaleVoice(self.config, seed=1234)
         voice.note_on(45, 70)
         voice.render(self.config.sample_rate // 2)
         voice.note_off(45)
-        voice.render(self.config.sample_rate // 20)
+        before = voice.render(self.config.sample_rate // 20)
+        baseline_next = copy.deepcopy(voice).render(1)[0]
         self.assertGreater(voice.envelope, 0.12)
         self.assertFalse(voice.gate)
         self.assertFalse(voice.held_notes)
 
         voice.note_on(69, 90)
+        first_fade_sample = voice.render(1)[0]
+        remaining = voice.retrigger_fade_remaining
+        transition = voice.render(remaining)
 
+        self.assertLess(abs(first_fade_sample - baseline_next), 0.005)
+        self.assertLess(
+            max(
+                abs(right - left)
+                for left, right in zip(
+                    before[-1:] + [first_fade_sample] + transition[:-1],
+                    [first_fade_sample] + transition,
+                )
+            ),
+            0.01,
+        )
         self.assertTrue(voice.gate)
+        self.assertEqual(voice.retrigger_fade_remaining, 0)
         self.assertEqual(voice.note_age_frames, 0)
         self.assertEqual(voice.hold_frames, 0)
         self.assertAlmostEqual(voice.current_frequency, voice.target_frequency)
+        self.assertAlmostEqual(voice.current_register, voice.target_register)
         self.assertEqual(voice.glide_seconds, 0.02)
-        self.assertLessEqual(voice.envelope, 0.12)
+        self.assertEqual(voice.envelope, 0.0)
+
+        onset_sample = voice.render(1)[0]
+        self.assertEqual(voice.note_age_frames, 1)
+        self.assertEqual(voice.hold_frames, 1)
+        self.assertGreater(voice.envelope, 0.0)
+        self.assertLess(abs(onset_sample), 0.01)
 
     def test_releasing_latest_legato_note_returns_to_previous_held_note(self):
         voice = engine.WhaleVoice(self.config)

@@ -162,11 +162,15 @@ class WhaleVoice:
         self.target_velocity = 0.5
         self.current_frequency = note_to_whale_hz(48, self.config)
         self.target_frequency = self.current_frequency
+        self.current_register = register_position(48, self.config)
+        self.target_register = self.current_register
         self.glide_seconds = 0.18
         self.attack_seconds = 0.06
         self.release_seconds = 0.8
         self.note_age_frames = 0
         self.hold_frames = 0
+        self.retrigger_fade_total = max(1, round(self.config.sample_rate * 0.006))
+        self.retrigger_fade_remaining = 0
 
         self.phase = 0.0
         self.sub_phase = 0.0
@@ -199,6 +203,7 @@ class WhaleVoice:
         self.held_notes[note] = (velocity, self._order)
         self.active_note = note
         self.target_frequency = note_to_whale_hz(note, self.config)
+        self.target_register = register_position(note, self.config)
         self.target_velocity = velocity / 127.0
         interval_octaves = abs(math.log2(self.target_frequency / old_frequency))
         # Big leaps become deliberate whale sweeps. Harder attacks move faster.
@@ -210,12 +215,13 @@ class WhaleVoice:
         self.attack_seconds = clamp(0.085 - 0.06 * self.target_velocity, 0.018, 0.085)
         self.gate = True
         if not phrase_continues:
-            self.note_age_frames = 0
-            self.hold_frames = 0
-            self.current_frequency = self.target_frequency
             self.glide_seconds = 0.02
-            # A detached note is a new phrase even while the old release is audible.
-            self.envelope = min(self.envelope, 0.12)
+            if self.envelope > 1e-5:
+                # Preserve the current sample, then fade the old phrase to zero before
+                # resetting oscillator, register and envelope state for the new onset.
+                self.retrigger_fade_remaining = self.retrigger_fade_total
+            else:
+                self._reset_phrase_to_target()
 
     def note_off(self, note: int) -> None:
         self.held_notes.pop(note, None)
@@ -225,6 +231,7 @@ class WhaleVoice:
             )
             self.active_note = next_note
             self.target_frequency = note_to_whale_hz(next_note, self.config)
+            self.target_register = register_position(next_note, self.config)
             self.target_velocity = velocity / 127.0
             self.glide_seconds = 0.14
             self.gate = True
@@ -257,6 +264,19 @@ class WhaleVoice:
         bounded = clamp(value, -8192, 8191)
         self.pitch_bend_cents = 180.0 * bounded / 8192.0
 
+    def _reset_phrase_to_target(self) -> None:
+        self.note_age_frames = 0
+        self.hold_frames = 0
+        self.envelope = 0.0
+        self.velocity = self.target_velocity
+        self.current_frequency = self.target_frequency
+        self.current_register = self.target_register
+        self.phase = 0.0
+        self.sub_phase = 0.0
+        self.formant_phase = 0.0
+        self.pulse_phase = 0.0
+        self.retrigger_fade_remaining = 0
+
     def _begin_release(self, pedal_value: int | None = None) -> None:
         self.gate = False
         held_seconds = self.hold_frames / self.config.sample_rate
@@ -275,13 +295,16 @@ class WhaleVoice:
         envelope = self.envelope
         velocity = self.velocity
         current_frequency = self.current_frequency
+        current_register = self.current_register
         phase = self.phase
         sub_phase = self.sub_phase
         formant_phase = self.formant_phase
         pulse_phase = self.pulse_phase
         noise_state = self.noise_state
         noise_lowpass = self.noise_lowpass
-        age_start = self.note_age_frames
+        note_age_frames = self.note_age_frames
+        hold_frames = self.hold_frames
+        retrigger_fade_remaining = self.retrigger_fade_remaining
 
         glide_alpha = 1.0 - math.exp(
             -1.0 / (sample_rate * max(self.glide_seconds, 0.001))
@@ -294,25 +317,30 @@ class WhaleVoice:
             -6.907755278982137 / (sample_rate * max(self.release_seconds, 0.001))
         )
         velocity_alpha = 1.0 - math.exp(-1.0 / (sample_rate * 0.045))
-        note = self.active_note if self.active_note is not None else 48
-        register = register_position(note, self.config)
-        body_weight = 0.78 - 0.42 * register
-        formant_weight = 0.18 + 0.38 * (1.0 - abs(register - 0.48) * 1.55)
-        whistle_weight = 0.06 + 0.52 * register**1.45
-        noise_cut = 0.018 + 0.11 * register
         output: list[float] = []
 
-        for index in range(frames):
-            current_frequency += (
-                self.target_frequency - current_frequency
-            ) * glide_alpha
-            velocity += (self.target_velocity - velocity) * velocity_alpha
+        for _index in range(frames):
+            fading_old_phrase = retrigger_fade_remaining > 0
+            if not fading_old_phrase:
+                current_frequency += (
+                    self.target_frequency - current_frequency
+                ) * glide_alpha
+                current_register += (
+                    self.target_register - current_register
+                ) * glide_alpha
+                velocity += (self.target_velocity - velocity) * velocity_alpha
             if self.gate:
                 envelope += (1.0 - envelope) * attack_alpha
             else:
                 envelope += (0.0 - envelope) * release_alpha
 
-            age = (age_start + index) / sample_rate
+            age = note_age_frames / sample_rate
+            register = clamp(current_register, 0.0, 1.0)
+            body_weight = 0.78 - 0.42 * register
+            formant_weight = 0.18 + 0.38 * (1.0 - abs(register - 0.48) * 1.55)
+            whistle_weight = 0.06 + 0.52 * register**1.45
+            noise_cut = 0.018 + 0.11 * register
+
             # Slow non-repeating contours keep a held key alive instead of looping.
             slow_arc = math.sin(two_pi * (0.071 + register * 0.023) * age + 0.7)
             second_arc = math.sin(two_pi * (0.193 - register * 0.041) * age + 2.1)
@@ -357,11 +385,17 @@ class WhaleVoice:
             phrase_breath = 0.82 + 0.12 * slow_arc + 0.045 * second_arc
             velocity_gain = 0.22 + 0.78 * velocity**1.35
             distance_gain = 1.0 - 0.48 * self.distance
+            retrigger_gain = (
+                retrigger_fade_remaining / self.retrigger_fade_total
+                if fading_old_phrase
+                else 1.0
+            )
             raw = (
                 tone
                 * phrase_breath
                 * velocity_gain
                 * envelope
+                * retrigger_gain
                 * self.expression
                 * distance_gain
                 * self.config.master_gain
@@ -370,18 +404,37 @@ class WhaleVoice:
             sample = raw / (1.0 + 1.7 * abs(raw))
             output.append(clamp(sample, -MAX_MASTER_GAIN, MAX_MASTER_GAIN))
 
+            if fading_old_phrase:
+                retrigger_fade_remaining -= 1
+                if retrigger_fade_remaining == 0:
+                    envelope = 0.0
+                    velocity = self.target_velocity
+                    current_frequency = self.target_frequency
+                    current_register = self.target_register
+                    phase = 0.0
+                    sub_phase = 0.0
+                    formant_phase = 0.0
+                    pulse_phase = 0.0
+                    note_age_frames = 0
+                    hold_frames = 0
+                    continue
+            note_age_frames += 1
+            if self.gate:
+                hold_frames += 1
+
         self.envelope = 0.0 if not self.gate and envelope < 1e-7 else envelope
         self.velocity = velocity
         self.current_frequency = current_frequency
+        self.current_register = current_register
         self.phase = phase
         self.sub_phase = sub_phase
         self.formant_phase = formant_phase
         self.pulse_phase = pulse_phase
         self.noise_state = noise_state
         self.noise_lowpass = noise_lowpass
-        self.note_age_frames += frames
-        if self.gate:
-            self.hold_frames += frames
+        self.note_age_frames = note_age_frames
+        self.hold_frames = hold_frames
+        self.retrigger_fade_remaining = retrigger_fade_remaining
         return output
 
     def render_f32_stereo(self, frames: int) -> bytes:

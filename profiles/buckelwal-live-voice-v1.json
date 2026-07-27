@@ -50,7 +50,8 @@
       "formant-evolution",
       "release-tail"
     ],
-    "overlap": "continuous-pitch-and-formant-glide",
+    "overlap": "continuous-pitch-register-and-formant-glide",
+    "detached_retrigger": "six-millisecond-fade-out-then-new-attack",
     "simultaneous_notes": "one-voice-no-piano-chord"
   },
   "audio": {
