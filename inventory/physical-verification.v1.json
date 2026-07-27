@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "kind": "physical_audio_verification_contract",
+  "state": "unverified",
+  "facts": {
+    "rode_nt1a_connected": null,
+    "rode_nt1a_motu_input": null,
+    "motu_phantom_48v": null,
+    "motu_input_gain_reference": null,
+    "motu_output_to_lake_people": null,
+    "lake_people_gain_setting": null,
+    "lake_people_volume_reference": null,
+    "focal_connected_output": null,
+    "pioneer_pc_connection": null,
+    "pioneer_selected_input": null,
+    "pioneer_listening_mode": null,
+    "pioneer_reference_volume": null,
+    "transmitter_input": null,
+    "transmitter_tx_mode": null,
+    "transmitter_codec": null,
+    "transmitter_paired_target": null
+  },
+  "rules": [
+    "null means unknown and must never be interpreted as off, disconnected or safe",
+    "software tools must not infer physical knob or switch positions",
+    "48 V may be recorded only after direct visual verification",
+    "reference volume may be recorded only with an explicit low-level calibration signal"
+  ]
+}

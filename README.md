@@ -30,6 +30,9 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
 - [Read-only Baselines](docs/baselines/README.md)
+- [Signalweg und physische Wahrheit](docs/signal-path.md)
+- [Referenzpegel](docs/reference-levels.md)
+- [Round-Trip-Latenz](docs/latency.md)
 - [Aktuelle Heim-PC-Baseline](baselines/heim-pc/2026-07-27/README.md)
 
 ## Prüfung
@@ -37,4 +40,5 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 ```bash
 bash tests/test-audio-safety.sh
 bash scripts/check-audio-safety .
+./scripts/audio-doctor --pretty
 ```

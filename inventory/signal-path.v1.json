@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "kind": "audio_signal_path_inventory",
+  "authority": {
+    "software_observation": "read-only doctor output",
+    "physical_topology": "user declaration until manually verified"
+  },
+  "nodes": [
+    {"id": "heim-pc", "type": "computer", "verification": "observed"},
+    {"id": "pipewire", "type": "audio-graph", "verification": "observed"},
+    {"id": "motu-m2", "type": "audio-interface", "verification": "observed"},
+    {"id": "roland-fp-30x", "type": "digital-piano", "verification": "observed"},
+    {"id": "rode-nt1-a", "type": "condenser-microphone", "verification": "user-declared"},
+    {"id": "lake-people-g111-mk2", "type": "headphone-amplifier", "verification": "user-declared"},
+    {"id": "focal-clear-mg", "type": "headphones", "verification": "user-declared"},
+    {"id": "pioneer-vsx-830-k", "type": "receiver", "verification": "user-declared"},
+    {"id": "1mii-b03-pro", "type": "bluetooth-transmitter", "verification": "user-declared"},
+    {"id": "qobuz", "type": "streaming-source", "verification": "observed-via-mopidy"}
+  ],
+  "edges": [
+    {"from": "roland-fp-30x", "to": "heim-pc", "transport": "usb-audio-midi", "verification": "software-observable"},
+    {"from": "heim-pc", "to": "pipewire", "transport": "local-software", "verification": "software-observable"},
+    {"from": "pipewire", "to": "motu-m2", "transport": "usb-audio", "verification": "software-observable"},
+    {"from": "rode-nt1-a", "to": "motu-m2", "transport": "balanced-xlr", "verification": "unknown", "required_physical_facts": ["input number", "cable connected", "48 V state", "gain position"]},
+    {"from": "motu-m2", "to": "lake-people-g111-mk2", "transport": "analog-line", "verification": "unknown", "required_physical_facts": ["output pair", "cable type", "amplifier input"]},
+    {"from": "lake-people-g111-mk2", "to": "focal-clear-mg", "transport": "headphone", "verification": "unknown", "required_physical_facts": ["gain setting", "headphone output", "volume reference"]},
+    {"from": "heim-pc", "to": "pioneer-vsx-830-k", "transport": "unknown-digital-or-analog", "verification": "user-declared-unresolved", "required_physical_facts": ["PC output", "receiver input", "receiver listening mode", "reference volume"]},
+    {"from": "heim-pc", "to": "1mii-b03-pro", "transport": "unknown-optical-or-analog", "verification": "unknown", "required_physical_facts": ["transmitter input", "TX mode", "codec", "paired target"]},
+    {"from": "qobuz", "to": "pipewire", "transport": "mopidy-pulse", "verification": "software-observable", "quality_boundary": "mixed path; bit-perfect not established"}
+  ]
+}
