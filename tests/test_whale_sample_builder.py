@@ -154,6 +154,18 @@ class WhaleSampleBuilderTests(unittest.TestCase):
                     self.assertIn("catalog root must be an object", response["error"])
                     self.assertFalse(output.exists())
 
+    def test_invalid_builder_arguments_are_one_json_error(self):
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            result = builder.main(["--unknown-option"])
+
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(result, 2)
+        self.assertEqual(len(lines), 1)
+        response = json.loads(lines[0])
+        self.assertEqual(response["state"], "blocked")
+        self.assertIn("unrecognized arguments", response["error"])
+
     def test_raw_hash_is_authoritative_before_ffmpeg(self):
         with tempfile.TemporaryDirectory() as directory:
             root, catalog, source = self.make_root(directory)

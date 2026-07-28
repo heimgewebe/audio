@@ -567,8 +567,13 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
         raise
 
 
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError(message)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = JsonArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=pathlib.Path, default=SOURCE_CATALOG)
     parser.add_argument("--output", type=pathlib.Path, default=PROCESSED_ROOT)
     try:
