@@ -27,9 +27,11 @@ Quellseiten, vollständige Urheber, Lizenz-URIs, Bearbeitungshinweise,
 Rohdateigrößen und erwartete SHA-256-Werte stehen in
 `assets/whale-sources/SOURCES.json`; `assets/whale-sources/NOTICE.md` begleitet
 die weitergegebenen Dateien menschenlesbar. Die Rohdateien bleiben unverändert
-erhalten. Der Builder prüft sie vor FFmpeg, baut pfad- und symlinkgesichert in
-einem privaten Staging-Verzeichnis und ersetzt die produktive Bank erst nach
-vollständiger Validierung atomar. Er erzeugt 19 mono PCM16-Phrasen bei 48 kHz,
+erhalten. Der Builder öffnet jede Rohdatei symlinkgesichert, erstellt beim
+Hash- und Größenabgleich einen privaten Snapshot und übergibt nur diesen an
+FFmpeg. Danach baut er in einem privaten Staging-Verzeichnis und ersetzt die
+produktive Bank erst nach vollständiger Validierung atomar. Er erzeugt 19 mono
+PCM16-Phrasen bei 48 kHz,
 normalisiert sie konservativ und versieht sie mit geloopten Mittelbereichen.
 
 ## Spielmodell
@@ -113,7 +115,7 @@ Start.
 Der verwaltete Start erzeugt
 `audio-buckelwal-live-voice-v1.service` als `Type=notify` mit:
 
-- höchstens sechs Stunden Laufzeit;
+- Laufzeitgrenze 60 bis 21.600 Sekunden mit kurzer JSON-Fehlermeldung;
 - 256 MiB Speichergrenze;
 - 80 Prozent CPU-Quote;
 - 32 Tasks;
@@ -143,7 +145,7 @@ Round-Trip-Angabe bleibt bis zur physischen Loopback-Messung unzulässig.
 
 ### Automatisiert und offline belegt
 
-- 141/141 Repositorytests, beide Safety-Gates und Compileall bestanden.
+- 145/145 Repositorytests, beide Safety-Gates und Compileall bestanden.
 - 8 Quellen, 19 Phrasen, 27 Zonen; alle 88 Tasten höchstens vier Halbtöne vom
   Zonenwurzelton entfernt.
 - deterministischer Schema-2-Bank-Neubau: Gesamt-Hash

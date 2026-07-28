@@ -4,6 +4,7 @@ import math
 import pathlib
 import struct
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -91,6 +92,20 @@ class WhaleSampleBankTests(unittest.TestCase):
         }
         self.assertEqual(realistic["cross_boundary_assignments"], actual_exceptions)
         self.assertEqual(realistic["maximum_fading_layers"], sample.MAX_FADING_LAYERS)
+
+    def test_structurally_invalid_manifest_is_reported_without_key_error(self):
+        manifest = copy.deepcopy(self.bank.manifest)
+        manifest["clips"][0].pop("file")
+        with tempfile.TemporaryDirectory() as directory:
+            processed = pathlib.Path(directory) / "processed"
+            processed.mkdir()
+            manifest_path = processed / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            status = sample.sample_bank_status(manifest_path)
+            self.assertFalse(status["ready"])
+            self.assertIn("missing fields: file", status["error"])
+            with self.assertRaisesRegex(RuntimeError, "missing fields: file"):
+                sample.WhaleSampleBank(manifest_path)
 
     def test_registers_choose_natural_source_families(self):
         self.assertEqual(self.bank.select(24).clip.category, "low")

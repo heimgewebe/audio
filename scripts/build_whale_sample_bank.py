@@ -221,6 +221,55 @@ def validate_output_root(
     return candidate
 
 
+def snapshot_verified_source(
+    source: dict[str, Any], destination: pathlib.Path
+) -> pathlib.Path:
+    source_path = pathlib.Path(source["_path"])
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError(
+            f"refusing to overwrite staged source snapshot: {destination}"
+        )
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise RuntimeError("O_NOFOLLOW is required for verified whale source snapshots")
+    flags = os.O_RDONLY | os.O_CLOEXEC | no_follow
+    descriptor = os.open(source_path, flags)
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"whale source snapshot is not regular: {source_path}")
+        with os.fdopen(descriptor, "rb") as source_handle:
+            descriptor = -1
+            with destination.open("xb") as destination_handle:
+                while True:
+                    chunk = source_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    destination_handle.write(chunk)
+                    digest.update(chunk)
+                    total += len(chunk)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    expected_bytes = source["expected_bytes"]
+    expected_sha256 = source["expected_sha256"]
+    if total != expected_bytes:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"whale source snapshot byte-size mismatch: {source['file']}: "
+            f"{total} != {expected_bytes}"
+        )
+    if digest.hexdigest() != expected_sha256:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(f"whale source snapshot SHA-256 mismatch: {source['file']}")
+    return destination
+
+
 def run_ffmpeg(source: pathlib.Path, output: pathlib.Path) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -400,15 +449,21 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
     )
     intermediate_root = staging / ".intermediate"
     intermediate_root.mkdir(mode=0o700)
+    source_snapshot_root = staging / ".sources"
+    source_snapshot_root.mkdir(mode=0o700)
     try:
         clips: list[dict[str, Any]] = []
         source_records: list[dict[str, Any]] = []
         for source in sources:
             source_id = source["id"]
             category = source["category"]
-            source_path = source["_path"]
+            source_path = pathlib.Path(source["_path"])
+            snapshot_path = (
+                source_snapshot_root / f"{source_id}{source_path.suffix.lower()}"
+            )
+            snapshot_verified_source(source, snapshot_path)
             intermediate = intermediate_root / f"{source_id}.wav"
-            run_ffmpeg(source_path, intermediate)
+            run_ffmpeg(snapshot_path, intermediate)
             samples = read_wav(intermediate)
             clip_frames = round(CLIP_SECONDS[category] * SAMPLE_RATE)
             count = source["clip_count"]
@@ -440,6 +495,7 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
                     }
                 )
         shutil.rmtree(intermediate_root)
+        shutil.rmtree(source_snapshot_root)
 
         slots: list[dict[str, Any]] = []
         for category in ("low", "song", "high"):

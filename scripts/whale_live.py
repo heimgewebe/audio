@@ -857,6 +857,18 @@ def bounded_gain(value: str) -> float:
     return gain
 
 
+def bounded_runtime_seconds(value: str) -> int:
+    try:
+        seconds = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("runtime limit must be an integer") from error
+    if not 60 <= seconds <= MAX_MANAGED_RUNTIME_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"runtime limit must be between 60 and {MAX_MANAGED_RUNTIME_SECONDS} seconds"
+        )
+    return seconds
+
+
 class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise ValueError(message)
@@ -891,9 +903,8 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--voice-mode", choices=VOICE_MODES, default=DEFAULT_VOICE_MODE)
     start.add_argument(
         "--runtime-max-seconds",
-        type=int,
+        type=bounded_runtime_seconds,
         default=MAX_MANAGED_RUNTIME_SECONDS,
-        choices=range(60, MAX_MANAGED_RUNTIME_SECONDS + 1),
         metavar=f"60..{MAX_MANAGED_RUNTIME_SECONDS}",
     )
 
@@ -965,7 +976,15 @@ def main(argv: list[str] | None = None) -> int:
                 stop_service(announce=False)
             return start_service(restart_args)
         raise AssertionError("unreachable command")
-    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        KeyError,
+        TypeError,
+        IndexError,
+        subprocess.TimeoutExpired,
+    ) as error:
         print(
             json.dumps({"state": "blocked", "error": str(error)}, sort_keys=True),
             file=sys.stderr,

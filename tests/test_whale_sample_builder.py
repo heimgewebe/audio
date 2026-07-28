@@ -80,6 +80,50 @@ class WhaleSampleBuilderTests(unittest.TestCase):
         self.assertEqual(len(centers), 1)
         self.assertGreater(centers[0], 48_000)
 
+    def test_mutation_after_catalog_check_is_rejected_before_ffmpeg(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, source = self.make_root(directory)
+            original_snapshot = builder.snapshot_verified_source
+
+            def mutate_then_snapshot(record, destination):
+                if record["category"] == "low":
+                    source.write_bytes(b"changed-after-catalog-validation")
+                return original_snapshot(record, destination)
+
+            with (
+                mock.patch.object(
+                    builder,
+                    "snapshot_verified_source",
+                    side_effect=mutate_then_snapshot,
+                ),
+                mock.patch.object(builder, "run_ffmpeg") as ffmpeg,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "snapshot byte-size mismatch"
+                ):
+                    builder.build(catalog, root / "processed")
+            ffmpeg.assert_not_called()
+
+    def test_ffmpeg_uses_the_verified_private_source_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, source = self.make_root(directory)
+            expected = source.read_bytes()
+            observed_sources = []
+
+            def inspect_snapshot(snapshot, output):
+                observed_sources.append(snapshot)
+                self.assertEqual(snapshot.parent.name, ".sources")
+                if snapshot.name.startswith("source-low"):
+                    source.write_bytes(b"replacement-after-snapshot")
+                    self.assertEqual(snapshot.read_bytes(), expected)
+                    self.assertNotEqual(snapshot.read_bytes(), source.read_bytes())
+                self.fake_ffmpeg(snapshot, output)
+
+            with mock.patch.object(builder, "run_ffmpeg", side_effect=inspect_snapshot):
+                builder.build(catalog, root / "processed")
+            self.assertEqual(len(observed_sources), 3)
+            self.assertTrue(all(not snapshot.exists() for snapshot in observed_sources))
+
     def test_raw_hash_is_authoritative_before_ffmpeg(self):
         with tempfile.TemporaryDirectory() as directory:
             root, catalog, source = self.make_root(directory)

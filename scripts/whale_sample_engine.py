@@ -33,6 +33,19 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def require_record_fields(
+    records: list[Any], required_fields: set[str], label: str
+) -> None:
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise RuntimeError(f"{label} record {index} must be an object")
+        missing = sorted(required_fields - set(record))
+        if missing:
+            raise RuntimeError(
+                f"{label} record {index} is missing fields: {', '.join(missing)}"
+            )
+
+
 @dataclass(frozen=True)
 class SampleClip:
     clip_id: str
@@ -116,6 +129,44 @@ class WhaleSampleBank:
             for value in (source_records, clip_records, slot_records)
         ):
             raise RuntimeError("whale sample bank manifest is incomplete")
+        require_record_fields(
+            source_records,
+            {
+                "id",
+                "file",
+                "license",
+                "license_url",
+                "title",
+                "creators",
+                "attribution",
+                "source_page",
+                "changes",
+                "category",
+                "sha256",
+                "bytes",
+            },
+            "whale source manifest",
+        )
+        require_record_fields(
+            clip_records,
+            {
+                "id",
+                "source_id",
+                "category",
+                "file",
+                "frames",
+                "sha256",
+                "loop_start_frame",
+                "loop_end_frame",
+                "loop_crossfade_frames",
+            },
+            "whale clip manifest",
+        )
+        require_record_fields(
+            slot_records,
+            {"clip_id", "root_note", "minimum_note", "maximum_note"},
+            "whale slot manifest",
+        )
 
         asset_root = self.manifest_path.parent.parent
         source_catalog_path = asset_root / "SOURCES.json"
@@ -133,6 +184,25 @@ class WhaleSampleBank:
             or not isinstance(catalog_records, list)
         ):
             raise RuntimeError("whale source catalog has the wrong schema")
+        require_record_fields(
+            catalog_records,
+            {
+                "id",
+                "file",
+                "license",
+                "license_url",
+                "title",
+                "creators",
+                "attribution",
+                "source_page",
+                "changes",
+                "category",
+                "expected_sha256",
+                "expected_bytes",
+                "clip_count",
+            },
+            "whale source catalog",
+        )
         catalog_by_id = {str(record.get("id")): record for record in catalog_records}
         if len(catalog_by_id) != len(catalog_records):
             raise RuntimeError("whale source catalog contains duplicate ids")
@@ -316,7 +386,15 @@ def sample_bank_status(
 ) -> dict[str, Any]:
     try:
         return WhaleSampleBank(manifest_path).status()
-    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        KeyError,
+        TypeError,
+        IndexError,
+        json.JSONDecodeError,
+    ) as error:
         return {"ready": False, "manifest": str(manifest_path), "error": str(error)}
 
 

@@ -856,6 +856,18 @@ class WhaleRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "systemctl show failed"):
                 whale_live.stop_service()
 
+    def test_invalid_runtime_limit_emits_one_short_json_error(self):
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            self.assertEqual(
+                whale_live.main(["start", "--runtime-max-seconds", "59"]), 2
+            )
+        payload_text = stderr.getvalue().strip()
+        self.assertLess(len(payload_text), 500)
+        payload = json.loads(payload_text)
+        self.assertEqual(payload["state"], "blocked")
+        self.assertIn("between 60 and 21600 seconds", payload["error"])
+
     def test_invalid_cli_arguments_emit_one_json_error(self):
         stderr = io.StringIO()
         with mock.patch("sys.stderr", stderr):

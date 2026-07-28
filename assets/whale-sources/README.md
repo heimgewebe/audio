@@ -29,10 +29,12 @@ Audioassets; `processed/manifest.json` bindet den tatsächlich gebauten Stand.
 Es wird keine Unterstützung oder Empfehlung durch Urheber, NPS, PLOS oder
 Wikimedia behauptet.
 
-Der Builder prüft sämtliche Rohdateien vor FFmpeg gegen den Katalog, akzeptiert
-keine absoluten Pfade, Traversal oder Symlinks und baut in einem privaten
-Staging-Verzeichnis. Erst eine vollständig validierte Bank ersetzt das bisherige
-`processed/`-Verzeichnis atomar; ein Fehler lässt die alte Bank unverändert.
+Der Builder öffnet jede Rohdatei mit Symlink-Schutz, kopiert sie einmal in einen
+privaten Snapshot und prüft beim Kopieren Bytezahl und SHA-256. FFmpeg verarbeitet
+ausschließlich diesen verifizierten Snapshot. Absolute Pfade, Traversal, Symlinks
+und abweichende Dateimengen werden abgewiesen. Erst eine vollständig validierte
+Bank ersetzt das bisherige `processed/`-Verzeichnis atomar; ein Fehler lässt die
+alte Bank unverändert.
 
 ## Klangvertrag
 
