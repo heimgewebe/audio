@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "humpback-song-cc0",
+      "file": "raw/humpback-song-cc0.ogg",
+      "category": "song",
+      "license": "CC0-1.0",
+      "attribution": "Spyrogumas, Song of Humpback Whales",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpbackwhale2.ogg",
+      "clip_count": 3
+    },
+    {
+      "id": "humpback-moo-nps",
+      "file": "raw/humpback-moo-nps.ogg",
+      "category": "low",
+      "license": "Public-Domain-US-NPS",
+      "attribution": "U.S. National Park Service, Glacier Bay hydrophone recording",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback_whale_moo.ogg",
+      "clip_count": 3
+    },
+    {
+      "id": "humpback-wheezeblow-nps",
+      "file": "raw/humpback-wheezeblow-nps.ogg",
+      "category": "high",
+      "license": "Public-Domain-US-NPS",
+      "attribution": "U.S. National Park Service, Glacier Bay hydrophone recording",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback_whale_wheezeblow.ogg",
+      "clip_count": 3
+    },
+    {
+      "id": "song-antarctic-area-v-2010",
+      "file": "raw/song-antarctic-area-v-2010-ccby25.oga",
+      "category": "song",
+      "license": "CC-BY-2.5",
+      "attribution": "Garland et al. (2013), PLOS ONE, Acoustic File S1",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s001.oga",
+      "clip_count": 2
+    },
+    {
+      "id": "song-new-caledonia-2010",
+      "file": "raw/song-new-caledonia-2010-ccby25.oga",
+      "category": "song",
+      "license": "CC-BY-2.5",
+      "attribution": "Garland et al. (2013), PLOS ONE, Acoustic File S3",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s003.oga",
+      "clip_count": 2
+    },
+    {
+      "id": "song-eastern-australia-2010",
+      "file": "raw/song-eastern-australia-2010-ccby25.oga",
+      "category": "song",
+      "license": "CC-BY-2.5",
+      "attribution": "Garland et al. (2013), PLOS ONE, Acoustic File S4",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s004.oga",
+      "clip_count": 2
+    },
+    {
+      "id": "song-foraging-mn132a",
+      "file": "raw/song-foraging-mn132a-ccby25.oga",
+      "category": "song",
+      "license": "CC-BY-2.5",
+      "attribution": "Stimpert et al. (2012), PLOS ONE, Acoustic File S1",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-and-Foraging-Behavior-on-an-Antarctic-Feeding-Ground-pone.0051214.s001.oga",
+      "clip_count": 2
+    },
+    {
+      "id": "song-foraging-mn133a",
+      "file": "raw/song-foraging-mn133a-ccby25.oga",
+      "category": "song",
+      "license": "CC-BY-2.5",
+      "attribution": "Stimpert et al. (2012), PLOS ONE, Acoustic File S2",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-and-Foraging-Behavior-on-an-Antarctic-Feeding-Ground-pone.0051214.s002.oga",
+      "clip_count": 2
+    }
+  ]
+}
