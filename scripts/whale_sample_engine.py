@@ -79,17 +79,64 @@ class WhaleSampleBank:
             for value in (source_records, clip_records, slot_records)
         ):
             raise RuntimeError("whale sample bank manifest is incomplete")
+
+        asset_root = self.manifest_path.parent.parent
+        source_catalog_path = asset_root / "SOURCES.json"
+        if not source_catalog_path.is_file():
+            raise RuntimeError("whale source catalog is missing")
+        if sha256_file(source_catalog_path) != manifest.get("source_catalog_sha256"):
+            raise RuntimeError("whale source catalog hash mismatch")
+        source_catalog = json.loads(source_catalog_path.read_text(encoding="utf-8"))
+        catalog_records = source_catalog.get("sources")
+        if source_catalog.get("schema_version") != 1 or not isinstance(
+            catalog_records, list
+        ):
+            raise RuntimeError("whale source catalog has the wrong schema")
+        catalog_by_id = {str(record.get("id")): record for record in catalog_records}
+        if len(catalog_by_id) != len(catalog_records):
+            raise RuntimeError("whale source catalog contains duplicate ids")
+
         allowed_licenses = {"CC0-1.0", "Public-Domain-US-NPS", "CC-BY-2.5"}
+        seen_source_ids: set[str] = set()
         for source in source_records:
+            source_id = str(source.get("id"))
+            if source_id in seen_source_ids:
+                raise RuntimeError(
+                    "whale sample manifest contains duplicate source ids"
+                )
+            seen_source_ids.add(source_id)
+            expected = catalog_by_id.get(source_id)
+            if expected is None:
+                raise RuntimeError(f"unknown whale source id: {source_id}")
+            for field in ("file", "license", "attribution", "source_page", "category"):
+                if source.get(field) != expected.get(field):
+                    raise RuntimeError(
+                        f"whale source metadata mismatch: {source_id}.{field}"
+                    )
             if source.get("license") not in allowed_licenses:
                 raise RuntimeError(
                     f"unsupported whale source license: {source.get('license')}"
                 )
             if not source.get("source_page") or not source.get("attribution"):
                 raise RuntimeError("whale source attribution is incomplete")
+            raw_path = asset_root / str(source["file"])
+            if not raw_path.is_file():
+                raise RuntimeError(f"whale source audio is missing: {raw_path}")
+            if sha256_file(raw_path) != source.get("sha256"):
+                raise RuntimeError(f"whale source audio hash mismatch: {raw_path}")
+        if seen_source_ids != set(catalog_by_id):
+            raise RuntimeError(
+                "whale sample manifest does not cover the source catalog"
+            )
 
         clips: dict[str, SampleClip] = {}
         root = self.manifest_path.parent
+        expected_wav_names = {str(record["file"]) for record in clip_records}
+        actual_wav_names = {path.name for path in root.glob("*.wav") if path.is_file()}
+        if actual_wav_names != expected_wav_names:
+            raise RuntimeError(
+                "processed whale sample file set does not match manifest"
+            )
         for record in clip_records:
             clip_id = str(record["id"])
             path = root / str(record["file"])
@@ -107,6 +154,8 @@ class WhaleSampleBank:
                 raise RuntimeError(f"invalid whale sample loop: {clip_id}")
             if not 1 <= loop_crossfade < (loop_end - loop_start) // 2:
                 raise RuntimeError(f"invalid whale sample loop crossfade: {clip_id}")
+            if clip_id in clips:
+                raise RuntimeError(f"duplicate whale sample clip id: {clip_id}")
             clips[clip_id] = SampleClip(
                 clip_id=clip_id,
                 category=str(record["category"]),
@@ -127,6 +176,19 @@ class WhaleSampleBank:
         )
         if not self.slots:
             raise RuntimeError("whale sample bank has no keyboard slots")
+        for slot in self.slots:
+            if (
+                not 21
+                <= slot.minimum_note
+                <= slot.root_note
+                <= slot.maximum_note
+                <= 108
+            ):
+                raise RuntimeError("whale sample slot has invalid note bounds")
+        for note in range(21, 109):
+            selected = self.select(note)
+            if abs(note - selected.root_note) > 4:
+                raise RuntimeError("whale sample slots exceed pitch-shift contract")
         self.sources = tuple(source_records)
         self.manifest = manifest
 
@@ -240,7 +302,11 @@ class WhaleSampleVoice:
         self.active_note = note
         self.target_velocity = velocity / 127.0
         self.attack_seconds = clamp(0.09 - 0.06 * self.target_velocity, 0.025, 0.09)
-        if self.current and self.current.slot.clip.clip_id == slot.clip.clip_id:
+        if (
+            not detached
+            and self.current
+            and self.current.slot.clip.clip_id == slot.clip.clip_id
+        ):
             self.current.target_rate = rate
             self.gate = True
             return
@@ -360,7 +426,9 @@ class WhaleSampleVoice:
         effective_rate = layer.rate * 2.0 ** (flutter_cents / 1200.0)
         layer.position += effective_rate
         if looping and layer.position >= clip.loop_end:
-            layer.position = clip.loop_start + (layer.position - clip.loop_end)
+            layer.position = (
+                clip.loop_start + clip.loop_crossfade + (layer.position - clip.loop_end)
+            )
         return sample
 
     def render(self, frames: int) -> list[float]:

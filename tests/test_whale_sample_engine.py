@@ -3,6 +3,7 @@ import pathlib
 import struct
 import sys
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -35,6 +36,28 @@ class WhaleSampleBankTests(unittest.TestCase):
         self.assertEqual(self.bank.select(60).clip.category, "song")
         self.assertEqual(self.bank.select(104).clip.category, "high")
 
+    def test_bank_rejects_catalog_and_raw_source_hash_mismatch(self):
+        actual_sha256 = sample.sha256_file
+
+        def bad_catalog(path):
+            if pathlib.Path(path).name == "SOURCES.json":
+                return "0" * 64
+            return actual_sha256(path)
+
+        with mock.patch.object(sample, "sha256_file", side_effect=bad_catalog):
+            with self.assertRaisesRegex(RuntimeError, "source catalog hash mismatch"):
+                sample.WhaleSampleBank()
+
+        def bad_raw_source(path):
+            path = pathlib.Path(path)
+            if path.suffix in {".ogg", ".oga"}:
+                return "0" * 64
+            return actual_sha256(path)
+
+        with mock.patch.object(sample, "sha256_file", side_effect=bad_raw_source):
+            with self.assertRaisesRegex(RuntimeError, "source audio hash mismatch"):
+                sample.WhaleSampleBank()
+
 
 class WhaleSampleVoiceTests(unittest.TestCase):
     @classmethod
@@ -65,6 +88,38 @@ class WhaleSampleVoiceTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertGreater(max(abs(value) for value in first), 0.01)
         self.assertLessEqual(max(abs(value) for value in first), sample.MAX_MASTER_GAIN)
+
+    def test_detached_note_in_same_zone_restarts_original_phrase(self):
+        voice = self.voice()
+        voice.note_on(60, 96)
+        voice.render(4_000)
+        original_layer = voice.current
+        original_clip = original_layer.slot.clip.clip_id
+        voice.note_off(60)
+        voice.render(512)
+
+        voice.note_on(60, 96)
+
+        self.assertIs(voice.previous, original_layer)
+        self.assertIsNot(voice.current, original_layer)
+        self.assertEqual(voice.current.slot.clip.clip_id, original_clip)
+        self.assertEqual(voice.current.position, 0.0)
+        self.assertEqual(voice.crossfade_remaining, voice.crossfade_total)
+
+    def test_loop_wrap_skips_the_already_crossfaded_head(self):
+        voice = self.voice()
+        voice.note_on(60, 96)
+        layer = voice.current
+        clip = layer.slot.clip
+        layer.position = float(clip.loop_end - clip.loop_crossfade)
+        layer.rate = 1.0
+        layer.target_rate = 1.0
+
+        voice.render(clip.loop_crossfade + 1)
+
+        self.assertAlmostEqual(
+            layer.position, clip.loop_start + clip.loop_crossfade + 1, places=4
+        )
 
     def test_legato_crossfades_between_recordings(self):
         voice = self.voice()
