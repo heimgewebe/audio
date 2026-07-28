@@ -1,15 +1,61 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "kind": "buckelwal_live_voice_profile",
-  "name": "Buckelwal Live Voice v1",
+  "name": "Buckelwal Live Voice",
   "voice_model": "monophonic-last-note-priority",
+  "default_voice_mode": "realistic",
+  "voice_modes": {
+    "realistic": {
+      "backend": "licensed-humpback-sample-bank",
+      "source_catalog": "assets/whale-sources/SOURCES.json",
+      "manifest": "assets/whale-sources/processed/manifest.json",
+      "source_count": 8,
+      "clip_count": 19,
+      "keyboard_slot_count": 27,
+      "note_range": [
+        21,
+        108
+      ],
+      "maximum_total_pitch_shift_semitones": 4,
+      "pitch_bend_included_in_limit": true,
+      "hold": "looped-original-phrase-with-equal-power-crossfade",
+      "legato": "multilayer-90-millisecond-equal-power-crossfade",
+      "detached_retrigger": "restart-selected-original-phrase-with-phrase-local-hold-time",
+      "register_selection": "nearest-root-first-category-tiebreak",
+      "nominal_register_preferences": {
+        "21-48": "low-preference-moo-groan-and-body-sounds",
+        "49-84": "song-preference",
+        "85-108": "high-preference-wheeze-breath-and-high-calls"
+      },
+      "cross_boundary_assignments": {
+        "42": "song",
+        "46": "song",
+        "84": "high",
+        "86": "song",
+        "90": "song"
+      },
+      "maximum_fading_layers": 3,
+      "retarget_overflow_policy": "coalesce-to-latest-target-until-fade-slot-is-free",
+      "modulation_included_in_pitch_limit": true
+    },
+    "ufo": {
+      "backend": "deterministic-synthetic-scaffold",
+      "status": "preserved-experimental-mode-not-realism-reference",
+      "mapping": "continuous-34-to-1850-hz-synthetic-space",
+      "legato": "continuous-pitch-register-and-formant-glide",
+      "detached_retrigger": "freeze-old-envelope-six-millisecond-fade-out-then-new-attack"
+    }
+  },
   "input": {
     "device": "roland-fp-30x",
     "transport": "alsa-sequencer-via-aseqdump",
-    "note_range": [21, 108],
+    "note_range": [
+      21,
+      108
+    ],
     "sustain_controller": 64,
     "optional_controllers": {
-      "1": "roughness-and-flutter",
+      "1": "bounded-natural-flutter",
       "11": "expression",
       "67": "distance-and-depth"
     },
@@ -17,53 +63,6 @@
       "120": "immediate-all-sound-off",
       "123": "all-notes-off-with-natural-release"
     }
-  },
-  "mapping": {
-    "frequency_range_hz": [34.0, 1850.0],
-    "zones": [
-      {
-        "notes": [21, 35],
-        "role": "body-resonance-and-groan"
-      },
-      {
-        "notes": [36, 59],
-        "role": "dark-moans-and-pulses"
-      },
-      {
-        "notes": [60, 83],
-        "role": "central-wails-and-sweeps"
-      },
-      {
-        "notes": [84, 95],
-        "role": "bright-calls"
-      },
-      {
-        "notes": [96, 108],
-        "role": "squeals-and-flourishes"
-      }
-    ],
-    "velocity": [
-      "amplitude",
-      "attack-time",
-      "roughness",
-      "overtone-density"
-    ],
-    "hold_time": [
-      "continuous-voice-duration",
-      "slow-pitch-contour",
-      "formant-evolution",
-      "release-tail"
-    ],
-    "overlap": "continuous-pitch-register-and-formant-glide",
-    "detached_retrigger": "freeze-old-envelope-six-millisecond-fade-out-then-new-attack",
-    "oscillator_phase_contract": {
-      "fractional_formant_modulator": "dedicated-integrated-phase",
-      "detuned_partial": "dedicated-integrated-phase",
-      "slow_arc": "dedicated-integrated-phase",
-      "second_arc": "dedicated-integrated-phase",
-      "flutter": "dedicated-integrated-phase"
-    },
-    "simultaneous_notes": "one-voice-no-piano-chord"
   },
   "audio": {
     "sample_rate_hz": 48000,
@@ -94,9 +93,17 @@
       "requires": [
         "midi-process-alive",
         "pipewire-process-alive",
-        "bounded-pcm-consumption"
+        "bounded-pcm-consumption",
+        "selected-voice-backend-loaded"
       ]
     },
+    "mode_switch_preserves": [
+      "midi-port",
+      "pipewire-target",
+      "master-gain",
+      "latency-frames",
+      "runtime-limit"
+    ],
     "maximum_runtime_seconds": 21600,
     "memory_max_bytes": 268435456,
     "cpu_quota_percent": 80,
@@ -106,12 +113,18 @@
       "burst": 100
     },
     "event_logging": false,
-    "standalone_sfizz_jack": false
+    "standalone_sfizz_jack": false,
+    "midi_queue": {
+      "maximum_pending_events": 256,
+      "maximum_events_per_audio_block": 64,
+      "overflow_behavior": "bounded-reader-backpressure-preserves-event-order"
+    }
   },
   "truth_boundary": {
-    "current_backend": "deterministic-synthetic-scaffold",
-    "biological_realism_claim": false,
-    "future_backend": "licensed-humpback-samples-plus-resynthesis",
+    "current_backend": "licensed-humpback-sample-bank",
+    "biological_voice_model_claim": false,
+    "realism_claim": "real-recording-playback-with-bounded-resampling-not-biological-resynthesis",
+    "preserved_alternative_backend": "deterministic-synthetic-ufo-mode",
     "stable_contract": "roland-gesture-semantics"
   }
 }

@@ -24,6 +24,11 @@ run/
 *.sf3
 *.gig
 
+# Explicitly versioned, licensed and hash-bound Buckelwal sample bank
+!assets/whale-sources/raw/*.ogg
+!assets/whale-sources/raw/*.oga
+!assets/whale-sources/processed/*.wav
+
 # Tooling
 .venv/
 __pycache__/

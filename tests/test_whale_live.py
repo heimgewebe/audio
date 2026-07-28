@@ -1,8 +1,10 @@
 import copy
+import io
 import json
 import os
 import math
 import pathlib
+import queue
 import sys
 import tempfile
 import threading
@@ -640,6 +642,38 @@ class WhaleRuntimeTests(unittest.TestCase):
                 whale_live.write_pcm_block(stream, b"audio", stop_event, process)
             )
 
+    def test_midi_queue_and_dispatch_budget_are_bounded(self):
+        events: queue.Queue[engine.MidiEvent | BaseException] = queue.Queue(
+            maxsize=whale_live.MAX_PENDING_MIDI_EVENTS
+        )
+        total = whale_live.MAX_MIDI_EVENTS_PER_BLOCK + 5
+        for note in range(total):
+            events.put_nowait(engine.MidiEvent("note_on", 0, 21 + note % 88, 80))
+        voice = mock.Mock()
+
+        dispatched = whale_live._dispatch_pending_events(voice, events)
+
+        self.assertEqual(dispatched, whale_live.MAX_MIDI_EVENTS_PER_BLOCK)
+        self.assertEqual(events.qsize(), 5)
+        self.assertEqual(
+            voice.dispatch.call_count, whale_live.MAX_MIDI_EVENTS_PER_BLOCK
+        )
+        self.assertEqual(events.maxsize, whale_live.MAX_PENDING_MIDI_EVENTS)
+        with self.assertRaises(ValueError):
+            whale_live._dispatch_pending_events(voice, events, maximum_events=0)
+
+    def test_full_midi_queue_stops_without_unbounded_growth(self):
+        events: queue.Queue[engine.MidiEvent | BaseException] = queue.Queue(maxsize=1)
+        events.put_nowait(engine.MidiEvent("note_on", 0, 60, 80))
+        stopped = threading.Event()
+        stopped.set()
+        self.assertFalse(
+            whale_live._put_midi_item(
+                events, engine.MidiEvent("note_off", 0, 60, 0), stopped
+            )
+        )
+        self.assertEqual(events.qsize(), 1)
+
     def test_systemd_notify_ready_supports_abstract_socket(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertFalse(
@@ -671,6 +705,7 @@ class WhaleRuntimeTests(unittest.TestCase):
             gain=0.16,
             latency_frames=128,
             runtime_max_seconds=3600,
+            voice_mode="realistic",
         )
         port = whale_live.MidiPort(
             "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
@@ -712,6 +747,77 @@ class WhaleRuntimeTests(unittest.TestCase):
             whale_live.SERVICE_START_TIMEOUT_SECONDS,
         )
 
+    def test_start_service_records_the_complete_restart_contract(self):
+        args = mock.Mock(
+            midi_port="24:0",
+            target="alsa_output.motu test",
+            gain=0.12,
+            latency_frames=256,
+            runtime_max_seconds=7200,
+            voice_mode="realistic",
+        )
+        port = whale_live.MidiPort(
+            "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
+        )
+        ready = {
+            "unit": whale_live.UNIT_NAME,
+            "load_state": "loaded",
+            "active_state": "active",
+            "sub_state": "running",
+            "result": "success",
+            "exec_main_status": "0",
+        }
+        launched = mock.Mock(returncode=0, stdout="", stderr="")
+        with (
+            mock.patch.object(whale_live, "service_active", return_value=False),
+            mock.patch.object(whale_live, "resolve_midi_port", return_value=port),
+            mock.patch.object(whale_live, "run_capture", return_value=launched) as run,
+            mock.patch.object(whale_live, "service_status", return_value=ready),
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(whale_live.start_service(args), 0)
+
+        command = run.call_args.args[0]
+        for setting in (
+            f"{whale_live.MIDI_PORT_ENV}=24:0",
+            f"{whale_live.TARGET_ENV}=alsa_output.motu test",
+            f"{whale_live.GAIN_ENV}=0.12",
+            f"{whale_live.LATENCY_FRAMES_ENV}=256",
+            f"{whale_live.RUNTIME_MAX_SECONDS_ENV}=7200",
+        ):
+            self.assertIn(setting, command)
+
+    def test_service_status_and_mode_restart_preserve_runtime_settings(self):
+        environment = " ".join(
+            [
+                f"{whale_live.VOICE_MODE_ENV}=realistic",
+                f"{whale_live.MIDI_PORT_ENV}=24:0",
+                f'"{whale_live.TARGET_ENV}=alsa_output.motu test"',
+                f"{whale_live.GAIN_ENV}=0.12",
+                f"{whale_live.LATENCY_FRAMES_ENV}=256",
+                f"{whale_live.RUNTIME_MAX_SECONDS_ENV}=7200",
+            ]
+        )
+        completed = mock.Mock(
+            returncode=0,
+            stdout=(
+                "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                "Result=success\nExecMainStatus=0\n"
+                f"Environment={environment}\n"
+            ),
+            stderr="",
+        )
+        with mock.patch.object(whale_live, "run_capture", return_value=completed):
+            status = whale_live.service_status()
+        self.assertEqual(status["target"], "alsa_output.motu test")
+        restart = whale_live.restart_namespace_from_status(status, "ufo")
+        self.assertEqual(restart.midi_port, "24:0")
+        self.assertEqual(restart.target, "alsa_output.motu test")
+        self.assertEqual(restart.gain, 0.12)
+        self.assertEqual(restart.latency_frames, 256)
+        self.assertEqual(restart.runtime_max_seconds, 7200)
+        self.assertEqual(restart.voice_mode, "ufo")
+
     def test_start_service_fails_if_unit_dies_before_ready(self):
         args = mock.Mock(
             midi_port="auto",
@@ -719,6 +825,7 @@ class WhaleRuntimeTests(unittest.TestCase):
             gain=0.16,
             latency_frames=128,
             runtime_max_seconds=3600,
+            voice_mode="realistic",
         )
         port = whale_live.MidiPort(
             "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
@@ -748,6 +855,28 @@ class WhaleRuntimeTests(unittest.TestCase):
                 whale_live.service_status()
             with self.assertRaisesRegex(RuntimeError, "systemctl show failed"):
                 whale_live.stop_service()
+
+    def test_invalid_runtime_limit_emits_one_short_json_error(self):
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            self.assertEqual(
+                whale_live.main(["start", "--runtime-max-seconds", "59"]), 2
+            )
+        payload_text = stderr.getvalue().strip()
+        self.assertLess(len(payload_text), 500)
+        payload = json.loads(payload_text)
+        self.assertEqual(payload["state"], "blocked")
+        self.assertIn("between 60 and 21600 seconds", payload["error"])
+
+    def test_invalid_cli_arguments_emit_one_json_error(self):
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            self.assertEqual(whale_live.main(["mode", "invalid"]), 2)
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        payload = json.loads(lines[0])
+        self.assertEqual(payload["state"], "blocked")
+        self.assertIn("invalid choice", payload["error"])
 
     def test_short_demo_truncates_the_fixed_phrase(self):
         with mock.patch.object(whale_live, "write_stereo_wav") as writer:
@@ -800,6 +929,15 @@ class WhaleRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(audio["reference_sink"], "motu-m2")
         self.assertNotIn("--target", command)
+        self.assertEqual(profile["default_voice_mode"], "realistic")
+        self.assertEqual(
+            profile["truth_boundary"]["current_backend"],
+            "licensed-humpback-sample-bank",
+        )
+        self.assertEqual(
+            profile["voice_modes"]["ufo"]["status"],
+            "preserved-experimental-mode-not-realism-reference",
+        )
 
     def test_doctor_reports_missing_roland_without_claiming_readiness(self):
         completed = mock.Mock(returncode=0, stdout="active\n", stderr="")

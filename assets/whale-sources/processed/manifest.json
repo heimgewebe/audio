@@ -1,0 +1,552 @@
+{
+  "channels": 1,
+  "clips": [
+    {
+      "category": "song",
+      "file": "humpback-song-cc0-01.wav",
+      "frames": 336000,
+      "id": "humpback-song-cc0-01",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "407b28ce102e53d30114fc9fb40e54bf4037357efcf50ab54df34a3d318df09c",
+      "source_id": "humpback-song-cc0"
+    },
+    {
+      "category": "song",
+      "file": "humpback-song-cc0-02.wav",
+      "frames": 336000,
+      "id": "humpback-song-cc0-02",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "6bbbd349a623e685850b9e6fe2fd6a345a28c2dc0e9350c96c683075d53c8767",
+      "source_id": "humpback-song-cc0"
+    },
+    {
+      "category": "song",
+      "file": "humpback-song-cc0-03.wav",
+      "frames": 336000,
+      "id": "humpback-song-cc0-03",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "2231f769d8d335da93d6f5c5c0fae07befb739976f319732931f357e9916bac5",
+      "source_id": "humpback-song-cc0"
+    },
+    {
+      "category": "low",
+      "file": "humpback-moo-nps-01.wav",
+      "frames": 288000,
+      "id": "humpback-moo-nps-01",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 224640,
+      "loop_start_frame": 63360,
+      "sha256": "eb8e547b0b358b4a3db213d58e20d3ea92dbaccd2e930cb3cff07ee8b37c8c23",
+      "source_id": "humpback-moo-nps"
+    },
+    {
+      "category": "low",
+      "file": "humpback-moo-nps-02.wav",
+      "frames": 288000,
+      "id": "humpback-moo-nps-02",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 224640,
+      "loop_start_frame": 63360,
+      "sha256": "d196b4d60d8c5197aee9280a42233e04eef8a11fbc72c494dc3794632adbf73b",
+      "source_id": "humpback-moo-nps"
+    },
+    {
+      "category": "low",
+      "file": "humpback-moo-nps-03.wav",
+      "frames": 288000,
+      "id": "humpback-moo-nps-03",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 224640,
+      "loop_start_frame": 63360,
+      "sha256": "1eb432756a6617a8ff955958da639c0f2ae63051bb951b442c411b2090f9cd66",
+      "source_id": "humpback-moo-nps"
+    },
+    {
+      "category": "high",
+      "file": "humpback-wheezeblow-nps-01.wav",
+      "frames": 240000,
+      "id": "humpback-wheezeblow-nps-01",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 187200,
+      "loop_start_frame": 52800,
+      "sha256": "bdb347ee443cd734e048dc7c20cab8bb57eb6cba15547de0d6c56a5af5180480",
+      "source_id": "humpback-wheezeblow-nps"
+    },
+    {
+      "category": "high",
+      "file": "humpback-wheezeblow-nps-02.wav",
+      "frames": 240000,
+      "id": "humpback-wheezeblow-nps-02",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 187200,
+      "loop_start_frame": 52800,
+      "sha256": "a3cd5cad600ca21fd2bca1188ecc0dc41298ed0eb5feeee71aae209197e4c8bb",
+      "source_id": "humpback-wheezeblow-nps"
+    },
+    {
+      "category": "high",
+      "file": "humpback-wheezeblow-nps-03.wav",
+      "frames": 240000,
+      "id": "humpback-wheezeblow-nps-03",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 187200,
+      "loop_start_frame": 52800,
+      "sha256": "8b9b106ae330f75e488ee0f31bd7e6af8cb250bf7d9201a194ccc86e9b27ded3",
+      "source_id": "humpback-wheezeblow-nps"
+    },
+    {
+      "category": "song",
+      "file": "song-antarctic-area-v-2010-01.wav",
+      "frames": 336000,
+      "id": "song-antarctic-area-v-2010-01",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "e80a7616dc94829d6e2f0791d8d8bd65b845393e1911c9c5ee95aa8552519f69",
+      "source_id": "song-antarctic-area-v-2010"
+    },
+    {
+      "category": "song",
+      "file": "song-antarctic-area-v-2010-02.wav",
+      "frames": 336000,
+      "id": "song-antarctic-area-v-2010-02",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "44cd2791cac7928bf5d0711c03808ede7ddc61f6cc0ca01f42418a21dd4dbced",
+      "source_id": "song-antarctic-area-v-2010"
+    },
+    {
+      "category": "song",
+      "file": "song-new-caledonia-2010-01.wav",
+      "frames": 336000,
+      "id": "song-new-caledonia-2010-01",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "3bfa9a5e66c2de8065ab2277c266a4a26952acbfd62ffc241e331696fa86f9d2",
+      "source_id": "song-new-caledonia-2010"
+    },
+    {
+      "category": "song",
+      "file": "song-new-caledonia-2010-02.wav",
+      "frames": 336000,
+      "id": "song-new-caledonia-2010-02",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "263e9e5284f80a744f67427321bcf9997ebcdcbfb4aa0c26b4d13070238d5cd5",
+      "source_id": "song-new-caledonia-2010"
+    },
+    {
+      "category": "song",
+      "file": "song-eastern-australia-2010-01.wav",
+      "frames": 336000,
+      "id": "song-eastern-australia-2010-01",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "8e93b60e1406b1b247fa9a6b7bdeba8d0fc891b1f2ecec8a505da603e3af67f4",
+      "source_id": "song-eastern-australia-2010"
+    },
+    {
+      "category": "song",
+      "file": "song-eastern-australia-2010-02.wav",
+      "frames": 336000,
+      "id": "song-eastern-australia-2010-02",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "96ce82ea35534011c2bb8f6529e897f80976a361a12333483a9cdd549e3a76fe",
+      "source_id": "song-eastern-australia-2010"
+    },
+    {
+      "category": "song",
+      "file": "song-foraging-mn132a-01.wav",
+      "frames": 336000,
+      "id": "song-foraging-mn132a-01",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "b95d7a74ae7d32242ed382b35aa820533fb681a6a5df968942019c55c8150d47",
+      "source_id": "song-foraging-mn132a"
+    },
+    {
+      "category": "song",
+      "file": "song-foraging-mn132a-02.wav",
+      "frames": 336000,
+      "id": "song-foraging-mn132a-02",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "4c18c0712b97c3c9c4f8a9b21e004d75c172f1e36437ba7be1436ec4f593d01d",
+      "source_id": "song-foraging-mn132a"
+    },
+    {
+      "category": "song",
+      "file": "song-foraging-mn133a-01.wav",
+      "frames": 336000,
+      "id": "song-foraging-mn133a-01",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "111c32065e7ace94a1e390621d0af7318f52a073da25a4fb0c69aadcde8b38f1",
+      "source_id": "song-foraging-mn133a"
+    },
+    {
+      "category": "song",
+      "file": "song-foraging-mn133a-02.wav",
+      "frames": 336000,
+      "id": "song-foraging-mn133a-02",
+      "loop_crossfade_frames": 5760,
+      "loop_end_frame": 262080,
+      "loop_start_frame": 73920,
+      "sha256": "0a0a4f845e721934eecd2c88109f0aa013b1a1d085a8fb7867d21cc94c59dae0",
+      "source_id": "song-foraging-mn133a"
+    }
+  ],
+  "kind": "humpback_whale_sample_bank",
+  "render_contract": {
+    "default_voice_mode": "realistic",
+    "looping": "equal-power-crossfade",
+    "maximum_total_pitch_shift_semitones": 4,
+    "monophonic": true,
+    "pitch_bend_included": true
+  },
+  "sample_rate_hz": 48000,
+  "sample_width_bytes": 2,
+  "schema_version": 2,
+  "slots": [
+    {
+      "clip_id": "humpback-moo-nps-01",
+      "maximum_note": 27,
+      "minimum_note": 21,
+      "root_note": 24
+    },
+    {
+      "clip_id": "humpback-moo-nps-01",
+      "maximum_note": 31,
+      "minimum_note": 25,
+      "root_note": 28
+    },
+    {
+      "clip_id": "humpback-moo-nps-02",
+      "maximum_note": 35,
+      "minimum_note": 29,
+      "root_note": 32
+    },
+    {
+      "clip_id": "humpback-moo-nps-02",
+      "maximum_note": 39,
+      "minimum_note": 33,
+      "root_note": 36
+    },
+    {
+      "clip_id": "humpback-moo-nps-02",
+      "maximum_note": 43,
+      "minimum_note": 37,
+      "root_note": 40
+    },
+    {
+      "clip_id": "humpback-song-cc0-01",
+      "maximum_note": 45,
+      "minimum_note": 39,
+      "root_note": 42
+    },
+    {
+      "clip_id": "humpback-moo-nps-03",
+      "maximum_note": 47,
+      "minimum_note": 41,
+      "root_note": 44
+    },
+    {
+      "clip_id": "humpback-song-cc0-02",
+      "maximum_note": 49,
+      "minimum_note": 43,
+      "root_note": 46
+    },
+    {
+      "clip_id": "humpback-moo-nps-03",
+      "maximum_note": 51,
+      "minimum_note": 45,
+      "root_note": 48
+    },
+    {
+      "clip_id": "humpback-song-cc0-03",
+      "maximum_note": 53,
+      "minimum_note": 47,
+      "root_note": 50
+    },
+    {
+      "clip_id": "song-antarctic-area-v-2010-01",
+      "maximum_note": 57,
+      "minimum_note": 51,
+      "root_note": 54
+    },
+    {
+      "clip_id": "song-antarctic-area-v-2010-02",
+      "maximum_note": 61,
+      "minimum_note": 55,
+      "root_note": 58
+    },
+    {
+      "clip_id": "song-new-caledonia-2010-01",
+      "maximum_note": 65,
+      "minimum_note": 59,
+      "root_note": 62
+    },
+    {
+      "clip_id": "song-new-caledonia-2010-02",
+      "maximum_note": 69,
+      "minimum_note": 63,
+      "root_note": 66
+    },
+    {
+      "clip_id": "song-eastern-australia-2010-01",
+      "maximum_note": 73,
+      "minimum_note": 67,
+      "root_note": 70
+    },
+    {
+      "clip_id": "song-eastern-australia-2010-02",
+      "maximum_note": 77,
+      "minimum_note": 71,
+      "root_note": 74
+    },
+    {
+      "clip_id": "song-foraging-mn132a-01",
+      "maximum_note": 81,
+      "minimum_note": 75,
+      "root_note": 78
+    },
+    {
+      "clip_id": "song-foraging-mn132a-02",
+      "maximum_note": 85,
+      "minimum_note": 79,
+      "root_note": 82
+    },
+    {
+      "clip_id": "humpback-wheezeblow-nps-01",
+      "maximum_note": 87,
+      "minimum_note": 81,
+      "root_note": 84
+    },
+    {
+      "clip_id": "song-foraging-mn133a-01",
+      "maximum_note": 89,
+      "minimum_note": 83,
+      "root_note": 86
+    },
+    {
+      "clip_id": "humpback-wheezeblow-nps-01",
+      "maximum_note": 91,
+      "minimum_note": 85,
+      "root_note": 88
+    },
+    {
+      "clip_id": "song-foraging-mn133a-02",
+      "maximum_note": 93,
+      "minimum_note": 87,
+      "root_note": 90
+    },
+    {
+      "clip_id": "humpback-wheezeblow-nps-02",
+      "maximum_note": 95,
+      "minimum_note": 89,
+      "root_note": 92
+    },
+    {
+      "clip_id": "humpback-wheezeblow-nps-02",
+      "maximum_note": 99,
+      "minimum_note": 93,
+      "root_note": 96
+    },
+    {
+      "clip_id": "humpback-wheezeblow-nps-02",
+      "maximum_note": 103,
+      "minimum_note": 97,
+      "root_note": 100
+    },
+    {
+      "clip_id": "humpback-wheezeblow-nps-03",
+      "maximum_note": 107,
+      "minimum_note": 101,
+      "root_note": 104
+    },
+    {
+      "clip_id": "humpback-wheezeblow-nps-03",
+      "maximum_note": 108,
+      "minimum_note": 105,
+      "root_note": 108
+    }
+  ],
+  "source_catalog_schema_version": 2,
+  "source_catalog_sha256": "d5a9dad7f56ea9893c1d1c458578447721529b032c8c4c006eea245ef43687b8",
+  "sources": [
+    {
+      "attribution": "Spyrogumas — Song of Humpback Whales",
+      "bytes": 400820,
+      "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Spyrogumas"
+      ],
+      "file": "raw/humpback-song-cc0.ogg",
+      "id": "humpback-song-cc0",
+      "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "sha256": "cf05e8aa82b3e0296a6fa83a464ee179a8c0e462270493d35af4019c545d5f04",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpbackwhale2.ogg",
+      "title": "Song of Humpback Whales"
+    },
+    {
+      "attribution": "U.S. National Park Service — Humpback whale moo, Glacier Bay hydrophone recording, September 2001",
+      "bytes": 274534,
+      "category": "low",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "U.S. National Park Service"
+      ],
+      "file": "raw/humpback-moo-nps.ogg",
+      "id": "humpback-moo-nps",
+      "license": "Public-Domain-US-NPS",
+      "license_url": "https://www.nps.gov/aboutus/disclaimer.htm",
+      "sha256": "c61c17c0ecc3e71db70891290cad4c8982792b83d4b9e586ccc7a09aa2dbb25e",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback_whale_moo.ogg",
+      "title": "Humpback whale moo"
+    },
+    {
+      "attribution": "U.S. National Park Service — Humpback whale wheezeblow, Glacier Bay hydrophone recording, September 2001",
+      "bytes": 530768,
+      "category": "high",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "U.S. National Park Service"
+      ],
+      "file": "raw/humpback-wheezeblow-nps.ogg",
+      "id": "humpback-wheezeblow-nps",
+      "license": "Public-Domain-US-NPS",
+      "license_url": "https://www.nps.gov/aboutus/disclaimer.htm",
+      "sha256": "af4ca0b6d71aee31a8c73a37eef4b60492a06116e46683e10668552be0f9feb9",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback_whale_wheezeblow.ogg",
+      "title": "Humpback whale wheezeblow"
+    },
+    {
+      "attribution": "Ellen C. Garland, Jason Gedamke, Melinda L. Rekdahl, Michael J. Noad, Claire Garrigue, Nick Gales — Antarctic Area V 2010 song, Acoustic File S1; supporting audio for Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission (2013), PLOS ONE",
+      "bytes": 251208,
+      "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Ellen C. Garland",
+        "Jason Gedamke",
+        "Melinda L. Rekdahl",
+        "Michael J. Noad",
+        "Claire Garrigue",
+        "Nick Gales"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0079422",
+      "file": "raw/song-antarctic-area-v-2010-ccby25.oga",
+      "id": "song-antarctic-area-v-2010",
+      "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission",
+      "sha256": "da05d6d111f1f1f7655e76dcd9f53a583f2d7125d0afd7e20a32af10d34e59e3",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s001.oga",
+      "title": "Antarctic Area V 2010 song, Acoustic File S1"
+    },
+    {
+      "attribution": "Ellen C. Garland, Jason Gedamke, Melinda L. Rekdahl, Michael J. Noad, Claire Garrigue, Nick Gales — New Caledonia 2010 song, Acoustic File S3; supporting audio for Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission (2013), PLOS ONE",
+      "bytes": 887963,
+      "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Ellen C. Garland",
+        "Jason Gedamke",
+        "Melinda L. Rekdahl",
+        "Michael J. Noad",
+        "Claire Garrigue",
+        "Nick Gales"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0079422",
+      "file": "raw/song-new-caledonia-2010-ccby25.oga",
+      "id": "song-new-caledonia-2010",
+      "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission",
+      "sha256": "8ca4c2cf839e5aa3e74a12ced49d2db7592ec5492351839d17c20a1d6bf7881f",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s003.oga",
+      "title": "New Caledonia 2010 song, Acoustic File S3"
+    },
+    {
+      "attribution": "Ellen C. Garland, Jason Gedamke, Melinda L. Rekdahl, Michael J. Noad, Claire Garrigue, Nick Gales — Eastern Australia 2010 song, Acoustic File S4; supporting audio for Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission (2013), PLOS ONE",
+      "bytes": 517238,
+      "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Ellen C. Garland",
+        "Jason Gedamke",
+        "Melinda L. Rekdahl",
+        "Michael J. Noad",
+        "Claire Garrigue",
+        "Nick Gales"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0079422",
+      "file": "raw/song-eastern-australia-2010-ccby25.oga",
+      "id": "song-eastern-australia-2010",
+      "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission",
+      "sha256": "e897b284fa8e9945195619c101804516174d6b9b8471bee4371983e19245794b",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s004.oga",
+      "title": "Eastern Australia 2010 song, Acoustic File S4"
+    },
+    {
+      "attribution": "Alison K. Stimpert, Lindsey E. Peavey, Ari S. Friedlaender, Douglas P. Nowacek — Representative song phrases from record mn132a, Acoustic File S1; supporting audio for Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground (2012), PLOS ONE",
+      "bytes": 463592,
+      "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Alison K. Stimpert",
+        "Lindsey E. Peavey",
+        "Ari S. Friedlaender",
+        "Douglas P. Nowacek"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0051214",
+      "file": "raw/song-foraging-mn132a-ccby25.oga",
+      "id": "song-foraging-mn132a",
+      "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground",
+      "sha256": "709db575564662bc32861d26d0efa167bee40093ee147c94190752857fb84971",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-and-Foraging-Behavior-on-an-Antarctic-Feeding-Ground-pone.0051214.s001.oga",
+      "title": "Representative song phrases from record mn132a, Acoustic File S1"
+    },
+    {
+      "attribution": "Alison K. Stimpert, Lindsey E. Peavey, Ari S. Friedlaender, Douglas P. Nowacek — Representative song phrases from record mn133a, Acoustic File S2; supporting audio for Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground (2012), PLOS ONE",
+      "bytes": 473176,
+      "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Alison K. Stimpert",
+        "Lindsey E. Peavey",
+        "Ari S. Friedlaender",
+        "Douglas P. Nowacek"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0051214",
+      "file": "raw/song-foraging-mn133a-ccby25.oga",
+      "id": "song-foraging-mn133a",
+      "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground",
+      "sha256": "a24cc9221811cf8d946c2701ae08cacd5701a3d8940f4bbcd543600490fa487f",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-and-Foraging-Behavior-on-an-Antarctic-Feeding-Ground-pone.0051214.s002.oga",
+      "title": "Representative song phrases from record mn133a, Acoustic File S2"
+    }
+  ]
+}
