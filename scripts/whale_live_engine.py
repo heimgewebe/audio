@@ -24,6 +24,7 @@ MAX_MASTER_GAIN = 0.25
 DEFAULT_SAMPLE_RATE = 48_000
 DEFAULT_BLOCK_FRAMES = 128
 MAX_OFFLINE_DURATION_SECONDS = 30.0
+SILENCE_ENVELOPE_THRESHOLD = 1e-7
 
 _NOTE_RE = re.compile(
     r"\bNote\s+(on|off)\s+(\d+)\s*,\s*note\s+(\d+)\s*,\s*velocity\s+(\d+)",
@@ -406,6 +407,10 @@ class WhaleVoice:
                     envelope += (1.0 - envelope) * attack_alpha
                 else:
                     envelope += (0.0 - envelope) * release_alpha
+                    if envelope < SILENCE_ENVELOPE_THRESHOLD:
+                        envelope = 0.0
+                        output.extend([0.0] * (frames - _index))
+                        break
 
             register = clamp(current_register, 0.0, 1.0)
             body_weight = 0.78 - 0.42 * register
@@ -512,7 +517,9 @@ class WhaleVoice:
             if self.gate:
                 hold_frames += 1
 
-        self.envelope = 0.0 if not self.gate and envelope < 1e-7 else envelope
+        self.envelope = (
+            0.0 if not self.gate and envelope < SILENCE_ENVELOPE_THRESHOLD else envelope
+        )
         self.velocity = velocity
         self.current_frequency = current_frequency
         self.current_register = current_register

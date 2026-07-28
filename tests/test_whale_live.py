@@ -117,6 +117,37 @@ class WhaleVoiceTests(unittest.TestCase):
             },
         )
 
+    def test_release_to_silence_is_chunk_invariant(self):
+        one_shot = engine.WhaleVoice(self.config, seed=1234)
+        chunked = engine.WhaleVoice(self.config, seed=1234)
+        for voice in (one_shot, chunked):
+            voice.note_on(60, 96)
+            voice.render(4_000)
+            voice.note_off(60)
+
+        total_frames = self.config.sample_rate * 5
+        one_shot_output = one_shot.render(total_frames)
+        chunked_output = []
+        remaining = total_frames
+        chunk_sizes = (1, 17, 64, 257, 511)
+        chunk_index = 0
+        while remaining:
+            frames = min(chunk_sizes[chunk_index % len(chunk_sizes)], remaining)
+            chunked_output.extend(chunked.render(frames))
+            remaining -= frames
+            chunk_index += 1
+
+        self.assertEqual(one_shot_output, chunked_output)
+        self.assertEqual(one_shot.__dict__, chunked.__dict__)
+        self.assertTrue(one_shot.silent)
+
+        one_shot.note_on(72, 108)
+        chunked.note_on(72, 108)
+        self.assertEqual(
+            one_shot.render_f32_stereo(1_024),
+            chunked.render_f32_stereo(1_024),
+        )
+
     def test_idle_duration_does_not_change_a_new_phrase(self):
         immediate = engine.WhaleVoice(self.config, seed=1234)
         delayed = engine.WhaleVoice(self.config, seed=1234)
