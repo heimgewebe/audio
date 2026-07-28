@@ -447,7 +447,13 @@ def parse_systemd_show(result: CommandResult | None) -> dict[str, dict[str, Any]
     return dict(sorted(units.items()))
 
 
-REQUIRED_SERVICE_STATES = ("pipewire", "pipewire-pulse", "wireplumber", "mopidy")
+REQUIRED_SERVICE_STATES = (
+    "pipewire",
+    "pipewire-pulse",
+    "wireplumber",
+    "mopidy",
+    "easyeffects",
+)
 REQUIRED_SERVICE_UNITS = tuple(f"{name}.service" for name in REQUIRED_SERVICE_STATES)
 
 
@@ -489,7 +495,7 @@ def runtime_observation_completeness(runtime: dict[str, Any]) -> dict[str, Any]:
         or (
             field == "LimitNOFILE"
             and (
-                not isinstance(limits[unit].get(field), int)
+                type(limits[unit].get(field)) is not int
                 or limits[unit].get(field, 0) <= 0
             )
         )
@@ -711,15 +717,11 @@ def version_projection(results: Iterable[CommandResult]) -> dict[str, dict[str, 
                 "line_count": 0,
             }
             continue
+        evidence = command_record(result)
         projection[label] = {
-            "available": (
-                result.error is None
-                and result.returncode in allowed_returncodes(result.argv)
-                and not result.stdout_truncated
-            ),
-            "output_sha256": result.stdout_sha256
-            or sha256_bytes(result.stdout.encode("utf-8")),
-            "line_count": len(result.stdout.splitlines()),
+            "available": evidence["accepted"],
+            "output_sha256": evidence["stdout_sha256"],
+            "line_count": evidence["stdout_line_count"],
         }
     return projection
 
@@ -1325,6 +1327,28 @@ def verify_report(report: dict[str, Any]) -> None:
             raise ValueError(f"command evidence {index} accepted status mismatch")
         if command.get("command") != shlex.join(argv):
             raise ValueError(f"command evidence {index} display mismatch")
+    command_by_argv = {
+        tuple(command["argv"]): command for command in commands
+    }
+    version_commands = {
+        "kernel": ("uname", "-r"),
+        "pipewire": ("pipewire", "--version"),
+        "wireplumber": ("wireplumber", "--version"),
+        "mopidy": ("mopidy", "--version"),
+    }
+    for label, argv in version_commands.items():
+        evidence = command_by_argv.get(argv)
+        if evidence is None:
+            raise ValueError(f"version command evidence is missing: {label}")
+        expected_version = {
+            "available": evidence["accepted"],
+            "output_sha256": evidence["stdout_sha256"],
+            "line_count": evidence["stdout_line_count"],
+        }
+        if versions.get(label) != expected_version:
+            raise ValueError(
+                f"version projection does not match command evidence: {label}"
+            )
     expected_runtime_health = commands[-len(READ_ONLY_COMMANDS) :]
     if runtime.get("command_health") != expected_runtime_health:
         raise ValueError("runtime command-health projection mismatch")

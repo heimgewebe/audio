@@ -79,7 +79,10 @@ def runtime_results():
             "TasksCurrent=5\nLimitNOFILE=1048576\n\n"
             "Id=mopidy.service\nLoadState=loaded\nActiveState=active\n"
             "SubState=running\nNRestarts=1\nMemoryCurrent=2000\n"
-            "TasksCurrent=4\nLimitNOFILE=1048576\n"
+            "TasksCurrent=4\nLimitNOFILE=1048576\n\n"
+            "Id=easyeffects.service\nLoadState=not-found\nActiveState=inactive\n"
+            "SubState=dead\nNRestarts=0\nMemoryCurrent=\n"
+            "TasksCurrent=\nLimitNOFILE=1048576\n"
         ),
         MODULE.READ_ONLY_COMMANDS[2]: (
             "PID PPID STAT ELAPSED %CPU %MEM COMMAND COMMAND\n"
@@ -347,6 +350,39 @@ class SystemTruthTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runtime command-health"):
             MODULE.verify_report(report)
 
+    def test_easyeffects_state_is_required_but_inactive_is_observed(self):
+        report = self.report()
+        self.assertTrue(report["runtime"]["observation_completeness"]["complete"])
+        self.assertEqual(report["runtime"]["services"]["easyeffects"], "inactive")
+        runtime = copy.deepcopy(report["runtime"])
+        runtime["services"]["easyeffects"] = "unknown"
+        runtime["observation_completeness"] = (
+            MODULE.runtime_observation_completeness(runtime)
+        )
+        gates = MODULE.build_gate_status(
+            report["doctor"],
+            report["physical"],
+            report["laboratory"],
+            runtime,
+            report["contracts"],
+        )
+        self.assertFalse(runtime["observation_completeness"]["complete"])
+        self.assertIn(
+            "easyeffects",
+            runtime["observation_completeness"]["missing_service_states"],
+        )
+        self.assertEqual(gates["runtime-storage-observation"]["status"], "degraded")
+
+    def test_boolean_limit_nofile_is_rejected(self):
+        report = self.report()
+        runtime = copy.deepcopy(report["runtime"])
+        runtime["service_limits"]["mopidy.service"]["LimitNOFILE"] = True
+        completeness = MODULE.runtime_observation_completeness(runtime)
+        self.assertFalse(completeness["complete"])
+        self.assertIn(
+            "mopidy.service:LimitNOFILE", completeness["missing_service_limits"]
+        )
+
     def test_missing_required_service_limit_field_degrades_runtime_gate(self):
         report = self.report()
         runtime = copy.deepcopy(report["runtime"])
@@ -574,6 +610,15 @@ class SystemTruthTests(unittest.TestCase):
         for item in report["commands"]:
             self.assertNotIn("stdout", item)
             self.assertNotIn("stderr", item)
+
+    def test_version_projection_is_cross_bound_to_command_evidence(self):
+        report = self.report()
+        report["runtime"]["versions"]["mopidy"]["output_sha256"] = "0" * 64
+        recompute(report)
+        with self.assertRaisesRegex(
+            ValueError, "version projection does not match command evidence"
+        ):
+            MODULE.verify_report(report)
 
     def test_version_projection_persists_only_digest_metadata(self):
         results = runtime_results()
