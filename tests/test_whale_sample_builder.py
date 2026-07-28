@@ -138,10 +138,10 @@ class WhaleSampleBuilderTests(unittest.TestCase):
             root, catalog, source = self.make_root(directory)
             original_snapshot = builder.snapshot_verified_source
 
-            def mutate_then_snapshot(record, destination):
+            def mutate_then_snapshot(record, source_fd, destination):
                 if record["category"] == "low":
                     source.write_bytes(b"changed-after-catalog-validation")
-                return original_snapshot(record, destination)
+                return original_snapshot(record, source_fd, destination)
 
             with (
                 mock.patch.object(
@@ -176,6 +176,198 @@ class WhaleSampleBuilderTests(unittest.TestCase):
                 builder.build(catalog, root / "processed")
             self.assertEqual(len(observed_sources), 3)
             self.assertTrue(all(not snapshot.exists() for snapshot in observed_sources))
+
+    def test_transient_catalog_exchange_cannot_change_bound_build_decisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            original_catalog = catalog.read_bytes()
+            displaced = root / ".original-catalog"
+            real_read = builder._read_descriptor_bytes
+            exchange_count = 0
+
+            def exchange_while_reading(catalog_fd):
+                nonlocal exchange_count
+                exchange_count += 1
+                os.rename(catalog, displaced)
+                catalog.write_bytes(b"[]")
+                try:
+                    return real_read(catalog_fd)
+                finally:
+                    catalog.unlink()
+                    os.rename(displaced, catalog)
+
+            with (
+                mock.patch.object(
+                    builder,
+                    "_read_descriptor_bytes",
+                    side_effect=exchange_while_reading,
+                ),
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+            ):
+                manifest = builder.build(catalog, root / "processed")
+
+            self.assertEqual(exchange_count, 1)
+            self.assertEqual(len(manifest["sources"]), 3)
+            self.assertEqual(len(manifest["clips"]), 3)
+            self.assertEqual(
+                manifest["source_catalog_sha256"],
+                hashlib.sha256(original_catalog).hexdigest(),
+            )
+            self.assertEqual(catalog.read_bytes(), original_catalog)
+
+    def test_manifest_hash_covers_the_exact_catalog_bytes_given_to_parser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            catalog_bytes = catalog.read_bytes()
+            parsed_bytes = []
+            real_parse = builder._parse_catalog_bytes
+
+            def capture_parsed_bytes(payload):
+                parsed_bytes.append(payload)
+                return real_parse(payload)
+
+            with (
+                mock.patch.object(
+                    builder,
+                    "_parse_catalog_bytes",
+                    side_effect=capture_parsed_bytes,
+                ),
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+            ):
+                manifest = builder.build(catalog, root / "processed")
+
+            self.assertEqual(parsed_bytes, [catalog_bytes])
+            self.assertEqual(
+                manifest["source_catalog_sha256"],
+                hashlib.sha256(parsed_bytes[0]).hexdigest(),
+            )
+
+    def test_snapshot_reads_bound_fd_during_transient_raw_path_exchange(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, source = self.make_root(directory)
+            original_payload = source.read_bytes()
+            displaced = root / ".bound-source-low.ogg"
+            real_snapshot = builder.snapshot_verified_source
+            exchange_count = 0
+
+            def exchange_then_snapshot(record, source_fd, destination):
+                nonlocal exchange_count
+                if record["category"] != "low":
+                    return real_snapshot(record, source_fd, destination)
+                exchange_count += 1
+                os.rename(source, displaced)
+                source.write_bytes(b"replacement-at-raw-path")
+                try:
+                    result = real_snapshot(record, source_fd, destination)
+                    self.assertEqual(destination.read_bytes(), original_payload)
+                    return result
+                finally:
+                    source.unlink()
+                    os.rename(displaced, source)
+
+            with (
+                mock.patch.object(
+                    builder,
+                    "snapshot_verified_source",
+                    side_effect=exchange_then_snapshot,
+                ),
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+            ):
+                manifest = builder.build(catalog, root / "processed")
+
+            self.assertEqual(exchange_count, 1)
+            self.assertEqual(len(manifest["clips"]), 3)
+            self.assertEqual(source.read_bytes(), original_payload)
+
+    def test_each_catalog_source_is_opened_once_relative_to_bound_raw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw_metadata = (root / "raw").stat()
+            raw_identity = (raw_metadata.st_dev, raw_metadata.st_ino)
+            source_opens = []
+            real_open = builder._open_nofollow
+
+            def observe_open(directory_fd, name, *, directory):
+                if name.startswith("source-"):
+                    parent_metadata = os.fstat(directory_fd)
+                    source_opens.append(
+                        (
+                            name,
+                            directory,
+                            parent_metadata.st_dev,
+                            parent_metadata.st_ino,
+                        )
+                    )
+                return real_open(directory_fd, name, directory=directory)
+
+            with (
+                mock.patch.object(
+                    builder,
+                    "_open_nofollow",
+                    side_effect=observe_open,
+                ),
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+            ):
+                builder.build(catalog, root / "processed")
+
+            self.assertEqual(
+                source_opens,
+                [
+                    ("source-low.ogg", False, *raw_identity),
+                    ("source-song.ogg", False, *raw_identity),
+                    ("source-high.ogg", False, *raw_identity),
+                ],
+            )
+
+    def test_bound_source_descriptors_keep_zero_offset_and_close(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            observed_descriptors = []
+            real_snapshot = builder.snapshot_verified_source
+
+            def observe_descriptor(source, source_fd, destination):
+                self.assertEqual(os.lseek(source_fd, 0, os.SEEK_CUR), 0)
+                result = real_snapshot(source, source_fd, destination)
+                self.assertEqual(os.lseek(source_fd, 0, os.SEEK_CUR), 0)
+                observed_descriptors.append(source_fd)
+                return result
+
+            with (
+                mock.patch.object(
+                    builder,
+                    "snapshot_verified_source",
+                    side_effect=observe_descriptor,
+                ),
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+            ):
+                builder.build(catalog, root / "processed")
+
+            self.assertEqual(len(observed_descriptors), 3)
+            self.assertEqual(len(set(observed_descriptors)), 3)
+            for descriptor in observed_descriptors:
+                with self.assertRaises(OSError):
+                    os.fstat(descriptor)
+
+    def test_repeated_build_is_byte_reproducible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            output = root / "processed"
+
+            def file_payloads():
+                return {
+                    path.relative_to(output).as_posix(): path.read_bytes()
+                    for path in sorted(output.rglob("*"))
+                    if path.is_file()
+                }
+
+            with mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg):
+                first_manifest = builder.build(catalog, output)
+                first_payloads = file_payloads()
+                second_manifest = builder.build(catalog, output)
+                second_payloads = file_payloads()
+
+            self.assertEqual(second_manifest, first_manifest)
+            self.assertEqual(second_payloads, first_payloads)
 
     def test_non_object_catalog_root_is_controlled_json_error(self):
         for payload in ("[]", "null", '"scalar"'):
@@ -442,21 +634,20 @@ class WhaleSampleBuilderTests(unittest.TestCase):
             protected_identities = {
                 (values[1], values[2]) for values in raw_before.values()
             }
-            real_validate = builder.validate_output_root
+            real_capture = builder._capture_replace_state
             real_rmtree = builder.shutil.rmtree
-            validation_count = 0
+            capture_count = 0
             removed_identities = []
 
-            def validate_then_swap(*args, **kwargs):
-                nonlocal validation_count
-                result = real_validate(*args, **kwargs)
-                validation_count += 1
-                if validation_count == 2:
-                    displaced = root / ".race-displaced"
-                    os.rename(raw, displaced)
-                    os.rename(output, raw)
-                    os.rename(displaced, output)
-                return result
+            def capture_then_swap(*args, **kwargs):
+                nonlocal capture_count
+                state = real_capture(*args, **kwargs)
+                capture_count += 1
+                displaced = root / ".race-displaced"
+                os.rename(raw, displaced)
+                os.rename(output, raw)
+                os.rename(displaced, output)
+                return state
 
             def observe_rmtree(path, *args, **kwargs):
                 candidate = pathlib.Path(path)
@@ -469,8 +660,8 @@ class WhaleSampleBuilderTests(unittest.TestCase):
                 mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
                 mock.patch.object(
                     builder,
-                    "validate_output_root",
-                    side_effect=validate_then_swap,
+                    "_capture_replace_state",
+                    side_effect=capture_then_swap,
                 ),
                 mock.patch.object(builder.shutil, "rmtree", side_effect=observe_rmtree),
             ):
@@ -479,7 +670,7 @@ class WhaleSampleBuilderTests(unittest.TestCase):
                 ):
                     builder.build(catalog, output)
 
-            self.assertEqual(validation_count, 2)
+            self.assertEqual(capture_count, 1)
             self.assertEqual(self.snapshot_tree(raw), raw_before)
             self.assertEqual(self.snapshot_tree(output), output_before)
             self.assertTrue(
@@ -559,11 +750,6 @@ class WhaleSampleBuilderTests(unittest.TestCase):
             with (
                 mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
                 mock.patch.object(
-                    builder,
-                    "_clear_bound_directory",
-                    wraps=builder._clear_bound_directory,
-                ) as clear_bound_directory,
-                mock.patch.object(
                     builder, "_rename_exchange", side_effect=fail_rollback
                 ),
                 mock.patch.object(
@@ -595,93 +781,58 @@ class WhaleSampleBuilderTests(unittest.TestCase):
             self.assertTrue(raw.is_dir())
             self.assertTrue(output.is_dir())
             self.assertEqual(cleanup_after_race, [])
-            self.assertEqual(
-                [call.args[2] for call in clear_bound_directory.call_args_list],
-                ["intermediate workspace", "source snapshot workspace"],
-            )
 
-    def test_file_cleanup_race_quarantines_injected_catalog_hardlink(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root, catalog, _source = self.make_root(directory)
-            raw_before = self.snapshot_tree(root / "raw")
-            catalog_before = catalog.read_bytes()
-            catalog_metadata = catalog.stat()
-            output = root / "processed"
-            output.mkdir()
-            (output / "marker.txt").write_text("old-bank", encoding="utf-8")
-            race_started = False
-
-            def inject_catalog_hardlink(
-                directory_fd, name, _quarantine_name, _expected, label
-            ):
-                nonlocal race_started
-                if label != "output backup/marker.txt":
-                    return
-                race_started = True
-                os.rename(
-                    name,
-                    ".race-displaced-marker",
-                    src_dir_fd=directory_fd,
-                    dst_dir_fd=directory_fd,
-                )
-                os.link(
-                    catalog,
-                    name,
-                    dst_dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-
-            with (
-                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
-                mock.patch.object(
-                    builder,
-                    "_before_quarantine_rename",
-                    side_effect=inject_catalog_hardlink,
-                ),
-            ):
-                with self.assertRaisesRegex(
-                    builder._RecoveryRequiredError,
-                    "outcome is unknown.*manual recovery",
-                ):
-                    builder.build(catalog, output)
-
-            catalog_after = catalog.stat()
-            self.assertTrue(race_started)
-            self.assertEqual(catalog.read_bytes(), catalog_before)
-            self.assertEqual(
-                (catalog_after.st_dev, catalog_after.st_ino),
-                (catalog_metadata.st_dev, catalog_metadata.st_ino),
-            )
-            self.assertEqual(self.snapshot_tree(root / "raw"), raw_before)
-            self.assertEqual(len(list(root.glob(".processed-staging-*"))), 1)
-
-    def test_directory_cleanup_race_quarantines_raw_before_rmdir(self):
+    def _assert_retention_race_preserves_raw(self, seam_name):
         with tempfile.TemporaryDirectory() as directory:
             root, catalog, _source = self.make_root(directory)
             raw = root / "raw"
             raw_before = self.snapshot_tree(raw)
             raw_metadata = raw.stat()
+            raw_identity = (
+                raw_metadata.st_dev,
+                raw_metadata.st_ino,
+                stat.S_IFMT(raw_metadata.st_mode),
+            )
             output = root / "processed"
             output.mkdir()
             (output / "marker.txt").write_text("old-bank", encoding="utf-8")
             race_started = False
+            destructive_calls = []
 
-            def exchange_raw_before_quarantine(
-                directory_fd, name, _quarantine_name, _expected, label
+            def exchange_raw_before_retention(
+                source_parent_fd, source_name, _destination_name, _expected, label
             ):
                 nonlocal race_started
                 if label != "output backup":
                     return
                 race_started = True
-                builder._rename_exchange(directory_fd, "raw", name)
+                builder._rename_exchange(source_parent_fd, "raw", source_name)
 
+            def exchange_raw_after_retention(
+                bindings, destination_name, _destination_fd, _expected, label
+            ):
+                nonlocal race_started
+                if label != "output backup":
+                    return
+                race_started = True
+                builder._rename_exchange(
+                    bindings.source_root_fd, "raw", destination_name
+                )
+
+            def forbid_delete(*args, **kwargs):
+                destructive_calls.append((args, kwargs))
+                raise AssertionError("cleanup must retain instead of delete")
+
+            seam = (
+                exchange_raw_before_retention
+                if seam_name == "_before_retention_rename"
+                else exchange_raw_after_retention
+            )
             with (
                 mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
-                mock.patch.object(
-                    builder,
-                    "_before_quarantine_rename",
-                    side_effect=exchange_raw_before_quarantine,
-                ),
+                mock.patch.object(builder, seam_name, side_effect=seam),
+                mock.patch.object(builder.os, "unlink", side_effect=forbid_delete),
+                mock.patch.object(builder.os, "rmdir", side_effect=forbid_delete),
             ):
                 with self.assertRaisesRegex(
                     builder._RecoveryRequiredError,
@@ -689,28 +840,43 @@ class WhaleSampleBuilderTests(unittest.TestCase):
                 ):
                     builder.build(catalog, output)
 
-            quarantines = list(root.glob(".whale-cleanup-quarantine-*"))
+            retained = list(root.glob(f"{builder.RETAINED_CLEANUP_PREFIX}*"))
+            retained_raw = [
+                candidate
+                for candidate in retained
+                if (
+                    candidate.stat().st_dev,
+                    candidate.stat().st_ino,
+                    stat.S_IFMT(candidate.stat().st_mode),
+                )
+                == raw_identity
+            ]
             self.assertTrue(race_started)
-            self.assertEqual(len(quarantines), 1)
-            quarantined_raw = quarantines[0]
-            quarantined_metadata = quarantined_raw.stat()
-            self.assertEqual(
-                (quarantined_metadata.st_dev, quarantined_metadata.st_ino),
-                (raw_metadata.st_dev, raw_metadata.st_ino),
-            )
-            self.assertEqual(self.snapshot_tree(quarantined_raw), raw_before)
+            self.assertEqual(destructive_calls, [])
+            self.assertEqual(len(retained_raw), 1)
+            self.assertEqual(self.snapshot_tree(retained_raw[0]), raw_before)
 
             root_fd = os.open(root, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
             try:
-                builder._rename_exchange(root_fd, "raw", quarantined_raw.name)
+                builder._rename_exchange(root_fd, "raw", retained_raw[0].name)
             finally:
                 os.close(root_fd)
-            self.assertEqual(self.snapshot_tree(raw), raw_before)
-            restored_metadata = raw.stat()
+            restored = raw.stat()
             self.assertEqual(
-                (restored_metadata.st_dev, restored_metadata.st_ino),
-                (raw_metadata.st_dev, raw_metadata.st_ino),
+                (
+                    restored.st_dev,
+                    restored.st_ino,
+                    stat.S_IFMT(restored.st_mode),
+                ),
+                raw_identity,
             )
+            self.assertEqual(self.snapshot_tree(raw), raw_before)
+
+    def test_retention_race_before_rename_preserves_raw_without_delete(self):
+        self._assert_retention_race_preserves_raw("_before_retention_rename")
+
+    def test_retention_race_after_open_preserves_raw_without_delete(self):
+        self._assert_retention_race_preserves_raw("_after_retention_open")
 
     def _assert_raw_race_before_temporary_cleanup(self, temporary_name):
         with tempfile.TemporaryDirectory() as directory:
@@ -786,7 +952,7 @@ class WhaleSampleBuilderTests(unittest.TestCase):
     def test_raw_race_before_source_snapshot_cleanup_is_fail_closed(self):
         self._assert_raw_race_before_temporary_cleanup(".sources")
 
-    def test_cleanup_handles_files_symlinks_hardlinks_and_nested_directories(self):
+    def test_cleanup_retains_complete_directories_without_delete_syscalls(self):
         with tempfile.TemporaryDirectory() as directory:
             root, catalog, _source = self.make_root(directory)
             output = root / "processed"
@@ -798,18 +964,62 @@ class WhaleSampleBuilderTests(unittest.TestCase):
             nested = output / "nested"
             nested.mkdir()
             (nested / "child.txt").write_text("nested", encoding="utf-8")
+            old_output = self.snapshot_tree(output)
+            retention_evidence = []
+            destructive_calls = []
 
-            with mock.patch.object(
-                builder, "run_ffmpeg", side_effect=self.fake_ffmpeg
+            def forbid_delete(*args, **kwargs):
+                destructive_calls.append((args, kwargs))
+                raise AssertionError("builder cleanup must never unlink or rmdir")
+
+            with (
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+                mock.patch.object(builder.os, "unlink", side_effect=forbid_delete),
+                mock.patch.object(builder.os, "rmdir", side_effect=forbid_delete),
             ):
-                manifest = builder.build(catalog, output)
+                manifest = builder.build(
+                    catalog,
+                    output,
+                    retention_evidence=retention_evidence,
+                )
 
             self.assertEqual(manifest["schema_version"], 2)
-            self.assertFalse(regular.exists())
+            self.assertEqual(destructive_calls, [])
+            self.assertFalse((output / "regular.txt").exists())
             self.assertFalse((output / "hardlink.txt").exists())
             self.assertFalse((output / "symlink.txt").exists())
-            self.assertFalse(nested.exists())
-            self.assertFalse(list(root.rglob(".whale-cleanup-quarantine-*")))
+            self.assertFalse((output / "nested").exists())
+            self.assertTrue((output / "manifest.json").is_file())
+
+            output_backups = [
+                pathlib.Path(item["path"])
+                for item in retention_evidence
+                if item["label"] == "output backup"
+            ]
+            self.assertEqual(len(retention_evidence), 3)
+            self.assertEqual(len(output_backups), 1)
+            self.assertEqual(output_backups[0].parent, root)
+            self.assertEqual(self.snapshot_tree(output_backups[0]), old_output)
+            self.assertEqual(
+                len(list(root.glob(f"{builder.RETAINED_CLEANUP_PREFIX}*"))),
+                3,
+            )
+
+    def test_retained_cleanup_capacity_blocks_before_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            for index in range(6):
+                (root / f"{builder.RETAINED_CLEANUP_PREFIX}{index}").mkdir()
+
+            with mock.patch.object(builder, "run_ffmpeg") as run_ffmpeg:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "retained whale cleanup capacity exhausted.*no staging was created",
+                ):
+                    builder.build(catalog, root / "processed")
+
+            run_ffmpeg.assert_not_called()
+            self.assertFalse(list(root.glob(".processed-staging-*")))
 
     def test_successful_build_atomically_replaces_old_bank(self):
         with tempfile.TemporaryDirectory() as directory:

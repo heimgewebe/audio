@@ -11,7 +11,6 @@ import math
 import os
 import pathlib
 import re
-import secrets
 import shutil
 import stat
 import struct
@@ -39,6 +38,8 @@ SOURCE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 ALLOWED_LICENSES = {"CC0-1.0", "Public-Domain-US-NPS", "CC-BY-2.5"}
 CATALOG_SCHEMA_VERSION = 2
+RETAINED_CLEANUP_PREFIX = ".whale-cleanup-retained-"
+MAX_RETAINED_CLEANUP_DIRECTORIES = 8
 FileIdentity = tuple[int, int, int]
 
 
@@ -90,10 +91,11 @@ class _ProtectedBindings:
     catalog_name: str
     catalog_fd: int
     catalog_identity: FileIdentity
-    source_fds: tuple[tuple[str, int, FileIdentity], ...]
-    output_name: str
-    output_fd: int | None
-    output_identity: FileIdentity | None
+    source_fds: tuple[tuple[str, int, FileIdentity], ...] = ()
+    output_name: str = ""
+    output_fd: int | None = None
+    output_identity: FileIdentity | None = None
+    retention_evidence: list[dict[str, Any]] | None = None
 
     @property
     def protected_identities(self) -> frozenset[FileIdentity]:
@@ -111,11 +113,6 @@ class _ProtectedBindings:
             _file_identity(os.fstat(self.source_root_fd)),
             self.source_root_identity,
             "source root descriptor",
-        )
-        _require_identity(
-            _file_identity(os.stat(self.source_root, follow_symlinks=False)),
-            self.source_root_identity,
-            "source root path",
         )
         _require_identity(
             _file_identity(os.fstat(self.raw_fd)),
@@ -160,18 +157,16 @@ class _ProtectedBindings:
 
 
 def _bind_protected_inputs(
-    source_root: pathlib.Path,
     source_catalog: pathlib.Path,
-    sources: list[dict[str, Any]],
-    output_root: pathlib.Path,
+    retention_evidence: list[dict[str, Any]] | None = None,
 ) -> _ProtectedBindings:
-    source_root = source_root.resolve(strict=True)
-    source_catalog = source_catalog.resolve(strict=True)
+    source_catalog = pathlib.Path(
+        os.path.abspath(os.fspath(source_catalog.expanduser()))
+    )
+    source_root = source_catalog.parent
     source_root_fd = -1
     raw_fd = -1
     catalog_fd = -1
-    output_fd: int | None = None
-    source_fds: list[tuple[str, int, FileIdentity]] = []
     try:
         no_follow = getattr(os, "O_NOFOLLOW", None)
         directory_flag = getattr(os, "O_DIRECTORY", None)
@@ -189,38 +184,12 @@ def _bind_protected_inputs(
         if raw_identity[2] != stat.S_IFDIR:
             raise RuntimeError("bound whale raw input is not a directory")
 
-        if source_catalog.parent != source_root:
-            raise RuntimeError("whale source catalog moved outside its source root")
         catalog_fd = _open_nofollow(
             source_root_fd, source_catalog.name, directory=False
         )
         catalog_identity = _file_identity(os.fstat(catalog_fd))
         if catalog_identity[2] != stat.S_IFREG:
             raise RuntimeError("bound whale source catalog is not a regular file")
-
-        for source in sources:
-            source_path = pathlib.Path(source["_path"])
-            if source_path.parent != source_root / "raw":
-                raise RuntimeError("catalog-bound whale source moved outside raw")
-            descriptor = _open_nofollow(raw_fd, source_path.name, directory=False)
-            identity = _file_identity(os.fstat(descriptor))
-            if identity[2] != stat.S_IFREG:
-                os.close(descriptor)
-                raise RuntimeError(
-                    f"catalog-bound whale source is not regular: {source_path}"
-                )
-            source_fds.append((source_path.name, descriptor, identity))
-
-        output_identity = _entry_identity(source_root_fd, output_root.name)
-        if output_identity is not None:
-            if output_identity[2] != stat.S_IFDIR:
-                raise RuntimeError("bound whale bank output is not a directory")
-            output_fd = _open_nofollow(source_root_fd, output_root.name, directory=True)
-            _require_identity(
-                _file_identity(os.fstat(output_fd)),
-                output_identity,
-                "initial output",
-            )
 
         bindings = _ProtectedBindings(
             source_root=source_root,
@@ -231,24 +200,13 @@ def _bind_protected_inputs(
             catalog_name=source_catalog.name,
             catalog_fd=catalog_fd,
             catalog_identity=catalog_identity,
-            source_fds=tuple(source_fds),
-            output_name=output_root.name,
-            output_fd=output_fd,
-            output_identity=output_identity,
+            retention_evidence=retention_evidence,
         )
         bindings.verify()
-        if output_fd is not None:
-            _verify_tree_excludes_identities(
-                output_fd, bindings.protected_identities, "initial output"
-            )
         return bindings
     except BaseException:
-        for _name, descriptor, _identity in source_fds:
-            os.close(descriptor)
         if catalog_fd >= 0:
             os.close(catalog_fd)
-        if output_fd is not None:
-            os.close(output_fd)
         if raw_fd >= 0:
             os.close(raw_fd)
         if source_root_fd >= 0:
@@ -275,19 +233,7 @@ def _sha256_descriptor(descriptor: int) -> str:
         offset += len(chunk)
 
 
-def _reject_symlink_chain(path: pathlib.Path, root: pathlib.Path) -> None:
-    current = path
-    while True:
-        if current.is_symlink():
-            raise RuntimeError(f"symlink is not allowed in whale-bank path: {current}")
-        if current == root:
-            return
-        if root not in current.parents:
-            raise RuntimeError(f"path escapes whale source root: {path}")
-        current = current.parent
-
-
-def _source_path(source_root: pathlib.Path, value: object) -> pathlib.Path:
+def _source_name(value: object) -> str:
     if not isinstance(value, str) or not value:
         raise RuntimeError("whale source file must be a non-empty relative path")
     relative = pathlib.PurePosixPath(value)
@@ -299,16 +245,7 @@ def _source_path(source_root: pathlib.Path, value: object) -> pathlib.Path:
         raise RuntimeError(f"whale source must be directly under raw/: {value!r}")
     if relative.suffix.lower() not in {".ogg", ".oga"}:
         raise RuntimeError(f"unsupported whale source extension: {value!r}")
-    candidate = source_root.joinpath(*relative.parts)
-    _reject_symlink_chain(candidate, source_root)
-    if not candidate.exists() or not candidate.is_file():
-        raise RuntimeError(f"missing source audio: {candidate}")
-    resolved = candidate.resolve(strict=True)
-    if resolved.parent != (source_root / "raw").resolve(strict=True):
-        raise RuntimeError(f"whale source escapes raw directory: {value!r}")
-    if not stat.S_ISREG(resolved.stat().st_mode):
-        raise RuntimeError(f"whale source is not a regular file: {candidate}")
-    return resolved
+    return relative.name
 
 
 def require_json_object(value: Any, label: str) -> dict[str, Any]:
@@ -324,16 +261,35 @@ def _nonempty_text(source: dict[str, Any], field: str) -> str:
     return value
 
 
-def load_catalog(
-    source_catalog: pathlib.Path,
-) -> tuple[pathlib.Path, list[dict[str, Any]]]:
-    if source_catalog.is_symlink() or not source_catalog.is_file():
-        raise RuntimeError("whale source catalog must be a regular non-symlink file")
-    source_catalog = source_catalog.resolve(strict=True)
-    source_root = source_catalog.parent
-    _reject_symlink_chain(source_catalog, source_root)
+def _read_descriptor_bytes(descriptor: int) -> bytes:
+    chunks: list[bytes] = []
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, 1024 * 1024, offset)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        offset += len(chunk)
+
+
+def _parse_catalog_bytes(catalog_bytes: bytes) -> dict[str, Any]:
+    try:
+        catalog_text = catalog_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RuntimeError("whale source catalog must be UTF-8") from error
+    return require_json_object(
+        json.loads(catalog_text),
+        "whale source catalog",
+    )
+
+
+def _load_bound_catalog(
+    bindings: _ProtectedBindings,
+) -> tuple[list[dict[str, Any]], bytes, str]:
+    catalog_bytes = _read_descriptor_bytes(bindings.catalog_fd)
+    catalog_sha256 = hashlib.sha256(catalog_bytes).hexdigest()
     catalog = require_json_object(
-        json.loads(source_catalog.read_text(encoding="utf-8")),
+        _parse_catalog_bytes(catalog_bytes),
         "whale source catalog",
     )
     sources = catalog.get("sources")
@@ -363,7 +319,7 @@ def load_catalog(
         if file_value in seen_files:
             raise RuntimeError(f"duplicate whale source file: {file_value}")
         seen_files.add(file_value)
-        path = _source_path(source_root, file_value)
+        source_name = _source_name(file_value)
 
         category = _nonempty_text(source, "category")
         if category not in CLIP_SECONDS:
@@ -401,15 +357,7 @@ def load_catalog(
             or not 1 <= clip_count <= 8
         ):
             raise RuntimeError(f"invalid clip count for {source_id}")
-        actual_bytes = path.stat().st_size
-        if actual_bytes != expected_bytes:
-            raise RuntimeError(
-                f"whale source byte-size mismatch: {file_value}: {actual_bytes} != {expected_bytes}"
-            )
-        actual_sha256 = sha256_file(path)
-        if actual_sha256 != expected_sha256:
-            raise RuntimeError(f"whale source SHA-256 mismatch: {file_value}")
-        source["_path"] = path
+        source["_name"] = source_name
         validated.append(source)
 
     if {source["category"] for source in validated} != set(CLIP_SECONDS):
@@ -417,140 +365,161 @@ def load_catalog(
             "whale source catalog must cover low, song and high categories"
         )
 
-    raw_root = source_root / "raw"
-    _reject_symlink_chain(raw_root, source_root)
-    raw_entries = list(raw_root.iterdir())
-    unsafe_entries = [
-        path.name for path in raw_entries if path.is_symlink() or not path.is_file()
-    ]
+    raw_entries = os.listdir(bindings.raw_fd)
+    raw_identities = {
+        name: _entry_identity(bindings.raw_fd, name) for name in raw_entries
+    }
+    unsafe_entries = sorted(
+        name
+        for name, identity in raw_identities.items()
+        if identity is None or identity[2] != stat.S_IFREG
+    )
     if unsafe_entries:
-        raise RuntimeError(f"unsafe raw whale source entries: {sorted(unsafe_entries)}")
-    actual_files = {path.relative_to(source_root).as_posix() for path in raw_entries}
+        raise RuntimeError(
+            "unsafe raw whale source entries (non-regular or symlink): "
+            f"{unsafe_entries}"
+        )
+    actual_files = {f"raw/{name}" for name in raw_entries}
     if actual_files != seen_files:
         missing = sorted(seen_files - actual_files)
         extra = sorted(actual_files - seen_files)
         raise RuntimeError(
             f"raw whale source set mismatch; missing={missing}; extra={extra}"
         )
-    return source_root, validated
 
-
-def _resolved_path_key(path: pathlib.Path) -> pathlib.Path:
+    source_fds: list[tuple[str, int, FileIdentity]] = []
     try:
-        resolved = path.resolve(strict=False)
-    except (OSError, RuntimeError) as error:
-        raise RuntimeError(f"cannot resolve whale-bank path safely: {path}") from error
-    return pathlib.Path(os.path.normcase(os.fspath(resolved)))
-
-
-def _paths_overlap(first: pathlib.Path, second: pathlib.Path) -> bool:
-    first_key = _resolved_path_key(first)
-    second_key = _resolved_path_key(second)
-    if (
-        first_key == second_key
-        or first_key in second_key.parents
-        or second_key in first_key.parents
-    ):
-        return True
-    if not first.exists() or not second.exists():
-        return False
-    try:
-        return os.path.samefile(first, second)
-    except OSError as error:
-        raise RuntimeError(
-            f"cannot verify whale-bank path identity: {first}"
-        ) from error
-
-
-def _reject_protected_output_aliases(
-    output_root: pathlib.Path, protected_paths: tuple[pathlib.Path, ...]
-) -> None:
-    paths_to_check = [output_root]
-    while paths_to_check:
-        candidate = paths_to_check.pop()
-        if any(_paths_overlap(candidate, protected) for protected in protected_paths):
-            raise RuntimeError(
-                "whale bank output overlaps a protected catalog or raw source input"
+        for source in validated:
+            name = source["_name"]
+            descriptor = _open_nofollow(bindings.raw_fd, name, directory=False)
+            identity = _file_identity(os.fstat(descriptor))
+            if identity[2] != stat.S_IFREG:
+                os.close(descriptor)
+                raise RuntimeError(
+                    "catalog-bound whale source is not regular: "
+                    f"{bindings.source_root / 'raw' / name}"
+                )
+            source_fds.append((name, descriptor, identity))
+            _require_identity(
+                _entry_identity(bindings.raw_fd, name),
+                identity,
+                f"raw/{name}",
             )
-        if candidate.is_symlink() or not candidate.is_dir():
-            continue
-        try:
-            with os.scandir(candidate) as entries:
-                for entry in entries:
-                    path = pathlib.Path(entry.path)
-                    paths_to_check.append(path)
-        except OSError as error:
-            raise RuntimeError(
-                f"cannot inspect whale bank output safely: {candidate}"
-            ) from error
+            actual_bytes = os.fstat(descriptor).st_size
+            expected_bytes = source["expected_bytes"]
+            if actual_bytes != expected_bytes:
+                raise RuntimeError(
+                    f"whale source byte-size mismatch: {source['file']}: "
+                    f"{actual_bytes} != {expected_bytes}"
+                )
+            if _sha256_descriptor(descriptor) != source["expected_sha256"]:
+                raise RuntimeError(f"whale source SHA-256 mismatch: {source['file']}")
+        bindings.source_fds = tuple(source_fds)
+        bindings.verify()
+    except BaseException:
+        bindings.source_fds = ()
+        for _name, descriptor, _identity in source_fds:
+            os.close(descriptor)
+        raise
+    return validated, catalog_bytes, catalog_sha256
 
 
-def validate_output_root(
-    source_root: pathlib.Path,
-    output_root: pathlib.Path,
-    protected_paths: tuple[pathlib.Path, ...] = (),
+def _bind_output_root(
+    bindings: _ProtectedBindings, output_root: pathlib.Path
 ) -> pathlib.Path:
-    candidate = output_root.expanduser()
-    if not candidate.is_absolute():
-        candidate = pathlib.Path.cwd() / candidate
-    try:
-        parent = candidate.parent.resolve(strict=True)
-    except FileNotFoundError as error:
-        raise RuntimeError("whale bank output parent must already exist") from error
-    source_root = source_root.resolve(strict=True)
-    if parent != source_root:
-        raise RuntimeError(
-            "whale bank output must be a direct child of the source root"
-        )
+    candidate = pathlib.Path(os.path.abspath(os.fspath(output_root.expanduser())))
     if not SOURCE_ID_RE.fullmatch(candidate.name):
         raise RuntimeError("unsafe whale bank output directory name")
-    candidate = parent / candidate.name
-    if candidate.is_symlink():
-        raise RuntimeError("whale bank output must not be a symlink")
-    if candidate.exists() and not candidate.is_dir():
-        raise RuntimeError("whale bank output must be a directory")
-    protected_paths = (
-        (source_root / "raw").resolve(strict=True),
-        *(path.resolve(strict=True) for path in protected_paths),
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory_flag is None:
+        raise RuntimeError(
+            "descriptor-bound no-follow directory operations are unavailable"
+        )
+    parent_fd = os.open(
+        candidate.parent,
+        os.O_RDONLY | os.O_CLOEXEC | no_follow | directory_flag,
     )
-    _reject_protected_output_aliases(candidate, protected_paths)
-    return candidate
+    try:
+        _require_identity(
+            _file_identity(os.fstat(parent_fd)),
+            bindings.source_root_identity,
+            "output parent",
+        )
+    except BaseException:
+        os.close(parent_fd)
+        raise RuntimeError(
+            "whale bank output must be a direct child of the source root"
+        ) from None
+    os.close(parent_fd)
+
+    output_identity = _entry_identity(bindings.source_root_fd, candidate.name)
+    if output_identity in bindings.protected_identities:
+        raise RuntimeError(
+            "whale bank output overlaps a protected catalog or raw source input"
+        )
+    output_fd: int | None = None
+    try:
+        if output_identity is not None:
+            if output_identity[2] != stat.S_IFDIR:
+                raise RuntimeError("bound whale bank output is not a directory")
+            output_fd = _open_nofollow(
+                bindings.source_root_fd, candidate.name, directory=True
+            )
+            _require_identity(
+                _file_identity(os.fstat(output_fd)),
+                output_identity,
+                "initial output",
+            )
+        bindings.output_name = candidate.name
+        bindings.output_fd = output_fd
+        bindings.output_identity = output_identity
+        bindings.verify()
+        if output_fd is not None:
+            _verify_tree_excludes_identities(
+                output_fd, bindings.protected_identities, "initial output"
+            )
+    except BaseException:
+        bindings.output_name = ""
+        bindings.output_fd = None
+        bindings.output_identity = None
+        if output_fd is not None:
+            os.close(output_fd)
+        raise
+    return bindings.source_root / candidate.name
 
 
 def snapshot_verified_source(
-    source: dict[str, Any], destination: pathlib.Path
+    source: dict[str, Any], source_fd: int, destination: pathlib.Path
 ) -> pathlib.Path:
-    source_path = pathlib.Path(source["_path"])
     if destination.exists() or destination.is_symlink():
         raise RuntimeError(
             f"refusing to overwrite staged source snapshot: {destination}"
         )
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise RuntimeError("O_NOFOLLOW is required for verified whale source snapshots")
-    flags = os.O_RDONLY | os.O_CLOEXEC | no_follow
-    descriptor = os.open(source_path, flags)
+    descriptor = os.dup(source_fd)
     digest = hashlib.sha256()
     total = 0
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeError(f"whale source snapshot is not regular: {source_path}")
-        with os.fdopen(descriptor, "rb") as source_handle:
-            descriptor = -1
-            with destination.open("xb") as destination_handle:
-                while True:
-                    chunk = source_handle.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    destination_handle.write(chunk)
-                    digest.update(chunk)
-                    total += len(chunk)
+            raise RuntimeError(
+                f"whale source snapshot is not regular: {source['file']}"
+            )
+        with destination.open("xb") as destination_handle:
+            offset = 0
+            while True:
+                chunk = os.pread(descriptor, 1024 * 1024, offset)
+                if not chunk:
+                    break
+                destination_handle.write(chunk)
+                digest.update(chunk)
+                total += len(chunk)
+                offset += len(chunk)
     except BaseException:
         raise
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        os.close(descriptor)
     expected_bytes = source["expected_bytes"]
     expected_sha256 = source["expected_sha256"]
     if total != expected_bytes:
@@ -691,7 +660,8 @@ def _source_manifest_record(source: dict[str, Any]) -> dict[str, Any]:
     record = {
         key: value
         for key, value in source.items()
-        if key not in {"_path", "clip_count", "expected_sha256", "expected_bytes"}
+        if not key.startswith("_")
+        and key not in {"clip_count", "expected_sha256", "expected_bytes"}
     }
     record["sha256"] = source["expected_sha256"]
     record["bytes"] = source["expected_bytes"]
@@ -764,6 +734,21 @@ def _rename_exchange_between(
     )
 
 
+def _rename_noreplace_between(
+    first_directory_fd: int,
+    first_name: str,
+    second_directory_fd: int,
+    second_name: str,
+) -> None:
+    _renameat2_between(
+        first_directory_fd,
+        first_name,
+        second_directory_fd,
+        second_name,
+        1,
+    )
+
+
 def _require_secure_replace_platform() -> None:
     if (
         getattr(os, "O_PATH", None) is None
@@ -789,6 +774,25 @@ def _verify_tree_excludes_identities(
             raise RuntimeError(
                 f"whale bank {label} contains a protected input identity"
             )
+        if identity[2] == stat.S_IFLNK:
+            # Cleanup unlinks the link entry without following it. A read-only
+            # target check still preserves the product rule that existing output
+            # must not contain aliases to catalog or raw-source identities.
+            try:
+                target_identity = _file_identity(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=True)
+                )
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise RuntimeError(
+                    f"cannot inspect whale bank symlink safely in {label}: {name}"
+                ) from error
+            if target_identity in protected_identities:
+                raise RuntimeError(
+                    f"whale bank {label} contains a symlink to a protected input"
+                )
+            continue
         if identity[2] != stat.S_IFDIR:
             continue
         child_fd = _open_nofollow(directory_fd, name, directory=True)
@@ -1057,121 +1061,166 @@ def _restore_directory_layout(
     _verify_original_layout(bindings, state)
 
 
-def _before_quarantine_rename(
-    _directory_fd: int,
-    _name: str,
-    _quarantine_name: str,
+def _retention_name(expected: FileIdentity, label: str) -> str:
+    label_digest = hashlib.sha256(label.encode("utf-8")).hexdigest()[:12]
+    device, inode, object_type = expected
+    return (
+        f"{RETAINED_CLEANUP_PREFIX}{device:x}-{inode:x}-{object_type:x}-{label_digest}"
+    )
+
+
+def _retained_cleanup_names(bindings: _ProtectedBindings) -> list[str]:
+    retained: list[str] = []
+    for name in os.listdir(bindings.source_root_fd):
+        if not name.startswith(RETAINED_CLEANUP_PREFIX):
+            continue
+        identity = _entry_identity(bindings.source_root_fd, name)
+        if identity is None or identity[2] != stat.S_IFDIR:
+            raise RuntimeError(
+                "unsafe retained whale cleanup entry; manual review required; "
+                f"path={bindings.source_root / name!r}"
+            )
+        retained.append(name)
+    return sorted(retained)
+
+
+def _require_retention_capacity(bindings: _ProtectedBindings, *, reserve: int) -> None:
+    retained = _retained_cleanup_names(bindings)
+    if len(retained) + reserve <= MAX_RETAINED_CLEANUP_DIRECTORIES:
+        return
+    retained_paths = [str(bindings.source_root / name) for name in retained]
+    raise RuntimeError(
+        "retained whale cleanup capacity exhausted; no staging was created; "
+        f"existing={len(retained)}; reserve={reserve}; "
+        f"maximum={MAX_RETAINED_CLEANUP_DIRECTORIES}; "
+        f"retained_paths={retained_paths!r}; manual review required"
+    )
+
+
+def _before_retention_rename(
+    _source_parent_fd: int,
+    _source_name: str,
+    _destination_name: str,
     _expected: FileIdentity,
     _label: str,
 ) -> None:
-    """Test seam immediately before the namespace entry is quarantined."""
+    """Test seam immediately before atomic movement into retained cleanup."""
 
 
-def _quarantine_verified_entry(
+def _after_retention_open(
+    _bindings: _ProtectedBindings,
+    _destination_name: str,
+    _destination_fd: int,
+    _expected: FileIdentity,
+    _label: str,
+) -> None:
+    """Test seam after retention binding and before final evidence capture."""
+
+
+def _retain_verified_directory(
     bindings: _ProtectedBindings,
-    directory_fd: int,
-    name: str,
+    source_parent_fd: int,
+    source_name: str,
     expected: FileIdentity,
     label: str,
-) -> None:
+) -> pathlib.Path:
+    if expected[2] != stat.S_IFDIR:
+        raise RuntimeError(f"refusing to retain non-directory cleanup target: {label}")
     if expected in bindings.protected_identities:
-        raise RuntimeError(f"refusing to quarantine protected identity from {label}")
-    path_flag = getattr(os, "O_PATH", None)
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if path_flag is None or no_follow is None:
-        raise RuntimeError(
-            "descriptor-bound quarantine cleanup is unavailable on this host"
-        )
+        raise RuntimeError(f"refusing to retain protected identity from {label}")
 
-    quarantine_name = ""
-    for _attempt in range(16):
-        bindings.verify()
-        _require_identity(
-            _entry_identity(directory_fd, name),
-            expected,
-            label,
-        )
-        candidate = f".whale-cleanup-quarantine-{secrets.token_hex(16)}"
-        if _entry_identity(directory_fd, candidate) is not None:
-            continue
-        _before_quarantine_rename(
-            directory_fd,
-            name,
-            candidate,
-            expected,
-            label,
-        )
-        try:
-            _rename_noreplace(directory_fd, name, candidate)
-        except FileExistsError:
-            continue
-        except BaseException as error:
-            raise _RecoveryRequiredError(
-                f"could not quarantine {label}; nothing was deleted; "
-                f"reason={error}"
-            ) from error
-        quarantine_name = candidate
-        break
-    if not quarantine_name:
-        raise _RecoveryRequiredError(
-            f"could not reserve a unique quarantine name for {label}; "
-            "nothing was deleted"
-        )
-
-    quarantine_fd = -1
+    destination_name = _retention_name(expected, label)
+    destination_path = bindings.source_root / destination_name
+    source_fd = -1
+    destination_fd = -1
+    moved = False
     try:
-        flags = path_flag | os.O_CLOEXEC | no_follow
-        if expected[2] == stat.S_IFDIR:
-            quarantine_fd = _open_nofollow(
-                directory_fd, quarantine_name, directory=True
-            )
-        else:
-            quarantine_fd = os.open(
-                quarantine_name,
-                flags,
-                dir_fd=directory_fd,
-            )
-        actual_descriptor = _file_identity(os.fstat(quarantine_fd))
-        actual_entry = _entry_identity(directory_fd, quarantine_name)
-        if actual_descriptor != expected or actual_entry != expected:
-            raise _RecoveryRequiredError(
-                f"quarantined {label} identity is ambiguous; expected={expected!r}; "
-                f"descriptor={actual_descriptor!r}; entry={actual_entry!r}; "
-                "nothing was deleted"
-            )
         bindings.verify()
-        if actual_descriptor in bindings.protected_identities:
-            raise _RecoveryRequiredError(
-                f"quarantined {label} is a protected identity; nothing was deleted"
-            )
         _require_identity(
-            _entry_identity(directory_fd, quarantine_name),
-            actual_descriptor,
-            f"quarantined {label}",
+            _entry_identity(source_parent_fd, source_name),
+            expected,
+            label,
         )
-        if expected[2] == stat.S_IFDIR:
-            os.rmdir(quarantine_name, dir_fd=directory_fd)
-        else:
-            os.unlink(quarantine_name, dir_fd=directory_fd)
-        if _entry_identity(directory_fd, quarantine_name) is not None:
-            raise _RecoveryRequiredError(
-                f"quarantined {label} still exists after cleanup"
-            )
+        source_fd = _open_nofollow(source_parent_fd, source_name, directory=True)
         _require_identity(
-            _file_identity(os.fstat(quarantine_fd)),
-            actual_descriptor,
-            f"removed {label} descriptor",
+            _file_identity(os.fstat(source_fd)),
+            expected,
+            f"{label} descriptor",
         )
+        _verify_tree_excludes_identities(
+            source_fd, bindings.protected_identities, label
+        )
+        if _entry_identity(bindings.source_root_fd, destination_name) is not None:
+            raise _RecoveryRequiredError(
+                f"retained cleanup destination already exists for {label}; "
+                f"preserved_source={source_name!r}; "
+                f"destination={str(destination_path)!r}; nothing was deleted"
+            )
+        _before_retention_rename(
+            source_parent_fd,
+            source_name,
+            destination_name,
+            expected,
+            label,
+        )
+        _rename_noreplace_between(
+            source_parent_fd,
+            source_name,
+            bindings.source_root_fd,
+            destination_name,
+        )
+        moved = True
+        destination_fd = _open_nofollow(
+            bindings.source_root_fd, destination_name, directory=True
+        )
+        _after_retention_open(
+            bindings, destination_name, destination_fd, expected, label
+        )
+        bindings.verify()
+        final_descriptor = _file_identity(os.fstat(destination_fd))
+        final_entry = _entry_identity(bindings.source_root_fd, destination_name)
+        if final_descriptor != expected or final_entry != expected:
+            raise _RecoveryRequiredError(
+                f"retained {label} identity is ambiguous; expected={expected!r}; "
+                f"descriptor={final_descriptor!r}; entry={final_entry!r}; "
+                f"preserved_path={str(destination_path)!r}; nothing was deleted"
+            )
+        if final_descriptor in bindings.protected_identities:
+            raise _RecoveryRequiredError(
+                f"retained {label} is a protected identity; "
+                f"preserved_path={str(destination_path)!r}; nothing was deleted"
+            )
+        if _entry_identity(source_parent_fd, source_name) is not None:
+            raise _RecoveryRequiredError(
+                f"retained {label} still exists at its source name; "
+                f"preserved_path={str(destination_path)!r}; nothing was deleted"
+            )
+        evidence = {
+            "label": label,
+            "path": str(destination_path),
+            "identity": {
+                "device": expected[0],
+                "inode": expected[1],
+                "type": expected[2],
+            },
+        }
+        if bindings.retention_evidence is not None:
+            bindings.retention_evidence.append(evidence)
+        return destination_path
     except _RecoveryRequiredError:
         raise
     except BaseException as error:
+        preserved = destination_path if moved else pathlib.Path(source_name)
         raise _RecoveryRequiredError(
-            f"quarantined {label} could not be removed safely; "
-            f"preserved_name={quarantine_name!r}; reason={error}"
+            f"could not retain {label} safely; "
+            f"preserved_path={str(preserved)!r}; nothing was deleted; "
+            f"reason={error}"
         ) from error
     finally:
-        if quarantine_fd >= 0:
-            os.close(quarantine_fd)
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        if source_fd >= 0:
+            os.close(source_fd)
 
 
 def _remove_verified_directory(
@@ -1193,7 +1242,7 @@ def _remove_verified_directory(
     if expected is None or descriptor is None:
         return
     if expected in bindings.protected_identities:
-        raise RuntimeError(f"refusing to recursively remove protected {label}")
+        raise RuntimeError(f"refusing to retain protected {label}")
     _require_identity(
         _file_identity(os.fstat(descriptor)),
         expected,
@@ -1205,72 +1254,13 @@ def _remove_verified_directory(
         label,
     )
     _verify_tree_excludes_identities(descriptor, bindings.protected_identities, label)
-    _clear_bound_directory(bindings, descriptor, label)
-    _quarantine_verified_entry(
+    _retain_verified_directory(
         bindings,
         bindings.source_root_fd,
         state.staging_name,
         expected,
         label,
     )
-
-
-def _clear_bound_directory(
-    bindings: _ProtectedBindings, directory_fd: int, label: str
-) -> None:
-    path_flag = getattr(os, "O_PATH", None)
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if path_flag is None or no_follow is None:
-        raise RuntimeError(
-            "descriptor-bound recursive cleanup is unavailable on this host"
-        )
-    for name in os.listdir(directory_fd):
-        bindings.verify()
-        identity = _entry_identity(directory_fd, name)
-        if identity is None:
-            raise RuntimeError(f"whale bank {label} changed during cleanup")
-        if identity in bindings.protected_identities:
-            raise RuntimeError(f"refusing to remove protected identity from {label}")
-        if identity[2] == stat.S_IFDIR:
-            child_fd = _open_nofollow(directory_fd, name, directory=True)
-            try:
-                _require_identity(
-                    _file_identity(os.fstat(child_fd)),
-                    identity,
-                    f"{label}/{name}",
-                )
-                _clear_bound_directory(bindings, child_fd, f"{label}/{name}")
-                _quarantine_verified_entry(
-                    bindings,
-                    directory_fd,
-                    name,
-                    identity,
-                    f"{label}/{name}",
-                )
-            finally:
-                os.close(child_fd)
-            continue
-
-        identity_fd = os.open(
-            name,
-            path_flag | os.O_CLOEXEC | no_follow,
-            dir_fd=directory_fd,
-        )
-        try:
-            _require_identity(
-                _file_identity(os.fstat(identity_fd)),
-                identity,
-                f"{label}/{name}",
-            )
-            _quarantine_verified_entry(
-                bindings,
-                directory_fd,
-                name,
-                identity,
-                f"{label}/{name}",
-            )
-        finally:
-            os.close(identity_fd)
 
 
 def _remove_bound_directory(
@@ -1280,15 +1270,13 @@ def _remove_bound_directory(
     bindings.verify()
     bound.verify()
     if bound.identity in bindings.protected_identities:
-        raise RuntimeError(f"refusing to recursively remove protected {bound.label}")
+        raise RuntimeError(f"refusing to retain protected {bound.label}")
     _verify_tree_excludes_identities(
         bound.descriptor,
         bindings.protected_identities,
         bound.label,
     )
-    _clear_bound_directory(bindings, bound.descriptor, bound.label)
-    bound.verify()
-    _quarantine_verified_entry(
+    _retain_verified_directory(
         bindings,
         bound.parent_fd,
         bound.name,
@@ -1314,12 +1302,11 @@ def _remove_failed_staging(
         return
     _require_identity(actual, staging_identity, "failed staging")
     if staging_identity in bindings.protected_identities:
-        raise RuntimeError("refusing to clean a protected failed staging identity")
+        raise RuntimeError("refusing to retain a protected failed staging identity")
     _verify_tree_excludes_identities(
         staging_fd, bindings.protected_identities, "failed staging"
     )
-    _clear_bound_directory(bindings, staging_fd, "failed staging")
-    _quarantine_verified_entry(
+    _retain_verified_directory(
         bindings,
         bindings.source_root_fd,
         staging.name,
@@ -1431,18 +1418,24 @@ def _atomic_replace_directory(
             state.close()
 
 
-def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, Any]:
-    source_root, sources = load_catalog(source_catalog)
-    protected_paths = (
-        source_catalog.resolve(strict=True),
-        *(pathlib.Path(source["_path"]) for source in sources),
-    )
-    output_root = validate_output_root(source_root, output_root, protected_paths)
-    bindings = _bind_protected_inputs(source_root, source_catalog, sources, output_root)
+def build(
+    source_catalog: pathlib.Path,
+    output_root: pathlib.Path,
+    *,
+    retention_evidence: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    bindings = _bind_protected_inputs(source_catalog, retention_evidence)
     staging_fd = -1
     intermediate_binding: _BoundDirectory | None = None
     source_snapshot_binding: _BoundDirectory | None = None
     try:
+        sources, _catalog_bytes, catalog_sha256 = _load_bound_catalog(bindings)
+        output_root = _bind_output_root(bindings, output_root)
+        _require_retention_capacity(bindings, reserve=3)
+        source_root = bindings.source_root
+        source_descriptors = {
+            name: descriptor for name, descriptor, _identity in bindings.source_fds
+        }
         staging = pathlib.Path(
             tempfile.mkdtemp(prefix=f".{output_root.name}-staging-", dir=source_root)
         )
@@ -1483,11 +1476,13 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
             for source in sources:
                 source_id = source["id"]
                 category = source["category"]
-                source_path = pathlib.Path(source["_path"])
-                snapshot_path = (
-                    source_snapshot_root / f"{source_id}{source_path.suffix.lower()}"
+                source_suffix = pathlib.PurePosixPath(source["file"]).suffix.lower()
+                snapshot_path = source_snapshot_root / f"{source_id}{source_suffix}"
+                snapshot_verified_source(
+                    source,
+                    source_descriptors[source["_name"]],
+                    snapshot_path,
                 )
-                snapshot_verified_source(source, snapshot_path)
                 intermediate = intermediate_root / f"{source_id}.wav"
                 run_ffmpeg(snapshot_path, intermediate)
                 samples = read_wav(intermediate)
@@ -1557,7 +1552,7 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
                 "channels": 1,
                 "sample_width_bytes": 2,
                 "source_catalog_schema_version": CATALOG_SCHEMA_VERSION,
-                "source_catalog_sha256": _sha256_descriptor(bindings.catalog_fd),
+                "source_catalog_sha256": catalog_sha256,
                 "sources": source_records,
                 "clips": clips,
                 "slots": sorted(
@@ -1581,7 +1576,6 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
             actual_files = {path.name for path in staging.iterdir() if path.is_file()}
             if actual_files != expected_files:
                 raise RuntimeError("staged whale bank file set does not match manifest")
-            validate_output_root(source_root, output_root, protected_paths)
             _atomic_replace_directory(
                 staging,
                 output_root,
@@ -1619,22 +1613,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=pathlib.Path, default=PROCESSED_ROOT)
     try:
         args = parser.parse_args(argv)
-        manifest = build(args.catalog, args.output)
+        retention_evidence: list[dict[str, Any]] = []
+        manifest = build(
+            args.catalog,
+            args.output,
+            retention_evidence=retention_evidence,
+        )
+        manifest_path = (
+            pathlib.Path(os.path.abspath(os.fspath(args.output.expanduser())))
+            / "manifest.json"
+        )
         print(
             json.dumps(
                 {
                     "state": "built",
-                    "manifest": str(
-                        validate_output_root(
-                            args.catalog.resolve().parent,
-                            args.output,
-                            (args.catalog,),
-                        )
-                        / "manifest.json"
-                    ),
+                    "manifest": str(manifest_path),
                     "source_count": len(manifest["sources"]),
                     "clip_count": len(manifest["clips"]),
                     "slot_count": len(manifest["slots"]),
+                    "retained_cleanup": retention_evidence,
                 },
                 sort_keys=True,
             )
