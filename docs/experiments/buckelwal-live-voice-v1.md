@@ -128,6 +128,15 @@ Vor einer Latenzfreigabe bleiben Loopback- und XRun-Messung erforderlich.
   MIDI-/PipeWire-Initialisierung gebunden; `activating` reicht nicht aus. Die
   positive User-Systemd-Probe erreichte `Started`; die Gegenprobe ohne READY
   endete nach 500 Millisekunden mit `start operation timed out`.
+- Bei vollständig abgeklungener Stimme erzeugt ein Nullsignal-Fastpath die
+  PCM-Nullblöcke ohne Oszillator-, Rausch- oder Hüllkurvenberechnung. Die
+  Synthesezustände frieren exakt im ersten Sample unterhalb der
+  Stillegrenze ein; verbleibende Frames desselben Render-Aufrufs werden mit
+  Nullen gefüllt. Neue Einsätze sind dadurch unabhängig von Leerlaufdauer und
+  Render-Blockgrenzen. Im lokalen
+  128-Frame-Benchmark sank der Median eines stillen Blocks auf 0,94 µs; aktive
+  Synthese lag bei 438,04 µs und damit weiter deutlich unter der Frist von
+  2.666,67 µs.
 - CC123 überführt auch einen laufenden Retrigger-Fade pegelkontinuierlich in den
   natürlichen Release; der nächste Anschlag verstärkt den alten Tail nicht.
 - Analytisch beschleunigte Sechs-Stunden-Konturphasen decken alle 7.656
