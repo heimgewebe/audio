@@ -20,11 +20,11 @@
   "required_observations": [
     "normalized MOTU and Roland presence",
     "PipeWire rate, quantum, defaults and canonical graph fingerprint",
-    "PipeWire, WirePlumber, Mopidy and EasyEffects states and limits",
+    "PipeWire, WirePlumber, Mopidy and EasyEffects states plus complete required limit fields including LimitNOFILE",
     "complete bounded audio recorder, plugin host, playback and creative-runtime process fingerprints without raw names",
     "recent XRun-like journal line count and digest",
     "filesystem free space and bounded audio state usage",
-    "kernel, PipeWire, WirePlumber and Mopidy versions",
+    "digest-only kernel, PipeWire, WirePlumber and Mopidy version projections",
     "resolved, invalidated and unresolved laboratory gates"
   ],
   "completion_gates": [
@@ -53,7 +53,7 @@
     "standalone hashes provide integrity checks, not authenticity; authenticity requires an external digest pin or signature",
     "Qobuz proof requires matching current-track fingerprint and rate context",
     "required_remeasurements contains only laboratory catalog IDs while non-catalog work is separated as required_followups",
-    "process fingerprint changes are material drift",
+    "process fingerprint and service-limit changes are material drift",
     "drift identifies catalog-exact remeasurement gates but never applies a profile"
   ]
 }

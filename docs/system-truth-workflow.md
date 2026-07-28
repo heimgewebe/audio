@@ -43,12 +43,12 @@ Verzeichnisdeskriptoren. Der Report enthält:
 - den normalisierten Doctor-Zustand und den kanonischen Labor-Graphfingerprint,
 - nur Digest und Status der privaten physischen Beobachtungen,
 - Digest, aufgelöste, invalidierte und offene private Laborgates,
-- Dienstzustände und Ressourcenlimits,
+- Dienstzustände und vollständige Pflicht-Limitfelder einschließlich `LimitNOFILE`,
 - alle im bounded `ps`-Fenster klassifizierten Prozesse ausschließlich über
   Befehls- und Argument-Digests,
 - Anzahl und Digest jüngster XRun-ähnlicher Journalzeilen ohne Rohlogs,
 - freien Speicher und zeit-/eintragsbegrenzte Größen der Audio-Zustände,
-- Kernel-, PipeWire-, WirePlumber- und Mopidy-Versionen,
+- ausschließlich Digest, Verfügbarkeit und Zeilenzahl der Kernel-, PipeWire-, WirePlumber- und Mopidy-Versionsausgaben,
 - den Status jedes T001-Abnahmegates.
 
 Kommandos werden mit begrenztem Speicher und einer eigenen Prozessgruppe gelesen.
@@ -90,7 +90,7 @@ Der Driftbericht vergleicht unter anderem:
 - MOTU- und Roland-Präsenz,
 - Standardquelle und Standardsenke,
 - Rate und Quantum,
-- Dienstzustände und Softwareversionen,
+- Dienstzustände, Dienstlimits und gehashte Softwareversionsprojektionen,
 - relevante Prozessfingerprints,
 - XRun-ähnliche Zeilenanzahl und -digest.
 

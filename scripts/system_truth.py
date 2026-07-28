@@ -471,8 +471,28 @@ def runtime_observation_completeness(runtime: dict[str, Any]) -> dict[str, Any]:
     missing_states = sorted(
         name for name in REQUIRED_SERVICE_STATES if services.get(name) == "unknown"
     )
+    required_limit_fields = (
+        "Id",
+        "LoadState",
+        "ActiveState",
+        "SubState",
+        "NRestarts",
+        "LimitNOFILE",
+    )
     missing_limits = sorted(
-        unit for unit in REQUIRED_SERVICE_UNITS if unit not in limits
+        f"{unit}:{field}"
+        for unit in REQUIRED_SERVICE_UNITS
+        for field in required_limit_fields
+        if unit not in limits
+        or field not in limits[unit]
+        or limits[unit].get(field) is None
+        or (
+            field == "LimitNOFILE"
+            and (
+                not isinstance(limits[unit].get(field), int)
+                or limits[unit].get(field, 0) <= 0
+            )
+        )
     )
     missing_commands = sorted(
         shlex.join(command)
@@ -675,8 +695,8 @@ def bounded_tree_usage(path: pathlib.Path, limit: int = MAX_TREE_ENTRIES) -> dic
     return result
 
 
-def version_projection(results: Iterable[CommandResult]) -> dict[str, str | None]:
-    projection: dict[str, str | None] = {}
+def version_projection(results: Iterable[CommandResult]) -> dict[str, dict[str, Any]]:
+    projection: dict[str, dict[str, Any]] = {}
     for prefix, label in (
         (("uname", "-r"), "kernel"),
         (("pipewire", "--version"), "pipewire"),
@@ -684,8 +704,23 @@ def version_projection(results: Iterable[CommandResult]) -> dict[str, str | None
         (("mopidy", "--version"), "mopidy"),
     ):
         result = command_by_prefix(results, prefix)
-        lines = (result.stdout if result else "").strip().splitlines()
-        projection[label] = "; ".join(lines[:3])[:400] if lines else None
+        if result is None:
+            projection[label] = {
+                "available": False,
+                "output_sha256": _empty_digest(),
+                "line_count": 0,
+            }
+            continue
+        projection[label] = {
+            "available": (
+                result.error is None
+                and result.returncode in allowed_returncodes(result.argv)
+                and not result.stdout_truncated
+            ),
+            "output_sha256": result.stdout_sha256
+            or sha256_bytes(result.stdout.encode("utf-8")),
+            "line_count": len(result.stdout.splitlines()),
+        }
     return projection
 
 
@@ -1205,6 +1240,20 @@ def verify_report(report: dict[str, Any]) -> None:
         validate_sha(process.get("arguments_sha256"), f"process {index} arguments digest")
         if "command" in process or "arguments" in process:
             raise ValueError("raw process identity must not be persisted")
+    versions = runtime.get("versions")
+    if not isinstance(versions, dict):
+        raise ValueError("runtime version projection is invalid")
+    for label in ("kernel", "pipewire", "wireplumber", "mopidy"):
+        record = versions.get(label)
+        if not isinstance(record, dict):
+            raise ValueError(f"version projection is missing: {label}")
+        validate_sha(record.get("output_sha256"), f"version {label} digest")
+        if set(record) != {"available", "output_sha256", "line_count"}:
+            raise ValueError(f"version projection fields are invalid: {label}")
+        if not isinstance(record.get("available"), bool):
+            raise ValueError(f"version availability is invalid: {label}")
+        if not isinstance(record.get("line_count"), int) or record["line_count"] < 0:
+            raise ValueError(f"version line count is invalid: {label}")
     journal = runtime.get("journal")
     if not isinstance(journal, dict):
         raise ValueError("runtime journal projection is invalid")
@@ -1357,7 +1406,12 @@ def required_remeasurements(changed_fields: set[str]) -> list[str]:
                 "resampling-decision",
             }
         )
-    if changed_fields & {"services", "versions", "process_fingerprint"}:
+    if changed_fields & {
+        "services",
+        "service_limits",
+        "versions",
+        "process_fingerprint",
+    }:
         required.update(
             {"managed-plugin-host-proof", "xrun-stability-test", "qobuz-rate-proof"}
         )
@@ -1403,6 +1457,7 @@ def build_drift_report(before: dict[str, Any], after: dict[str, Any]) -> dict[st
         "rate_hz": ("doctor", "graph", "force_rate_hz"),
         "quantum_frames": ("doctor", "graph", "force_quantum_frames"),
         "services": ("runtime", "services"),
+        "service_limits": ("runtime", "service_limits"),
         "versions": ("runtime", "versions"),
         "process_fingerprint": ("runtime", "process_fingerprint"),
         "xrun_like_line_count": ("runtime", "journal", "xrun_like_line_count"),

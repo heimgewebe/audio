@@ -347,6 +347,27 @@ class SystemTruthTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runtime command-health"):
             MODULE.verify_report(report)
 
+    def test_missing_required_service_limit_field_degrades_runtime_gate(self):
+        report = self.report()
+        runtime = copy.deepcopy(report["runtime"])
+        runtime["service_limits"]["mopidy.service"].pop("LimitNOFILE")
+        runtime["observation_completeness"] = (
+            MODULE.runtime_observation_completeness(runtime)
+        )
+        gates = MODULE.build_gate_status(
+            report["doctor"],
+            report["physical"],
+            report["laboratory"],
+            runtime,
+            report["contracts"],
+        )
+        self.assertFalse(runtime["observation_completeness"]["complete"])
+        self.assertIn(
+            "mopidy.service:LimitNOFILE",
+            runtime["observation_completeness"]["missing_service_limits"],
+        )
+        self.assertEqual(gates["runtime-storage-observation"]["status"], "degraded")
+
     def test_missing_service_observation_degrades_runtime_gate(self):
         report = self.report()
         results = runtime_results()
@@ -554,6 +575,27 @@ class SystemTruthTests(unittest.TestCase):
             self.assertNotIn("stdout", item)
             self.assertNotIn("stderr", item)
 
+    def test_version_projection_persists_only_digest_metadata(self):
+        results = runtime_results()
+        version_index = MODULE.READ_ONLY_COMMANDS.index(("mopidy", "--version"))
+        secret = "Mopidy user@example.invalid token=secret-value\n"
+        results[version_index] = MODULE.CommandResult(
+            results[version_index].argv,
+            0,
+            secret,
+            "",
+            stdout_total_bytes=len(secret.encode()),
+            stdout_sha256=MODULE.sha256_bytes(secret.encode()),
+            stderr_sha256=MODULE.sha256_bytes(b""),
+        )
+        projection = MODULE.version_projection(results)
+        self.assertEqual(
+            set(projection["mopidy"]),
+            {"available", "output_sha256", "line_count"},
+        )
+        self.assertNotIn("example.invalid", str(projection))
+        self.assertNotIn("secret-value", str(projection))
+
     def test_transient_output_is_parsed_before_persisted_redaction(self):
         raw = (
             "Standard-Ziel: alsa_output.usb-MOTU_M2_SERIAL-00.Direct__hw_M2__sink\n"
@@ -628,6 +670,28 @@ class SystemTruthTests(unittest.TestCase):
         self.assertIn("safe-listening-calibration", followups)
         self.assertIn("motu-device-loss-exercise", followups)
         self.assertIn("roland-device-loss-exercise", followups)
+
+    def test_service_limit_drift_is_material_and_requests_revalidation(self):
+        before = self.report()
+        after = copy.deepcopy(before)
+        after["runtime"]["service_limits"]["mopidy.service"]["LimitNOFILE"] += 1
+        after["runtime"]["observation_completeness"] = (
+            MODULE.runtime_observation_completeness(after["runtime"])
+        )
+        after["gates"] = MODULE.build_gate_status(
+            after["doctor"],
+            after["physical"],
+            after["laboratory"],
+            after["runtime"],
+            after["contracts"],
+        )
+        recompute(after)
+        drift = MODULE.build_drift_report(before, after)
+        self.assertTrue(drift["changed"])
+        self.assertTrue(drift["material"])
+        self.assertIn(
+            "managed-plugin-host-proof", drift["required_remeasurements"]
+        )
 
     def test_process_drift_is_material(self):
         before = self.report()
