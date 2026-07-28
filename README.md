@@ -6,11 +6,13 @@ Wiedergabe, Instrumente und experimentelle Musiksysteme.
 ## Aktueller Zustand
 
 Dieses Repository beginnt bewusst mit **Planung, Sicherheitsregeln und
-Betriebsverträgen**. Es verändert noch keine produktive Audiokonfiguration.
+Betriebsverträgen**. Produktive Audiokonfiguration wird ausschließlich über
+spätere profilgebundene Apply- und Rollback-Verträge verändert.
 
 Der Altbestand `heimgewebe/hausKI-audio` bleibt zunächst unverändert und dient
-nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
-übernommen; seine Historie wird nicht blind zur Grundlage des neuen Systems.
+nur als geprüfte Ideen- und Verhaltensquelle. Seine Implementierung und Historie
+werden standardmäßig nicht übernommen; nützliche Anforderungen und Testabsichten
+werden gegen die neuen Verträge neu programmiert.
 
 Als erstes ausführbares Klangexperiment enthält das Repository
 **Buckelwal Live Voice v1**: eine abhängigkeitsfreie, verwaltet startbare
@@ -24,7 +26,7 @@ noch kein biologisch realistisches Walmodell.
 - Qobuz: gemischter und exklusiver Betrieb
 - Aufnahme und Live-Monitoring
 - Dauersong und spätere Klangexperimente
-- Doctor, Diff, Apply, Rollback und Recovery
+- Doctor, Wahrheitskette, Drift, Diff, Apply, Rollback und Recovery
 - harte Grenzen für Logs, Prozesse, große Assets und Geheimnisse
 
 ## Dokumente
@@ -36,6 +38,7 @@ noch kein biologisch realistisches Walmodell.
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
 - [Read-only Baselines](docs/baselines/README.md)
+- [Systemwahrheit und Drift](docs/system-truth-workflow.md)
 - [Signalweg und physische Wahrheit](docs/signal-path.md)
 - [Referenzpegel](docs/reference-levels.md)
 - [Round-Trip-Latenz](docs/latency.md)
@@ -47,10 +50,10 @@ noch kein biologisch realistisches Walmodell.
 ## Prüfung
 
 ```bash
-bash tests/test-audio-safety.sh
-bash scripts/check-audio-safety .
-python3 -m unittest discover -s tests -v
+just check
 ./scripts/audio-doctor --pretty
+./scripts/audio-truth capture --output ~/.local/state/audio/truth/latest.v1.json
+./scripts/audio-truth verify ~/.local/state/audio/truth/latest.v1.json
 ./scripts/audio-physical status
 ./scripts/audio-plan desktop-mixed
 python3 scripts/whale_live.py doctor

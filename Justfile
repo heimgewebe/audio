@@ -7,6 +7,15 @@ check:
 doctor:
     ./scripts/audio-doctor --pretty
 
+truth output="${XDG_STATE_HOME:-$HOME/.local/state}/audio/truth/latest.v1.json":
+    ./scripts/audio-truth capture --output "{{output}}"
+
+truth-verify report="${XDG_STATE_HOME:-$HOME/.local/state}/audio/truth/latest.v1.json":
+    ./scripts/audio-truth verify "{{report}}"
+
+truth-drift before after output="${XDG_STATE_HOME:-$HOME/.local/state}/audio/truth/drift.v1.json":
+    ./scripts/audio-truth compare "{{before}}" "{{after}}" --output "{{output}}"
+
 reference-tone output="/tmp/audio-reference-1khz-minus20dbfs.wav":
     ./scripts/generate-audio-reference "{{output}}" --kind tone --dbfs -20 --duration 5
 

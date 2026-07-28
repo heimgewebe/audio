@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "audio_system_truth_contract",
+  "authority_order": [
+    "live read-only observation",
+    "explicit human physical observation",
+    "validated laboratory evidence",
+    "repository plan and defaults"
+  ],
+  "bound_components": [
+    "inventory/signal-path.v1.json",
+    "inventory/physical-facts.v1.json",
+    "inventory/physical-verification.v1.json",
+    "inventory/laboratory-gates.v1.json",
+    "profiles/audio-profiles.v1.json",
+    "profiles/reference-levels.v1.json"
+  ],
+  "required_observations": [
+    "normalized MOTU and Roland presence",
+    "PipeWire rate, quantum, defaults and graph fingerprint",
+    "PipeWire, WirePlumber, Mopidy and EasyEffects states and limits",
+    "audio recorder, plugin host, playback and creative-runtime processes",
+    "recent XRun-like journal entries",
+    "filesystem free space and bounded audio state usage",
+    "kernel, PipeWire, WirePlumber and Mopidy versions"
+  ],
+  "completion_gates": [
+    "single-truth-model",
+    "host-read-boundary",
+    "safe-listening-calibration",
+    "voice-reference",
+    "latency-xrun-baseline",
+    "device-loss-baseline",
+    "runtime-storage-observation",
+    "drift-contract"
+  ],
+  "rules": [
+    "unknown physical state remains unknown",
+    "a PipeWire buffer period is not round-trip latency",
+    "absence of recent XRun-like log lines is not an XRun-free proof",
+    "service activity is not profile readiness",
+    "all report commands are argv-only and read-only denylist checked",
+    "private reports are atomically written with mode 0600",
+    "drift identifies required remeasurement but never applies a profile"
+  ]
+}
