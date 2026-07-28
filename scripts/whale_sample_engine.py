@@ -22,6 +22,7 @@ DEFAULT_BANK_MANIFEST = (
 MAX_SAMPLE_VALUE = 32768.0
 MAX_MASTER_GAIN = 0.25
 SILENCE_THRESHOLD = 1e-7
+MAX_FADING_LAYERS = 3
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -349,6 +350,7 @@ class WhaleSampleVoice:
         self.hold_frames = 0
         self.current: PlaybackLayer | None = None
         self.fading_layers: list[PlaybackLayer] = []
+        self.pending_retarget: tuple[int, int, bool] | None = None
         self.crossfade_total = round(self.config.sample_rate * 0.09)
         self.flutter_phase = 0.0
 
@@ -374,6 +376,7 @@ class WhaleSampleVoice:
             and self.envelope == 0.0
             and self.current is None
             and not self.fading_layers
+            and self.pending_retarget is None
         )
 
     def dispatch(self, event: MidiEvent) -> None:
@@ -407,9 +410,15 @@ class WhaleSampleVoice:
         ):
             self.current.slot = slot
             self.current.target_rate = rate
+            self.pending_retarget = None
+            self.gate = True
+            return
+        if len(self.fading_layers) >= MAX_FADING_LAYERS:
+            self.pending_retarget = (note, velocity, detached)
             self.gate = True
             return
 
+        self.pending_retarget = None
         audible_layers = [
             layer
             for layer in [*self.fading_layers, self.current]
@@ -429,6 +438,24 @@ class WhaleSampleVoice:
                 self.envelope = 0.0
         self.current = new_layer
         self.gate = True
+
+    def _apply_pending_retarget_if_possible(self) -> None:
+        if (
+            self.pending_retarget is None
+            or len(self.fading_layers) >= MAX_FADING_LAYERS
+        ):
+            return
+        note, velocity, detached = self.pending_retarget
+        if self.held_notes:
+            note, (velocity, _order) = max(
+                self.held_notes.items(), key=lambda item: item[1][1]
+            )
+            detached = False
+        elif not self.gate:
+            self.pending_retarget = None
+            return
+        self.pending_retarget = None
+        self._retarget(note, velocity, detached=detached)
 
     def note_on(self, note: int, velocity: int) -> None:
         note = int(clamp(note, 21, 108))
@@ -451,6 +478,7 @@ class WhaleSampleVoice:
         self._begin_release()
 
     def _begin_release(self, pedal_value: int | None = None) -> None:
+        self.pending_retarget = None
         self.gate = False
         held_seconds = self.hold_frames / self.config.sample_rate
         effective_pedal = self.sustain if pedal_value is None else pedal_value
@@ -495,6 +523,7 @@ class WhaleSampleVoice:
         self.hold_frames = 0
         self.current = None
         self.fading_layers.clear()
+        self.pending_retarget = None
 
     @staticmethod
     def _interpolated(samples: array, position: float) -> float:
@@ -530,7 +559,9 @@ class WhaleSampleVoice:
         rate_alpha = 1.0 - math.exp(-1.0 / (self.config.sample_rate * 0.08))
         layer.rate += (layer.target_rate - layer.rate) * rate_alpha
         flutter_cents = self.modulation * 2.5 * math.sin(self.flutter_phase)
-        effective_rate = layer.rate * 2.0 ** (flutter_cents / 1200.0)
+        base_semitones = 12.0 * math.log2(max(layer.rate, 1e-12))
+        effective_semitones = clamp(base_semitones + flutter_cents / 100.0, -4.0, 4.0)
+        effective_rate = 2.0 ** (effective_semitones / 12.0)
         layer.position += effective_rate
         if looping and layer.position >= clip.loop_end:
             layer.position = (
@@ -565,6 +596,7 @@ class WhaleSampleVoice:
                     self.envelope = 0.0
                     self.current = None
                     self.fading_layers.clear()
+                    self.pending_retarget = None
                     output.extend([0.0] * (frames - index))
                     break
             self.velocity += (self.target_velocity - self.velocity) * velocity_alpha
@@ -590,6 +622,7 @@ class WhaleSampleVoice:
                 for layer in self.fading_layers
                 if layer.fade_remaining > 0 or layer.gain > SILENCE_THRESHOLD
             ]
+            self._apply_pending_retarget_if_possible()
             velocity_gain = 0.34 + 0.66 * self.velocity**1.25
             distance_gain = 1.0 - 0.42 * self.distance
             raw = (

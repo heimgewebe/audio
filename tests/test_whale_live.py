@@ -4,6 +4,7 @@ import json
 import os
 import math
 import pathlib
+import queue
 import sys
 import tempfile
 import threading
@@ -640,6 +641,38 @@ class WhaleRuntimeTests(unittest.TestCase):
             self.assertTrue(
                 whale_live.write_pcm_block(stream, b"audio", stop_event, process)
             )
+
+    def test_midi_queue_and_dispatch_budget_are_bounded(self):
+        events: queue.Queue[engine.MidiEvent | BaseException] = queue.Queue(
+            maxsize=whale_live.MAX_PENDING_MIDI_EVENTS
+        )
+        total = whale_live.MAX_MIDI_EVENTS_PER_BLOCK + 5
+        for note in range(total):
+            events.put_nowait(engine.MidiEvent("note_on", 0, 21 + note % 88, 80))
+        voice = mock.Mock()
+
+        dispatched = whale_live._dispatch_pending_events(voice, events)
+
+        self.assertEqual(dispatched, whale_live.MAX_MIDI_EVENTS_PER_BLOCK)
+        self.assertEqual(events.qsize(), 5)
+        self.assertEqual(
+            voice.dispatch.call_count, whale_live.MAX_MIDI_EVENTS_PER_BLOCK
+        )
+        self.assertEqual(events.maxsize, whale_live.MAX_PENDING_MIDI_EVENTS)
+        with self.assertRaises(ValueError):
+            whale_live._dispatch_pending_events(voice, events, maximum_events=0)
+
+    def test_full_midi_queue_stops_without_unbounded_growth(self):
+        events: queue.Queue[engine.MidiEvent | BaseException] = queue.Queue(maxsize=1)
+        events.put_nowait(engine.MidiEvent("note_on", 0, 60, 80))
+        stopped = threading.Event()
+        stopped.set()
+        self.assertFalse(
+            whale_live._put_midi_item(
+                events, engine.MidiEvent("note_off", 0, 60, 0), stopped
+            )
+        )
+        self.assertEqual(events.qsize(), 1)
 
     def test_systemd_notify_ready_supports_abstract_socket(self):
         with mock.patch.dict(os.environ, {}, clear=True):

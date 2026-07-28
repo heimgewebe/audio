@@ -18,14 +18,25 @@
       ],
       "maximum_total_pitch_shift_semitones": 4,
       "pitch_bend_included_in_limit": true,
-      "register_families": {
-        "21-48": "moo-groan-and-body-sounds",
-        "49-84": "song-phrases",
-        "85-108": "wheeze-breath-and-high-calls"
-      },
       "hold": "looped-original-phrase-with-equal-power-crossfade",
       "legato": "multilayer-90-millisecond-equal-power-crossfade",
-      "detached_retrigger": "restart-selected-original-phrase-with-phrase-local-hold-time"
+      "detached_retrigger": "restart-selected-original-phrase-with-phrase-local-hold-time",
+      "register_selection": "nearest-root-first-category-tiebreak",
+      "nominal_register_preferences": {
+        "21-48": "low-preference-moo-groan-and-body-sounds",
+        "49-84": "song-preference",
+        "85-108": "high-preference-wheeze-breath-and-high-calls"
+      },
+      "cross_boundary_assignments": {
+        "42": "song",
+        "46": "song",
+        "84": "high",
+        "86": "song",
+        "90": "song"
+      },
+      "maximum_fading_layers": 3,
+      "retarget_overflow_policy": "coalesce-to-latest-target-until-fade-slot-is-free",
+      "modulation_included_in_pitch_limit": true
     },
     "ufo": {
       "backend": "deterministic-synthetic-scaffold",
@@ -102,7 +113,12 @@
       "burst": 100
     },
     "event_logging": false,
-    "standalone_sfizz_jack": false
+    "standalone_sfizz_jack": false,
+    "midi_queue": {
+      "maximum_pending_events": 256,
+      "maximum_events_per_audio_block": 64,
+      "overflow_behavior": "bounded-reader-backpressure-preserves-event-order"
+    }
   },
   "truth_boundary": {
     "current_backend": "licensed-humpback-sample-bank",

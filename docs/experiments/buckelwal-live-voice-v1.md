@@ -50,19 +50,24 @@ gehaltene Taste steuert eine einzige Stimme.
 - **CC67:** Entfernung beziehungsweise Tiefe.
 - **CC120:** sofortige Stummschaltung.
 - **CC123:** normaler Ausklang aller Noten.
-- **Pitch Bend:** bis ±120 Cent Steuerweg, jedoch gemeinsam mit der Tastenzone
-  hart auf insgesamt ±4 Halbtöne begrenzt.
+- **Pitch Bend:** bis ±120 Cent Steuerweg, jedoch gemeinsam mit Tastenzone und
+  CC1-Flutter hart auf insgesamt ±4 Halbtöne begrenzt.
 
 ## Nutzung der 88 Tasten
 
 Die Samplebank besitzt 27 Zonen für A0 bis C8. Jede Taste liegt höchstens vier
 Halbtöne vom Wurzelton ihrer Originalphrase entfernt.
 
-| MIDI-Noten | Klangfamilie | Ausgangsmaterial |
+| MIDI-Noten | nominelle Präferenz | Ausgangsmaterial |
 |---:|---|---|
 | 21–48 | tief | Moo-, Stöhn- und Körperlaute |
 | 49–84 | mittel | Gesangsphrasen verschiedener Aufnahmen und Populationen |
 | 85–108 | hoch | Wheeze-, Atem- und helle Ruflaute |
+
+Die tatsächliche Auswahl folgt zuerst dem nächsten Zonenwurzelton und nutzt die
+Registerfamilie nur als Gleichstandsentscheidung. Daher liegen die belegten
+Grenzzuweisungen 42/46 im Gesangsregister, 84 im hohen Register sowie 86/90
+wieder im Gesangsregister. Alle 27 Zonen und 19 Clips bleiben dadurch erreichbar.
 
 Die Zonierung begrenzt den typischen Theremin-/UFO-Effekt großer
 Tonhöhenverschiebungen. Sie garantiert nicht, dass jede Taste wie eine
@@ -113,6 +118,7 @@ Der verwaltete Start erzeugt
 - 80 Prozent CPU-Quote;
 - 32 Tasks;
 - begrenzter Journalrate;
+- MIDI-Queue maximal 256 Ereignisse, pro Audioblock höchstens 64 Dispatches;
 - READY erst nach mindestens 100 ms erfolgreichem MIDI-/PCM-Verbrauch.
 
 MIDI-Ereignisse werden nicht protokolliert. Es gibt kein `sfizz_jack` und keine
@@ -137,7 +143,7 @@ Round-Trip-Angabe bleibt bis zur physischen Loopback-Messung unzulässig.
 
 ### Automatisiert und offline belegt
 
-- 136/136 Repositorytests, beide Safety-Gates und Compileall bestanden.
+- 141/141 Repositorytests, beide Safety-Gates und Compileall bestanden.
 - 8 Quellen, 19 Phrasen, 27 Zonen; alle 88 Tasten höchstens vier Halbtöne vom
   Zonenwurzelton entfernt.
 - deterministischer Schema-2-Bank-Neubau: Gesamt-Hash
@@ -146,8 +152,9 @@ Round-Trip-Angabe bleibt bis zur physischen Loopback-Messung unzulässig.
 - Katalog-Hash `d5a9dad7f56ea9893c1d1c458578447721529b032c8c4c006eea245ef43687b8`;
   Manifest-Hash `cdea5da13edf435a631043459eef2687cc973386dd28c287c33efbf13dc6fd67`.
 - Bankladezeit einschließlich Katalog-, Rohdatei- und Clipprüfung: 368,522 ms.
-- 128-Frame-Block mit drei gleichzeitig ausblendenden Altschichten: Median
-  337,767 µs, p99 424,873 µs, Maximum 1.055,877 µs bei 2.666,667 µs Frist.
+- Sturmprobe mit 600 schnellen Wechseln, maximal drei ausblendenden
+  Altschichten und jüngstem koalesziertem Ziel: Median 379,457 µs, p99
+  729,814 µs, Maximum 1.233,397 µs bei 2.666,667 µs Frist.
 - stiller Block: Median 0,370 µs, p99 0,650 µs.
 - 12-Sekunden-Demo: Peak −25,137 dBFS, RMS ungefähr −41,37 dBFS, kein Clipping.
 - Sustain, Legato-Crossfade, Release, Panic, deterministische Ausgabe,

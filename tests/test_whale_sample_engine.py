@@ -70,6 +70,28 @@ class WhaleSampleBankTests(unittest.TestCase):
         self.assertIn("https://creativecommons.org/licenses/by/2.5/", notice)
         self.assertIn("Änderungen:", notice)
 
+    def test_profile_register_contract_matches_actual_boundary_selection(self):
+        profile = json.loads(
+            (ROOT / "profiles" / "buckelwal-live-voice-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        realistic = profile["voice_modes"]["realistic"]
+        self.assertEqual(
+            realistic["register_selection"], "nearest-root-first-category-tiebreak"
+        )
+        nominal = {
+            note: "low" if note <= 48 else "song" if note <= 84 else "high"
+            for note in range(21, 109)
+        }
+        actual_exceptions = {
+            str(note): self.bank.select(note).clip.category
+            for note in range(21, 109)
+            if self.bank.select(note).clip.category != nominal[note]
+        }
+        self.assertEqual(realistic["cross_boundary_assignments"], actual_exceptions)
+        self.assertEqual(realistic["maximum_fading_layers"], sample.MAX_FADING_LAYERS)
+
     def test_registers_choose_natural_source_families(self):
         self.assertEqual(self.bank.select(24).clip.category, "low")
         self.assertEqual(self.bank.select(60).clip.category, "song")
@@ -241,6 +263,42 @@ class WhaleSampleVoiceTests(unittest.TestCase):
         voice.control_change(120, 0)
         self.assertTrue(voice.silent)
         self.assertEqual(voice.render_f32_stereo(64), bytes(64 * 8))
+
+    def test_retarget_storm_coalesces_to_a_bounded_latest_target(self):
+        voice = self.voice()
+        voice.note_on(30, 100)
+        voice.render(4_000)
+        maximum_layers = 0
+        for index in range(600):
+            voice.note_on(70 if index % 2 == 0 else 30, 100)
+            voice.render(1)
+            maximum_layers = max(maximum_layers, len(voice.fading_layers))
+        self.assertLessEqual(maximum_layers, sample.MAX_FADING_LAYERS)
+        self.assertIsNotNone(voice.pending_retarget)
+        self.assertEqual(voice.pending_retarget[0], 30)
+
+        voice.render(voice.crossfade_total + 256)
+
+        self.assertLessEqual(len(voice.fading_layers), sample.MAX_FADING_LAYERS)
+        self.assertEqual(voice.active_note, 30)
+        self.assertTrue(voice.gate)
+
+    def test_flutter_stays_inside_the_final_four_semitone_rate(self):
+        for semitones, phase in ((-4.0, -math.pi / 2.0), (4.0, math.pi / 2.0)):
+            voice = self.voice()
+            voice.note_on(60, 100)
+            voice.modulation = 1.0
+            voice.flutter_phase = phase
+            layer = voice.current
+            layer.rate = 2.0 ** (semitones / 12.0)
+            layer.target_rate = layer.rate
+            layer.position = 1_000.0
+            before = layer.position
+
+            voice._layer_sample(layer, True)
+
+            effective = 12.0 * math.log2(layer.position - before)
+            self.assertLessEqual(abs(effective), 4.0 + 1e-12)
 
     def test_pitch_bend_stays_inside_total_four_semitone_contract(self):
         voice = self.voice()

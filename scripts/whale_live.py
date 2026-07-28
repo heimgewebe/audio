@@ -56,6 +56,9 @@ DEFAULT_TARGET_SENTINEL = "__current_pipewire_default__"
 VOICE_MODES = ("realistic", "ufo")
 DEFAULT_VOICE_MODE = "realistic"
 SERVICE_START_TIMEOUT_SECONDS = 15
+MAX_PENDING_MIDI_EVENTS = 256
+MAX_MIDI_EVENTS_PER_BLOCK = 64
+MIDI_QUEUE_PUT_TIMEOUT_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -350,9 +353,23 @@ def write_pcm_block(
     return True
 
 
+def _put_midi_item(
+    event_queue: queue.Queue[MidiEvent | BaseException],
+    item: MidiEvent | BaseException,
+    stop_event: threading.Event,
+) -> bool:
+    while not stop_event.is_set():
+        try:
+            event_queue.put(item, timeout=MIDI_QUEUE_PUT_TIMEOUT_SECONDS)
+            return True
+        except queue.Full:
+            continue
+    return False
+
+
 def _midi_reader(
     process: subprocess.Popen[str],
-    event_queue: queue.SimpleQueue[MidiEvent | BaseException],
+    event_queue: queue.Queue[MidiEvent | BaseException],
     stop_event: threading.Event,
 ) -> None:
     assert process.stdout is not None
@@ -361,12 +378,14 @@ def _midi_reader(
             if stop_event.is_set():
                 break
             event = parse_aseqdump_line(line)
-            if event is not None:
-                event_queue.put(event)
+            if event is not None and not _put_midi_item(event_queue, event, stop_event):
+                break
         if not stop_event.is_set():
-            event_queue.put(RuntimeError("aseqdump ended unexpectedly"))
+            _put_midi_item(
+                event_queue, RuntimeError("aseqdump ended unexpectedly"), stop_event
+            )
     except BaseException as error:  # forward the exact reader failure to the audio loop
-        event_queue.put(error)
+        _put_midi_item(event_queue, error, stop_event)
 
 
 def terminate_process(process: subprocess.Popen[object] | None) -> None:
@@ -398,16 +417,23 @@ def notify_systemd_ready(status: str) -> bool:
 
 def _dispatch_pending_events(
     voice: WhaleVoice | WhaleSampleVoice,
-    event_queue: queue.SimpleQueue[MidiEvent | BaseException],
-) -> None:
-    while True:
+    event_queue: queue.Queue[MidiEvent | BaseException],
+    *,
+    maximum_events: int = MAX_MIDI_EVENTS_PER_BLOCK,
+) -> int:
+    if maximum_events <= 0:
+        raise ValueError("maximum_events must be positive")
+    dispatched = 0
+    while dispatched < maximum_events:
         try:
             item = event_queue.get_nowait()
         except queue.Empty:
-            return
+            return dispatched
         if isinstance(item, BaseException):
             raise item
         voice.dispatch(item)
+        dispatched += 1
+    return dispatched
 
 
 def _require_live_children(
@@ -436,7 +462,9 @@ def run_live(
     else:
         raise ValueError(f"unknown whale voice mode: {voice_mode}")
     stop_event = threading.Event()
-    event_queue: queue.SimpleQueue[MidiEvent | BaseException] = queue.SimpleQueue()
+    event_queue: queue.Queue[MidiEvent | BaseException] = queue.Queue(
+        maxsize=MAX_PENDING_MIDI_EVENTS
+    )
     midi_process: subprocess.Popen[str] | None = None
     audio_process: subprocess.Popen[bytes] | None = None
 
