@@ -15,6 +15,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import wave
 from array import array
@@ -81,6 +82,12 @@ def _source_path(source_root: pathlib.Path, value: object) -> pathlib.Path:
     return resolved
 
 
+def require_json_object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{label} root must be an object")
+    return value
+
+
 def _nonempty_text(source: dict[str, Any], field: str) -> str:
     value = source.get(field)
     if not isinstance(value, str) or not value.strip():
@@ -96,7 +103,10 @@ def load_catalog(
     source_catalog = source_catalog.resolve(strict=True)
     source_root = source_catalog.parent
     _reject_symlink_chain(source_catalog, source_root)
-    catalog = json.loads(source_catalog.read_text(encoding="utf-8"))
+    catalog = require_json_object(
+        json.loads(source_catalog.read_text(encoding="utf-8")),
+        "whale source catalog",
+    )
     sources = catalog.get("sources")
     if (
         catalog.get("schema_version") != CATALOG_SCHEMA_VERSION
@@ -557,28 +567,44 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
         raise
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=pathlib.Path, default=SOURCE_CATALOG)
     parser.add_argument("--output", type=pathlib.Path, default=PROCESSED_ROOT)
-    args = parser.parse_args()
-    manifest = build(args.catalog, args.output)
-    print(
-        json.dumps(
-            {
-                "state": "built",
-                "manifest": str(
-                    validate_output_root(args.catalog.resolve().parent, args.output)
-                    / "manifest.json"
-                ),
-                "source_count": len(manifest["sources"]),
-                "clip_count": len(manifest["clips"]),
-                "slot_count": len(manifest["slots"]),
-            },
-            sort_keys=True,
+    try:
+        args = parser.parse_args(argv)
+        manifest = build(args.catalog, args.output)
+        print(
+            json.dumps(
+                {
+                    "state": "built",
+                    "manifest": str(
+                        validate_output_root(args.catalog.resolve().parent, args.output)
+                        / "manifest.json"
+                    ),
+                    "source_count": len(manifest["sources"]),
+                    "clip_count": len(manifest["clips"]),
+                    "slot_count": len(manifest["slots"]),
+                },
+                sort_keys=True,
+            )
         )
-    )
-    return 0
+        return 0
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        KeyError,
+        TypeError,
+        IndexError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        print(
+            json.dumps({"state": "blocked", "error": str(error)}, sort_keys=True),
+            file=sys.stderr,
+        )
+        return 2
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import pathlib
 import struct
@@ -123,6 +124,35 @@ class WhaleSampleBuilderTests(unittest.TestCase):
                 builder.build(catalog, root / "processed")
             self.assertEqual(len(observed_sources), 3)
             self.assertTrue(all(not snapshot.exists() for snapshot in observed_sources))
+
+    def test_non_object_catalog_root_is_controlled_json_error(self):
+        for payload in ("[]", "null", '"scalar"'):
+            with self.subTest(payload=payload):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = pathlib.Path(directory)
+                    (root / "raw").mkdir()
+                    catalog = root / "SOURCES.json"
+                    catalog.write_text(payload, encoding="utf-8")
+                    output = root / "processed"
+                    stderr = io.StringIO()
+
+                    with mock.patch("sys.stderr", stderr):
+                        result = builder.main(
+                            [
+                                "--catalog",
+                                str(catalog),
+                                "--output",
+                                str(output),
+                            ]
+                        )
+
+                    self.assertEqual(result, 2)
+                    error_text = stderr.getvalue().strip()
+                    self.assertEqual(len(error_text.splitlines()), 1)
+                    response = json.loads(error_text)
+                    self.assertEqual(response["state"], "blocked")
+                    self.assertIn("catalog root must be an object", response["error"])
+                    self.assertFalse(output.exists())
 
     def test_raw_hash_is_authoritative_before_ffmpeg(self):
         with tempfile.TemporaryDirectory() as directory:

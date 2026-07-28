@@ -145,7 +145,7 @@ Round-Trip-Angabe bleibt bis zur physischen Loopback-Messung unzulässig.
 
 ### Automatisiert und offline belegt
 
-- 146/146 Repositorytests, beide Safety-Gates und Compileall bestanden.
+- 147/147 Repositorytests, beide Safety-Gates und Compileall bestanden.
 - 8 Quellen, 19 Phrasen, 27 Zonen; alle 88 Tasten höchstens vier Halbtöne vom
   Zonenwurzelton entfernt.
 - deterministischer Schema-2-Bank-Neubau: Gesamt-Hash
