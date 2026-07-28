@@ -31,6 +31,7 @@ class Phase2ContractTests(unittest.TestCase):
                 "bluetooth-convenience",
                 "qobuz-exclusive",
                 "experimental",
+                "production",
             },
         )
         for name, profile in profiles.items():

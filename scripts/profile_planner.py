@@ -181,6 +181,12 @@ def plan(
     if profile not in catalog:
         raise ValueError(f"unknown profile: {profile}")
     spec = catalog[profile]
+    operational_status = spec.get("operational_status", "available")
+    if operational_status not in {"available", "planned"}:
+        raise ValueError(
+            f"profile {profile} has unsupported operational_status: {operational_status}"
+        )
+    profile_executable = operational_status == "available"
     doctor = doctor_report()
     state = PHYSICAL.read_state(state_path)
     facts = {
@@ -255,8 +261,12 @@ def plan(
                     "to": desired[field],
                 }
             )
+    readiness_blockers: list[str] = []
+    if not profile_executable:
+        readiness_blockers.append("profile-planned-not-executable")
     ready = (
-        not missing_hardware
+        profile_executable
+        and not missing_hardware
         and not missing_facts
         and not mismatched_facts
         and not unresolved_laboratory_gates
@@ -267,6 +277,10 @@ def plan(
         "profile": profile,
         "purpose": spec["purpose"],
         "read_only": True,
+        "operational_status": operational_status,
+        "profile_executable": profile_executable,
+        "planned_blocker": spec.get("planned_blocker"),
+        "readiness_blockers": readiness_blockers,
         "ready_for_laboratory_apply": ready,
         "apply_authority": spec["apply_authority"],
         "missing_hardware": missing_hardware,

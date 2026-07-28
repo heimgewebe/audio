@@ -59,6 +59,24 @@ class ProfilePlannerTests(unittest.TestCase):
             self.assertTrue(result["ready_for_laboratory_apply"])
             self.assertEqual(result["proposed_changes"], [])
 
+
+    def test_production_is_known_but_explicitly_not_executable(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            MODULE, "doctor_report", self.doctor
+        ):
+            result = MODULE.plan(
+                "production",
+                pathlib.Path(directory) / "state.json",
+                pathlib.Path(directory) / "gates.json",
+            )
+            self.assertEqual(result["operational_status"], "planned")
+            self.assertFalse(result["profile_executable"])
+            self.assertFalse(result["ready_for_laboratory_apply"])
+            self.assertEqual(
+                result["readiness_blockers"], ["profile-planned-not-executable"]
+            )
+            self.assertTrue(result["planned_blocker"])
+
     def test_mismatched_required_fact_blocks(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             MODULE, "doctor_report", self.doctor

@@ -29,15 +29,59 @@ class AudioDoctorTests(unittest.TestCase):
             self.result(("pactl", "info"), "Default Sink: alsa_output.usb-MOTU_M2-00\nDefault Source: alsa_input.usb-Roland_Digital_Piano-00\n"),
             self.result(("pactl", "list", "short", "sinks"), "1\tmotu\tPipeWire\ts32le 2ch 48000Hz\n"),
             self.result(("pactl", "list", "short", "sources"), "2\troland\tPipeWire\ts24le 2ch 44100Hz\n"),
+            self.result(("aconnect", "-l"), "client 24: 'Roland FP-30X' [type=kernel]\n"),
+            self.result(("amidi", "-l"), ""),
             self.result(("systemctl", "is-active", "bluetooth"), "inactive\n", 3),
         ]
         report = MODULE.build_report(results)
         self.assertTrue(report["hardware"]["motu_m2"])
         self.assertTrue(report["hardware"]["roland_fp_30x"])
+        self.assertTrue(report["device_truth"]["observed"]["roland_fp_30x"]["alsa_midi"])
+        self.assertEqual(
+            report["device_truth"]["configured_defaults"]["default_source"],
+            "roland-fp-30x",
+        )
+        self.assertEqual(
+            report["device_truth"]["desired"],
+            {"motu_m2": True, "roland_fp_30x": True},
+        )
         self.assertEqual(report["graph"]["single_buffer_period_ms"], 21.333)
         self.assertIsNone(report["graph"]["round_trip_latency_ms"])
         self.assertIn("motu_phantom_48v", report["physical_unknowns"])
         self.assertFalse(report["profiles"]["voice_recording"]["software_ready"])
+
+
+    def test_configured_roland_default_does_not_prove_physical_presence(self):
+        results = [
+            self.result(("aplay", "-l"), "Karte 0: Generic [Generic]\n"),
+            self.result(("arecord", "-l"), "Karte 0: Generic [Generic]\n"),
+            self.result(("wpctl", "status"), "Roland Digital Piano (configured)\n"),
+            self.result(("pw-metadata", "-n", "settings", "0"), ""),
+            self.result(
+                ("pactl", "info"),
+                "Default Sink: alsa_output.generic\n"
+                "Default Source: alsa_input.usb-Roland_Digital_Piano-00\n",
+            ),
+            self.result(("pactl", "list", "short", "sinks"), ""),
+            self.result(("pactl", "list", "short", "sources"), ""),
+            self.result(("aconnect", "-l"), "client 0: 'System' [type=kernel]\n"),
+            self.result(("amidi", "-l"), ""),
+            self.result(("systemctl", "is-active", "bluetooth"), "active\n"),
+        ]
+        report = MODULE.build_report(results)
+        self.assertFalse(report["hardware"]["roland_fp_30x"])
+        observed = report["device_truth"]["observed"]["roland_fp_30x"]
+        self.assertFalse(observed["present"])
+        self.assertFalse(observed["alsa_midi"])
+        self.assertTrue(observed["pipewire_graph"])
+        self.assertEqual(
+            report["device_truth"]["configured_defaults"]["default_source"],
+            "roland-fp-30x",
+        )
+        self.assertIn(
+            "configured-default-device-absent",
+            {warning["code"] for warning in report["warnings"]},
+        )
 
     def test_serial_redaction(self):
         self.assertNotIn("M20000062566", MODULE.redact("usb-MOTU_M2_M20000062566-00"))
