@@ -93,6 +93,43 @@ class WhaleSampleBankTests(unittest.TestCase):
         self.assertEqual(realistic["cross_boundary_assignments"], actual_exceptions)
         self.assertEqual(realistic["maximum_fading_layers"], sample.MAX_FADING_LAYERS)
 
+    def test_non_object_json_roots_are_reported_without_attribute_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            processed = root / "processed"
+            processed.mkdir()
+            manifest_path = processed / "manifest.json"
+            manifest_path.write_text("[]", encoding="utf-8")
+
+            status = sample.sample_bank_status(manifest_path)
+
+            self.assertFalse(status["ready"])
+            self.assertIn("manifest root must be an object", status["error"])
+            with self.assertRaisesRegex(
+                RuntimeError, "manifest root must be an object"
+            ):
+                sample.WhaleSampleBank(manifest_path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            processed = root / "processed"
+            processed.mkdir()
+            catalog_path = root / "SOURCES.json"
+            catalog_path.write_text("[]", encoding="utf-8")
+            manifest = copy.deepcopy(self.bank.manifest)
+            manifest["source_catalog_sha256"] = sample.sha256_file(catalog_path)
+            manifest_path = processed / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            status = sample.sample_bank_status(manifest_path)
+
+            self.assertFalse(status["ready"])
+            self.assertIn("source catalog root must be an object", status["error"])
+            with self.assertRaisesRegex(
+                RuntimeError, "source catalog root must be an object"
+            ):
+                sample.WhaleSampleBank(manifest_path)
+
     def test_structurally_invalid_manifest_is_reported_without_key_error(self):
         manifest = copy.deepcopy(self.bank.manifest)
         manifest["clips"][0].pop("file")

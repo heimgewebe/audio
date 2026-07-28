@@ -33,6 +33,12 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def require_json_object(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{label} root must be an object")
+    return value
+
+
 def require_record_fields(
     records: list[Any], required_fields: set[str], label: str
 ) -> None:
@@ -110,7 +116,10 @@ class WhaleSampleBank:
                 "whale sample manifest must be a regular non-symlink file"
             )
         self.manifest_path = requested_manifest.resolve(strict=True)
-        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest = require_json_object(
+            json.loads(self.manifest_path.read_text(encoding="utf-8")),
+            "whale sample bank manifest",
+        )
         if (
             manifest.get("schema_version") != 2
             or manifest.get("kind") != "humpback_whale_sample_bank"
@@ -176,7 +185,10 @@ class WhaleSampleBank:
             )
         if sha256_file(source_catalog_path) != manifest.get("source_catalog_sha256"):
             raise RuntimeError("whale source catalog hash mismatch")
-        source_catalog = json.loads(source_catalog_path.read_text(encoding="utf-8"))
+        source_catalog = require_json_object(
+            json.loads(source_catalog_path.read_text(encoding="utf-8")),
+            "whale source catalog",
+        )
         catalog_records = source_catalog.get("sources")
         if (
             source_catalog.get("schema_version") != 2
