@@ -2,13 +2,14 @@
 
 Der Audio-Doctor zeigt eine einzelne read-only Momentaufnahme. `audio-truth`
 bindet diese Beobachtung zusätzlich an die kanonischen Signalweg-, Profil-,
-Pegel-, Labor- und physischen Faktenverträge.
+Pegel-, Labor- und physischen Faktenverträge sowie an den validierten privaten
+Laborzustand.
 
 ## Wahrheitsordnung
 
 1. Aktuelle read-only Softwarebeobachtung.
 2. Explizite menschliche Beobachtung physischer Kabel, Regler und Schalter.
-3. Validierte Laborbelege aus realen Aufnahmen oder Testläufen.
+3. Validierte private Laborbelege aus realen Aufnahmen oder Testläufen.
 4. Repositorypläne und Standardwerte.
 
 Ein tieferer Rang darf einen höheren Rang nicht überschreiben. Insbesondere gilt:
@@ -19,6 +20,9 @@ Ein tieferer Rang darf einen höheren Rang nicht überschreiben. Insbesondere gi
 - Ein aktiver Dienst beweist weder korrektes Routing noch Profilbereitschaft.
 - Ein 48-V-, Gain-, Lautstärke- oder Codecwert darf nicht aus Software geraten
   werden.
+- Ein lokaler SHA-256-Report prüft Integrität und innere Konsistenz, aber keine
+  Urheberschaft. Für Authentizität muss der Capture-Receipt-Digest außerhalb des
+  Reports festgehalten oder signiert werden.
 
 ## Momentaufnahme erzeugen
 
@@ -32,17 +36,22 @@ Der Standardpfad ist privat:
 ~/.local/state/audio/truth/latest.v1.json
 ```
 
-Das Schreiben erfolgt atomar mit Modus `0600`. Der Report enthält:
+Das Schreiben erfolgt atomar mit Modus `0600` über no-follow
+Verzeichnisdeskriptoren. Der Report enthält:
 
 - SHA-256-Bindungen aller Wahrheitsverträge,
-- den normalisierten Doctor-Zustand und Graph-Fingerprint,
-- nur den Digest und Status der privaten physischen Beobachtungen,
+- den normalisierten Doctor-Zustand und den kanonischen Labor-Graphfingerprint,
+- nur Digest und Status der privaten physischen Beobachtungen,
+- Digest, aufgelöste, invalidierte und offene private Laborgates,
 - Dienstzustände und Ressourcenlimits,
-- relevante Aufnahme-, Plugin-, Wiedergabe- und Kreativprozesse,
-- jüngste XRun-ähnliche Journalzeilen,
-- freien Speicher und begrenzte Größen der Audio-Zustandsverzeichnisse,
+- klassifizierte Prozesse ohne rohe Kommandoargumente,
+- Anzahl und Digest jüngster XRun-ähnlicher Journalzeilen ohne Rohlogs,
+- freien Speicher und zeit-/eintragsbegrenzte Größen der Audio-Zustände,
 - Kernel-, PipeWire-, WirePlumber- und Mopidy-Versionen,
 - den Status jedes T001-Abnahmegates.
+
+Kommandos werden mit begrenztem Speicher gelesen. Im Report stehen nur Hashes,
+Byte- und Zeilenzahlen, nie stdout, stderr, Prozessargumente oder Journalzeilen.
 
 ## Report prüfen
 
@@ -50,8 +59,10 @@ Das Schreiben erfolgt atomar mit Modus `0600`. Der Report enthält:
 just truth-verify ~/.local/state/audio/truth/latest.v1.json
 ```
 
-Die Prüfung erkennt nachträgliche Änderungen am Report. Sie besagt nicht, dass
-alle Messgates bestanden sind.
+Die Prüfung berechnet Vertragsaggregate, Graph-, Prozess- und Wahrheitsfingerprints
+neu und deckt auch den Zeitstempel über `report_sha256` ab. Sie besagt nicht,
+dass alle Messgates bestanden sind. Gegen gezielte vollständige Neuerzeugung
+schützt nur der extern festgehaltene Capture-Digest oder eine Signatur.
 
 ## Drift vergleichen
 
@@ -65,16 +76,18 @@ just truth-drift before.json after.json drift.json
 Der Driftbericht vergleicht unter anderem:
 
 - Vertragsaggregate,
-- physischen Zustandsdigest,
-- Graph-Fingerprint,
+- physischen und Labor-Zustandsdigest,
+- kanonischen Graphfingerprint,
 - MOTU- und Roland-Präsenz,
 - Standardquelle und Standardsenke,
 - Rate und Quantum,
-- Dienstzustände,
-- Softwareversionen,
-- relevante Prozessklassen.
+- Dienstzustände und Softwareversionen,
+- relevante Prozessfingerprints,
+- XRun-ähnliche Zeilenanzahl und -digest.
 
-Er nennt erforderliche Nachmessungen. Er ändert niemals Profile oder Dienste.
+Er nennt erforderliche Nachmessungen mit den exakten IDs des Laborkatalogs,
+beispielsweise `loopback-latency-measurement`, `xrun-stability-test` und
+`qobuz-rate-proof`. Er ändert niemals Profile oder Dienste.
 
 ## T001-Abschlussgrenze
 
@@ -86,7 +99,8 @@ folgenden Punkte bleiben blockiert, bis reale Evidenz vorliegt:
 - physische Round-Trip-Latenz,
 - begrenzter XRun-Stabilitätstest,
 - MOTU- und Roland-Verlust-/Wiederkehrtest,
-- Qobuz-Track-, Graph- und Endpunktrate samt Resampling.
+- Qobuz-Track-, Graph- und Endpunktrate samt Resampling,
+- validierte Rate-/Resamplingentscheidung und Plugin-Host-Nachweis.
 
 Diese Grenze verhindert, dass technische Bereitschaft mit gemessener
 Audioqualität verwechselt wird.
