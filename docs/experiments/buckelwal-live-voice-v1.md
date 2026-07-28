@@ -23,10 +23,13 @@ acht dokumentierten Quellen gebaut:
 - Public Domain, U.S. National Park Service;
 - CC BY 2.5, PLOS ONE.
 
-Quellseiten, Attributionen, Lizenzen und SHA-256-Werte stehen in
-`assets/whale-sources/SOURCES.json` und
-`assets/whale-sources/processed/manifest.json`. Die Rohdateien bleiben
-unverändert erhalten. Der Builder erzeugt 19 mono PCM16-Phrasen bei 48 kHz,
+Quellseiten, vollständige Urheber, Lizenz-URIs, Bearbeitungshinweise,
+Rohdateigrößen und erwartete SHA-256-Werte stehen in
+`assets/whale-sources/SOURCES.json`; `assets/whale-sources/NOTICE.md` begleitet
+die weitergegebenen Dateien menschenlesbar. Die Rohdateien bleiben unverändert
+erhalten. Der Builder prüft sie vor FFmpeg, baut pfad- und symlinkgesichert in
+einem privaten Staging-Verzeichnis und ersetzt die produktive Bank erst nach
+vollständiger Validierung atomar. Er erzeugt 19 mono PCM16-Phrasen bei 48 kHz,
 normalisiert sie konservativ und versieht sie mit geloopten Mittelbereichen.
 
 ## Spielmodell
@@ -47,7 +50,8 @@ gehaltene Taste steuert eine einzige Stimme.
 - **CC67:** Entfernung beziehungsweise Tiefe.
 - **CC120:** sofortige Stummschaltung.
 - **CC123:** normaler Ausklang aller Noten.
-- **Pitch Bend:** höchstens ±120 Cent zusätzlich zur Tastenzone.
+- **Pitch Bend:** bis ±120 Cent Steuerweg, jedoch gemeinsam mit der Tastenzone
+  hart auf insgesamt ±4 Halbtöne begrenzt.
 
 ## Nutzung der 88 Tasten
 
@@ -133,14 +137,17 @@ Round-Trip-Angabe bleibt bis zur physischen Loopback-Messung unzulässig.
 
 ### Automatisiert und offline belegt
 
-- 114/114 Repositorytests bestanden.
+- 134/134 Repositorytests, beide Safety-Gates und Compileall bestanden.
 - 8 Quellen, 19 Phrasen, 27 Zonen; alle 88 Tasten höchstens vier Halbtöne vom
   Zonenwurzelton entfernt.
-- deterministischer Bank-Neubau: Gesamt-Hash
-  `da6bb02ab1d7c6d35356116efb752c961a6326ad9190d61bacbb0b1be2872537`.
-- Bankladezeit: 388,438 ms.
-- 128-Frame-Block, realistische Stimme aktiv: Median 223,936 µs,
-  p99 344,762 µs, Maximum 511,373 µs bei 2.666,667 µs Frist.
+- deterministischer Schema-2-Bank-Neubau: Gesamt-Hash
+  `82f77f68f7fbce6e0f6b3f00805f57a1128df88bfda3bb6bcba9eb1b8eae1a0f`;
+  die 19 WAV-Dateien blieben gegenüber dem vorherigen Build bitidentisch.
+- Katalog-Hash `d5a9dad7f56ea9893c1d1c458578447721529b032c8c4c006eea245ef43687b8`;
+  Manifest-Hash `cdea5da13edf435a631043459eef2687cc973386dd28c287c33efbf13dc6fd67`.
+- Bankladezeit einschließlich Katalog-, Rohdatei- und Clipprüfung: 368,522 ms.
+- 128-Frame-Block mit drei gleichzeitig ausblendenden Altschichten: Median
+  337,767 µs, p99 424,873 µs, Maximum 1.055,877 µs bei 2.666,667 µs Frist.
 - stiller Block: Median 0,370 µs, p99 0,650 µs.
 - 12-Sekunden-Demo: Peak −25,137 dBFS, RMS ungefähr −41,37 dBFS, kein Clipping.
 - Sustain, Legato-Crossfade, Release, Panic, deterministische Ausgabe,
@@ -152,11 +159,13 @@ Round-Trip-Angabe bleibt bis zur physischen Loopback-Messung unzulässig.
   ändern und wird bei `auto` erneut aufgelöst.
 - realistische Engine als `active/running` mit `voice_mode=realistic`.
 - PipeWire-Ausgabe auf MOTU M2.
-- 40,7 MiB Service-Speicher, 46,8 MiB Prozess-Höchstwert, sechs Tasks,
+- 40,9 MiB Service-Speicher, 47,1 MiB Prozess-Höchstwert, sechs Tasks,
   null Neustarts.
-- stiller Livebetrieb ungefähr 1,33 Prozent eines CPU-Kerns.
-- stabiler Beobachtungsabschnitt: null neue PipeWire-Fehler beziehungsweise
-  XRuns.
+- stiller Livebetrieb ungefähr 1,08 Prozent eines CPU-Kerns.
+- stabiler Beobachtungsabschnitt: MOTU `3 → 3`, Fluidsynth `0 → 0`; keine
+  neuen PipeWire-Fehler beziehungsweise XRuns. Die drei absoluten MOTU-Zähler
+  entstanden vor dem beobachteten stabilen Abschnitt und werden nicht der
+  Engine zugerechnet.
 - Desktop-Umschaltung aus/an und Moduswechsel UFO/realistisch wurden mit
   Status-Readback ausgeführt.
 

@@ -22,16 +22,24 @@ Phrasen und ein hashgebundenes Manifest.
   *Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground*,
   PLOS ONE, CC BY 2.5.
 
-Die kanonischen Beschreibungsseiten, Attributionen, Lizenzen und SHA-256-Werte
-stehen in `SOURCES.json` und `processed/manifest.json`. Veränderungen sind
-Bearbeitungen der jeweiligen Ausgangsaufnahmen. Es wird keine Unterstützung
-oder Empfehlung durch Urheber, NPS, PLOS oder Wikimedia behauptet.
+Die kanonischen Beschreibungsseiten, vollständigen Urheber, Lizenz-URIs,
+Bearbeitungshinweise, erwarteten Rohdateigrößen und SHA-256-Werte stehen in
+`SOURCES.json`. `NOTICE.md` stellt dieselben Angaben menschenlesbar neben die
+Audioassets; `processed/manifest.json` bindet den tatsächlich gebauten Stand.
+Es wird keine Unterstützung oder Empfehlung durch Urheber, NPS, PLOS oder
+Wikimedia behauptet.
+
+Der Builder prüft sämtliche Rohdateien vor FFmpeg gegen den Katalog, akzeptiert
+keine absoluten Pfade, Traversal oder Symlinks und baut in einem privaten
+Staging-Verzeichnis. Erst eine vollständig validierte Bank ersetzt das bisherige
+`processed/`-Verzeichnis atomar; ein Fehler lässt die alte Bank unverändert.
 
 ## Klangvertrag
 
 - 19 extrahierte Originalphrasen;
 - 27 Tastaturzonen über A0 bis C8;
-- höchstens vier Halbtöne Resampling pro Taste;
+- höchstens vier Halbtöne gesamte Tonhöhenverschiebung je Taste, Pitch Bend
+  eingeschlossen;
 - tiefe Tasten bevorzugen NPS-Moo-/Körperlaute;
 - mittlere Tasten bevorzugen Gesangsphrasen;
 - hohe Tasten bevorzugen Wheeze-/Atemlaute;

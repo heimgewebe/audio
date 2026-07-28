@@ -15,9 +15,9 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 Als erstes ausführbares Klangexperiment enthält das Repository
 **Buckelwal Live Voice**. Standard ist nun eine lokal gespeicherte,
 lizenzdokumentierte Samplebank aus echten Buckelwalaufnahmen. 19 natürliche
-Phrasen werden über 27 Tastaturzonen mit höchstens vier Halbtönen Resampling
-spielbar gemacht. Der frühere synthetische Klang bleibt ausdrücklich als
-separater `ufo`-Modus erhalten.
+Phrasen werden über 27 Tastaturzonen mit höchstens vier Halbtönen gesamter
+Tonhöhenverschiebung einschließlich Pitch Bend spielbar gemacht. Der frühere
+synthetische Klang bleibt ausdrücklich als separater `ufo`-Modus erhalten.
 
 ## Bereiche
 

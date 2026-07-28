@@ -7,6 +7,7 @@ import argparse
 import ast
 import json
 import pathlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,31 @@ ACTIONS = {
 }
 
 
+def desktop_exec_quote(value: str) -> str:
+    if any(character in value for character in ("\n", "\r", "\0")):
+        raise ValueError("desktop command arguments must be one line")
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("`", "\\`")
+        .replace("$", "\\$")
+        .replace("%", "%%")
+    )
+    return f'"{escaped}"'
+
+
+def desktop_exec_command(action: str) -> str:
+    if action not in ACTIONS:
+        raise ValueError(f"unknown desktop action: {action}")
+    return " ".join(
+        desktop_exec_quote(value) for value in (sys.executable, str(CONTROL), action)
+    )
+
+
+def shortcut_command() -> str:
+    return shlex.join([sys.executable, str(CONTROL), "toggle"])
+
+
 def desktop_text(action: str) -> str:
     name, comment, icon = ACTIONS[action]
     return "\n".join(
@@ -51,7 +77,7 @@ def desktop_text(action: str) -> str:
             "Type=Application",
             f"Name={name}",
             f"Comment={comment}",
-            f"Exec={sys.executable} {CONTROL} {action}",
+            f"Exec={desktop_exec_command(action)}",
             f"Icon={icon}",
             "Terminal=false",
             "Categories=AudioVideo;Audio;Utility;",
@@ -72,6 +98,18 @@ def run_gsettings(*arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def parse_custom_keybindings(value: str) -> list[str]:
+    text = value.strip()
+    if text.startswith("@as "):
+        text = text[4:].strip()
+    parsed = ast.literal_eval(text)
+    if not isinstance(parsed, (list, tuple)) or not all(
+        isinstance(item, str) for item in parsed
+    ):
+        raise ValueError("custom-keybindings is not a string array")
+    return list(parsed)
+
+
 def install_shortcut(binding: str) -> dict[str, object]:
     if not shutil.which("gsettings"):
         return {"installed": False, "reason": "gsettings-not-found"}
@@ -83,7 +121,7 @@ def install_shortcut(binding: str) -> dict[str, object]:
             "reason": current.stderr.strip() or "gsettings-read-failed",
         }
     try:
-        paths = list(ast.literal_eval(current.stdout.strip()))
+        paths = parse_custom_keybindings(current.stdout)
     except (SyntaxError, ValueError):
         return {"installed": False, "reason": "invalid-custom-keybindings-state"}
     if KEY_PATH not in paths:
@@ -95,7 +133,7 @@ def install_shortcut(binding: str) -> dict[str, object]:
                 "reason": result.stderr.strip() or "gsettings-write-failed",
             }
     custom_schema = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding"
-    command = f"{sys.executable} {CONTROL} toggle"
+    command = shortcut_command()
     settings = {
         "name": "Buckelwal an/aus",
         "command": command,

@@ -56,15 +56,51 @@ class PlaybackLayer:
     position: float
     rate: float
     target_rate: float
+    gain: float = 1.0
+    fade_start_gain: float = 1.0
+    fade_target_gain: float = 1.0
+    fade_total: int = 0
+    fade_remaining: int = 0
+
+    def begin_fade(self, target_gain: float, frames: int) -> None:
+        self.fade_start_gain = self.gain
+        self.fade_target_gain = clamp(target_gain, 0.0, 1.0)
+        self.fade_total = max(0, frames)
+        self.fade_remaining = self.fade_total
+        if self.fade_total == 0:
+            self.gain = self.fade_target_gain
+
+    def advance_fade(self) -> None:
+        if self.fade_remaining <= 0:
+            return
+        elapsed = self.fade_total - self.fade_remaining + 1
+        progress = clamp(elapsed / self.fade_total, 0.0, 1.0)
+        if self.fade_target_gain >= self.fade_start_gain:
+            curve = math.sin(progress * math.pi / 2.0)
+        else:
+            curve = 1.0 - math.cos(progress * math.pi / 2.0)
+        self.gain = (
+            self.fade_start_gain
+            + (self.fade_target_gain - self.fade_start_gain) * curve
+        )
+        self.fade_remaining -= 1
+        if self.fade_remaining == 0:
+            self.gain = self.fade_target_gain
 
 
 class WhaleSampleBank:
     def __init__(self, manifest_path: pathlib.Path = DEFAULT_BANK_MANIFEST) -> None:
-        self.manifest_path = manifest_path.resolve()
+        requested_manifest = pathlib.Path(manifest_path)
+        if requested_manifest.is_symlink() or not requested_manifest.is_file():
+            raise RuntimeError(
+                "whale sample manifest must be a regular non-symlink file"
+            )
+        self.manifest_path = requested_manifest.resolve(strict=True)
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         if (
-            manifest.get("schema_version") != 1
+            manifest.get("schema_version") != 2
             or manifest.get("kind") != "humpback_whale_sample_bank"
+            or manifest.get("source_catalog_schema_version") != 2
         ):
             raise RuntimeError("whale sample bank manifest has the wrong schema")
         if manifest.get("sample_rate_hz") != 48_000:
@@ -82,14 +118,18 @@ class WhaleSampleBank:
 
         asset_root = self.manifest_path.parent.parent
         source_catalog_path = asset_root / "SOURCES.json"
-        if not source_catalog_path.is_file():
-            raise RuntimeError("whale source catalog is missing")
+        if source_catalog_path.is_symlink() or not source_catalog_path.is_file():
+            raise RuntimeError(
+                "whale source catalog must be a regular non-symlink file"
+            )
         if sha256_file(source_catalog_path) != manifest.get("source_catalog_sha256"):
             raise RuntimeError("whale source catalog hash mismatch")
         source_catalog = json.loads(source_catalog_path.read_text(encoding="utf-8"))
         catalog_records = source_catalog.get("sources")
-        if source_catalog.get("schema_version") != 1 or not isinstance(
-            catalog_records, list
+        if (
+            source_catalog.get("schema_version") != 2
+            or source_catalog.get("kind") != "humpback_whale_source_catalog"
+            or not isinstance(catalog_records, list)
         ):
             raise RuntimeError("whale source catalog has the wrong schema")
         catalog_by_id = {str(record.get("id")): record for record in catalog_records}
@@ -108,20 +148,50 @@ class WhaleSampleBank:
             expected = catalog_by_id.get(source_id)
             if expected is None:
                 raise RuntimeError(f"unknown whale source id: {source_id}")
-            for field in ("file", "license", "attribution", "source_page", "category"):
+            for field in (
+                "file",
+                "license",
+                "license_url",
+                "title",
+                "creators",
+                "attribution",
+                "source_page",
+                "changes",
+                "category",
+                "parent_work",
+                "doi",
+            ):
                 if source.get(field) != expected.get(field):
                     raise RuntimeError(
                         f"whale source metadata mismatch: {source_id}.{field}"
                     )
+            if source.get("sha256") != expected.get("expected_sha256"):
+                raise RuntimeError(f"whale source expected hash mismatch: {source_id}")
+            if source.get("bytes") != expected.get("expected_bytes"):
+                raise RuntimeError(
+                    f"whale source expected byte-size mismatch: {source_id}"
+                )
             if source.get("license") not in allowed_licenses:
                 raise RuntimeError(
                     f"unsupported whale source license: {source.get('license')}"
                 )
-            if not source.get("source_page") or not source.get("attribution"):
+            creators = source.get("creators")
+            if (
+                not source.get("source_page")
+                or not source.get("license_url")
+                or not source.get("attribution")
+                or not source.get("changes")
+                or not isinstance(creators, list)
+                or not creators
+            ):
                 raise RuntimeError("whale source attribution is incomplete")
             raw_path = asset_root / str(source["file"])
-            if not raw_path.is_file():
-                raise RuntimeError(f"whale source audio is missing: {raw_path}")
+            if raw_path.is_symlink() or not raw_path.is_file():
+                raise RuntimeError(
+                    f"whale source audio is missing or unsafe: {raw_path}"
+                )
+            if raw_path.stat().st_size != source.get("bytes"):
+                raise RuntimeError(f"whale source audio byte-size mismatch: {raw_path}")
             if sha256_file(raw_path) != source.get("sha256"):
                 raise RuntimeError(f"whale source audio hash mismatch: {raw_path}")
         if seen_source_ids != set(catalog_by_id):
@@ -131,6 +201,8 @@ class WhaleSampleBank:
 
         clips: dict[str, SampleClip] = {}
         root = self.manifest_path.parent
+        if root.is_symlink() or not root.is_dir():
+            raise RuntimeError("processed whale sample directory is unsafe")
         expected_wav_names = {str(record["file"]) for record in clip_records}
         actual_wav_names = {path.name for path in root.glob("*.wav") if path.is_file()}
         if actual_wav_names != expected_wav_names:
@@ -140,8 +212,8 @@ class WhaleSampleBank:
         for record in clip_records:
             clip_id = str(record["id"])
             path = root / str(record["file"])
-            if not path.is_file():
-                raise RuntimeError(f"whale sample clip is missing: {path}")
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError(f"whale sample clip is missing or unsafe: {path}")
             if sha256_file(path) != record.get("sha256"):
                 raise RuntimeError(f"whale sample clip hash mismatch: {path}")
             samples = self._read_wav(path)
@@ -189,6 +261,14 @@ class WhaleSampleBank:
             selected = self.select(note)
             if abs(note - selected.root_note) > 4:
                 raise RuntimeError("whale sample slots exceed pitch-shift contract")
+        render_contract = manifest.get("render_contract")
+        if (
+            not isinstance(render_contract, dict)
+            or render_contract.get("maximum_total_pitch_shift_semitones") != 4
+            or render_contract.get("pitch_bend_included") is not True
+            or render_contract.get("default_voice_mode") != "realistic"
+        ):
+            raise RuntimeError("whale sample render contract is invalid")
         self.sources = tuple(source_records)
         self.manifest = manifest
 
@@ -209,16 +289,15 @@ class WhaleSampleBank:
     def select(self, note: int) -> SampleSlot:
         note = int(clamp(note, 21, 108))
         preferred = "low" if note <= 48 else "high" if note >= 85 else "song"
-        candidates = [slot for slot in self.slots if slot.clip.category == preferred]
-        if not candidates:
-            candidates = list(self.slots)
-        containing = [
-            slot
-            for slot in candidates
-            if slot.minimum_note <= note <= slot.maximum_note
-        ]
-        pool = containing or candidates
-        return min(pool, key=lambda slot: (abs(note - slot.root_note), slot.root_note))
+        return min(
+            self.slots,
+            key=lambda slot: (
+                abs(note - slot.root_note),
+                0 if slot.clip.category == preferred else 1,
+                slot.root_note,
+                slot.clip.clip_id,
+            ),
+        )
 
     def status(self) -> dict[str, Any]:
         return {
@@ -269,9 +348,8 @@ class WhaleSampleVoice:
         self.release_seconds = 0.9
         self.hold_frames = 0
         self.current: PlaybackLayer | None = None
-        self.previous: PlaybackLayer | None = None
+        self.fading_layers: list[PlaybackLayer] = []
         self.crossfade_total = round(self.config.sample_rate * 0.09)
-        self.crossfade_remaining = 0
         self.flutter_phase = 0.0
 
     @property
@@ -279,8 +357,24 @@ class WhaleSampleVoice:
         return self.gate or self.envelope > SILENCE_THRESHOLD
 
     @property
+    def previous(self) -> PlaybackLayer | None:
+        return self.fading_layers[-1] if self.fading_layers else None
+
+    @property
+    def crossfade_remaining(self) -> int:
+        layers = list(self.fading_layers)
+        if self.current is not None:
+            layers.append(self.current)
+        return max((layer.fade_remaining for layer in layers), default=0)
+
+    @property
     def silent(self) -> bool:
-        return not self.gate and self.envelope == 0.0 and self.previous is None
+        return (
+            not self.gate
+            and self.envelope == 0.0
+            and self.current is None
+            and not self.fading_layers
+        )
 
     def dispatch(self, event: MidiEvent) -> None:
         if event.kind == "note_on":
@@ -293,8 +387,10 @@ class WhaleSampleVoice:
             self.pitch_bend(event.value)
 
     def _rate_for(self, note: int, slot: SampleSlot) -> float:
-        semitones = clamp(note - slot.root_note, -4, 4)
-        return 2.0 ** ((semitones + self.pitch_bend_cents / 100.0) / 12.0)
+        total_semitones = clamp(
+            note - slot.root_note + self.pitch_bend_cents / 100.0, -4.0, 4.0
+        )
+        return 2.0 ** (total_semitones / 12.0)
 
     def _retarget(self, note: int, velocity: int, *, detached: bool) -> None:
         slot = self.bank.select(note)
@@ -302,6 +398,8 @@ class WhaleSampleVoice:
         self.active_note = note
         self.target_velocity = velocity / 127.0
         self.attack_seconds = clamp(0.09 - 0.06 * self.target_velocity, 0.025, 0.09)
+        if detached:
+            self.hold_frames = 0
         if (
             not detached
             and self.current
@@ -310,13 +408,22 @@ class WhaleSampleVoice:
             self.current.target_rate = rate
             self.gate = True
             return
+
+        audible_layers = [
+            layer
+            for layer in [*self.fading_layers, self.current]
+            if layer is not None and layer.gain > SILENCE_THRESHOLD
+        ]
         new_layer = PlaybackLayer(slot=slot, position=0.0, rate=rate, target_rate=rate)
-        if self.current and self.envelope > SILENCE_THRESHOLD:
-            self.previous = self.current
-            self.crossfade_remaining = self.crossfade_total
+        if audible_layers and self.envelope > SILENCE_THRESHOLD:
+            for layer in audible_layers:
+                layer.begin_fade(0.0, self.crossfade_total)
+            self.fading_layers = audible_layers
+            new_layer.gain = 0.0
+            new_layer.fade_start_gain = 0.0
+            new_layer.begin_fade(1.0, self.crossfade_total)
         else:
-            self.previous = None
-            self.crossfade_remaining = 0
+            self.fading_layers.clear()
             if detached:
                 self.envelope = 0.0
         self.current = new_layer
@@ -386,8 +493,7 @@ class WhaleSampleVoice:
         self.envelope = 0.0
         self.hold_frames = 0
         self.current = None
-        self.previous = None
-        self.crossfade_remaining = 0
+        self.fading_layers.clear()
 
     @staticmethod
     def _interpolated(samples: array, position: float) -> float:
@@ -457,30 +563,32 @@ class WhaleSampleVoice:
                 if self.envelope < SILENCE_THRESHOLD:
                     self.envelope = 0.0
                     self.current = None
-                    self.previous = None
-                    self.crossfade_remaining = 0
+                    self.fading_layers.clear()
                     output.extend([0.0] * (frames - index))
                     break
             self.velocity += (self.target_velocity - self.velocity) * velocity_alpha
             self.flutter_phase = (
                 self.flutter_phase + 2.0 * math.pi * 0.7 / self.config.sample_rate
             ) % (2.0 * math.pi)
-            current_sample = (
-                self._layer_sample(self.current, looping) if self.current else 0.0
+            layers = list(self.fading_layers)
+            if self.current is not None:
+                layers.append(self.current)
+            weighted_samples: list[tuple[float, float]] = []
+            for layer in layers:
+                layer_sample = self._layer_sample(layer, looping)
+                weighted_samples.append((layer_sample, layer.gain))
+            energy = math.sqrt(sum(gain * gain for _sample, gain in weighted_samples))
+            normalization = max(1.0, energy)
+            voice_sample = (
+                sum(sample * gain for sample, gain in weighted_samples) / normalization
             )
-            if self.previous and self.crossfade_remaining > 0:
-                previous_sample = self._layer_sample(self.previous, looping)
-                progress = 1.0 - self.crossfade_remaining / self.crossfade_total
-                current_mix = math.sin(progress * math.pi / 2.0)
-                previous_mix = math.cos(progress * math.pi / 2.0)
-                voice_sample = (
-                    previous_sample * previous_mix + current_sample * current_mix
-                )
-                self.crossfade_remaining -= 1
-                if self.crossfade_remaining == 0:
-                    self.previous = None
-            else:
-                voice_sample = current_sample
+            for layer in layers:
+                layer.advance_fade()
+            self.fading_layers = [
+                layer
+                for layer in self.fading_layers
+                if layer.fade_remaining > 0 or layer.gain > SILENCE_THRESHOLD
+            ]
             velocity_gain = 0.34 + 0.66 * self.velocity**1.25
             distance_gain = 1.0 - 0.42 * self.distance
             raw = (

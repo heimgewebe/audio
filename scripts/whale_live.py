@@ -11,6 +11,7 @@ import pathlib
 import queue
 import re
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -46,6 +47,12 @@ PCM_WRITE_STALL_SECONDS = 2.0
 LIVE_INITIALIZATION_SECONDS = 0.1
 MANAGED_NOTIFY_REQUIRED_ENV = "AUDIO_BUCKELWAL_REQUIRE_NOTIFY"
 VOICE_MODE_ENV = "AUDIO_BUCKELWAL_VOICE_MODE"
+MIDI_PORT_ENV = "AUDIO_BUCKELWAL_MIDI_PORT"
+TARGET_ENV = "AUDIO_BUCKELWAL_TARGET"
+GAIN_ENV = "AUDIO_BUCKELWAL_GAIN"
+LATENCY_FRAMES_ENV = "AUDIO_BUCKELWAL_LATENCY_FRAMES"
+RUNTIME_MAX_SECONDS_ENV = "AUDIO_BUCKELWAL_RUNTIME_MAX_SECONDS"
+DEFAULT_TARGET_SENTINEL = "__current_pipewire_default__"
 VOICE_MODES = ("realistic", "ufo")
 DEFAULT_VOICE_MODE = "realistic"
 SERVICE_START_TIMEOUT_SECONDS = 15
@@ -571,6 +578,16 @@ def start_service(args: argparse.Namespace, *, announce: bool = True) -> int:
         f"{MANAGED_NOTIFY_REQUIRED_ENV}=1",
         "--setenv",
         f"{VOICE_MODE_ENV}={args.voice_mode}",
+        "--setenv",
+        f"{MIDI_PORT_ENV}={port.address}",
+        "--setenv",
+        f"{TARGET_ENV}={args.target or DEFAULT_TARGET_SENTINEL}",
+        "--setenv",
+        f"{GAIN_ENV}={args.gain}",
+        "--setenv",
+        f"{LATENCY_FRAMES_ENV}={args.latency_frames}",
+        "--setenv",
+        f"{RUNTIME_MAX_SECONDS_ENV}={args.runtime_max_seconds}",
         "--unit",
         UNIT_NAME.removesuffix(".service"),
         "--property",
@@ -650,6 +667,20 @@ def stop_service(*, announce: bool = True) -> int:
     return 0
 
 
+def parse_service_environment(value: str) -> dict[str, str]:
+    try:
+        items = shlex.split(value)
+    except ValueError as error:
+        raise RuntimeError(f"invalid systemd service environment: {error}") from error
+    environment: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            continue
+        key, setting = item.split("=", 1)
+        environment[key] = setting
+    return environment
+
+
 def service_status() -> dict[str, object]:
     result = run_capture(
         [
@@ -677,6 +708,19 @@ def service_status() -> dict[str, object]:
         raise RuntimeError(f"systemctl show failed: {detail}")
     if "LoadState" not in values or "ActiveState" not in values:
         raise RuntimeError("systemctl show returned incomplete service state")
+    environment = parse_service_environment(values.get("Environment", ""))
+    target = environment.get(TARGET_ENV)
+    if target == DEFAULT_TARGET_SENTINEL:
+        target = None
+
+    def optional_int(name: str) -> int | None:
+        value = environment.get(name)
+        return int(value) if value not in {None, ""} else None
+
+    def optional_float(name: str) -> float | None:
+        value = environment.get(name)
+        return float(value) if value not in {None, ""} else None
+
     return {
         "unit": UNIT_NAME,
         "load_state": values.get("LoadState", "unknown"),
@@ -684,15 +728,47 @@ def service_status() -> dict[str, object]:
         "sub_state": values.get("SubState", "unknown"),
         "result": values.get("Result", "unknown"),
         "exec_main_status": values.get("ExecMainStatus", "unknown"),
-        "voice_mode": next(
-            (
-                item.split("=", 1)[1]
-                for item in values.get("Environment", "").split()
-                if item.startswith(f"{VOICE_MODE_ENV}=")
-            ),
-            None,
-        ),
+        "voice_mode": environment.get(VOICE_MODE_ENV),
+        "midi_port": environment.get(MIDI_PORT_ENV),
+        "target": target,
+        "gain": optional_float(GAIN_ENV),
+        "latency_frames": optional_int(LATENCY_FRAMES_ENV),
+        "runtime_max_seconds": optional_int(RUNTIME_MAX_SECONDS_ENV),
     }
+
+
+def restart_namespace_from_status(
+    status: dict[str, object], voice_mode: str
+) -> argparse.Namespace:
+    midi_port = status.get("midi_port")
+    target = status.get("target")
+    gain = status.get("gain")
+    latency_frames = status.get("latency_frames")
+    runtime_max_seconds = status.get("runtime_max_seconds")
+    if not isinstance(midi_port, str) or not midi_port:
+        midi_port = "auto"
+    if target is not None and not isinstance(target, str):
+        raise RuntimeError("managed service target is invalid")
+    if not isinstance(gain, (int, float)):
+        gain = 0.16
+    if not isinstance(latency_frames, int):
+        latency_frames = 128
+    if not isinstance(runtime_max_seconds, int):
+        runtime_max_seconds = MAX_MANAGED_RUNTIME_SECONDS
+    if not 0 < float(gain) <= MAX_MASTER_GAIN:
+        raise RuntimeError("managed service gain is invalid")
+    if not 32 <= latency_frames <= 2_048:
+        raise RuntimeError("managed service latency is invalid")
+    if not 60 <= runtime_max_seconds <= MAX_MANAGED_RUNTIME_SECONDS:
+        raise RuntimeError("managed service runtime limit is invalid")
+    return argparse.Namespace(
+        midi_port=midi_port,
+        target=target,
+        gain=float(gain),
+        latency_frames=latency_frames,
+        runtime_max_seconds=runtime_max_seconds,
+        voice_mode=voice_mode,
+    )
 
 
 def render_voice_timeline(
@@ -753,8 +829,13 @@ def bounded_gain(value: str) -> float:
     return gain
 
 
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValueError(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = JsonArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("doctor", help="read-only runtime and MIDI readiness report")
@@ -797,9 +878,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
     try:
+        args = build_parser().parse_args(argv)
         if args.command == "doctor":
             report = runtime_doctor()
             print(json.dumps(report, indent=2, sort_keys=True))
@@ -849,18 +930,12 @@ def main() -> int:
                 )
             )
         if args.command == "mode":
-            if service_active():
+            active = service_active()
+            status = service_status() if active else {}
+            restart_args = restart_namespace_from_status(status, args.voice_mode)
+            if active:
                 stop_service(announce=False)
-            return start_service(
-                argparse.Namespace(
-                    midi_port="auto",
-                    target=None,
-                    gain=0.16,
-                    latency_frames=128,
-                    runtime_max_seconds=MAX_MANAGED_RUNTIME_SECONDS,
-                    voice_mode=args.voice_mode,
-                )
-            )
+            return start_service(restart_args)
         raise AssertionError("unreachable command")
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         print(

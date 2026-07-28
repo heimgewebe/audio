@@ -215,12 +215,13 @@
   "render_contract": {
     "default_voice_mode": "realistic",
     "looping": "equal-power-crossfade",
-    "maximum_pitch_shift_semitones": 4,
-    "monophonic": true
+    "maximum_total_pitch_shift_semitones": 4,
+    "monophonic": true,
+    "pitch_bend_included": true
   },
   "sample_rate_hz": 48000,
   "sample_width_bytes": 2,
-  "schema_version": 1,
+  "schema_version": 2,
   "slots": [
     {
       "clip_id": "humpback-moo-nps-01",
@@ -385,79 +386,167 @@
       "root_note": 108
     }
   ],
-  "source_catalog_sha256": "c9a17e0cc0edc9573b2ccae0a5d2733122326c7e50b489766dcc3e92a66da54e",
+  "source_catalog_schema_version": 2,
+  "source_catalog_sha256": "d5a9dad7f56ea9893c1d1c458578447721529b032c8c4c006eea245ef43687b8",
   "sources": [
     {
-      "attribution": "Spyrogumas, Song of Humpback Whales",
+      "attribution": "Spyrogumas — Song of Humpback Whales",
+      "bytes": 400820,
       "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Spyrogumas"
+      ],
       "file": "raw/humpback-song-cc0.ogg",
       "id": "humpback-song-cc0",
       "license": "CC0-1.0",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
       "sha256": "cf05e8aa82b3e0296a6fa83a464ee179a8c0e462270493d35af4019c545d5f04",
-      "source_page": "https://commons.wikimedia.org/wiki/File:Humpbackwhale2.ogg"
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpbackwhale2.ogg",
+      "title": "Song of Humpback Whales"
     },
     {
-      "attribution": "U.S. National Park Service, Glacier Bay hydrophone recording",
+      "attribution": "U.S. National Park Service — Humpback whale moo, Glacier Bay hydrophone recording, September 2001",
+      "bytes": 274534,
       "category": "low",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "U.S. National Park Service"
+      ],
       "file": "raw/humpback-moo-nps.ogg",
       "id": "humpback-moo-nps",
       "license": "Public-Domain-US-NPS",
+      "license_url": "https://www.nps.gov/aboutus/disclaimer.htm",
       "sha256": "c61c17c0ecc3e71db70891290cad4c8982792b83d4b9e586ccc7a09aa2dbb25e",
-      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback_whale_moo.ogg"
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback_whale_moo.ogg",
+      "title": "Humpback whale moo"
     },
     {
-      "attribution": "U.S. National Park Service, Glacier Bay hydrophone recording",
+      "attribution": "U.S. National Park Service — Humpback whale wheezeblow, Glacier Bay hydrophone recording, September 2001",
+      "bytes": 530768,
       "category": "high",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "U.S. National Park Service"
+      ],
       "file": "raw/humpback-wheezeblow-nps.ogg",
       "id": "humpback-wheezeblow-nps",
       "license": "Public-Domain-US-NPS",
+      "license_url": "https://www.nps.gov/aboutus/disclaimer.htm",
       "sha256": "af4ca0b6d71aee31a8c73a37eef4b60492a06116e46683e10668552be0f9feb9",
-      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback_whale_wheezeblow.ogg"
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback_whale_wheezeblow.ogg",
+      "title": "Humpback whale wheezeblow"
     },
     {
-      "attribution": "Garland et al. (2013), PLOS ONE, Acoustic File S1",
+      "attribution": "Ellen C. Garland, Jason Gedamke, Melinda L. Rekdahl, Michael J. Noad, Claire Garrigue, Nick Gales — Antarctic Area V 2010 song, Acoustic File S1; supporting audio for Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission (2013), PLOS ONE",
+      "bytes": 251208,
       "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Ellen C. Garland",
+        "Jason Gedamke",
+        "Melinda L. Rekdahl",
+        "Michael J. Noad",
+        "Claire Garrigue",
+        "Nick Gales"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0079422",
       "file": "raw/song-antarctic-area-v-2010-ccby25.oga",
       "id": "song-antarctic-area-v-2010",
       "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission",
       "sha256": "da05d6d111f1f1f7655e76dcd9f53a583f2d7125d0afd7e20a32af10d34e59e3",
-      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s001.oga"
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s001.oga",
+      "title": "Antarctic Area V 2010 song, Acoustic File S1"
     },
     {
-      "attribution": "Garland et al. (2013), PLOS ONE, Acoustic File S3",
+      "attribution": "Ellen C. Garland, Jason Gedamke, Melinda L. Rekdahl, Michael J. Noad, Claire Garrigue, Nick Gales — New Caledonia 2010 song, Acoustic File S3; supporting audio for Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission (2013), PLOS ONE",
+      "bytes": 887963,
       "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Ellen C. Garland",
+        "Jason Gedamke",
+        "Melinda L. Rekdahl",
+        "Michael J. Noad",
+        "Claire Garrigue",
+        "Nick Gales"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0079422",
       "file": "raw/song-new-caledonia-2010-ccby25.oga",
       "id": "song-new-caledonia-2010",
       "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission",
       "sha256": "8ca4c2cf839e5aa3e74a12ced49d2db7592ec5492351839d17c20a1d6bf7881f",
-      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s003.oga"
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s003.oga",
+      "title": "New Caledonia 2010 song, Acoustic File S3"
     },
     {
-      "attribution": "Garland et al. (2013), PLOS ONE, Acoustic File S4",
+      "attribution": "Ellen C. Garland, Jason Gedamke, Melinda L. Rekdahl, Michael J. Noad, Claire Garrigue, Nick Gales — Eastern Australia 2010 song, Acoustic File S4; supporting audio for Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission (2013), PLOS ONE",
+      "bytes": 517238,
       "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Ellen C. Garland",
+        "Jason Gedamke",
+        "Melinda L. Rekdahl",
+        "Michael J. Noad",
+        "Claire Garrigue",
+        "Nick Gales"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0079422",
       "file": "raw/song-eastern-australia-2010-ccby25.oga",
       "id": "song-eastern-australia-2010",
       "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song on the Southern Ocean Feeding Grounds: Implications for Cultural Transmission",
       "sha256": "e897b284fa8e9945195619c101804516174d6b9b8471bee4371983e19245794b",
-      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s004.oga"
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-on-the-Southern-Ocean-Feeding-Grounds-Implications-for-Cultural-Transmission-pone.0079422.s004.oga",
+      "title": "Eastern Australia 2010 song, Acoustic File S4"
     },
     {
-      "attribution": "Stimpert et al. (2012), PLOS ONE, Acoustic File S1",
+      "attribution": "Alison K. Stimpert, Lindsey E. Peavey, Ari S. Friedlaender, Douglas P. Nowacek — Representative song phrases from record mn132a, Acoustic File S1; supporting audio for Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground (2012), PLOS ONE",
+      "bytes": 463592,
       "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Alison K. Stimpert",
+        "Lindsey E. Peavey",
+        "Ari S. Friedlaender",
+        "Douglas P. Nowacek"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0051214",
       "file": "raw/song-foraging-mn132a-ccby25.oga",
       "id": "song-foraging-mn132a",
       "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground",
       "sha256": "709db575564662bc32861d26d0efa167bee40093ee147c94190752857fb84971",
-      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-and-Foraging-Behavior-on-an-Antarctic-Feeding-Ground-pone.0051214.s001.oga"
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-and-Foraging-Behavior-on-an-Antarctic-Feeding-Ground-pone.0051214.s001.oga",
+      "title": "Representative song phrases from record mn132a, Acoustic File S1"
     },
     {
-      "attribution": "Stimpert et al. (2012), PLOS ONE, Acoustic File S2",
+      "attribution": "Alison K. Stimpert, Lindsey E. Peavey, Ari S. Friedlaender, Douglas P. Nowacek — Representative song phrases from record mn133a, Acoustic File S2; supporting audio for Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground (2012), PLOS ONE",
+      "bytes": 473176,
       "category": "song",
+      "changes": "Unmodified raw Ogg source redistributed as downloaded from Wikimedia Commons. Processed derivatives are converted to mono PCM16 at 48 kHz, filtered, compressed, excerpted, DC-corrected, normalized, faded and loop-annotated.",
+      "creators": [
+        "Alison K. Stimpert",
+        "Lindsey E. Peavey",
+        "Ari S. Friedlaender",
+        "Douglas P. Nowacek"
+      ],
+      "doi": "https://doi.org/10.1371/journal.pone.0051214",
       "file": "raw/song-foraging-mn133a-ccby25.oga",
       "id": "song-foraging-mn133a",
       "license": "CC-BY-2.5",
+      "license_url": "https://creativecommons.org/licenses/by/2.5/",
+      "parent_work": "Humpback Whale Song and Foraging Behavior on an Antarctic Feeding Ground",
       "sha256": "a24cc9221811cf8d946c2701ae08cacd5701a3d8940f4bbcd543600490fa487f",
-      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-and-Foraging-Behavior-on-an-Antarctic-Feeding-Ground-pone.0051214.s002.oga"
+      "source_page": "https://commons.wikimedia.org/wiki/File:Humpback-Whale-Song-and-Foraging-Behavior-on-an-Antarctic-Feeding-Ground-pone.0051214.s002.oga",
+      "title": "Representative song phrases from record mn133a, Acoustic File S2"
     }
   ]
 }
