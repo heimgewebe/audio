@@ -4,6 +4,7 @@ import pathlib
 import stat
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -70,6 +71,12 @@ def runtime_results():
             "Id=pipewire.service\nLoadState=loaded\nActiveState=active\n"
             "SubState=running\nNRestarts=0\nMemoryCurrent=1000\n"
             "TasksCurrent=3\nLimitNOFILE=1048576\n\n"
+            "Id=pipewire-pulse.service\nLoadState=loaded\nActiveState=active\n"
+            "SubState=running\nNRestarts=0\nMemoryCurrent=1100\n"
+            "TasksCurrent=3\nLimitNOFILE=1048576\n\n"
+            "Id=wireplumber.service\nLoadState=loaded\nActiveState=active\n"
+            "SubState=running\nNRestarts=0\nMemoryCurrent=1200\n"
+            "TasksCurrent=5\nLimitNOFILE=1048576\n\n"
             "Id=mopidy.service\nLoadState=loaded\nActiveState=active\n"
             "SubState=running\nNRestarts=1\nMemoryCurrent=2000\n"
             "TasksCurrent=4\nLimitNOFILE=1048576\n"
@@ -114,6 +121,7 @@ def recompute(report):
         report["runtime"],
         report["physical"],
         report["laboratory"],
+        report["playback"],
     )
     report["report_sha256"] = MODULE.sha256_json(MODULE.report_digest_core(report))
 
@@ -267,6 +275,8 @@ class SystemTruthTests(unittest.TestCase):
         processes = MODULE.parse_processes(runtime_results()[2])
         self.assertEqual(processes[0]["classification"], "playback")
         self.assertNotIn("arguments", processes[0])
+        self.assertNotIn("command", processes[0])
+        self.assertRegex(processes[0]["command_sha256"], r"^[0-9a-f]{64}$")
         first = MODULE.process_fingerprint(processes)
         pid_changed = copy.deepcopy(processes)
         pid_changed[0]["pid"] = 99999
@@ -276,7 +286,7 @@ class SystemTruthTests(unittest.TestCase):
         rate_48 = [
             {
                 "classification": "recorder",
-                "command": "pw-record",
+                "command_sha256": MODULE.sha256_bytes(b"pw-record"),
                 "arguments_sha256": MODULE.sha256_bytes(
                     b"pw-record --rate 48000 --channels 2"
                 ),
@@ -305,6 +315,176 @@ class SystemTruthTests(unittest.TestCase):
             ),
             "creative-runtime",
         )
+
+    def test_canonical_command_vector_rejects_mutation_and_runtime_forgery(self):
+        report = self.report()
+        mutation = MODULE.CommandResult(
+            ("systemctl", "--user", "restart", "pipewire"),
+            0,
+            "",
+            "",
+            stdout_sha256=MODULE.sha256_bytes(b""),
+            stderr_sha256=MODULE.sha256_bytes(b""),
+        )
+        report["commands"].append(MODULE.command_record(mutation))
+        recompute(report)
+        with self.assertRaisesRegex(ValueError, "canonical command vector"):
+            MODULE.verify_report(report)
+
+        report = self.report()
+        report["runtime"]["command_health"][0]["accepted"] = False
+        report["runtime"]["observation_completeness"] = (
+            MODULE.runtime_observation_completeness(report["runtime"])
+        )
+        report["gates"] = MODULE.build_gate_status(
+            report["doctor"],
+            report["physical"],
+            report["laboratory"],
+            report["runtime"],
+            report["contracts"],
+        )
+        recompute(report)
+        with self.assertRaisesRegex(ValueError, "runtime command-health"):
+            MODULE.verify_report(report)
+
+    def test_missing_service_observation_degrades_runtime_gate(self):
+        report = self.report()
+        results = runtime_results()
+        results[0] = MODULE.CommandResult(
+            results[0].argv,
+            4,
+            "",
+            "",
+            stdout_sha256=MODULE.sha256_bytes(b""),
+            stderr_sha256=MODULE.sha256_bytes(b""),
+        )
+        results[1] = MODULE.CommandResult(
+            results[1].argv,
+            1,
+            "",
+            "",
+            stdout_sha256=MODULE.sha256_bytes(b""),
+            stderr_sha256=MODULE.sha256_bytes(b""),
+        )
+        runtime = MODULE.build_runtime_projection(results, report["doctor"])
+        gates = MODULE.build_gate_status(
+            report["doctor"],
+            report["physical"],
+            report["laboratory"],
+            runtime,
+            report["contracts"],
+        )
+        self.assertFalse(runtime["observation_completeness"]["complete"])
+        self.assertEqual(gates["runtime-storage-observation"]["status"], "degraded")
+
+    def test_qobuz_proof_requires_matching_current_track_context(self):
+        track = "a" * 64
+        graph = {
+            "default_sink": "motu-m2",
+            "default_source": "roland-fp-30x",
+            "force_rate_hz": 48000,
+            "force_quantum_frames": 1024,
+        }
+        evidence = {
+            "schema_version": 1,
+            "kind": "qobuz_rate_observation",
+            "gate": "qobuz-rate-proof",
+            "result": "pass",
+            "measured_at": "2026-07-28T00:00:00+00:00",
+            "track_rate_hz": 48000,
+            "track_fingerprint": track,
+            "graph_rate_hz": 48000,
+            "endpoint_rate_hz": 48000,
+            "resampling_observed": False,
+            "method": "read-only current-track rate observation",
+            "graph_fingerprint": MODULE.LABORATORY.graph_fingerprint(graph),
+            "physical_state_sha256": None,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            lab_path = root / "laboratory.json"
+            physical_path = root / "physical.json"
+            state = MODULE.LABORATORY.empty_state()
+            MODULE.LABORATORY.record_gate(
+                state, "qobuz-rate-proof", evidence, physical_path
+            )
+            MODULE.LABORATORY.atomic_write_private(lab_path, state)
+            missing = MODULE.build_report(
+                doctor_results(),
+                runtime_results(),
+                physical_state=physical_path,
+                laboratory_state=lab_path,
+            )
+            self.assertNotEqual(missing["gates"]["qobuz-rate-proof"]["status"], "pass")
+            matching = MODULE.build_report(
+                doctor_results(),
+                runtime_results(),
+                physical_state=physical_path,
+                laboratory_state=lab_path,
+                qobuz_track_fingerprint=track,
+                qobuz_track_rate_hz=48000,
+            )
+            self.assertEqual(matching["gates"]["qobuz-rate-proof"]["status"], "pass")
+            MODULE.verify_report(matching)
+            changed = MODULE.build_report(
+                doctor_results(),
+                runtime_results(),
+                physical_state=physical_path,
+                laboratory_state=lab_path,
+                qobuz_track_fingerprint="b" * 64,
+                qobuz_track_rate_hz=48000,
+            )
+            self.assertNotEqual(changed["gates"]["qobuz-rate-proof"]["status"], "pass")
+
+    def test_all_relevant_processes_are_fingerprinted_and_identity_hidden(self):
+        header = "PID PPID STAT ELAPSED %CPU %MEM COMMAND COMMAND\n"
+        lines = [
+            f"{index} 1 S 1 0.0 0.0 mopidy /usr/bin/mopidy --instance {index}"
+            for index in range(1, 202)
+        ]
+        result = MODULE.CommandResult(
+            MODULE.READ_ONLY_COMMANDS[2], 0, header + "\n".join(lines) + "\n", ""
+        )
+        processes = MODULE.parse_processes(result)
+        self.assertEqual(len(processes), 201)
+        self.assertNotIn("mopidy", str(processes))
+        changed_lines = list(lines)
+        changed_lines[-1] += " --changed"
+        changed = MODULE.parse_processes(
+            MODULE.CommandResult(
+                MODULE.READ_ONLY_COMMANDS[2],
+                0,
+                header + "\n".join(changed_lines) + "\n",
+                "",
+            )
+        )
+        self.assertNotEqual(
+            MODULE.process_fingerprint(processes),
+            MODULE.process_fingerprint(changed),
+        )
+
+    def test_timeout_kills_process_group_with_bounded_drain(self):
+        original_timeout = MODULE.COMMAND_TIMEOUT_SECONDS
+        original_drain = MODULE.POST_KILL_DRAIN_SECONDS
+        try:
+            MODULE.COMMAND_TIMEOUT_SECONDS = 0.1
+            MODULE.POST_KILL_DRAIN_SECONDS = 0.2
+            started = time.monotonic()
+            result = MODULE.run_read_only(
+                (
+                    sys.executable,
+                    "-c",
+                    "import subprocess,sys,time; "
+                    "subprocess.Popen([sys.executable,'-c','import time;time.sleep(2)']); "
+                    "time.sleep(5)",
+                )
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            MODULE.COMMAND_TIMEOUT_SECONDS = original_timeout
+            MODULE.POST_KILL_DRAIN_SECONDS = original_drain
+        self.assertEqual(result.error, "timeout")
+        self.assertLess(elapsed, 0.8)
 
     def test_non_systemctl_returncode_three_degrades_runtime_gate(self):
         report = self.report()
@@ -439,13 +619,36 @@ class SystemTruthTests(unittest.TestCase):
         self.assertIn("qobuz-rate-proof", drift["required_remeasurements"])
         self.assertNotIn("loopback-latency", drift["required_remeasurements"])
 
-    def test_physical_drift_invalidates_physical_gates_and_exercises(self):
+    def test_physical_drift_separates_laboratory_gates_and_followups(self):
         required = MODULE.required_remeasurements({"physical_state"})
+        followups = MODULE.required_followups({"physical_state"})
         self.assertIn("voice-level-measurement", required)
         self.assertIn("loopback-latency-measurement", required)
-        self.assertIn("safe-listening-calibration", required)
-        self.assertIn("motu-device-loss-exercise", required)
-        self.assertIn("roland-device-loss-exercise", required)
+        self.assertTrue(set(required) <= set(MODULE.LABORATORY.load_catalog()))
+        self.assertIn("safe-listening-calibration", followups)
+        self.assertIn("motu-device-loss-exercise", followups)
+        self.assertIn("roland-device-loss-exercise", followups)
+
+    def test_process_drift_is_material(self):
+        before = self.report()
+        after = copy.deepcopy(before)
+        after["runtime"]["processes"].append(
+            copy.deepcopy(after["runtime"]["processes"][0])
+        )
+        after["runtime"]["process_fingerprint"] = MODULE.process_fingerprint(
+            after["runtime"]["processes"]
+        )
+        after["gates"] = MODULE.build_gate_status(
+            after["doctor"],
+            after["physical"],
+            after["laboratory"],
+            after["runtime"],
+            after["contracts"],
+        )
+        recompute(after)
+        drift = MODULE.build_drift_report(before, after)
+        self.assertTrue(drift["material"])
+        self.assertIn("managed-plugin-host-proof", drift["required_remeasurements"])
 
     def test_no_drift_is_empty(self):
         report = self.report()

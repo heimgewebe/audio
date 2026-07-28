@@ -17,6 +17,7 @@ import pathlib
 import re
 import secrets
 import selectors
+import signal
 import shlex
 import stat
 import subprocess
@@ -30,6 +31,7 @@ SCHEMA_VERSION = 1
 MAX_COMMAND_BYTES = 262_144
 MAX_REPORT_BYTES = 4_194_304
 COMMAND_TIMEOUT_SECONDS = 12.0
+POST_KILL_DRAIN_SECONDS = 0.5
 MAX_TREE_ENTRIES = 5_000
 MAX_TREE_SECONDS = 2.0
 READ_CHUNK_BYTES = 65_536
@@ -201,6 +203,10 @@ def assert_read_only_commands(commands: Iterable[tuple[str, ...]] = READ_ONLY_CO
         raise RuntimeError("mutation-capable truth command: " + "; ".join(violations))
 
 
+def expected_command_argvs() -> list[tuple[str, ...]]:
+    return [*DOCTOR.READ_ONLY_COMMANDS, *READ_ONLY_COMMANDS]
+
+
 def allowed_returncodes(argv: tuple[str, ...]) -> frozenset[int]:
     if argv[:3] == ("systemctl", "--user", "is-active"):
         return frozenset({0, 3, 4})
@@ -225,6 +231,7 @@ def run_read_only(argv: tuple[str, ...]) -> CommandResult:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             close_fds=True,
+            start_new_session=True,
             env={**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"},
         )
     except FileNotFoundError:
@@ -260,13 +267,36 @@ def run_read_only(argv: tuple[str, ...]) -> CommandResult:
         selector.register(stream["file"], selectors.EVENT_READ, name)
 
     deadline = started + COMMAND_TIMEOUT_SECONDS
+    drain_deadline: float | None = None
     error: str | None = None
+
+    def kill_process_group() -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+
     while selector.get_map():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0 and process.poll() is None:
+        now = time.monotonic()
+        if error is None and now >= deadline:
             error = "timeout"
-            process.kill()
-        events = selector.select(timeout=max(0.0, min(0.2, remaining)))
+            kill_process_group()
+            drain_deadline = now + POST_KILL_DRAIN_SECONDS
+        if drain_deadline is not None and now >= drain_deadline:
+            for key in list(selector.get_map().values()):
+                try:
+                    selector.unregister(key.fileobj)
+                except KeyError:
+                    pass
+                key.fileobj.close()
+            break
+        wait_until = drain_deadline if drain_deadline is not None else deadline
+        events = selector.select(timeout=max(0.0, min(0.2, wait_until - now)))
         if not events and process.poll() is not None:
             events = [(key, selectors.EVENT_READ) for key in selector.get_map().values()]
         for key, _ in events:
@@ -288,7 +318,15 @@ def run_read_only(argv: tuple[str, ...]) -> CommandResult:
             if len(chunk) > available:
                 stream["truncated"] = True
     selector.close()
-    returncode = process.wait()
+    try:
+        returncode = process.wait(timeout=POST_KILL_DRAIN_SECONDS)
+    except subprocess.TimeoutExpired:
+        kill_process_group()
+        try:
+            returncode = process.wait(timeout=POST_KILL_DRAIN_SECONDS)
+        except subprocess.TimeoutExpired:
+            returncode = 124
+            error = "timeout"
 
     def text(name: str) -> str:
         # Raw output remains process-local and bounded. Persisted projections either
@@ -359,6 +397,27 @@ def doctor_inputs_from_capture(results: list[CommandResult]) -> list[Any]:
     ]
 
 
+def capture_from_doctor_results(results: Iterable[Any]) -> list[CommandResult]:
+    captured: list[CommandResult] = []
+    for result in results:
+        stdout = str(result.stdout)
+        stderr = str(result.stderr)
+        captured.append(
+            CommandResult(
+                argv=tuple(result.argv),
+                returncode=int(result.returncode),
+                stdout=stdout,
+                stderr=stderr,
+                error=result.error,
+                stdout_total_bytes=len(stdout.encode("utf-8")),
+                stderr_total_bytes=len(stderr.encode("utf-8")),
+                stdout_sha256=sha256_bytes(stdout.encode("utf-8")),
+                stderr_sha256=sha256_bytes(stderr.encode("utf-8")),
+            )
+        )
+    return captured
+
+
 def parse_services(result: CommandResult | None) -> dict[str, str]:
     names = ("pipewire", "pipewire-pulse", "wireplumber", "mopidy", "easyeffects")
     lines = result.stdout.splitlines() if result else []
@@ -386,6 +445,54 @@ def parse_systemd_show(result: CommandResult | None) -> dict[str, dict[str, Any]
             else:
                 current[key] = value or None
     return dict(sorted(units.items()))
+
+
+REQUIRED_SERVICE_STATES = ("pipewire", "pipewire-pulse", "wireplumber", "mopidy")
+REQUIRED_SERVICE_UNITS = tuple(f"{name}.service" for name in REQUIRED_SERVICE_STATES)
+
+
+def runtime_observation_completeness(runtime: dict[str, Any]) -> dict[str, Any]:
+    services = runtime.get("services") if isinstance(runtime.get("services"), dict) else {}
+    limits = (
+        runtime.get("service_limits")
+        if isinstance(runtime.get("service_limits"), dict)
+        else {}
+    )
+    command_health = (
+        runtime.get("command_health")
+        if isinstance(runtime.get("command_health"), list)
+        else []
+    )
+    observed_commands = {
+        tuple(item.get("argv", [])): item
+        for item in command_health
+        if isinstance(item, dict) and isinstance(item.get("argv"), list)
+    }
+    missing_states = sorted(
+        name for name in REQUIRED_SERVICE_STATES if services.get(name) == "unknown"
+    )
+    missing_limits = sorted(
+        unit for unit in REQUIRED_SERVICE_UNITS if unit not in limits
+    )
+    missing_commands = sorted(
+        shlex.join(command)
+        for command in READ_ONLY_COMMANDS
+        if command not in observed_commands
+    )
+    rejected_commands = sorted(
+        shlex.join(command)
+        for command, item in observed_commands.items()
+        if command in READ_ONLY_COMMANDS and item.get("accepted") is not True
+    )
+    return {
+        "complete": not (
+            missing_states or missing_limits or missing_commands or rejected_commands
+        ),
+        "missing_service_states": missing_states,
+        "missing_service_limits": missing_limits,
+        "missing_commands": missing_commands,
+        "rejected_commands": rejected_commands,
+    }
 
 
 def classify_process(command: str, arguments: str) -> str | None:
@@ -432,11 +539,13 @@ def parse_processes(result: CommandResult | None) -> list[dict[str, Any]]:
                     if re.fullmatch(r"\d+(?:\.\d+)?", memory)
                     else None
                 ),
-                "command": command,
+                "command_sha256": sha256_bytes(
+                    DOCTOR.redact(command).encode("utf-8")
+                ),
                 "arguments_sha256": sha256_bytes(redacted_arguments.encode("utf-8")),
             }
         )
-    return records[:200]
+    return records
 
 
 def process_fingerprint(processes: list[dict[str, Any]]) -> str:
@@ -444,7 +553,7 @@ def process_fingerprint(processes: list[dict[str, Any]]) -> str:
         [
             (
                 str(item.get("classification")),
-                str(item.get("command")),
+                str(item.get("command_sha256")),
                 str(item.get("arguments_sha256")),
             )
             for item in processes
@@ -600,10 +709,54 @@ def physical_projection(state_path: pathlib.Path) -> dict[str, Any]:
     }
 
 
+def normalize_qobuz_context(
+    track_fingerprint: str | None, track_rate_hz: int | None
+) -> dict[str, Any] | None:
+    if track_fingerprint is None and track_rate_hz is None:
+        return None
+    if track_fingerprint is None or track_rate_hz is None:
+        raise ValueError(
+            "Qobuz current-track context requires both fingerprint and rate"
+        )
+    validate_sha(track_fingerprint, "Qobuz track fingerprint")
+    if isinstance(track_rate_hz, bool) or not isinstance(track_rate_hz, int) or track_rate_hz <= 0:
+        raise ValueError("Qobuz track rate must be a positive integer")
+    return {
+        "track_fingerprint": track_fingerprint,
+        "track_rate_hz": track_rate_hz,
+    }
+
+
+def laboratory_receipt_binding(gate: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    fields_by_gate = {
+        "loopback-latency-measurement": (
+            "quantum_frames",
+            "graph_fingerprint",
+        ),
+        "xrun-stability-test": (
+            "rate_hz",
+            "quantum_frames",
+            "graph_fingerprint",
+        ),
+        "qobuz-rate-proof": (
+            "track_fingerprint",
+            "track_rate_hz",
+            "graph_rate_hz",
+            "endpoint_rate_hz",
+            "resampling_observed",
+            "graph_fingerprint",
+        ),
+    }
+    return {
+        field: evidence.get(field) for field in fields_by_gate.get(gate, ())
+    }
+
+
 def laboratory_projection(
     state_path: pathlib.Path,
     physical_state_path: pathlib.Path,
     graph: dict[str, Any],
+    qobuz_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state = LABORATORY.read_state(state_path)
     status = LABORATORY.status_payload(state, state_path, physical_state_path)
@@ -630,6 +783,18 @@ def laboratory_projection(
         if gate in {"xrun-stability-test", "loopback-latency-measurement"}:
             if evidence.get("quantum_frames") != graph.get("force_quantum_frames"):
                 incompatible[gate] = "graph-quantum-changed"
+                continue
+        if gate == "qobuz-rate-proof":
+            if qobuz_context is None:
+                incompatible[gate] = "current-track-context-missing"
+                continue
+            if evidence.get("track_fingerprint") != qobuz_context.get(
+                "track_fingerprint"
+            ):
+                incompatible[gate] = "track-fingerprint-changed"
+                continue
+            if evidence.get("track_rate_hz") != qobuz_context.get("track_rate_hz"):
+                incompatible[gate] = "track-rate-changed"
     resolved -= set(incompatible)
     invalidated = dict(status["invalidated"])
     invalidated.update(incompatible)
@@ -640,6 +805,12 @@ def laboratory_projection(
             "recorded_at": receipt.get("recorded_at"),
             "evidence_sha256": receipt.get("evidence_sha256"),
             "physical_state_sha256": receipt.get("physical_state_sha256"),
+            "binding": laboratory_receipt_binding(
+                gate,
+                receipt.get("evidence", {})
+                if isinstance(receipt.get("evidence"), dict)
+                else {},
+            ),
         }
         for gate, receipt in sorted(state.get("gates", {}).items())
         if isinstance(receipt, dict)
@@ -737,7 +908,21 @@ def build_gate_status(
         for item in runtime["bounded_state_usage"]
         if item["errors"] or item["truncated"] or item["time_exhausted"]
     ]
-    runtime_failures = command_failures + [f"state-tree:{item}" for item in tree_failures]
+    completeness = runtime_observation_completeness(runtime)
+    completeness_failures = [
+        f"service-state:{item}" for item in completeness["missing_service_states"]
+    ] + [
+        f"service-limit:{item}" for item in completeness["missing_service_limits"]
+    ] + [
+        f"missing-command:{item}" for item in completeness["missing_commands"]
+    ] + [
+        f"rejected-command:{item}" for item in completeness["rejected_commands"]
+    ]
+    runtime_failures = (
+        command_failures
+        + [f"state-tree:{item}" for item in tree_failures]
+        + completeness_failures
+    )
     voice = laboratory_gate_status(laboratory, "voice-level-measurement", "measurement-required")
     if unresolved & voice_required and voice["status"] != "pass":
         voice = _gate(
@@ -834,14 +1019,16 @@ def build_runtime_projection(results: list[CommandResult], doctor: dict[str, Any
     )
     disk_result = command_by_prefix(results, ("journalctl", "--user", "--disk-usage"))
     command_health = [command_record(result) for result in results]
-    return {
+    services = parse_services(
+        command_by_prefix(results, ("systemctl", "--user", "is-active"))
+    )
+    service_limits = parse_systemd_show(
+        command_by_prefix(results, ("systemctl", "--user", "show"))
+    )
+    projection = {
         "graph_fingerprint": graph_fingerprint(doctor),
-        "services": parse_services(
-            command_by_prefix(results, ("systemctl", "--user", "is-active"))
-        ),
-        "service_limits": parse_systemd_show(
-            command_by_prefix(results, ("systemctl", "--user", "show"))
-        ),
+        "services": services,
+        "service_limits": service_limits,
         "processes": processes,
         "process_fingerprint": process_fingerprint(processes),
         "filesystem": parse_df(command_by_prefix(results, ("df", "-B1"))),
@@ -868,6 +1055,10 @@ def build_runtime_projection(results: list[CommandResult], doctor: dict[str, Any
         "versions": version_projection(results),
         "command_health": command_health,
     }
+    projection["observation_completeness"] = runtime_observation_completeness(
+        projection
+    )
+    return projection
 
 
 def compute_truth_chain(
@@ -875,6 +1066,7 @@ def compute_truth_chain(
     runtime: dict[str, Any],
     physical: dict[str, Any],
     laboratory: dict[str, Any],
+    playback: dict[str, Any],
 ) -> str:
     return sha256_json(
         {
@@ -882,6 +1074,7 @@ def compute_truth_chain(
             "doctor": runtime["graph_fingerprint"],
             "physical": physical["state_sha256"],
             "laboratory": laboratory["state_sha256"],
+            "playback": sha256_json(playback),
             "runtime": sha256_json(
                 {
                     "services": runtime["services"],
@@ -905,18 +1098,32 @@ def build_report(
     *,
     physical_state: pathlib.Path = PHYSICAL.DEFAULT_STATE,
     laboratory_state: pathlib.Path = LABORATORY.DEFAULT_STATE,
+    qobuz_track_fingerprint: str | None = None,
+    qobuz_track_rate_hz: int | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     assert_read_only_commands()
-    doctor_capture: list[CommandResult] = []
     if doctor_results is None:
         doctor_capture = [run_read_only(command) for command in DOCTOR.READ_ONLY_COMMANDS]
-        doctor_results = doctor_inputs_from_capture(doctor_capture)
-    doctor_report = DOCTOR.build_report(doctor_results, DOCTOR.read_eld_text())
+        normalized_doctor_results = doctor_inputs_from_capture(doctor_capture)
+    else:
+        normalized_doctor_results = list(doctor_results)
+        doctor_capture = capture_from_doctor_results(normalized_doctor_results)
+    doctor_report = DOCTOR.build_report(
+        normalized_doctor_results, DOCTOR.read_eld_text()
+    )
     runtime_results = runtime_results or [run_read_only(command) for command in READ_ONLY_COMMANDS]
     physical = physical_projection(physical_state)
+    playback = {
+        "qobuz_current_track": normalize_qobuz_context(
+            qobuz_track_fingerprint, qobuz_track_rate_hz
+        )
+    }
     laboratory = laboratory_projection(
-        laboratory_state, physical_state, doctor_report.get("graph", {})
+        laboratory_state,
+        physical_state,
+        doctor_report.get("graph", {}),
+        playback["qobuz_current_track"],
     )
     contracts = contract_projection()
     runtime = build_runtime_projection(runtime_results, doctor_report)
@@ -931,6 +1138,7 @@ def build_report(
         "doctor": doctor_report,
         "physical": physical,
         "laboratory": laboratory,
+        "playback": playback,
         "runtime": runtime,
         "gates": build_gate_status(doctor_report, physical, laboratory, runtime, contracts),
         "commands": [
@@ -948,7 +1156,7 @@ def build_report(
         ],
     }
     report["truth_chain_sha256"] = compute_truth_chain(
-        contracts, runtime, physical, laboratory
+        contracts, runtime, physical, laboratory, playback
     )
     report["report_sha256"] = sha256_json(report_digest_core(report))
     return report
@@ -975,7 +1183,11 @@ def verify_report(report: dict[str, Any]) -> None:
     doctor = report.get("doctor")
     physical = report.get("physical")
     laboratory = report.get("laboratory")
-    if not all(isinstance(value, dict) for value in (runtime, doctor, physical, laboratory)):
+    playback = report.get("playback")
+    if not all(
+        isinstance(value, dict)
+        for value in (runtime, doctor, physical, laboratory, playback)
+    ):
         raise ValueError("truth report projections are incomplete")
     if runtime.get("graph_fingerprint") != graph_fingerprint(doctor):
         raise ValueError("doctor graph fingerprint mismatch")
@@ -989,7 +1201,10 @@ def verify_report(report: dict[str, Any]) -> None:
     for index, process in enumerate(processes):
         if not isinstance(process, dict):
             raise ValueError(f"process projection {index} is invalid")
+        validate_sha(process.get("command_sha256"), f"process {index} command digest")
         validate_sha(process.get("arguments_sha256"), f"process {index} arguments digest")
+        if "command" in process or "arguments" in process:
+            raise ValueError("raw process identity must not be persisted")
     journal = runtime.get("journal")
     if not isinstance(journal, dict):
         raise ValueError("runtime journal projection is invalid")
@@ -1004,9 +1219,40 @@ def verify_report(report: dict[str, Any]) -> None:
         raise ValueError("laboratory gate sets overlap")
     if laboratory.get("resolved_count") != len(resolved):
         raise ValueError("laboratory resolved count mismatch")
+    current_qobuz = playback.get("qobuz_current_track")
+    if current_qobuz is not None:
+        current_qobuz = normalize_qobuz_context(
+            current_qobuz.get("track_fingerprint"),
+            current_qobuz.get("track_rate_hz"),
+        )
+    if "qobuz-rate-proof" in resolved:
+        if current_qobuz is None:
+            raise ValueError("resolved Qobuz proof lacks current-track context")
+        receipt = laboratory.get("receipts", {}).get("qobuz-rate-proof", {})
+        binding = receipt.get("binding") if isinstance(receipt, dict) else None
+        if not isinstance(binding, dict):
+            raise ValueError("resolved Qobuz proof lacks projected binding")
+        if binding.get("track_fingerprint") != current_qobuz["track_fingerprint"]:
+            raise ValueError("Qobuz track fingerprint mismatch")
+        if binding.get("track_rate_hz") != current_qobuz["track_rate_hz"]:
+            raise ValueError("Qobuz track rate mismatch")
+        if binding.get("graph_fingerprint") != runtime.get("graph_fingerprint"):
+            raise ValueError("Qobuz graph fingerprint mismatch")
+        if binding.get("graph_rate_hz") != doctor.get("graph", {}).get(
+            "force_rate_hz"
+        ):
+            raise ValueError("Qobuz graph rate mismatch")
     commands = report.get("commands")
     if not isinstance(commands, list):
         raise ValueError("command evidence is missing")
+    expected_argvs = expected_command_argvs()
+    observed_argvs = [
+        tuple(command.get("argv", [])) if isinstance(command, dict) else ()
+        for command in commands
+    ]
+    if observed_argvs != expected_argvs:
+        raise ValueError("command evidence does not match the canonical command vector")
+    assert_read_only_commands(observed_argvs)
     for index, command in enumerate(commands):
         if not isinstance(command, dict):
             raise ValueError(f"command evidence {index} is invalid")
@@ -1030,11 +1276,30 @@ def verify_report(report: dict[str, Any]) -> None:
             raise ValueError(f"command evidence {index} accepted status mismatch")
         if command.get("command") != shlex.join(argv):
             raise ValueError(f"command evidence {index} display mismatch")
+    expected_runtime_health = commands[-len(READ_ONLY_COMMANDS) :]
+    if runtime.get("command_health") != expected_runtime_health:
+        raise ValueError("runtime command-health projection mismatch")
+    expected_completeness = runtime_observation_completeness(runtime)
+    if runtime.get("observation_completeness") != expected_completeness:
+        raise ValueError("runtime observation completeness mismatch")
+    doctor_health = doctor.get("command_health")
+    expected_doctor_health = [
+        {
+            "command": shlex.join(tuple(item["argv"])),
+            "available": item.get("error") is None,
+            "returncode": item.get("returncode"),
+        }
+        for item in commands[: len(DOCTOR.READ_ONLY_COMMANDS)]
+    ]
+    if doctor_health != expected_doctor_health:
+        raise ValueError("Doctor command-health projection mismatch")
     expected_gates = build_gate_status(doctor, physical, laboratory, runtime, contracts)
     if report.get("gates") != expected_gates:
         raise ValueError("gate projection mismatch")
     validate_sha(report.get("truth_chain_sha256"), "truth chain digest")
-    expected_chain = compute_truth_chain(contracts, runtime, physical, laboratory)
+    expected_chain = compute_truth_chain(
+        contracts, runtime, physical, laboratory, playback
+    )
     if report["truth_chain_sha256"] != expected_chain:
         raise ValueError("truth chain digest mismatch")
     validate_sha(report.get("report_sha256"), "truth report digest")
@@ -1058,10 +1323,9 @@ def required_remeasurements(changed_fields: set[str]) -> list[str]:
         required.update(catalog)
     if "physical_state" in changed_fields:
         required.update(
-            gate for gate, spec in catalog.items() if spec.get("binds_physical_state") is True
-        )
-        required.update(
-            {"safe-listening-calibration", "motu-device-loss-exercise", "roland-device-loss-exercise"}
+            gate
+            for gate, spec in catalog.items()
+            if spec.get("binds_physical_state") is True
         )
     if changed_fields & {
         "graph_fingerprint",
@@ -1083,8 +1347,6 @@ def required_remeasurements(changed_fields: set[str]) -> list[str]:
             {
                 "voice-level-measurement",
                 "loopback-latency-measurement",
-                "safe-listening-calibration",
-                "motu-device-loss-exercise",
             }
         )
     if "roland_present" in changed_fields:
@@ -1093,7 +1355,6 @@ def required_remeasurements(changed_fields: set[str]) -> list[str]:
                 "loopback-latency-measurement",
                 "xrun-stability-test",
                 "resampling-decision",
-                "roland-device-loss-exercise",
             }
         )
     if changed_fields & {"services", "versions", "process_fingerprint"}:
@@ -1102,7 +1363,29 @@ def required_remeasurements(changed_fields: set[str]) -> list[str]:
         )
     if changed_fields & {"xrun_like_line_count", "xrun_like_lines_sha256"}:
         required.add("xrun-stability-test")
+    unknown = required - set(catalog)
+    if unknown:
+        raise ValueError(f"unknown laboratory remeasurement IDs: {sorted(unknown)}")
     return sorted(required)
+
+
+def required_followups(changed_fields: set[str]) -> list[str]:
+    followups: set[str] = set()
+    if "physical_state" in changed_fields:
+        followups.update(
+            {
+                "safe-listening-calibration",
+                "motu-device-loss-exercise",
+                "roland-device-loss-exercise",
+            }
+        )
+    if "motu_present" in changed_fields:
+        followups.update(
+            {"safe-listening-calibration", "motu-device-loss-exercise"}
+        )
+    if "roland_present" in changed_fields:
+        followups.add("roland-device-loss-exercise")
+    return sorted(followups)
 
 
 def build_drift_report(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
@@ -1131,7 +1414,7 @@ def build_drift_report(before: dict[str, Any], after: dict[str, Any]) -> dict[st
         if _value(before, *path) != _value(after, *path)
     ]
     changed_fields = {item["field"] for item in changes}
-    material_fields = set(fields) - {"process_fingerprint"}
+    material_fields = set(fields)
     return {
         "schema_version": 1,
         "kind": "audio_system_truth_drift_report",
@@ -1142,6 +1425,7 @@ def build_drift_report(before: dict[str, Any], after: dict[str, Any]) -> dict[st
         "material": bool(changed_fields & material_fields),
         "changes": changes,
         "required_remeasurements": required_remeasurements(changed_fields),
+        "required_followups": required_followups(changed_fields),
         "does_not_establish": [
             "root cause for drift",
             "safe automatic profile application",
@@ -1243,6 +1527,8 @@ def main(argv: list[str] | None = None) -> int:
     capture.add_argument("--output", type=pathlib.Path, required=True)
     capture.add_argument("--physical-state", type=pathlib.Path, default=PHYSICAL.DEFAULT_STATE)
     capture.add_argument("--laboratory-state", type=pathlib.Path, default=LABORATORY.DEFAULT_STATE)
+    capture.add_argument("--qobuz-track-fingerprint")
+    capture.add_argument("--qobuz-track-rate-hz", type=int)
     compare = sub.add_parser("compare")
     compare.add_argument("before", type=pathlib.Path)
     compare.add_argument("after", type=pathlib.Path)
@@ -1254,6 +1540,8 @@ def main(argv: list[str] | None = None) -> int:
         report = build_report(
             physical_state=args.physical_state,
             laboratory_state=args.laboratory_state,
+            qobuz_track_fingerprint=args.qobuz_track_fingerprint,
+            qobuz_track_rate_hz=args.qobuz_track_rate_hz,
         )
         atomic_write_private(args.output, report)
         absolute = absolute_without_resolution(args.output)

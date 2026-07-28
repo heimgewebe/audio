@@ -21,7 +21,7 @@
     "normalized MOTU and Roland presence",
     "PipeWire rate, quantum, defaults and canonical graph fingerprint",
     "PipeWire, WirePlumber, Mopidy and EasyEffects states and limits",
-    "audio recorder, plugin host, playback and creative-runtime process fingerprints",
+    "complete bounded audio recorder, plugin host, playback and creative-runtime process fingerprints without raw names",
     "recent XRun-like journal line count and digest",
     "filesystem free space and bounded audio state usage",
     "kernel, PipeWire, WirePlumber and Mopidy versions",
@@ -45,12 +45,15 @@
     "a PipeWire buffer period is not round-trip latency",
     "absence of recent XRun-like log lines is not an XRun-free proof",
     "service activity is not profile readiness",
-    "all report commands are argv-only, memory-bounded and read-only denylist checked",
+    "all report commands exactly match the canonical argv vector, are memory-bounded, process-group terminated on timeout and read-only denylist checked",
     "raw process arguments, stdout, stderr and journal lines are never persisted",
     "private reports use no-follow directory descriptors, bounded reads and atomic mode-0600 writes",
     "derived aggregates and fingerprints are recomputed during verification",
     "the report timestamp is covered by report_sha256",
     "standalone hashes provide integrity checks, not authenticity; authenticity requires an external digest pin or signature",
+    "Qobuz proof requires matching current-track fingerprint and rate context",
+    "required_remeasurements contains only laboratory catalog IDs while non-catalog work is separated as required_followups",
+    "process fingerprint changes are material drift",
     "drift identifies catalog-exact remeasurement gates but never applies a profile"
   ]
 }

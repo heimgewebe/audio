@@ -44,14 +44,23 @@ Verzeichnisdeskriptoren. Der Report enthält:
 - nur Digest und Status der privaten physischen Beobachtungen,
 - Digest, aufgelöste, invalidierte und offene private Laborgates,
 - Dienstzustände und Ressourcenlimits,
-- klassifizierte Prozesse ohne rohe Kommandoargumente,
+- alle im bounded `ps`-Fenster klassifizierten Prozesse ausschließlich über
+  Befehls- und Argument-Digests,
 - Anzahl und Digest jüngster XRun-ähnlicher Journalzeilen ohne Rohlogs,
 - freien Speicher und zeit-/eintragsbegrenzte Größen der Audio-Zustände,
 - Kernel-, PipeWire-, WirePlumber- und Mopidy-Versionen,
 - den Status jedes T001-Abnahmegates.
 
-Kommandos werden mit begrenztem Speicher gelesen. Im Report stehen nur Hashes,
-Byte- und Zeilenzahlen, nie stdout, stderr, Prozessargumente oder Journalzeilen.
+Kommandos werden mit begrenztem Speicher und einer eigenen Prozessgruppe gelesen.
+Bei Timeout wird die gesamte Gruppe beendet und nur innerhalb eines festen
+Nachlaufbudgets geleert. Der Report akzeptiert ausschließlich den kanonischen
+read-only Befehlsvektor. Im Report stehen nur Hashes, Byte- und Zeilenzahlen,
+nie stdout, stderr, Prozessnamen, Prozessargumente oder Journalzeilen.
+
+Ein Qobuz-Beleg wird nur dann als aktuell gewertet, wenn beim Capture sowohl der
+Fingerprint als auch die Rate des gerade betrachteten Tracks angegeben werden
+und mit dem validierten Beleg übereinstimmen. Ohne aktuellen Trackkontext bleibt
+`qobuz-rate-proof` offen beziehungsweise invalidiert.
 
 ## Report prüfen
 
@@ -85,9 +94,12 @@ Der Driftbericht vergleicht unter anderem:
 - relevante Prozessfingerprints,
 - XRun-ähnliche Zeilenanzahl und -digest.
 
-Er nennt erforderliche Nachmessungen mit den exakten IDs des Laborkatalogs,
-beispielsweise `loopback-latency-measurement`, `xrun-stability-test` und
-`qobuz-rate-proof`. Er ändert niemals Profile oder Dienste.
+Er nennt unter `required_remeasurements` ausschließlich exakte IDs des
+Laborkatalogs, beispielsweise `loopback-latency-measurement`,
+`xrun-stability-test` und `qobuz-rate-proof`. Nicht katalogisierte Arbeiten wie
+Hörpegelkalibrierung oder Geräteverlustübungen stehen getrennt unter
+`required_followups`. Prozessänderungen gelten als materieller Drift. Der
+Vergleich ändert niemals Profile oder Dienste.
 
 ## T001-Abschlussgrenze
 
