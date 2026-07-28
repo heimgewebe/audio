@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import audioop
 import ctypes
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -274,12 +274,12 @@ def candidate_centers(samples: array, count: int, clip_frames: int) -> list[int]
     hop = max(1, round(HOP_SECONDS * SAMPLE_RATE))
     half_clip = clip_frames // 2
     scored: list[tuple[int, int]] = []
-    raw = samples.tobytes()
     for start in range(0, max(1, len(samples) - window), hop):
         center = start + window // 2
         if center < half_clip or center + half_clip >= len(samples):
             continue
-        rms = audioop.rms(raw[start * 2 : (start + window) * 2], 2)
+        segment = samples[start : start + window]
+        rms = math.isqrt(sum(sample * sample for sample in segment) // len(segment))
         scored.append((rms, center))
     if not scored:
         return [len(samples) // 2]

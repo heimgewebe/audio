@@ -405,6 +405,7 @@ class WhaleSampleVoice:
             and self.current
             and self.current.slot.clip.clip_id == slot.clip.clip_id
         ):
+            self.current.slot = slot
             self.current.target_rate = rate
             self.gate = True
             return

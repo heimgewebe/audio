@@ -160,6 +160,18 @@ class WhaleSampleVoiceTests(unittest.TestCase):
             layer.position, clip.loop_start + clip.loop_crossfade + 1, places=4
         )
 
+    def test_same_clip_zone_change_updates_root_for_later_pitch_bend(self):
+        voice = self.voice()
+        voice.note_on(24, 96)
+        voice.render(512)
+        first_clip = voice.current.slot.clip.clip_id
+        voice.note_on(28, 96)
+        self.assertEqual(voice.current.slot.clip.clip_id, first_clip)
+        self.assertEqual(voice.current.slot.root_note, 28)
+        voice.pitch_bend(8191)
+        expected = 2.0 ** ((8191 / 8192 * 1.2) / 12.0)
+        self.assertAlmostEqual(voice.current.target_rate, expected, places=7)
+
     def test_detached_phrase_resets_hold_duration(self):
         voice = self.voice()
         voice.note_on(48, 100)

@@ -74,6 +74,12 @@ class WhaleSampleBuilderTests(unittest.TestCase):
             handle.setframerate(48_000)
             handle.writeframes(samples.tobytes())
 
+    def test_candidate_rms_has_no_audioop_dependency(self):
+        samples = array("h", [0] * 48_000 + [2000] * 48_000 + [0] * 48_000)
+        centers = builder.candidate_centers(samples, 1, 48_000)
+        self.assertEqual(len(centers), 1)
+        self.assertGreater(centers[0], 48_000)
+
     def test_raw_hash_is_authoritative_before_ffmpeg(self):
         with tempfile.TemporaryDirectory() as directory:
             root, catalog, source = self.make_root(directory)
