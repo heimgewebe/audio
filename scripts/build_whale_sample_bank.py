@@ -19,6 +19,8 @@ import sys
 import tempfile
 import wave
 from array import array
+from collections import Counter
+from dataclasses import dataclass
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -36,6 +38,180 @@ SOURCE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 ALLOWED_LICENSES = {"CC0-1.0", "Public-Domain-US-NPS", "CC-BY-2.5"}
 CATALOG_SCHEMA_VERSION = 2
+RETAINED_CLEANUP_PREFIX = ".whale-cleanup-retained-"
+MAX_RETAINED_CLEANUP_DIRECTORIES = 8
+FileIdentity = tuple[int, int, int]
+
+
+class _RecoveryRequiredError(RuntimeError):
+    """Report an ambiguous replace without allowing generic staging cleanup."""
+
+
+def _file_identity(metadata: os.stat_result) -> FileIdentity:
+    return (metadata.st_dev, metadata.st_ino, stat.S_IFMT(metadata.st_mode))
+
+
+def _entry_identity(directory_fd: int, name: str) -> FileIdentity | None:
+    try:
+        return _file_identity(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
+    except FileNotFoundError:
+        return None
+
+
+def _open_nofollow(directory_fd: int, name: str, *, directory: bool) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory_flag is None:
+        raise RuntimeError(
+            "descriptor-bound no-follow directory operations are unavailable"
+        )
+    flags = os.O_RDONLY | os.O_CLOEXEC | no_follow
+    if directory:
+        flags |= directory_flag
+    return os.open(name, flags, dir_fd=directory_fd)
+
+
+def _require_identity(
+    actual: FileIdentity | None, expected: FileIdentity, label: str
+) -> None:
+    if actual != expected:
+        raise RuntimeError(
+            f"whale bank protected identity changed for {label}: "
+            f"expected={expected!r}; actual={actual!r}"
+        )
+
+
+@dataclass
+class _ProtectedBindings:
+    source_root: pathlib.Path
+    source_root_fd: int
+    source_root_identity: FileIdentity
+    raw_fd: int
+    raw_identity: FileIdentity
+    catalog_name: str
+    catalog_fd: int
+    catalog_identity: FileIdentity
+    source_fds: tuple[tuple[str, int, FileIdentity], ...] = ()
+    output_name: str = ""
+    output_fd: int | None = None
+    output_identity: FileIdentity | None = None
+    retention_evidence: list[dict[str, Any]] | None = None
+
+    @property
+    def protected_identities(self) -> frozenset[FileIdentity]:
+        return frozenset(
+            (
+                self.source_root_identity,
+                self.raw_identity,
+                self.catalog_identity,
+                *(identity for _name, _fd, identity in self.source_fds),
+            )
+        )
+
+    def verify(self) -> None:
+        _require_identity(
+            _file_identity(os.fstat(self.source_root_fd)),
+            self.source_root_identity,
+            "source root descriptor",
+        )
+        _require_identity(
+            _file_identity(os.fstat(self.raw_fd)),
+            self.raw_identity,
+            "raw descriptor",
+        )
+        _require_identity(
+            _entry_identity(self.source_root_fd, "raw"),
+            self.raw_identity,
+            "raw",
+        )
+        _require_identity(
+            _file_identity(os.fstat(self.catalog_fd)),
+            self.catalog_identity,
+            "catalog descriptor",
+        )
+        _require_identity(
+            _entry_identity(self.source_root_fd, self.catalog_name),
+            self.catalog_identity,
+            "catalog",
+        )
+        for name, descriptor, identity in self.source_fds:
+            _require_identity(
+                _file_identity(os.fstat(descriptor)),
+                identity,
+                f"raw/{name} descriptor",
+            )
+            _require_identity(
+                _entry_identity(self.raw_fd, name),
+                identity,
+                f"raw/{name}",
+            )
+
+    def close(self) -> None:
+        for _name, descriptor, _identity in self.source_fds:
+            os.close(descriptor)
+        if self.output_fd is not None:
+            os.close(self.output_fd)
+        os.close(self.catalog_fd)
+        os.close(self.raw_fd)
+        os.close(self.source_root_fd)
+
+
+def _bind_protected_inputs(
+    source_catalog: pathlib.Path,
+    retention_evidence: list[dict[str, Any]] | None = None,
+) -> _ProtectedBindings:
+    source_catalog = pathlib.Path(
+        os.path.abspath(os.fspath(source_catalog.expanduser()))
+    )
+    source_root = source_catalog.parent
+    source_root_fd = -1
+    raw_fd = -1
+    catalog_fd = -1
+    try:
+        no_follow = getattr(os, "O_NOFOLLOW", None)
+        directory_flag = getattr(os, "O_DIRECTORY", None)
+        if no_follow is None or directory_flag is None:
+            raise RuntimeError(
+                "descriptor-bound no-follow directory operations are unavailable"
+            )
+        source_root_fd = os.open(
+            source_root,
+            os.O_RDONLY | os.O_CLOEXEC | no_follow | directory_flag,
+        )
+        source_root_identity = _file_identity(os.fstat(source_root_fd))
+        raw_fd = _open_nofollow(source_root_fd, "raw", directory=True)
+        raw_identity = _file_identity(os.fstat(raw_fd))
+        if raw_identity[2] != stat.S_IFDIR:
+            raise RuntimeError("bound whale raw input is not a directory")
+
+        catalog_fd = _open_nofollow(
+            source_root_fd, source_catalog.name, directory=False
+        )
+        catalog_identity = _file_identity(os.fstat(catalog_fd))
+        if catalog_identity[2] != stat.S_IFREG:
+            raise RuntimeError("bound whale source catalog is not a regular file")
+
+        bindings = _ProtectedBindings(
+            source_root=source_root,
+            source_root_fd=source_root_fd,
+            source_root_identity=source_root_identity,
+            raw_fd=raw_fd,
+            raw_identity=raw_identity,
+            catalog_name=source_catalog.name,
+            catalog_fd=catalog_fd,
+            catalog_identity=catalog_identity,
+            retention_evidence=retention_evidence,
+        )
+        bindings.verify()
+        return bindings
+    except BaseException:
+        if catalog_fd >= 0:
+            os.close(catalog_fd)
+        if raw_fd >= 0:
+            os.close(raw_fd)
+        if source_root_fd >= 0:
+            os.close(source_root_fd)
+        raise
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -46,19 +222,18 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def _reject_symlink_chain(path: pathlib.Path, root: pathlib.Path) -> None:
-    current = path
+def _sha256_descriptor(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
     while True:
-        if current.is_symlink():
-            raise RuntimeError(f"symlink is not allowed in whale-bank path: {current}")
-        if current == root:
-            return
-        if root not in current.parents:
-            raise RuntimeError(f"path escapes whale source root: {path}")
-        current = current.parent
+        chunk = os.pread(descriptor, 1024 * 1024, offset)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+        offset += len(chunk)
 
 
-def _source_path(source_root: pathlib.Path, value: object) -> pathlib.Path:
+def _source_name(value: object) -> str:
     if not isinstance(value, str) or not value:
         raise RuntimeError("whale source file must be a non-empty relative path")
     relative = pathlib.PurePosixPath(value)
@@ -70,16 +245,7 @@ def _source_path(source_root: pathlib.Path, value: object) -> pathlib.Path:
         raise RuntimeError(f"whale source must be directly under raw/: {value!r}")
     if relative.suffix.lower() not in {".ogg", ".oga"}:
         raise RuntimeError(f"unsupported whale source extension: {value!r}")
-    candidate = source_root.joinpath(*relative.parts)
-    _reject_symlink_chain(candidate, source_root)
-    if not candidate.exists() or not candidate.is_file():
-        raise RuntimeError(f"missing source audio: {candidate}")
-    resolved = candidate.resolve(strict=True)
-    if resolved.parent != (source_root / "raw").resolve(strict=True):
-        raise RuntimeError(f"whale source escapes raw directory: {value!r}")
-    if not stat.S_ISREG(resolved.stat().st_mode):
-        raise RuntimeError(f"whale source is not a regular file: {candidate}")
-    return resolved
+    return relative.name
 
 
 def require_json_object(value: Any, label: str) -> dict[str, Any]:
@@ -95,16 +261,35 @@ def _nonempty_text(source: dict[str, Any], field: str) -> str:
     return value
 
 
-def load_catalog(
-    source_catalog: pathlib.Path,
-) -> tuple[pathlib.Path, list[dict[str, Any]]]:
-    if source_catalog.is_symlink() or not source_catalog.is_file():
-        raise RuntimeError("whale source catalog must be a regular non-symlink file")
-    source_catalog = source_catalog.resolve(strict=True)
-    source_root = source_catalog.parent
-    _reject_symlink_chain(source_catalog, source_root)
+def _read_descriptor_bytes(descriptor: int) -> bytes:
+    chunks: list[bytes] = []
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, 1024 * 1024, offset)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        offset += len(chunk)
+
+
+def _parse_catalog_bytes(catalog_bytes: bytes) -> dict[str, Any]:
+    try:
+        catalog_text = catalog_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RuntimeError("whale source catalog must be UTF-8") from error
+    return require_json_object(
+        json.loads(catalog_text),
+        "whale source catalog",
+    )
+
+
+def _load_bound_catalog(
+    bindings: _ProtectedBindings,
+) -> tuple[list[dict[str, Any]], bytes, str]:
+    catalog_bytes = _read_descriptor_bytes(bindings.catalog_fd)
+    catalog_sha256 = hashlib.sha256(catalog_bytes).hexdigest()
     catalog = require_json_object(
-        json.loads(source_catalog.read_text(encoding="utf-8")),
+        _parse_catalog_bytes(catalog_bytes),
         "whale source catalog",
     )
     sources = catalog.get("sources")
@@ -134,7 +319,7 @@ def load_catalog(
         if file_value in seen_files:
             raise RuntimeError(f"duplicate whale source file: {file_value}")
         seen_files.add(file_value)
-        path = _source_path(source_root, file_value)
+        source_name = _source_name(file_value)
 
         category = _nonempty_text(source, "category")
         if category not in CLIP_SECONDS:
@@ -172,15 +357,7 @@ def load_catalog(
             or not 1 <= clip_count <= 8
         ):
             raise RuntimeError(f"invalid clip count for {source_id}")
-        actual_bytes = path.stat().st_size
-        if actual_bytes != expected_bytes:
-            raise RuntimeError(
-                f"whale source byte-size mismatch: {file_value}: {actual_bytes} != {expected_bytes}"
-            )
-        actual_sha256 = sha256_file(path)
-        if actual_sha256 != expected_sha256:
-            raise RuntimeError(f"whale source SHA-256 mismatch: {file_value}")
-        source["_path"] = path
+        source["_name"] = source_name
         validated.append(source)
 
     if {source["category"] for source in validated} != set(CLIP_SECONDS):
@@ -188,94 +365,169 @@ def load_catalog(
             "whale source catalog must cover low, song and high categories"
         )
 
-    raw_root = source_root / "raw"
-    _reject_symlink_chain(raw_root, source_root)
-    raw_entries = list(raw_root.iterdir())
-    unsafe_entries = [
-        path.name for path in raw_entries if path.is_symlink() or not path.is_file()
-    ]
+    raw_entries = os.listdir(bindings.raw_fd)
+    raw_identities = {
+        name: _entry_identity(bindings.raw_fd, name) for name in raw_entries
+    }
+    unsafe_entries = sorted(
+        name
+        for name, identity in raw_identities.items()
+        if identity is None or identity[2] != stat.S_IFREG
+    )
     if unsafe_entries:
-        raise RuntimeError(f"unsafe raw whale source entries: {sorted(unsafe_entries)}")
-    actual_files = {path.relative_to(source_root).as_posix() for path in raw_entries}
+        raise RuntimeError(
+            "unsafe raw whale source entries (non-regular or symlink): "
+            f"{unsafe_entries}"
+        )
+    actual_files = {f"raw/{name}" for name in raw_entries}
     if actual_files != seen_files:
         missing = sorted(seen_files - actual_files)
         extra = sorted(actual_files - seen_files)
         raise RuntimeError(
             f"raw whale source set mismatch; missing={missing}; extra={extra}"
         )
-    return source_root, validated
 
-
-def validate_output_root(
-    source_root: pathlib.Path, output_root: pathlib.Path
-) -> pathlib.Path:
-    candidate = output_root.expanduser()
-    if not candidate.is_absolute():
-        candidate = pathlib.Path.cwd() / candidate
+    source_fds: list[tuple[str, int, FileIdentity]] = []
     try:
-        parent = candidate.parent.resolve(strict=True)
-    except FileNotFoundError as error:
-        raise RuntimeError("whale bank output parent must already exist") from error
-    source_root = source_root.resolve(strict=True)
-    if parent != source_root:
-        raise RuntimeError(
-            "whale bank output must be a direct child of the source root"
-        )
+        for source in validated:
+            name = source["_name"]
+            descriptor = _open_nofollow(bindings.raw_fd, name, directory=False)
+            identity = _file_identity(os.fstat(descriptor))
+            if identity[2] != stat.S_IFREG:
+                os.close(descriptor)
+                raise RuntimeError(
+                    "catalog-bound whale source is not regular: "
+                    f"{bindings.source_root / 'raw' / name}"
+                )
+            source_fds.append((name, descriptor, identity))
+            _require_identity(
+                _entry_identity(bindings.raw_fd, name),
+                identity,
+                f"raw/{name}",
+            )
+            actual_bytes = os.fstat(descriptor).st_size
+            expected_bytes = source["expected_bytes"]
+            if actual_bytes != expected_bytes:
+                raise RuntimeError(
+                    f"whale source byte-size mismatch: {source['file']}: "
+                    f"{actual_bytes} != {expected_bytes}"
+                )
+            if _sha256_descriptor(descriptor) != source["expected_sha256"]:
+                raise RuntimeError(f"whale source SHA-256 mismatch: {source['file']}")
+        bindings.source_fds = tuple(source_fds)
+        bindings.verify()
+    except BaseException:
+        bindings.source_fds = ()
+        for _name, descriptor, _identity in source_fds:
+            os.close(descriptor)
+        raise
+    return validated, catalog_bytes, catalog_sha256
+
+
+def _bind_output_root(
+    bindings: _ProtectedBindings, output_root: pathlib.Path
+) -> pathlib.Path:
+    candidate = pathlib.Path(os.path.abspath(os.fspath(output_root.expanduser())))
     if not SOURCE_ID_RE.fullmatch(candidate.name):
         raise RuntimeError("unsafe whale bank output directory name")
-    candidate = parent / candidate.name
-    if candidate.is_symlink():
-        raise RuntimeError("whale bank output must not be a symlink")
-    if candidate.exists() and not candidate.is_dir():
-        raise RuntimeError("whale bank output must be a directory")
-    return candidate
+
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory_flag is None:
+        raise RuntimeError(
+            "descriptor-bound no-follow directory operations are unavailable"
+        )
+    parent_fd = os.open(
+        candidate.parent,
+        os.O_RDONLY | os.O_CLOEXEC | no_follow | directory_flag,
+    )
+    try:
+        _require_identity(
+            _file_identity(os.fstat(parent_fd)),
+            bindings.source_root_identity,
+            "output parent",
+        )
+    except BaseException:
+        os.close(parent_fd)
+        raise RuntimeError(
+            "whale bank output must be a direct child of the source root"
+        ) from None
+    os.close(parent_fd)
+
+    output_identity = _entry_identity(bindings.source_root_fd, candidate.name)
+    if output_identity in bindings.protected_identities:
+        raise RuntimeError(
+            "whale bank output overlaps a protected catalog or raw source input"
+        )
+    output_fd: int | None = None
+    try:
+        if output_identity is not None:
+            if output_identity[2] != stat.S_IFDIR:
+                raise RuntimeError("bound whale bank output is not a directory")
+            output_fd = _open_nofollow(
+                bindings.source_root_fd, candidate.name, directory=True
+            )
+            _require_identity(
+                _file_identity(os.fstat(output_fd)),
+                output_identity,
+                "initial output",
+            )
+        bindings.output_name = candidate.name
+        bindings.output_fd = output_fd
+        bindings.output_identity = output_identity
+        bindings.verify()
+        if output_fd is not None:
+            _verify_tree_excludes_identities(
+                output_fd, bindings.protected_identities, "initial output"
+            )
+    except BaseException:
+        bindings.output_name = ""
+        bindings.output_fd = None
+        bindings.output_identity = None
+        if output_fd is not None:
+            os.close(output_fd)
+        raise
+    return bindings.source_root / candidate.name
 
 
 def snapshot_verified_source(
-    source: dict[str, Any], destination: pathlib.Path
+    source: dict[str, Any], source_fd: int, destination: pathlib.Path
 ) -> pathlib.Path:
-    source_path = pathlib.Path(source["_path"])
     if destination.exists() or destination.is_symlink():
         raise RuntimeError(
             f"refusing to overwrite staged source snapshot: {destination}"
         )
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise RuntimeError("O_NOFOLLOW is required for verified whale source snapshots")
-    flags = os.O_RDONLY | os.O_CLOEXEC | no_follow
-    descriptor = os.open(source_path, flags)
+    descriptor = os.dup(source_fd)
     digest = hashlib.sha256()
     total = 0
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
-            raise RuntimeError(f"whale source snapshot is not regular: {source_path}")
-        with os.fdopen(descriptor, "rb") as source_handle:
-            descriptor = -1
-            with destination.open("xb") as destination_handle:
-                while True:
-                    chunk = source_handle.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    destination_handle.write(chunk)
-                    digest.update(chunk)
-                    total += len(chunk)
+            raise RuntimeError(
+                f"whale source snapshot is not regular: {source['file']}"
+            )
+        with destination.open("xb") as destination_handle:
+            offset = 0
+            while True:
+                chunk = os.pread(descriptor, 1024 * 1024, offset)
+                if not chunk:
+                    break
+                destination_handle.write(chunk)
+                digest.update(chunk)
+                total += len(chunk)
+                offset += len(chunk)
     except BaseException:
-        destination.unlink(missing_ok=True)
         raise
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        os.close(descriptor)
     expected_bytes = source["expected_bytes"]
     expected_sha256 = source["expected_sha256"]
     if total != expected_bytes:
-        destination.unlink(missing_ok=True)
         raise RuntimeError(
             f"whale source snapshot byte-size mismatch: {source['file']}: "
             f"{total} != {expected_bytes}"
         )
     if digest.hexdigest() != expected_sha256:
-        destination.unlink(missing_ok=True)
         raise RuntimeError(f"whale source snapshot SHA-256 mismatch: {source['file']}")
     return destination
 
@@ -408,18 +660,37 @@ def _source_manifest_record(source: dict[str, Any]) -> dict[str, Any]:
     record = {
         key: value
         for key, value in source.items()
-        if key not in {"_path", "clip_count", "expected_sha256", "expected_bytes"}
+        if not key.startswith("_")
+        and key not in {"clip_count", "expected_sha256", "expected_bytes"}
     }
     record["sha256"] = source["expected_sha256"]
     record["bytes"] = source["expected_bytes"]
     return record
 
 
-def _rename_exchange(first: pathlib.Path, second: pathlib.Path) -> None:
+def _renameat2(
+    directory_fd: int, first_name: str, second_name: str, flags: int
+) -> None:
+    _renameat2_between(
+        directory_fd,
+        first_name,
+        directory_fd,
+        second_name,
+        flags,
+    )
+
+
+def _renameat2_between(
+    first_directory_fd: int,
+    first_name: str,
+    second_directory_fd: int,
+    second_name: str,
+    flags: int,
+) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     renameat2 = getattr(libc, "renameat2", None)
     if renameat2 is None:
-        raise RuntimeError("atomic directory exchange is unavailable on this host")
+        raise RuntimeError("descriptor-bound renameat2 is unavailable on this host")
     renameat2.argtypes = [
         ctypes.c_int,
         ctypes.c_char_p,
@@ -428,143 +699,912 @@ def _rename_exchange(first: pathlib.Path, second: pathlib.Path) -> None:
         ctypes.c_uint,
     ]
     renameat2.restype = ctypes.c_int
-    at_fdcwd = -100
-    rename_exchange = 2
     result = renameat2(
-        at_fdcwd,
-        os.fsencode(first),
-        at_fdcwd,
-        os.fsencode(second),
-        rename_exchange,
+        first_directory_fd,
+        os.fsencode(first_name),
+        second_directory_fd,
+        os.fsencode(second_name),
+        flags,
     )
     if result != 0:
         error_number = ctypes.get_errno()
         raise OSError(error_number, os.strerror(error_number))
 
 
-def _atomic_replace_directory(staging: pathlib.Path, output_root: pathlib.Path) -> None:
-    if output_root.exists():
-        _rename_exchange(staging, output_root)
-        # After the exchange, staging names the previous complete bank.
-        shutil.rmtree(staging)
-        return
-    os.replace(staging, output_root)
+def _rename_exchange(directory_fd: int, first_name: str, second_name: str) -> None:
+    _renameat2(directory_fd, first_name, second_name, 2)
 
 
-def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, Any]:
-    source_root, sources = load_catalog(source_catalog)
-    output_root = validate_output_root(source_root, output_root)
-    staging = pathlib.Path(
-        tempfile.mkdtemp(prefix=f".{output_root.name}-staging-", dir=source_root)
+def _rename_noreplace(directory_fd: int, first_name: str, second_name: str) -> None:
+    _renameat2(directory_fd, first_name, second_name, 1)
+
+
+def _rename_exchange_between(
+    first_directory_fd: int,
+    first_name: str,
+    second_directory_fd: int,
+    second_name: str,
+) -> None:
+    _renameat2_between(
+        first_directory_fd,
+        first_name,
+        second_directory_fd,
+        second_name,
+        2,
     )
-    intermediate_root = staging / ".intermediate"
-    intermediate_root.mkdir(mode=0o700)
-    source_snapshot_root = staging / ".sources"
-    source_snapshot_root.mkdir(mode=0o700)
-    try:
-        clips: list[dict[str, Any]] = []
-        source_records: list[dict[str, Any]] = []
-        for source in sources:
-            source_id = source["id"]
-            category = source["category"]
-            source_path = pathlib.Path(source["_path"])
-            snapshot_path = (
-                source_snapshot_root / f"{source_id}{source_path.suffix.lower()}"
-            )
-            snapshot_verified_source(source, snapshot_path)
-            intermediate = intermediate_root / f"{source_id}.wav"
-            run_ffmpeg(snapshot_path, intermediate)
-            samples = read_wav(intermediate)
-            clip_frames = round(CLIP_SECONDS[category] * SAMPLE_RATE)
-            count = source["clip_count"]
-            centers = candidate_centers(samples, count, clip_frames)
-            source_records.append(_source_manifest_record(source))
-            for clip_index, center in enumerate(centers, start=1):
-                start = max(0, center - clip_frames // 2)
-                end = min(len(samples), start + clip_frames)
-                start = max(0, end - clip_frames)
-                clip_samples = normalize_and_fade(samples[start:end])
-                clip_id = f"{source_id}-{clip_index:02d}"
-                filename = f"{clip_id}.wav"
-                destination = staging / filename
-                write_wav(destination, clip_samples)
-                frame_count = len(clip_samples)
-                clips.append(
-                    {
-                        "id": clip_id,
-                        "source_id": source_id,
-                        "category": category,
-                        "file": filename,
-                        "frames": frame_count,
-                        "sha256": sha256_file(destination),
-                        "loop_start_frame": round(frame_count * 0.22),
-                        "loop_end_frame": round(frame_count * 0.78),
-                        "loop_crossfade_frames": min(
-                            round(0.12 * SAMPLE_RATE), round(frame_count * 0.08)
-                        ),
-                    }
-                )
-        shutil.rmtree(intermediate_root)
-        shutil.rmtree(source_snapshot_root)
 
-        slots: list[dict[str, Any]] = []
-        for category in ("low", "song", "high"):
-            category_clips = [clip for clip in clips if clip["category"] == category]
-            lower, upper = ROOT_RANGES[category]
-            roots = list(range(lower, upper + 1, 4))
-            if roots[-1] != upper:
-                roots.append(upper)
-            for index, root_note in enumerate(roots):
-                clip_index = (
-                    0
-                    if len(roots) == 1
-                    else round(index * (len(category_clips) - 1) / (len(roots) - 1))
+
+def _rename_noreplace_between(
+    first_directory_fd: int,
+    first_name: str,
+    second_directory_fd: int,
+    second_name: str,
+) -> None:
+    _renameat2_between(
+        first_directory_fd,
+        first_name,
+        second_directory_fd,
+        second_name,
+        1,
+    )
+
+
+def _require_secure_replace_platform() -> None:
+    if (
+        getattr(os, "O_PATH", None) is None
+        or getattr(os, "O_NOFOLLOW", None) is None
+        or getattr(os, "O_DIRECTORY", None) is None
+        or getattr(ctypes.CDLL(None), "renameat2", None) is None
+    ):
+        raise RuntimeError(
+            "descriptor-bound exchange and cleanup are unavailable on this host"
+        )
+
+
+def _verify_tree_excludes_identities(
+    directory_fd: int,
+    protected_identities: frozenset[FileIdentity],
+    label: str,
+) -> None:
+    for name in os.listdir(directory_fd):
+        identity = _entry_identity(directory_fd, name)
+        if identity is None:
+            raise RuntimeError(f"whale bank tree changed while inspecting {label}")
+        if identity in protected_identities:
+            raise RuntimeError(
+                f"whale bank {label} contains a protected input identity"
+            )
+        if identity[2] == stat.S_IFLNK:
+            # Cleanup unlinks the link entry without following it. A read-only
+            # target check still preserves the product rule that existing output
+            # must not contain aliases to catalog or raw-source identities.
+            try:
+                target_identity = _file_identity(
+                    os.stat(name, dir_fd=directory_fd, follow_symlinks=True)
                 )
-                clip = category_clips[clip_index]
-                slots.append(
-                    {
-                        "clip_id": clip["id"],
-                        "root_note": root_note,
-                        "minimum_note": max(21, root_note - 3),
-                        "maximum_note": min(108, root_note + 3),
-                    }
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise RuntimeError(
+                    f"cannot inspect whale bank symlink safely in {label}: {name}"
+                ) from error
+            if target_identity in protected_identities:
+                raise RuntimeError(
+                    f"whale bank {label} contains a symlink to a protected input"
                 )
-        manifest = {
-            "schema_version": 2,
-            "kind": "humpback_whale_sample_bank",
-            "sample_rate_hz": SAMPLE_RATE,
-            "channels": 1,
-            "sample_width_bytes": 2,
-            "source_catalog_schema_version": CATALOG_SCHEMA_VERSION,
-            "source_catalog_sha256": sha256_file(source_catalog.resolve(strict=True)),
-            "sources": source_records,
-            "clips": clips,
-            "slots": sorted(
-                slots, key=lambda slot: (slot["root_note"], slot["clip_id"])
-            ),
-            "render_contract": {
-                "maximum_total_pitch_shift_semitones": 4,
-                "pitch_bend_included": True,
-                "monophonic": True,
-                "looping": "equal-power-crossfade",
-                "default_voice_mode": "realistic",
+            continue
+        if identity[2] != stat.S_IFDIR:
+            continue
+        child_fd = _open_nofollow(directory_fd, name, directory=True)
+        try:
+            _require_identity(
+                _file_identity(os.fstat(child_fd)),
+                identity,
+                f"{label}/{name}",
+            )
+            _verify_tree_excludes_identities(
+                child_fd, protected_identities, f"{label}/{name}"
+            )
+        finally:
+            os.close(child_fd)
+
+
+@dataclass
+class _ReplaceState:
+    staging: pathlib.Path
+    output_root: pathlib.Path
+    staging_name: str
+    output_name: str
+    staging_fd: int
+    staging_identity: FileIdentity
+    output_fd: int | None
+    output_identity: FileIdentity | None
+
+    def close(self) -> None:
+        if self.output_fd is not None:
+            os.close(self.output_fd)
+        os.close(self.staging_fd)
+
+
+@dataclass
+class _BoundDirectory:
+    parent_fd: int
+    parent_identity: FileIdentity
+    name: str
+    descriptor: int
+    identity: FileIdentity
+    label: str
+
+    def verify(self) -> None:
+        _require_identity(
+            _file_identity(os.fstat(self.parent_fd)),
+            self.parent_identity,
+            f"{self.label} parent descriptor",
+        )
+        _require_identity(
+            _file_identity(os.fstat(self.descriptor)),
+            self.identity,
+            f"{self.label} descriptor",
+        )
+        _require_identity(
+            _entry_identity(self.parent_fd, self.name),
+            self.identity,
+            self.label,
+        )
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def _create_bound_directory(
+    parent_fd: int,
+    parent_identity: FileIdentity,
+    name: str,
+    label: str,
+) -> _BoundDirectory:
+    _require_identity(
+        _file_identity(os.fstat(parent_fd)),
+        parent_identity,
+        f"{label} parent descriptor",
+    )
+    if _entry_identity(parent_fd, name) is not None:
+        raise RuntimeError(f"refusing to reuse existing {label}")
+    os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+    identity = _entry_identity(parent_fd, name)
+    if identity is None or identity[2] != stat.S_IFDIR:
+        raise _RecoveryRequiredError(
+            f"{label} identity could not be established after creation; "
+            "no recursive deletion will be attempted"
+        )
+    descriptor = -1
+    try:
+        descriptor = _open_nofollow(parent_fd, name, directory=True)
+        bound = _BoundDirectory(
+            parent_fd=parent_fd,
+            parent_identity=parent_identity,
+            name=name,
+            descriptor=descriptor,
+            identity=identity,
+            label=label,
+        )
+        bound.verify()
+        return bound
+    except BaseException as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise _RecoveryRequiredError(
+            f"{label} identity could not be bound after creation; "
+            f"no recursive deletion will be attempted; reason={error}"
+        ) from error
+
+
+def _capture_replace_state(
+    staging: pathlib.Path,
+    output_root: pathlib.Path,
+    bindings: _ProtectedBindings,
+    bound_staging_fd: int,
+    bound_staging_identity: FileIdentity,
+) -> _ReplaceState:
+    if (
+        staging.parent != bindings.source_root
+        or output_root.parent != bindings.source_root
+    ):
+        raise RuntimeError(
+            "replace paths are not direct children of the bound source root"
+        )
+    staging_fd = os.dup(bound_staging_fd)
+    try:
+        output_fd = (
+            os.dup(bindings.output_fd) if bindings.output_fd is not None else None
+        )
+        state = _ReplaceState(
+            staging=staging,
+            output_root=output_root,
+            staging_name=staging.name,
+            output_name=output_root.name,
+            staging_fd=staging_fd,
+            staging_identity=bound_staging_identity,
+            output_fd=output_fd,
+            output_identity=bindings.output_identity,
+        )
+        _verify_tree_excludes_identities(
+            staging_fd, bindings.protected_identities, "staging"
+        )
+        if output_fd is not None:
+            _verify_tree_excludes_identities(
+                output_fd, bindings.protected_identities, "existing output"
+            )
+        return state
+    except BaseException:
+        if "output_fd" in locals() and output_fd is not None:
+            os.close(output_fd)
+        os.close(staging_fd)
+        raise
+
+
+def _verify_original_layout(bindings: _ProtectedBindings, state: _ReplaceState) -> None:
+    bindings.verify()
+    _require_identity(
+        _file_identity(os.fstat(state.staging_fd)),
+        state.staging_identity,
+        "staging descriptor",
+    )
+    _require_identity(
+        _entry_identity(bindings.source_root_fd, state.staging_name),
+        state.staging_identity,
+        "staging",
+    )
+    actual_output = _entry_identity(bindings.source_root_fd, state.output_name)
+    if actual_output != state.output_identity:
+        raise RuntimeError(
+            "whale bank output identity changed: "
+            f"expected={state.output_identity!r}; actual={actual_output!r}"
+        )
+    if state.output_fd is not None and state.output_identity is not None:
+        _require_identity(
+            _file_identity(os.fstat(state.output_fd)),
+            state.output_identity,
+            "existing output descriptor",
+        )
+    _verify_tree_excludes_identities(
+        state.staging_fd, bindings.protected_identities, "staging"
+    )
+    if state.output_fd is not None:
+        _verify_tree_excludes_identities(
+            state.output_fd, bindings.protected_identities, "existing output"
+        )
+
+
+def _verify_installed_layout(
+    bindings: _ProtectedBindings, state: _ReplaceState
+) -> None:
+    bindings.verify()
+    _require_identity(
+        _file_identity(os.fstat(state.staging_fd)),
+        state.staging_identity,
+        "new output descriptor",
+    )
+    _require_identity(
+        _entry_identity(bindings.source_root_fd, state.output_name),
+        state.staging_identity,
+        "new output",
+    )
+    backup_identity = _entry_identity(bindings.source_root_fd, state.staging_name)
+    if backup_identity != state.output_identity:
+        raise RuntimeError(
+            "whale bank backup identity changed: "
+            f"expected={state.output_identity!r}; actual={backup_identity!r}"
+        )
+    if backup_identity in bindings.protected_identities:
+        raise RuntimeError("whale bank backup is a protected input identity")
+    if state.output_fd is not None and state.output_identity is not None:
+        _require_identity(
+            _file_identity(os.fstat(state.output_fd)),
+            state.output_identity,
+            "output backup descriptor",
+        )
+    _verify_tree_excludes_identities(
+        state.staging_fd, bindings.protected_identities, "new output"
+    )
+    if state.output_fd is not None:
+        _verify_tree_excludes_identities(
+            state.output_fd, bindings.protected_identities, "output backup"
+        )
+
+
+def _directory_layout(
+    bindings: _ProtectedBindings, state: _ReplaceState
+) -> dict[str, FileIdentity | None]:
+    return {
+        "raw": _entry_identity(bindings.source_root_fd, "raw"),
+        state.output_name: _entry_identity(bindings.source_root_fd, state.output_name),
+        state.staging_name: _entry_identity(
+            bindings.source_root_fd, state.staging_name
+        ),
+    }
+
+
+def _restore_directory_layout(
+    bindings: _ProtectedBindings, state: _ReplaceState
+) -> None:
+    expected = {
+        "raw": bindings.raw_identity,
+        state.output_name: state.output_identity,
+        state.staging_name: state.staging_identity,
+    }
+    current = _directory_layout(bindings, state)
+    if Counter(current.values()) != Counter(expected.values()):
+        raise RuntimeError(
+            f"cannot safely map changed whale bank directories: {current!r}"
+        )
+
+    for target_name in ("raw", state.staging_name, state.output_name):
+        wanted = expected[target_name]
+        current = _directory_layout(bindings, state)
+        if current[target_name] == wanted:
+            continue
+        source_name = next(
+            (name for name, identity in current.items() if identity == wanted),
+            None,
+        )
+        if source_name is None:
+            raise RuntimeError(
+                f"cannot locate expected whale bank identity for {target_name}"
+            )
+        if wanted is None:
+            raise RuntimeError("cannot exchange a missing directory identity")
+        if current[target_name] is None:
+            _rename_noreplace(bindings.source_root_fd, source_name, target_name)
+        else:
+            _rename_exchange(bindings.source_root_fd, target_name, source_name)
+
+    _verify_original_layout(bindings, state)
+
+
+def _retention_name(expected: FileIdentity, label: str) -> str:
+    label_digest = hashlib.sha256(label.encode("utf-8")).hexdigest()[:12]
+    device, inode, object_type = expected
+    return (
+        f"{RETAINED_CLEANUP_PREFIX}{device:x}-{inode:x}-{object_type:x}-{label_digest}"
+    )
+
+
+def _retained_cleanup_names(bindings: _ProtectedBindings) -> list[str]:
+    retained: list[str] = []
+    for name in os.listdir(bindings.source_root_fd):
+        if not name.startswith(RETAINED_CLEANUP_PREFIX):
+            continue
+        identity = _entry_identity(bindings.source_root_fd, name)
+        if identity is None or identity[2] != stat.S_IFDIR:
+            raise RuntimeError(
+                "unsafe retained whale cleanup entry; manual review required; "
+                f"path={bindings.source_root / name!r}"
+            )
+        retained.append(name)
+    return sorted(retained)
+
+
+def _require_retention_capacity(bindings: _ProtectedBindings, *, reserve: int) -> None:
+    retained = _retained_cleanup_names(bindings)
+    if len(retained) + reserve <= MAX_RETAINED_CLEANUP_DIRECTORIES:
+        return
+    retained_paths = [str(bindings.source_root / name) for name in retained]
+    raise RuntimeError(
+        "retained whale cleanup capacity exhausted; no staging was created; "
+        f"existing={len(retained)}; reserve={reserve}; "
+        f"maximum={MAX_RETAINED_CLEANUP_DIRECTORIES}; "
+        f"retained_paths={retained_paths!r}; manual review required"
+    )
+
+
+def _before_retention_rename(
+    _source_parent_fd: int,
+    _source_name: str,
+    _destination_name: str,
+    _expected: FileIdentity,
+    _label: str,
+) -> None:
+    """Test seam immediately before atomic movement into retained cleanup."""
+
+
+def _after_retention_open(
+    _bindings: _ProtectedBindings,
+    _destination_name: str,
+    _destination_fd: int,
+    _expected: FileIdentity,
+    _label: str,
+) -> None:
+    """Test seam after retention binding and before final evidence capture."""
+
+
+def _retain_verified_directory(
+    bindings: _ProtectedBindings,
+    source_parent_fd: int,
+    source_name: str,
+    expected: FileIdentity,
+    label: str,
+) -> pathlib.Path:
+    if expected[2] != stat.S_IFDIR:
+        raise RuntimeError(f"refusing to retain non-directory cleanup target: {label}")
+    if expected in bindings.protected_identities:
+        raise RuntimeError(f"refusing to retain protected identity from {label}")
+
+    destination_name = _retention_name(expected, label)
+    destination_path = bindings.source_root / destination_name
+    source_fd = -1
+    destination_fd = -1
+    moved = False
+    try:
+        bindings.verify()
+        _require_identity(
+            _entry_identity(source_parent_fd, source_name),
+            expected,
+            label,
+        )
+        source_fd = _open_nofollow(source_parent_fd, source_name, directory=True)
+        _require_identity(
+            _file_identity(os.fstat(source_fd)),
+            expected,
+            f"{label} descriptor",
+        )
+        _verify_tree_excludes_identities(
+            source_fd, bindings.protected_identities, label
+        )
+        if _entry_identity(bindings.source_root_fd, destination_name) is not None:
+            raise _RecoveryRequiredError(
+                f"retained cleanup destination already exists for {label}; "
+                f"preserved_source={source_name!r}; "
+                f"destination={str(destination_path)!r}; nothing was deleted"
+            )
+        _before_retention_rename(
+            source_parent_fd,
+            source_name,
+            destination_name,
+            expected,
+            label,
+        )
+        _rename_noreplace_between(
+            source_parent_fd,
+            source_name,
+            bindings.source_root_fd,
+            destination_name,
+        )
+        moved = True
+        destination_fd = _open_nofollow(
+            bindings.source_root_fd, destination_name, directory=True
+        )
+        _after_retention_open(
+            bindings, destination_name, destination_fd, expected, label
+        )
+        bindings.verify()
+        final_descriptor = _file_identity(os.fstat(destination_fd))
+        final_entry = _entry_identity(bindings.source_root_fd, destination_name)
+        if final_descriptor != expected or final_entry != expected:
+            raise _RecoveryRequiredError(
+                f"retained {label} identity is ambiguous; expected={expected!r}; "
+                f"descriptor={final_descriptor!r}; entry={final_entry!r}; "
+                f"preserved_path={str(destination_path)!r}; nothing was deleted"
+            )
+        if final_descriptor in bindings.protected_identities:
+            raise _RecoveryRequiredError(
+                f"retained {label} is a protected identity; "
+                f"preserved_path={str(destination_path)!r}; nothing was deleted"
+            )
+        if _entry_identity(source_parent_fd, source_name) is not None:
+            raise _RecoveryRequiredError(
+                f"retained {label} still exists at its source name; "
+                f"preserved_path={str(destination_path)!r}; nothing was deleted"
+            )
+        evidence = {
+            "label": label,
+            "path": str(destination_path),
+            "identity": {
+                "device": expected[0],
+                "inode": expected[1],
+                "type": expected[2],
             },
         }
-        manifest_path = staging / "manifest.json"
-        manifest_path.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        expected_files = {clip["file"] for clip in clips} | {"manifest.json"}
-        actual_files = {path.name for path in staging.iterdir() if path.is_file()}
-        if actual_files != expected_files:
-            raise RuntimeError("staged whale bank file set does not match manifest")
-        _atomic_replace_directory(staging, output_root)
-        return manifest
-    except BaseException:
-        if staging.exists():
-            shutil.rmtree(staging)
+        if bindings.retention_evidence is not None:
+            bindings.retention_evidence.append(evidence)
+        return destination_path
+    except _RecoveryRequiredError:
         raise
+    except BaseException as error:
+        preserved = destination_path if moved else pathlib.Path(source_name)
+        raise _RecoveryRequiredError(
+            f"could not retain {label} safely; "
+            f"preserved_path={str(preserved)!r}; nothing was deleted; "
+            f"reason={error}"
+        ) from error
+    finally:
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        if source_fd >= 0:
+            os.close(source_fd)
+
+
+def _remove_verified_directory(
+    bindings: _ProtectedBindings,
+    state: _ReplaceState,
+    *,
+    installed: bool,
+) -> None:
+    if installed:
+        _verify_installed_layout(bindings, state)
+        expected = state.output_identity
+        descriptor = state.output_fd
+        label = "output backup"
+    else:
+        _verify_original_layout(bindings, state)
+        expected = state.staging_identity
+        descriptor = state.staging_fd
+        label = "staging"
+    if expected is None or descriptor is None:
+        return
+    if expected in bindings.protected_identities:
+        raise RuntimeError(f"refusing to retain protected {label}")
+    _require_identity(
+        _file_identity(os.fstat(descriptor)),
+        expected,
+        f"{label} descriptor",
+    )
+    _require_identity(
+        _entry_identity(bindings.source_root_fd, state.staging_name),
+        expected,
+        label,
+    )
+    _verify_tree_excludes_identities(descriptor, bindings.protected_identities, label)
+    _retain_verified_directory(
+        bindings,
+        bindings.source_root_fd,
+        state.staging_name,
+        expected,
+        label,
+    )
+
+
+def _remove_bound_directory(
+    bindings: _ProtectedBindings,
+    bound: _BoundDirectory,
+) -> None:
+    bindings.verify()
+    bound.verify()
+    if bound.identity in bindings.protected_identities:
+        raise RuntimeError(f"refusing to retain protected {bound.label}")
+    _verify_tree_excludes_identities(
+        bound.descriptor,
+        bindings.protected_identities,
+        bound.label,
+    )
+    _retain_verified_directory(
+        bindings,
+        bound.parent_fd,
+        bound.name,
+        bound.identity,
+        bound.label,
+    )
+
+
+def _remove_failed_staging(
+    bindings: _ProtectedBindings,
+    staging: pathlib.Path,
+    staging_fd: int,
+    staging_identity: FileIdentity,
+) -> None:
+    bindings.verify()
+    _require_identity(
+        _file_identity(os.fstat(staging_fd)),
+        staging_identity,
+        "failed staging descriptor",
+    )
+    actual = _entry_identity(bindings.source_root_fd, staging.name)
+    if actual is None:
+        return
+    _require_identity(actual, staging_identity, "failed staging")
+    if staging_identity in bindings.protected_identities:
+        raise RuntimeError("refusing to retain a protected failed staging identity")
+    _verify_tree_excludes_identities(
+        staging_fd, bindings.protected_identities, "failed staging"
+    )
+    _retain_verified_directory(
+        bindings,
+        bindings.source_root_fd,
+        staging.name,
+        staging_identity,
+        "failed staging",
+    )
+
+
+def _before_temporary_cleanup(
+    _bindings: _ProtectedBindings,
+    _bound: _BoundDirectory,
+) -> None:
+    """Test seam immediately before a bound temporary directory is removed."""
+
+
+def _after_exchange_before_cleanup(
+    _bindings: _ProtectedBindings, _state: _ReplaceState
+) -> None:
+    """Test seam for deterministic namespace-race coverage."""
+
+
+def _manual_recovery_error(
+    bindings: _ProtectedBindings,
+    state: _ReplaceState | None,
+    reason: BaseException,
+    rollback_error: BaseException | None = None,
+) -> _RecoveryRequiredError:
+    paths = [bindings.source_root / "raw"]
+    if state is not None:
+        paths.extend((state.output_root, state.staging))
+    detail = f"; rollback_error={rollback_error}" if rollback_error else ""
+    return _RecoveryRequiredError(
+        "whale bank replace outcome is unknown; no further recursive deletion "
+        f"will be attempted; manual recovery required; preserved_paths={paths!r}; "
+        f"reason={reason}{detail}"
+    )
+
+
+def _atomic_replace_directory(
+    staging: pathlib.Path,
+    output_root: pathlib.Path,
+    bindings: _ProtectedBindings,
+    staging_fd: int,
+    staging_identity: FileIdentity,
+) -> None:
+    state: _ReplaceState | None = None
+    try:
+        state = _capture_replace_state(
+            staging,
+            output_root,
+            bindings,
+            staging_fd,
+            staging_identity,
+        )
+        try:
+            _require_secure_replace_platform()
+            # This is the replace operation's own bound precondition,
+            # immediately adjacent to the descriptor-relative rename.
+            _verify_original_layout(bindings, state)
+            if state.output_identity is None:
+                _rename_noreplace(
+                    bindings.source_root_fd, state.staging_name, state.output_name
+                )
+            else:
+                _rename_exchange(
+                    bindings.source_root_fd, state.staging_name, state.output_name
+                )
+        except BaseException as exchange_error:
+            try:
+                _restore_directory_layout(bindings, state)
+                _remove_verified_directory(bindings, state, installed=False)
+            except BaseException as rollback_error:
+                raise _manual_recovery_error(
+                    bindings, state, exchange_error, rollback_error
+                ) from exchange_error
+            raise RuntimeError(
+                f"{exchange_error}; original directory layout restored"
+            ) from exchange_error
+
+        try:
+            _after_exchange_before_cleanup(bindings, state)
+            _verify_installed_layout(bindings, state)
+        except BaseException as validation_error:
+            try:
+                _restore_directory_layout(bindings, state)
+                _remove_verified_directory(bindings, state, installed=False)
+            except BaseException as rollback_error:
+                raise _manual_recovery_error(
+                    bindings, state, validation_error, rollback_error
+                ) from validation_error
+            raise RuntimeError(
+                f"{validation_error}; original directory layout restored"
+            ) from validation_error
+
+        try:
+            _remove_verified_directory(bindings, state, installed=True)
+        except BaseException as cleanup_error:
+            raise _manual_recovery_error(
+                bindings, state, cleanup_error
+            ) from cleanup_error
+    except _RecoveryRequiredError:
+        raise
+    except BaseException as error:
+        if state is None:
+            raise _manual_recovery_error(bindings, state, error) from error
+        raise
+    finally:
+        if state is not None:
+            state.close()
+
+
+def build(
+    source_catalog: pathlib.Path,
+    output_root: pathlib.Path,
+    *,
+    retention_evidence: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    bindings = _bind_protected_inputs(source_catalog, retention_evidence)
+    staging_fd = -1
+    intermediate_binding: _BoundDirectory | None = None
+    source_snapshot_binding: _BoundDirectory | None = None
+    try:
+        sources, _catalog_bytes, catalog_sha256 = _load_bound_catalog(bindings)
+        output_root = _bind_output_root(bindings, output_root)
+        _require_retention_capacity(bindings, reserve=3)
+        source_root = bindings.source_root
+        source_descriptors = {
+            name: descriptor for name, descriptor, _identity in bindings.source_fds
+        }
+        staging = pathlib.Path(
+            tempfile.mkdtemp(prefix=f".{output_root.name}-staging-", dir=source_root)
+        )
+        try:
+            staging_fd = _open_nofollow(
+                bindings.source_root_fd, staging.name, directory=True
+            )
+            staging_identity = _file_identity(os.fstat(staging_fd))
+            bindings.verify()
+            _require_identity(
+                _entry_identity(bindings.source_root_fd, staging.name),
+                staging_identity,
+                "created staging",
+            )
+        except BaseException as staging_error:
+            raise _RecoveryRequiredError(
+                "whale bank staging identity could not be bound; no recursive "
+                "deletion will be attempted; manual recovery required; "
+                f"preserved_path={staging!r}; reason={staging_error}"
+            ) from staging_error
+        try:
+            intermediate_binding = _create_bound_directory(
+                staging_fd,
+                staging_identity,
+                ".intermediate",
+                "intermediate workspace",
+            )
+            source_snapshot_binding = _create_bound_directory(
+                staging_fd,
+                staging_identity,
+                ".sources",
+                "source snapshot workspace",
+            )
+            intermediate_root = staging / intermediate_binding.name
+            source_snapshot_root = staging / source_snapshot_binding.name
+            clips: list[dict[str, Any]] = []
+            source_records: list[dict[str, Any]] = []
+            for source in sources:
+                source_id = source["id"]
+                category = source["category"]
+                source_suffix = pathlib.PurePosixPath(source["file"]).suffix.lower()
+                snapshot_path = source_snapshot_root / f"{source_id}{source_suffix}"
+                snapshot_verified_source(
+                    source,
+                    source_descriptors[source["_name"]],
+                    snapshot_path,
+                )
+                intermediate = intermediate_root / f"{source_id}.wav"
+                run_ffmpeg(snapshot_path, intermediate)
+                samples = read_wav(intermediate)
+                clip_frames = round(CLIP_SECONDS[category] * SAMPLE_RATE)
+                count = source["clip_count"]
+                centers = candidate_centers(samples, count, clip_frames)
+                source_records.append(_source_manifest_record(source))
+                for clip_index, center in enumerate(centers, start=1):
+                    start = max(0, center - clip_frames // 2)
+                    end = min(len(samples), start + clip_frames)
+                    start = max(0, end - clip_frames)
+                    clip_samples = normalize_and_fade(samples[start:end])
+                    clip_id = f"{source_id}-{clip_index:02d}"
+                    filename = f"{clip_id}.wav"
+                    destination = staging / filename
+                    write_wav(destination, clip_samples)
+                    frame_count = len(clip_samples)
+                    clips.append(
+                        {
+                            "id": clip_id,
+                            "source_id": source_id,
+                            "category": category,
+                            "file": filename,
+                            "frames": frame_count,
+                            "sha256": sha256_file(destination),
+                            "loop_start_frame": round(frame_count * 0.22),
+                            "loop_end_frame": round(frame_count * 0.78),
+                            "loop_crossfade_frames": min(
+                                round(0.12 * SAMPLE_RATE),
+                                round(frame_count * 0.08),
+                            ),
+                        }
+                    )
+            _before_temporary_cleanup(bindings, intermediate_binding)
+            _remove_bound_directory(bindings, intermediate_binding)
+            _before_temporary_cleanup(bindings, source_snapshot_binding)
+            _remove_bound_directory(bindings, source_snapshot_binding)
+
+            slots: list[dict[str, Any]] = []
+            for category in ("low", "song", "high"):
+                category_clips = [
+                    clip for clip in clips if clip["category"] == category
+                ]
+                lower, upper = ROOT_RANGES[category]
+                roots = list(range(lower, upper + 1, 4))
+                if roots[-1] != upper:
+                    roots.append(upper)
+                for index, root_note in enumerate(roots):
+                    clip_index = (
+                        0
+                        if len(roots) == 1
+                        else round(index * (len(category_clips) - 1) / (len(roots) - 1))
+                    )
+                    clip = category_clips[clip_index]
+                    slots.append(
+                        {
+                            "clip_id": clip["id"],
+                            "root_note": root_note,
+                            "minimum_note": max(21, root_note - 3),
+                            "maximum_note": min(108, root_note + 3),
+                        }
+                    )
+            manifest = {
+                "schema_version": 2,
+                "kind": "humpback_whale_sample_bank",
+                "sample_rate_hz": SAMPLE_RATE,
+                "channels": 1,
+                "sample_width_bytes": 2,
+                "source_catalog_schema_version": CATALOG_SCHEMA_VERSION,
+                "source_catalog_sha256": catalog_sha256,
+                "sources": source_records,
+                "clips": clips,
+                "slots": sorted(
+                    slots, key=lambda slot: (slot["root_note"], slot["clip_id"])
+                ),
+                "render_contract": {
+                    "maximum_total_pitch_shift_semitones": 4,
+                    "pitch_bend_included": True,
+                    "monophonic": True,
+                    "looping": "equal-power-crossfade",
+                    "default_voice_mode": "realistic",
+                },
+            }
+            manifest_path = staging / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+            expected_files = {clip["file"] for clip in clips} | {"manifest.json"}
+            actual_files = {path.name for path in staging.iterdir() if path.is_file()}
+            if actual_files != expected_files:
+                raise RuntimeError("staged whale bank file set does not match manifest")
+            _atomic_replace_directory(
+                staging,
+                output_root,
+                bindings,
+                staging_fd,
+                staging_identity,
+            )
+            return manifest
+        except _RecoveryRequiredError:
+            raise
+        except BaseException as build_error:
+            try:
+                _remove_failed_staging(bindings, staging, staging_fd, staging_identity)
+            except BaseException as cleanup_error:
+                raise _RecoveryRequiredError(
+                    "whale bank failed staging outcome is unknown; no further "
+                    "recursive deletion will be attempted; manual recovery "
+                    f"required; preserved_path={staging!r}; "
+                    f"reason={build_error}; cleanup_error={cleanup_error}"
+                ) from build_error
+            raise
+    finally:
+        if source_snapshot_binding is not None:
+            source_snapshot_binding.close()
+        if intermediate_binding is not None:
+            intermediate_binding.close()
+        if staging_fd >= 0:
+            os.close(staging_fd)
+        bindings.close()
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
@@ -578,18 +1618,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=pathlib.Path, default=PROCESSED_ROOT)
     try:
         args = parser.parse_args(argv)
-        manifest = build(args.catalog, args.output)
+        retention_evidence: list[dict[str, Any]] = []
+        manifest = build(
+            args.catalog,
+            args.output,
+            retention_evidence=retention_evidence,
+        )
+        manifest_path = (
+            pathlib.Path(os.path.abspath(os.fspath(args.output.expanduser())))
+            / "manifest.json"
+        )
         print(
             json.dumps(
                 {
                     "state": "built",
-                    "manifest": str(
-                        validate_output_root(args.catalog.resolve().parent, args.output)
-                        / "manifest.json"
-                    ),
+                    "manifest": str(manifest_path),
                     "source_count": len(manifest["sources"]),
                     "clip_count": len(manifest["clips"]),
                     "slot_count": len(manifest["slots"]),
+                    "retained_cleanup": retention_evidence,
                 },
                 sort_keys=True,
             )
