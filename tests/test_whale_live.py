@@ -74,6 +74,61 @@ class WhaleVoiceTests(unittest.TestCase):
             max_frequency_hz=2_800.0,
         )
 
+    def test_idle_render_returns_exact_zero_without_advancing_synthesis(self):
+        voice = engine.WhaleVoice(self.config, seed=1234)
+        before = {
+            "phase": voice.phase,
+            "sub_phase": voice.sub_phase,
+            "formant_phase": voice.formant_phase,
+            "carrier_mod_phase": voice.carrier_mod_phase,
+            "pulse_phase": voice.pulse_phase,
+            "detuned_phase": voice.detuned_phase,
+            "slow_arc_phase": voice.slow_arc_phase,
+            "second_arc_phase": voice.second_arc_phase,
+            "flutter_phase": voice.flutter_phase,
+            "noise_state": voice.noise_state,
+            "noise_lowpass": voice.noise_lowpass,
+            "note_age_frames": voice.note_age_frames,
+        }
+
+        with mock.patch.object(
+            engine.math, "sin", side_effect=AssertionError("oscillator evaluated")
+        ):
+            mono = voice.render(512)
+            stereo = voice.render_f32_stereo(128)
+
+        self.assertEqual(mono, [0.0] * 512)
+        self.assertEqual(stereo, bytes(128 * 2 * 4))
+        self.assertEqual(
+            before,
+            {
+                "phase": voice.phase,
+                "sub_phase": voice.sub_phase,
+                "formant_phase": voice.formant_phase,
+                "carrier_mod_phase": voice.carrier_mod_phase,
+                "pulse_phase": voice.pulse_phase,
+                "detuned_phase": voice.detuned_phase,
+                "slow_arc_phase": voice.slow_arc_phase,
+                "second_arc_phase": voice.second_arc_phase,
+                "flutter_phase": voice.flutter_phase,
+                "noise_state": voice.noise_state,
+                "noise_lowpass": voice.noise_lowpass,
+                "note_age_frames": voice.note_age_frames,
+            },
+        )
+
+    def test_idle_duration_does_not_change_a_new_phrase(self):
+        immediate = engine.WhaleVoice(self.config, seed=1234)
+        delayed = engine.WhaleVoice(self.config, seed=1234)
+        delayed.render_f32_stereo(self.config.sample_rate * 30)
+
+        immediate.note_on(60, 96)
+        delayed.note_on(60, 96)
+
+        self.assertEqual(
+            immediate.render_f32_stereo(1024), delayed.render_f32_stereo(1024)
+        )
+
     def test_all_88_keys_map_monotonically_and_reach_endpoints(self):
         frequencies = [
             engine.note_to_whale_hz(note, self.config) for note in range(21, 109)

@@ -188,6 +188,14 @@ class WhaleVoice:
     def active(self) -> bool:
         return self.gate or self.envelope > 1e-5
 
+    @property
+    def silent(self) -> bool:
+        return (
+            not self.gate
+            and self.envelope == 0.0
+            and self.retrigger_fade_remaining == 0
+        )
+
     def dispatch(self, event: MidiEvent) -> None:
         if event.kind == "note_on":
             self.note_on(event.note, event.velocity)
@@ -346,6 +354,8 @@ class WhaleVoice:
             raise ValueError("render frame count is outside the bounded range")
         if frames == 0:
             return []
+        if self.silent:
+            return [0.0] * frames
 
         sample_rate = self.config.sample_rate
         two_pi = 2.0 * math.pi
@@ -523,6 +533,10 @@ class WhaleVoice:
         return output
 
     def render_f32_stereo(self, frames: int) -> bytes:
+        if frames < 0 or frames > self.config.sample_rate * 30:
+            raise ValueError("render frame count is outside the bounded range")
+        if self.silent:
+            return bytes(frames * 2 * 4)
         mono = self.render(frames)
         interleaved = array("f")
         for sample in mono:
