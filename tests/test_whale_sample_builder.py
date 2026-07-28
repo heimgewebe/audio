@@ -3,6 +3,7 @@ import io
 import json
 import os
 import pathlib
+import stat
 import subprocess
 import struct
 import sys
@@ -395,6 +396,195 @@ class WhaleSampleBuilderTests(unittest.TestCase):
                     builder.build(catalog, output)
             self.assertEqual(marker.read_text(encoding="utf-8"), "old-bank")
             self.assertFalse(list(root.glob(".processed-staging-*")))
+
+    def test_missing_output_never_falls_back_from_bound_rename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            output = root / "processed"
+            with (
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+                mock.patch.object(
+                    builder,
+                    "_rename_noreplace",
+                    side_effect=RuntimeError("bound rename unavailable"),
+                ),
+                mock.patch.object(builder.os, "replace") as unsafe_replace,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "bound rename unavailable.*layout restored"
+                ):
+                    builder.build(catalog, output)
+
+            unsafe_replace.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertFalse(list(root.glob(".processed-staging-*")))
+
+    def test_race_after_last_validation_is_rolled_back_without_raw_deletion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw = root / "raw"
+            output = root / "processed"
+            output.mkdir()
+            (output / "marker.txt").write_text("old-bank", encoding="utf-8")
+            raw_before = self.snapshot_tree(raw)
+            output_before = self.snapshot_tree(output)
+            protected_identities = {
+                (values[1], values[2]) for values in raw_before.values()
+            }
+            real_validate = builder.validate_output_root
+            real_rmtree = builder.shutil.rmtree
+            validation_count = 0
+            removed_identities = []
+
+            def validate_then_swap(*args, **kwargs):
+                nonlocal validation_count
+                result = real_validate(*args, **kwargs)
+                validation_count += 1
+                if validation_count == 2:
+                    displaced = root / ".race-displaced"
+                    os.rename(raw, displaced)
+                    os.rename(output, raw)
+                    os.rename(displaced, output)
+                return result
+
+            def observe_rmtree(path, *args, **kwargs):
+                candidate = pathlib.Path(path)
+                if candidate.exists():
+                    metadata = candidate.lstat()
+                    removed_identities.append((metadata.st_dev, metadata.st_ino))
+                return real_rmtree(path, *args, **kwargs)
+
+            with (
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+                mock.patch.object(
+                    builder,
+                    "validate_output_root",
+                    side_effect=validate_then_swap,
+                ),
+                mock.patch.object(builder.shutil, "rmtree", side_effect=observe_rmtree),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "protected identity changed.*layout restored"
+                ):
+                    builder.build(catalog, output)
+
+            self.assertEqual(validation_count, 2)
+            self.assertEqual(self.snapshot_tree(raw), raw_before)
+            self.assertEqual(self.snapshot_tree(output), output_before)
+            self.assertTrue(
+                protected_identities.isdisjoint(removed_identities),
+                "recursive cleanup targeted a protected raw identity",
+            )
+            self.assertFalse(list(root.glob(".processed-staging-*")))
+            self.assertFalse((root / ".race-displaced").exists())
+
+    def test_race_after_exchange_is_rolled_back_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw = root / "raw"
+            output = root / "processed"
+            output.mkdir()
+            (output / "marker.txt").write_text("old-bank", encoding="utf-8")
+            raw_before = self.snapshot_tree(raw)
+            output_before = self.snapshot_tree(output)
+            real_exchange = builder._rename_exchange
+
+            def swap_raw_with_backup(bindings, state):
+                real_exchange(bindings.source_root_fd, "raw", state.staging_name)
+
+            with (
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+                mock.patch.object(
+                    builder,
+                    "_after_exchange_before_cleanup",
+                    side_effect=swap_raw_with_backup,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "protected identity changed.*layout restored"
+                ):
+                    builder.build(catalog, output)
+
+            self.assertEqual(self.snapshot_tree(raw), raw_before)
+            self.assertEqual(self.snapshot_tree(output), output_before)
+            self.assertFalse(list(root.glob(".processed-staging-*")))
+
+    def test_failed_rollback_preserves_every_path_without_recursive_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw = root / "raw"
+            output = root / "processed"
+            output.mkdir()
+            (output / "marker.txt").write_text("old-bank", encoding="utf-8")
+            raw_before = self.snapshot_tree(raw)
+            raw_identity = (
+                raw.stat().st_dev,
+                raw.stat().st_ino,
+                stat.S_IFMT(raw.stat().st_mode),
+            )
+            real_exchange = builder._rename_exchange
+            real_rmtree = builder.shutil.rmtree
+            exchange_count = 0
+            race_started = False
+            cleanup_after_race = []
+
+            def fail_rollback(directory_fd, first_name, second_name):
+                nonlocal exchange_count
+                exchange_count += 1
+                if exchange_count == 1:
+                    return real_exchange(directory_fd, first_name, second_name)
+                raise RuntimeError("synthetic rollback failure")
+
+            def race_after_exchange(bindings, state):
+                nonlocal race_started
+                real_exchange(bindings.source_root_fd, "raw", state.staging_name)
+                race_started = True
+
+            def observe_rmtree(path, *args, **kwargs):
+                if race_started:
+                    cleanup_after_race.append(pathlib.Path(path))
+                return real_rmtree(path, *args, **kwargs)
+
+            with (
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+                mock.patch.object(
+                    builder,
+                    "_clear_bound_directory",
+                    wraps=builder._clear_bound_directory,
+                ) as clear_bound_directory,
+                mock.patch.object(
+                    builder, "_rename_exchange", side_effect=fail_rollback
+                ),
+                mock.patch.object(
+                    builder,
+                    "_after_exchange_before_cleanup",
+                    side_effect=race_after_exchange,
+                ),
+                mock.patch.object(builder.shutil, "rmtree", side_effect=observe_rmtree),
+            ):
+                with self.assertRaisesRegex(
+                    builder._RecoveryRequiredError,
+                    "outcome is unknown.*no further recursive deletion.*manual recovery",
+                ):
+                    builder.build(catalog, output)
+
+            staging_paths = list(root.glob(".processed-staging-*"))
+            self.assertEqual(len(staging_paths), 1)
+            staging = staging_paths[0]
+            staging_metadata = staging.stat()
+            self.assertEqual(
+                (
+                    staging_metadata.st_dev,
+                    staging_metadata.st_ino,
+                    stat.S_IFMT(staging_metadata.st_mode),
+                ),
+                raw_identity,
+            )
+            self.assertEqual(self.snapshot_tree(staging), raw_before)
+            self.assertTrue(raw.is_dir())
+            self.assertTrue(output.is_dir())
+            self.assertEqual(cleanup_after_race, [])
+            clear_bound_directory.assert_not_called()
 
     def test_successful_build_atomically_replaces_old_bank(self):
         with tempfile.TemporaryDirectory() as directory:
