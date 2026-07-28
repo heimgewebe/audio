@@ -206,8 +206,60 @@ def load_catalog(
     return source_root, validated
 
 
+def _resolved_path_key(path: pathlib.Path) -> pathlib.Path:
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError) as error:
+        raise RuntimeError(f"cannot resolve whale-bank path safely: {path}") from error
+    return pathlib.Path(os.path.normcase(os.fspath(resolved)))
+
+
+def _paths_overlap(first: pathlib.Path, second: pathlib.Path) -> bool:
+    first_key = _resolved_path_key(first)
+    second_key = _resolved_path_key(second)
+    if (
+        first_key == second_key
+        or first_key in second_key.parents
+        or second_key in first_key.parents
+    ):
+        return True
+    if not first.exists() or not second.exists():
+        return False
+    try:
+        return os.path.samefile(first, second)
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot verify whale-bank path identity: {first}"
+        ) from error
+
+
+def _reject_protected_output_aliases(
+    output_root: pathlib.Path, protected_paths: tuple[pathlib.Path, ...]
+) -> None:
+    paths_to_check = [output_root]
+    while paths_to_check:
+        candidate = paths_to_check.pop()
+        if any(_paths_overlap(candidate, protected) for protected in protected_paths):
+            raise RuntimeError(
+                "whale bank output overlaps a protected catalog or raw source input"
+            )
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        try:
+            with os.scandir(candidate) as entries:
+                for entry in entries:
+                    path = pathlib.Path(entry.path)
+                    paths_to_check.append(path)
+        except OSError as error:
+            raise RuntimeError(
+                f"cannot inspect whale bank output safely: {candidate}"
+            ) from error
+
+
 def validate_output_root(
-    source_root: pathlib.Path, output_root: pathlib.Path
+    source_root: pathlib.Path,
+    output_root: pathlib.Path,
+    protected_paths: tuple[pathlib.Path, ...] = (),
 ) -> pathlib.Path:
     candidate = output_root.expanduser()
     if not candidate.is_absolute():
@@ -228,6 +280,11 @@ def validate_output_root(
         raise RuntimeError("whale bank output must not be a symlink")
     if candidate.exists() and not candidate.is_dir():
         raise RuntimeError("whale bank output must be a directory")
+    protected_paths = (
+        (source_root / "raw").resolve(strict=True),
+        *(path.resolve(strict=True) for path in protected_paths),
+    )
+    _reject_protected_output_aliases(candidate, protected_paths)
     return candidate
 
 
@@ -453,7 +510,11 @@ def _atomic_replace_directory(staging: pathlib.Path, output_root: pathlib.Path) 
 
 def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, Any]:
     source_root, sources = load_catalog(source_catalog)
-    output_root = validate_output_root(source_root, output_root)
+    protected_paths = (
+        source_catalog.resolve(strict=True),
+        *(pathlib.Path(source["_path"]) for source in sources),
+    )
+    output_root = validate_output_root(source_root, output_root, protected_paths)
     staging = pathlib.Path(
         tempfile.mkdtemp(prefix=f".{output_root.name}-staging-", dir=source_root)
     )
@@ -559,6 +620,7 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
         actual_files = {path.name for path in staging.iterdir() if path.is_file()}
         if actual_files != expected_files:
             raise RuntimeError("staged whale bank file set does not match manifest")
+        validate_output_root(source_root, output_root, protected_paths)
         _atomic_replace_directory(staging, output_root)
         return manifest
     except BaseException:
@@ -579,7 +641,11 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "state": "built",
                     "manifest": str(
-                        validate_output_root(args.catalog.resolve().parent, args.output)
+                        validate_output_root(
+                            args.catalog.resolve().parent,
+                            args.output,
+                            (args.catalog,),
+                        )
                         / "manifest.json"
                     ),
                     "source_count": len(manifest["sources"]),

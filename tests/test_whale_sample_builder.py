@@ -1,7 +1,9 @@
 import hashlib
 import io
 import json
+import os
 import pathlib
+import subprocess
 import struct
 import sys
 import tempfile
@@ -61,6 +63,55 @@ class WhaleSampleBuilderTests(unittest.TestCase):
         catalog_path = root / "SOURCES.json"
         catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
         return root, catalog_path, first_source
+
+    @staticmethod
+    def snapshot_tree(root: pathlib.Path) -> dict[str, tuple[object, ...]]:
+        snapshot = {}
+        for path in (root, *sorted(root.rglob("*"))):
+            relative = "." if path == root else path.relative_to(root).as_posix()
+            metadata = path.lstat()
+            if path.is_file():
+                payload = path.read_bytes()
+                snapshot[relative] = (
+                    "file",
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    len(payload),
+                    hashlib.sha256(payload).hexdigest(),
+                    payload,
+                )
+            elif path.is_dir():
+                snapshot[relative] = (
+                    "directory",
+                    metadata.st_dev,
+                    metadata.st_ino,
+                )
+            else:
+                snapshot[relative] = (
+                    "other",
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    os.readlink(path) if path.is_symlink() else None,
+                )
+        return snapshot
+
+    def run_builder(
+        self, root: pathlib.Path, catalog: pathlib.Path, output: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "build_whale_sample_bank.py"),
+                "--catalog",
+                str(catalog),
+                "--output",
+                output,
+            ],
+            cwd=root,
+            check=False,
+            text=True,
+            capture_output=True,
+        )
 
     @staticmethod
     def fake_ffmpeg(_source: pathlib.Path, output: pathlib.Path) -> None:
@@ -163,6 +214,120 @@ class WhaleSampleBuilderTests(unittest.TestCase):
                     builder.build(catalog, root / "processed")
             ffmpeg.assert_not_called()
 
+    def test_cli_blocks_every_raw_output_spelling_without_side_effects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw_before = self.snapshot_tree(root / "raw")
+            raw_inode = (root / "raw").stat().st_ino
+            output_spellings = (
+                "raw",
+                "raw/",
+                "./raw",
+                str(root / "raw"),
+                f"{root}/./raw",
+            )
+
+            for output in output_spellings:
+                with self.subTest(output=output):
+                    result = self.run_builder(root, catalog, output)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(result.stdout, "")
+                    error_lines = result.stderr.strip().splitlines()
+                    self.assertEqual(len(error_lines), 1)
+                    response = json.loads(error_lines[0])
+                    self.assertEqual(response["state"], "blocked")
+                    self.assertIn("protected", response["error"])
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertEqual(
+                        self.snapshot_tree(root / "raw"),
+                        raw_before,
+                    )
+                    self.assertEqual((root / "raw").stat().st_ino, raw_inode)
+                    self.assertFalse(list(root.glob(".raw-staging-*")))
+                    self.assertFalse(list(root.glob(".raw-backup-*")))
+
+    def test_raw_output_is_blocked_before_any_staging_or_destructive_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw_before = self.snapshot_tree(root / "raw")
+            stderr = io.StringIO()
+            with (
+                mock.patch("sys.stderr", stderr),
+                mock.patch.object(builder.tempfile, "mkdtemp") as make_staging,
+                mock.patch.object(builder, "_atomic_replace_directory") as replace,
+                mock.patch.object(builder, "_rename_exchange") as exchange,
+                mock.patch.object(builder.os, "replace") as os_replace,
+                mock.patch.object(builder.shutil, "rmtree") as remove_tree,
+            ):
+                result = builder.main(
+                    ["--catalog", str(catalog), "--output", str(root / "raw")]
+                )
+
+            self.assertEqual(result, 2)
+            self.assertEqual(len(stderr.getvalue().strip().splitlines()), 1)
+            self.assertEqual(json.loads(stderr.getvalue())["state"], "blocked")
+            make_staging.assert_not_called()
+            replace.assert_not_called()
+            exchange.assert_not_called()
+            os_replace.assert_not_called()
+            remove_tree.assert_not_called()
+            self.assertEqual(self.snapshot_tree(root / "raw"), raw_before)
+
+    def test_cli_blocks_symlink_and_parent_aliases_to_raw(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw_before = self.snapshot_tree(root / "raw")
+            (root / "raw-alias").symlink_to(root / "raw", target_is_directory=True)
+            root_alias = root.parent / f"{root.name}-alias"
+            root_alias.symlink_to(root, target_is_directory=True)
+            self.addCleanup(root_alias.unlink)
+            outputs = (
+                str(root / "raw-alias"),
+                str(root_alias / "raw"),
+            )
+
+            for output in outputs:
+                with self.subTest(output=output):
+                    result = self.run_builder(root, catalog, output)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(result.stdout, "")
+                    error_lines = result.stderr.strip().splitlines()
+                    self.assertEqual(len(error_lines), 1)
+                    self.assertEqual(json.loads(error_lines[0])["state"], "blocked")
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertEqual(self.snapshot_tree(root / "raw"), raw_before)
+                    self.assertFalse(list(root.glob(".*-staging-*")))
+
+    def test_existing_custom_output_must_not_contain_input_aliases(self):
+        alias_kinds = ("catalog-hardlink", "source-hardlink", "source-symlink")
+        for alias_kind in alias_kinds:
+            with self.subTest(alias_kind=alias_kind):
+                with tempfile.TemporaryDirectory() as directory:
+                    root, catalog, source = self.make_root(directory)
+                    output = root / "custom"
+                    output.mkdir()
+                    alias = output / "bound-input"
+                    if alias_kind == "catalog-hardlink":
+                        os.link(catalog, alias)
+                    elif alias_kind == "source-hardlink":
+                        os.link(source, alias)
+                    else:
+                        alias.symlink_to(source)
+                    raw_before = self.snapshot_tree(root / "raw")
+
+                    with (
+                        mock.patch.object(builder, "run_ffmpeg") as ffmpeg,
+                        mock.patch.object(builder.tempfile, "mkdtemp") as make_staging,
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "protected"):
+                            builder.build(catalog, output)
+
+                    ffmpeg.assert_not_called()
+                    make_staging.assert_not_called()
+                    self.assertEqual(self.snapshot_tree(root / "raw"), raw_before)
+                    self.assertTrue(alias.exists())
+                    self.assertFalse(list(root.glob(".custom-staging-*")))
+
     def test_rejects_traversal_symlinks_and_external_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root, catalog, _source = self.make_root(
@@ -245,6 +410,21 @@ class WhaleSampleBuilderTests(unittest.TestCase):
             self.assertEqual(len(list(output.glob("*.wav"))), 3)
             self.assertFalse(list(root.glob(".processed-staging-*")))
             self.assertFalse(list(root.glob(".processed-backup-*")))
+
+    def test_safe_custom_direct_child_is_still_atomically_replaceable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            output = root / "custom-bank"
+            output.mkdir()
+            (output / "marker.txt").write_text("old-bank", encoding="utf-8")
+            with mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg):
+                manifest = builder.build(catalog, output)
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertFalse((output / "marker.txt").exists())
+            self.assertTrue((output / "manifest.json").is_file())
+            self.assertEqual(len(list(output.glob("*.wav"))), 3)
+            self.assertFalse(list(root.glob(".custom-bank-staging-*")))
+            self.assertFalse(list(root.glob(".custom-bank-backup-*")))
 
 
 if __name__ == "__main__":
