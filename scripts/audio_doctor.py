@@ -22,6 +22,8 @@ READ_ONLY_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("pactl", "info"),
     ("pactl", "list", "short", "sinks"),
     ("pactl", "list", "short", "sources"),
+    ("aconnect", "-l"),
+    ("amidi", "-l"),
     ("systemctl", "is-active", "bluetooth"),
 )
 
@@ -103,7 +105,13 @@ def contains_device(text: str, device: str) -> bool:
     if device == "motu-m2":
         return bool(re.search(r"\bMOTU\b|\bM Series\b|\bM2\b", text, re.IGNORECASE))
     if device == "roland-fp-30x":
-        return bool(re.search(r"Roland Digital Piano|Roland.*Piano", text, re.IGNORECASE))
+        return bool(
+            re.search(
+                r"Roland Digital Piano|Roland.*Piano|FP[- ]?30X",
+                text,
+                re.IGNORECASE,
+            )
+        )
     raise ValueError(f"unknown device: {device}")
 
 
@@ -139,8 +147,33 @@ def physical_unknowns(contract_path: pathlib.Path | None = None) -> list[str]:
     return sorted(facts)
 
 
+def desired_hardware() -> list[str]:
+    profile_path = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "profiles"
+        / "audio-profiles.v1.json"
+    )
+    try:
+        payload = json.loads(profile_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"audio profile catalog unavailable: {profile_path}") from exc
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict):
+        raise RuntimeError("audio profile catalog has no profiles object")
+    devices: set[str] = set()
+    for profile in profiles.values():
+        if not isinstance(profile, dict):
+            raise RuntimeError("audio profile catalog contains a non-object profile")
+        required = profile.get("required_hardware", [])
+        if not isinstance(required, list) or any(not isinstance(item, str) for item in required):
+            raise RuntimeError("audio profile required_hardware must be a string array")
+        devices.update(required)
+    return sorted(devices)
+
+
 def build_report(results: Iterable[CommandResult], eld_text: str = "") -> dict[str, object]:
-    by_command = {result.argv: result for result in results}
+    result_list = list(results)
+    by_command = {result.argv: result for result in result_list}
     aplay = by_command.get(("aplay", "-l"), CommandResult((), 127, "", ""))
     arecord = by_command.get(("arecord", "-l"), CommandResult((), 127, "", ""))
     wpctl = by_command.get(("wpctl", "status"), CommandResult((), 127, "", ""))
@@ -154,11 +187,15 @@ def build_report(results: Iterable[CommandResult], eld_text: str = "") -> dict[s
     sources = by_command.get(
         ("pactl", "list", "short", "sources"), CommandResult((), 127, "", "")
     )
+    aconnect = by_command.get(("aconnect", "-l"), CommandResult((), 127, "", ""))
+    amidi = by_command.get(("amidi", "-l"), CommandResult((), 127, "", ""))
     bluetooth = by_command.get(
         ("systemctl", "is-active", "bluetooth"), CommandResult((), 127, "", "")
     )
 
-    hardware_text = "\n".join((aplay.stdout, arecord.stdout, wpctl.stdout))
+    alsa_audio_text = "\n".join((aplay.stdout, arecord.stdout))
+    pipewire_text = wpctl.stdout
+    midi_text = "\n".join((aconnect.stdout, amidi.stdout))
     sink_name = parse_pactl_default(pactl_info.stdout, "sink")
     source_name = parse_pactl_default(pactl_info.stdout, "source")
     rate = parse_setting(metadata.stdout, "clock.force-rate") or parse_setting(
@@ -168,8 +205,15 @@ def build_report(results: Iterable[CommandResult], eld_text: str = "") -> dict[s
         metadata.stdout, "clock.quantum"
     )
     buffer_period_ms = round(quantum / rate * 1000, 3) if rate and quantum else None
-    motu = contains_device(hardware_text, "motu-m2")
-    roland = contains_device(hardware_text, "roland-fp-30x")
+    motu_alsa = contains_device(alsa_audio_text, "motu-m2")
+    motu_pipewire = contains_device(pipewire_text, "motu-m2")
+    roland_alsa_audio = contains_device(alsa_audio_text, "roland-fp-30x")
+    roland_pipewire = contains_device(pipewire_text, "roland-fp-30x")
+    roland_midi = contains_device(midi_text, "roland-fp-30x")
+    # Physical presence is fail-closed: defaults and PipeWire labels are configuration/graph
+    # evidence, not proof that a USB device is currently attached.
+    motu = motu_alsa
+    roland = roland_midi
     sink = normalize_endpoint(sink_name)
     source = normalize_endpoint(source_name)
     pioneer_observed = bool(re.search(r"Pioneer|VSX-?830", eld_text, re.IGNORECASE))
@@ -184,6 +228,17 @@ def build_report(results: Iterable[CommandResult], eld_text: str = "") -> dict[s
                 "detail": "Default capture source is not the MOTU M2 microphone input.",
             }
         )
+    configured_endpoints = {"default_sink": sink, "default_source": source}
+    observed_presence = {"motu-m2": motu, "roland-fp-30x": roland}
+    for role, endpoint in configured_endpoints.items():
+        if endpoint in observed_presence and not observed_presence[endpoint]:
+            warnings.append(
+                {
+                    "code": "configured-default-device-absent",
+                    "severity": "high",
+                    "detail": f"{role} names {endpoint}, but current physical observation does not confirm it.",
+                }
+            )
     if quantum and quantum >= 1024:
         warnings.append(
             {
@@ -214,7 +269,25 @@ def build_report(results: Iterable[CommandResult], eld_text: str = "") -> dict[s
         "kind": "audio_doctor_report",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "read_only_contract": True,
+        # Backward-compatible physical-presence projection used by profile planning.
         "hardware": {"motu_m2": motu, "roland_fp_30x": roland},
+        "device_truth": {
+            "observed": {
+                "motu_m2": {
+                    "present": motu,
+                    "alsa_audio": motu_alsa,
+                    "pipewire_graph": motu_pipewire,
+                },
+                "roland_fp_30x": {
+                    "present": roland,
+                    "alsa_audio": roland_alsa_audio,
+                    "pipewire_graph": roland_pipewire,
+                    "alsa_midi": roland_midi,
+                },
+            },
+            "configured_defaults": configured_endpoints,
+            "desired": {device: True for device in desired_hardware()},
+        },
         "graph": {
             "default_sink": sink,
             "default_source": source,
@@ -257,7 +330,7 @@ def build_report(results: Iterable[CommandResult], eld_text: str = "") -> dict[s
                 "available": result.error is None,
                 "returncode": result.returncode,
             }
-            for result in results
+            for result in result_list
         ],
     }
 

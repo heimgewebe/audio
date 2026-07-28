@@ -36,6 +36,27 @@ class LaboratoryGateTests(unittest.TestCase):
             },
         }
 
+
+    def test_planned_profiles_do_not_invalidate_operational_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "profiles.json"
+            base = {
+                "schema_version": 1,
+                "kind": "audio_profile_catalog",
+                "profiles": {
+                    "available": {"purpose": "test"},
+                },
+            }
+            path.write_text(json.dumps(base, ensure_ascii=False, indent=2) + "\n")
+            before = MODULE.operational_profile_catalog_sha256(path)
+            base["profiles"]["future"] = {
+                "purpose": "future",
+                "operational_status": "planned",
+            }
+            path.write_text(json.dumps(base, ensure_ascii=False, indent=2) + "\n")
+            after = MODULE.operational_profile_catalog_sha256(path)
+            self.assertEqual(before, after)
+
     def test_private_state_and_policy_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             state_path = pathlib.Path(directory) / "gates.json"

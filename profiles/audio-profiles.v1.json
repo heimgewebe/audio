@@ -177,6 +177,28 @@
       "required_laboratory_gates": [
         "managed-plugin-host-proof"
       ]
+    },
+    "production": {
+      "purpose": "Geplante reproduzierbare Musikproduktion mit Ardour, Plugins, Aufnahme, Speichern und Wiederöffnen",
+      "operational_status": "planned",
+      "planned_blocker": "Ardour-Installationsform, Session-Template, Plugininventar und Wiederöffnungsbeleg sind noch nicht kanonisch festgelegt.",
+      "required_hardware": [
+        "motu_m2"
+      ],
+      "required_physical_facts": [
+        "motu_output_to_lake_people",
+        "focal_connected_output"
+      ],
+      "desired": {
+        "session_engine": "ardour",
+        "default_sink": "motu-m2",
+        "default_source": "motu-m2",
+        "rate_hz": 48000,
+        "quantum_candidate_frames": 512,
+        "reopen_proof_required": true
+      },
+      "apply_authority": "planned-not-executable",
+      "required_laboratory_gates": []
     }
   }
 }

@@ -62,6 +62,34 @@ def canonical_sha256(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def operational_profile_catalog_sha256(
+    path: pathlib.Path = PROFILE_PATH,
+) -> str:
+    payload = load_json(path)
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict):
+        raise ValueError("audio profile catalog has no profiles object")
+    operational = {
+        name: profile
+        for name, profile in profiles.items()
+        if isinstance(profile, dict)
+        and profile.get("operational_status", "available") != "planned"
+    }
+    if len(operational) != sum(isinstance(profile, dict) for profile in profiles.values()):
+        non_objects = [
+            name for name, profile in profiles.items() if not isinstance(profile, dict)
+        ]
+        if non_objects:
+            raise ValueError(
+                "audio profile catalog contains non-object profiles: "
+                + ", ".join(non_objects)
+            )
+    normalized = dict(payload)
+    normalized["profiles"] = operational
+    encoded = (json.dumps(normalized, ensure_ascii=False, indent=2) + "\n").encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 GRAPH_CONTEXT_FIELDS = (
     "default_sink",
     "default_source",
@@ -106,7 +134,7 @@ def empty_state() -> dict[str, Any]:
         "kind": "audio_laboratory_gate_state",
         "updated_at": None,
         "catalog_sha256": sha256_file(CATALOG_PATH),
-        "profile_catalog_sha256": sha256_file(PROFILE_PATH),
+        "profile_catalog_sha256": operational_profile_catalog_sha256(),
         "gates": {},
         "does_not_establish": [
             "profile-apply-authority",
@@ -307,7 +335,7 @@ def validate_state(path: pathlib.Path, state: dict[str, Any]) -> None:
         raise ValueError("laboratory gate state has the wrong schema or kind")
     if state.get("catalog_sha256") != sha256_file(CATALOG_PATH):
         raise ValueError("laboratory gate catalog changed; review existing evidence")
-    if state.get("profile_catalog_sha256") != sha256_file(PROFILE_PATH):
+    if state.get("profile_catalog_sha256") != operational_profile_catalog_sha256():
         raise ValueError("audio profile catalog changed; review existing evidence")
     gates = state.get("gates")
     if not isinstance(gates, dict):
