@@ -11,6 +11,7 @@ import math
 import os
 import pathlib
 import re
+import secrets
 import shutil
 import stat
 import struct
@@ -546,7 +547,6 @@ def snapshot_verified_source(
                     digest.update(chunk)
                     total += len(chunk)
     except BaseException:
-        destination.unlink(missing_ok=True)
         raise
     finally:
         if descriptor >= 0:
@@ -554,13 +554,11 @@ def snapshot_verified_source(
     expected_bytes = source["expected_bytes"]
     expected_sha256 = source["expected_sha256"]
     if total != expected_bytes:
-        destination.unlink(missing_ok=True)
         raise RuntimeError(
             f"whale source snapshot byte-size mismatch: {source['file']}: "
             f"{total} != {expected_bytes}"
         )
     if digest.hexdigest() != expected_sha256:
-        destination.unlink(missing_ok=True)
         raise RuntimeError(f"whale source snapshot SHA-256 mismatch: {source['file']}")
     return destination
 
@@ -703,6 +701,22 @@ def _source_manifest_record(source: dict[str, Any]) -> dict[str, Any]:
 def _renameat2(
     directory_fd: int, first_name: str, second_name: str, flags: int
 ) -> None:
+    _renameat2_between(
+        directory_fd,
+        first_name,
+        directory_fd,
+        second_name,
+        flags,
+    )
+
+
+def _renameat2_between(
+    first_directory_fd: int,
+    first_name: str,
+    second_directory_fd: int,
+    second_name: str,
+    flags: int,
+) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     renameat2 = getattr(libc, "renameat2", None)
     if renameat2 is None:
@@ -716,9 +730,9 @@ def _renameat2(
     ]
     renameat2.restype = ctypes.c_int
     result = renameat2(
-        directory_fd,
+        first_directory_fd,
         os.fsencode(first_name),
-        directory_fd,
+        second_directory_fd,
         os.fsencode(second_name),
         flags,
     )
@@ -733,6 +747,21 @@ def _rename_exchange(directory_fd: int, first_name: str, second_name: str) -> No
 
 def _rename_noreplace(directory_fd: int, first_name: str, second_name: str) -> None:
     _renameat2(directory_fd, first_name, second_name, 1)
+
+
+def _rename_exchange_between(
+    first_directory_fd: int,
+    first_name: str,
+    second_directory_fd: int,
+    second_name: str,
+) -> None:
+    _renameat2_between(
+        first_directory_fd,
+        first_name,
+        second_directory_fd,
+        second_name,
+        2,
+    )
 
 
 def _require_secure_replace_platform() -> None:
@@ -791,6 +820,78 @@ class _ReplaceState:
         if self.output_fd is not None:
             os.close(self.output_fd)
         os.close(self.staging_fd)
+
+
+@dataclass
+class _BoundDirectory:
+    parent_fd: int
+    parent_identity: FileIdentity
+    name: str
+    descriptor: int
+    identity: FileIdentity
+    label: str
+
+    def verify(self) -> None:
+        _require_identity(
+            _file_identity(os.fstat(self.parent_fd)),
+            self.parent_identity,
+            f"{self.label} parent descriptor",
+        )
+        _require_identity(
+            _file_identity(os.fstat(self.descriptor)),
+            self.identity,
+            f"{self.label} descriptor",
+        )
+        _require_identity(
+            _entry_identity(self.parent_fd, self.name),
+            self.identity,
+            self.label,
+        )
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+
+
+def _create_bound_directory(
+    parent_fd: int,
+    parent_identity: FileIdentity,
+    name: str,
+    label: str,
+) -> _BoundDirectory:
+    _require_identity(
+        _file_identity(os.fstat(parent_fd)),
+        parent_identity,
+        f"{label} parent descriptor",
+    )
+    if _entry_identity(parent_fd, name) is not None:
+        raise RuntimeError(f"refusing to reuse existing {label}")
+    os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+    identity = _entry_identity(parent_fd, name)
+    if identity is None or identity[2] != stat.S_IFDIR:
+        raise _RecoveryRequiredError(
+            f"{label} identity could not be established after creation; "
+            "no recursive deletion will be attempted"
+        )
+    descriptor = -1
+    try:
+        descriptor = _open_nofollow(parent_fd, name, directory=True)
+        bound = _BoundDirectory(
+            parent_fd=parent_fd,
+            parent_identity=parent_identity,
+            name=name,
+            descriptor=descriptor,
+            identity=identity,
+            label=label,
+        )
+        bound.verify()
+        return bound
+    except BaseException as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise _RecoveryRequiredError(
+            f"{label} identity could not be bound after creation; "
+            f"no recursive deletion will be attempted; reason={error}"
+        ) from error
 
 
 def _capture_replace_state(
@@ -956,6 +1057,123 @@ def _restore_directory_layout(
     _verify_original_layout(bindings, state)
 
 
+def _before_quarantine_rename(
+    _directory_fd: int,
+    _name: str,
+    _quarantine_name: str,
+    _expected: FileIdentity,
+    _label: str,
+) -> None:
+    """Test seam immediately before the namespace entry is quarantined."""
+
+
+def _quarantine_verified_entry(
+    bindings: _ProtectedBindings,
+    directory_fd: int,
+    name: str,
+    expected: FileIdentity,
+    label: str,
+) -> None:
+    if expected in bindings.protected_identities:
+        raise RuntimeError(f"refusing to quarantine protected identity from {label}")
+    path_flag = getattr(os, "O_PATH", None)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if path_flag is None or no_follow is None:
+        raise RuntimeError(
+            "descriptor-bound quarantine cleanup is unavailable on this host"
+        )
+
+    quarantine_name = ""
+    for _attempt in range(16):
+        bindings.verify()
+        _require_identity(
+            _entry_identity(directory_fd, name),
+            expected,
+            label,
+        )
+        candidate = f".whale-cleanup-quarantine-{secrets.token_hex(16)}"
+        if _entry_identity(directory_fd, candidate) is not None:
+            continue
+        _before_quarantine_rename(
+            directory_fd,
+            name,
+            candidate,
+            expected,
+            label,
+        )
+        try:
+            _rename_noreplace(directory_fd, name, candidate)
+        except FileExistsError:
+            continue
+        except BaseException as error:
+            raise _RecoveryRequiredError(
+                f"could not quarantine {label}; nothing was deleted; "
+                f"reason={error}"
+            ) from error
+        quarantine_name = candidate
+        break
+    if not quarantine_name:
+        raise _RecoveryRequiredError(
+            f"could not reserve a unique quarantine name for {label}; "
+            "nothing was deleted"
+        )
+
+    quarantine_fd = -1
+    try:
+        flags = path_flag | os.O_CLOEXEC | no_follow
+        if expected[2] == stat.S_IFDIR:
+            quarantine_fd = _open_nofollow(
+                directory_fd, quarantine_name, directory=True
+            )
+        else:
+            quarantine_fd = os.open(
+                quarantine_name,
+                flags,
+                dir_fd=directory_fd,
+            )
+        actual_descriptor = _file_identity(os.fstat(quarantine_fd))
+        actual_entry = _entry_identity(directory_fd, quarantine_name)
+        if actual_descriptor != expected or actual_entry != expected:
+            raise _RecoveryRequiredError(
+                f"quarantined {label} identity is ambiguous; expected={expected!r}; "
+                f"descriptor={actual_descriptor!r}; entry={actual_entry!r}; "
+                "nothing was deleted"
+            )
+        bindings.verify()
+        if actual_descriptor in bindings.protected_identities:
+            raise _RecoveryRequiredError(
+                f"quarantined {label} is a protected identity; nothing was deleted"
+            )
+        _require_identity(
+            _entry_identity(directory_fd, quarantine_name),
+            actual_descriptor,
+            f"quarantined {label}",
+        )
+        if expected[2] == stat.S_IFDIR:
+            os.rmdir(quarantine_name, dir_fd=directory_fd)
+        else:
+            os.unlink(quarantine_name, dir_fd=directory_fd)
+        if _entry_identity(directory_fd, quarantine_name) is not None:
+            raise _RecoveryRequiredError(
+                f"quarantined {label} still exists after cleanup"
+            )
+        _require_identity(
+            _file_identity(os.fstat(quarantine_fd)),
+            actual_descriptor,
+            f"removed {label} descriptor",
+        )
+    except _RecoveryRequiredError:
+        raise
+    except BaseException as error:
+        raise _RecoveryRequiredError(
+            f"quarantined {label} could not be removed safely; "
+            f"preserved_name={quarantine_name!r}; reason={error}"
+        ) from error
+    finally:
+        if quarantine_fd >= 0:
+            os.close(quarantine_fd)
+
+
 def _remove_verified_directory(
     bindings: _ProtectedBindings,
     state: _ReplaceState,
@@ -988,11 +1206,13 @@ def _remove_verified_directory(
     )
     _verify_tree_excludes_identities(descriptor, bindings.protected_identities, label)
     _clear_bound_directory(bindings, descriptor, label)
-    if installed:
-        _verify_installed_layout(bindings, state)
-    else:
-        _verify_original_layout(bindings, state)
-    os.rmdir(state.staging_name, dir_fd=bindings.source_root_fd)
+    _quarantine_verified_entry(
+        bindings,
+        bindings.source_root_fd,
+        state.staging_name,
+        expected,
+        label,
+    )
 
 
 def _clear_bound_directory(
@@ -1020,13 +1240,13 @@ def _clear_bound_directory(
                     f"{label}/{name}",
                 )
                 _clear_bound_directory(bindings, child_fd, f"{label}/{name}")
-                bindings.verify()
-                _require_identity(
-                    _entry_identity(directory_fd, name),
+                _quarantine_verified_entry(
+                    bindings,
+                    directory_fd,
+                    name,
                     identity,
                     f"{label}/{name}",
                 )
-                os.rmdir(name, dir_fd=directory_fd)
             finally:
                 os.close(child_fd)
             continue
@@ -1042,15 +1262,39 @@ def _clear_bound_directory(
                 identity,
                 f"{label}/{name}",
             )
-            bindings.verify()
-            _require_identity(
-                _entry_identity(directory_fd, name),
+            _quarantine_verified_entry(
+                bindings,
+                directory_fd,
+                name,
                 identity,
                 f"{label}/{name}",
             )
-            os.unlink(name, dir_fd=directory_fd)
         finally:
             os.close(identity_fd)
+
+
+def _remove_bound_directory(
+    bindings: _ProtectedBindings,
+    bound: _BoundDirectory,
+) -> None:
+    bindings.verify()
+    bound.verify()
+    if bound.identity in bindings.protected_identities:
+        raise RuntimeError(f"refusing to recursively remove protected {bound.label}")
+    _verify_tree_excludes_identities(
+        bound.descriptor,
+        bindings.protected_identities,
+        bound.label,
+    )
+    _clear_bound_directory(bindings, bound.descriptor, bound.label)
+    bound.verify()
+    _quarantine_verified_entry(
+        bindings,
+        bound.parent_fd,
+        bound.name,
+        bound.identity,
+        bound.label,
+    )
 
 
 def _remove_failed_staging(
@@ -1075,13 +1319,20 @@ def _remove_failed_staging(
         staging_fd, bindings.protected_identities, "failed staging"
     )
     _clear_bound_directory(bindings, staging_fd, "failed staging")
-    bindings.verify()
-    _require_identity(
-        _entry_identity(bindings.source_root_fd, staging.name),
+    _quarantine_verified_entry(
+        bindings,
+        bindings.source_root_fd,
+        staging.name,
         staging_identity,
         "failed staging",
     )
-    os.rmdir(staging.name, dir_fd=bindings.source_root_fd)
+
+
+def _before_temporary_cleanup(
+    _bindings: _ProtectedBindings,
+    _bound: _BoundDirectory,
+) -> None:
+    """Test seam immediately before a bound temporary directory is removed."""
 
 
 def _after_exchange_before_cleanup(
@@ -1189,6 +1440,8 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
     output_root = validate_output_root(source_root, output_root, protected_paths)
     bindings = _bind_protected_inputs(source_root, source_catalog, sources, output_root)
     staging_fd = -1
+    intermediate_binding: _BoundDirectory | None = None
+    source_snapshot_binding: _BoundDirectory | None = None
     try:
         staging = pathlib.Path(
             tempfile.mkdtemp(prefix=f".{output_root.name}-staging-", dir=source_root)
@@ -1210,11 +1463,21 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
                 "deletion will be attempted; manual recovery required; "
                 f"preserved_path={staging!r}; reason={staging_error}"
             ) from staging_error
-        intermediate_root = staging / ".intermediate"
-        intermediate_root.mkdir(mode=0o700)
-        source_snapshot_root = staging / ".sources"
-        source_snapshot_root.mkdir(mode=0o700)
         try:
+            intermediate_binding = _create_bound_directory(
+                staging_fd,
+                staging_identity,
+                ".intermediate",
+                "intermediate workspace",
+            )
+            source_snapshot_binding = _create_bound_directory(
+                staging_fd,
+                staging_identity,
+                ".sources",
+                "source snapshot workspace",
+            )
+            intermediate_root = staging / intermediate_binding.name
+            source_snapshot_root = staging / source_snapshot_binding.name
             clips: list[dict[str, Any]] = []
             source_records: list[dict[str, Any]] = []
             for source in sources:
@@ -1258,8 +1521,10 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
                             ),
                         }
                     )
-            shutil.rmtree(intermediate_root)
-            shutil.rmtree(source_snapshot_root)
+            _before_temporary_cleanup(bindings, intermediate_binding)
+            _remove_bound_directory(bindings, intermediate_binding)
+            _before_temporary_cleanup(bindings, source_snapshot_binding)
+            _remove_bound_directory(bindings, source_snapshot_binding)
 
             slots: list[dict[str, Any]] = []
             for category in ("low", "song", "high"):
@@ -1339,6 +1604,10 @@ def build(source_catalog: pathlib.Path, output_root: pathlib.Path) -> dict[str, 
                 ) from build_error
             raise
     finally:
+        if source_snapshot_binding is not None:
+            source_snapshot_binding.close()
+        if intermediate_binding is not None:
+            intermediate_binding.close()
         if staging_fd >= 0:
             os.close(staging_fd)
         bindings.close()

@@ -401,12 +401,23 @@ class WhaleSampleBuilderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, catalog, _source = self.make_root(directory)
             output = root / "processed"
+            real_rename_noreplace = builder._rename_noreplace
+
+            def fail_output_install(directory_fd, first_name, second_name):
+                if second_name == output.name:
+                    raise RuntimeError("bound rename unavailable")
+                return real_rename_noreplace(
+                    directory_fd,
+                    first_name,
+                    second_name,
+                )
+
             with (
                 mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
                 mock.patch.object(
                     builder,
                     "_rename_noreplace",
-                    side_effect=RuntimeError("bound rename unavailable"),
+                    side_effect=fail_output_install,
                 ),
                 mock.patch.object(builder.os, "replace") as unsafe_replace,
             ):
@@ -584,7 +595,221 @@ class WhaleSampleBuilderTests(unittest.TestCase):
             self.assertTrue(raw.is_dir())
             self.assertTrue(output.is_dir())
             self.assertEqual(cleanup_after_race, [])
-            clear_bound_directory.assert_not_called()
+            self.assertEqual(
+                [call.args[2] for call in clear_bound_directory.call_args_list],
+                ["intermediate workspace", "source snapshot workspace"],
+            )
+
+    def test_file_cleanup_race_quarantines_injected_catalog_hardlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw_before = self.snapshot_tree(root / "raw")
+            catalog_before = catalog.read_bytes()
+            catalog_metadata = catalog.stat()
+            output = root / "processed"
+            output.mkdir()
+            (output / "marker.txt").write_text("old-bank", encoding="utf-8")
+            race_started = False
+
+            def inject_catalog_hardlink(
+                directory_fd, name, _quarantine_name, _expected, label
+            ):
+                nonlocal race_started
+                if label != "output backup/marker.txt":
+                    return
+                race_started = True
+                os.rename(
+                    name,
+                    ".race-displaced-marker",
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                )
+                os.link(
+                    catalog,
+                    name,
+                    dst_dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+
+            with (
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+                mock.patch.object(
+                    builder,
+                    "_before_quarantine_rename",
+                    side_effect=inject_catalog_hardlink,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    builder._RecoveryRequiredError,
+                    "outcome is unknown.*manual recovery",
+                ):
+                    builder.build(catalog, output)
+
+            catalog_after = catalog.stat()
+            self.assertTrue(race_started)
+            self.assertEqual(catalog.read_bytes(), catalog_before)
+            self.assertEqual(
+                (catalog_after.st_dev, catalog_after.st_ino),
+                (catalog_metadata.st_dev, catalog_metadata.st_ino),
+            )
+            self.assertEqual(self.snapshot_tree(root / "raw"), raw_before)
+            self.assertEqual(len(list(root.glob(".processed-staging-*"))), 1)
+
+    def test_directory_cleanup_race_quarantines_raw_before_rmdir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw = root / "raw"
+            raw_before = self.snapshot_tree(raw)
+            raw_metadata = raw.stat()
+            output = root / "processed"
+            output.mkdir()
+            (output / "marker.txt").write_text("old-bank", encoding="utf-8")
+            race_started = False
+
+            def exchange_raw_before_quarantine(
+                directory_fd, name, _quarantine_name, _expected, label
+            ):
+                nonlocal race_started
+                if label != "output backup":
+                    return
+                race_started = True
+                builder._rename_exchange(directory_fd, "raw", name)
+
+            with (
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+                mock.patch.object(
+                    builder,
+                    "_before_quarantine_rename",
+                    side_effect=exchange_raw_before_quarantine,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    builder._RecoveryRequiredError,
+                    "outcome is unknown.*manual recovery",
+                ):
+                    builder.build(catalog, output)
+
+            quarantines = list(root.glob(".whale-cleanup-quarantine-*"))
+            self.assertTrue(race_started)
+            self.assertEqual(len(quarantines), 1)
+            quarantined_raw = quarantines[0]
+            quarantined_metadata = quarantined_raw.stat()
+            self.assertEqual(
+                (quarantined_metadata.st_dev, quarantined_metadata.st_ino),
+                (raw_metadata.st_dev, raw_metadata.st_ino),
+            )
+            self.assertEqual(self.snapshot_tree(quarantined_raw), raw_before)
+
+            root_fd = os.open(root, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
+            try:
+                builder._rename_exchange(root_fd, "raw", quarantined_raw.name)
+            finally:
+                os.close(root_fd)
+            self.assertEqual(self.snapshot_tree(raw), raw_before)
+            restored_metadata = raw.stat()
+            self.assertEqual(
+                (restored_metadata.st_dev, restored_metadata.st_ino),
+                (raw_metadata.st_dev, raw_metadata.st_ino),
+            )
+
+    def _assert_raw_race_before_temporary_cleanup(self, temporary_name):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            raw = root / "raw"
+            raw_before = self.snapshot_tree(raw)
+            raw_metadata = raw.stat()
+            race_started = False
+
+            def exchange_raw_with_temporary(bindings, bound):
+                nonlocal race_started
+                if bound.name != temporary_name:
+                    return
+                race_started = True
+                builder._rename_exchange_between(
+                    bindings.source_root_fd,
+                    "raw",
+                    bound.parent_fd,
+                    bound.name,
+                )
+
+            with (
+                mock.patch.object(builder, "run_ffmpeg", side_effect=self.fake_ffmpeg),
+                mock.patch.object(
+                    builder,
+                    "_before_temporary_cleanup",
+                    side_effect=exchange_raw_with_temporary,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    builder._RecoveryRequiredError,
+                    "failed staging outcome is unknown.*manual recovery",
+                ):
+                    builder.build(catalog, root / "processed")
+
+            staging_paths = list(root.glob(".processed-staging-*"))
+            self.assertTrue(race_started)
+            self.assertEqual(len(staging_paths), 1)
+            staging = staging_paths[0]
+            moved_raw = staging / temporary_name
+            moved_metadata = moved_raw.stat()
+            self.assertEqual(
+                (moved_metadata.st_dev, moved_metadata.st_ino),
+                (raw_metadata.st_dev, raw_metadata.st_ino),
+            )
+            self.assertEqual(self.snapshot_tree(moved_raw), raw_before)
+
+            root_fd = os.open(root, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
+            staging_fd = os.open(
+                staging,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY,
+            )
+            try:
+                builder._rename_exchange_between(
+                    root_fd,
+                    "raw",
+                    staging_fd,
+                    temporary_name,
+                )
+            finally:
+                os.close(staging_fd)
+                os.close(root_fd)
+            self.assertEqual(self.snapshot_tree(raw), raw_before)
+            restored_metadata = raw.stat()
+            self.assertEqual(
+                (restored_metadata.st_dev, restored_metadata.st_ino),
+                (raw_metadata.st_dev, raw_metadata.st_ino),
+            )
+
+    def test_raw_race_before_intermediate_cleanup_is_fail_closed(self):
+        self._assert_raw_race_before_temporary_cleanup(".intermediate")
+
+    def test_raw_race_before_source_snapshot_cleanup_is_fail_closed(self):
+        self._assert_raw_race_before_temporary_cleanup(".sources")
+
+    def test_cleanup_handles_files_symlinks_hardlinks_and_nested_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, catalog, _source = self.make_root(directory)
+            output = root / "processed"
+            output.mkdir()
+            regular = output / "regular.txt"
+            regular.write_text("old-bank", encoding="utf-8")
+            os.link(regular, output / "hardlink.txt")
+            (output / "symlink.txt").symlink_to("regular.txt")
+            nested = output / "nested"
+            nested.mkdir()
+            (nested / "child.txt").write_text("nested", encoding="utf-8")
+
+            with mock.patch.object(
+                builder, "run_ffmpeg", side_effect=self.fake_ffmpeg
+            ):
+                manifest = builder.build(catalog, output)
+
+            self.assertEqual(manifest["schema_version"], 2)
+            self.assertFalse(regular.exists())
+            self.assertFalse((output / "hardlink.txt").exists())
+            self.assertFalse((output / "symlink.txt").exists())
+            self.assertFalse(nested.exists())
+            self.assertFalse(list(root.rglob(".whale-cleanup-quarantine-*")))
 
     def test_successful_build_atomically_replaces_old_bank(self):
         with tempfile.TemporaryDirectory() as directory:
