@@ -13,9 +13,11 @@ nur als geprüfte Spenderquelle. Code wird später selektiv und mit Herkunft
 übernommen; seine Historie wird nicht blind zur Grundlage des neuen Systems.
 
 Als erstes ausführbares Klangexperiment enthält das Repository
-**Buckelwal Live Voice v1**: eine abhängigkeitsfreie, verwaltet startbare
-Roland-Gestenengine mit sicherer Offline-Demo. Der aktuelle Syntheseklang ist
-noch kein biologisch realistisches Walmodell.
+**Buckelwal Live Voice**. Standard ist nun eine lokal gespeicherte,
+lizenzdokumentierte Samplebank aus echten Buckelwalaufnahmen. 19 natürliche
+Phrasen werden über 27 Tastaturzonen mit höchstens vier Halbtönen Resampling
+spielbar gemacht. Der frühere synthetische Klang bleibt ausdrücklich als
+separater `ufo`-Modus erhalten.
 
 ## Bereiche
 
@@ -31,7 +33,8 @@ noch kein biologisch realistisches Walmodell.
 
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
 - [sfizz-Störfall](docs/incidents/2026-07-26-sfizz-stdin-eof-loop.md)
-- [Buckelwal Live Voice v1](docs/experiments/buckelwal-live-voice-v1.md)
+- [Buckelwal Live Voice](docs/experiments/buckelwal-live-voice-v1.md)
+- [Buckelwal-Samplequellen und Lizenzen](assets/whale-sources/README.md)
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
@@ -54,5 +57,8 @@ python3 -m unittest discover -s tests -v
 ./scripts/audio-physical status
 ./scripts/audio-plan desktop-mixed
 python3 scripts/whale_live.py doctor
+python3 scripts/whale_live.py start --voice-mode realistic
+python3 scripts/whale_live.py mode ufo
+python3 scripts/whale_live.py toggle
 python3 scripts/whale_live.py demo /tmp/buckelwal-live-voice-v1-demo.wav
 ```

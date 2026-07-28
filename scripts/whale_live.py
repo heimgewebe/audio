@@ -20,6 +20,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 
+from whale_sample_engine import WhaleSampleVoice, sample_bank_status
 from whale_live_engine import (
     DEFAULT_BLOCK_FRAMES,
     MAX_MASTER_GAIN,
@@ -44,6 +45,9 @@ PCM_WRITE_POLL_SECONDS = 0.05
 PCM_WRITE_STALL_SECONDS = 2.0
 LIVE_INITIALIZATION_SECONDS = 0.1
 MANAGED_NOTIFY_REQUIRED_ENV = "AUDIO_BUCKELWAL_REQUIRE_NOTIFY"
+VOICE_MODE_ENV = "AUDIO_BUCKELWAL_VOICE_MODE"
+VOICE_MODES = ("realistic", "ufo")
+DEFAULT_VOICE_MODE = "realistic"
 SERVICE_START_TIMEOUT_SECONDS = 15
 
 
@@ -169,6 +173,10 @@ def runtime_doctor() -> dict[str, object]:
     if not pipewire_active:
         blocking_reasons.append("pipewire-inactive")
 
+    bank = sample_bank_status()
+    if not bank.get("ready"):
+        blocking_reasons.append("realistic-sample-bank-unavailable")
+
     report = {
         "schema_version": 1,
         "kind": "buckelwal_live_voice_doctor",
@@ -179,6 +187,9 @@ def runtime_doctor() -> dict[str, object]:
         "pcm_pipe_error": pcm_pipe_error,
         "midi_ports": [asdict(port) for port in ports],
         "roland_midi_port": asdict(roland_port) if roland_port else None,
+        "default_voice_mode": DEFAULT_VOICE_MODE,
+        "voice_modes": list(VOICE_MODES),
+        "realistic_sample_bank": bank,
         "ready": not blocking_reasons,
         "blocking_reason": blocking_reasons[0] if blocking_reasons else None,
         "blocking_reasons": blocking_reasons,
@@ -379,7 +390,7 @@ def notify_systemd_ready(status: str) -> bool:
 
 
 def _dispatch_pending_events(
-    voice: WhaleVoice,
+    voice: WhaleVoice | WhaleSampleVoice,
     event_queue: queue.SimpleQueue[MidiEvent | BaseException],
 ) -> None:
     while True:
@@ -407,10 +418,16 @@ def run_live(
     target: str | None,
     gain: float,
     latency_frames: int,
+    voice_mode: str,
 ) -> int:
     port = resolve_midi_port(midi_port)
     config = WhaleVoiceConfig(master_gain=gain, block_frames=latency_frames)
-    voice = WhaleVoice(config)
+    if voice_mode == "realistic":
+        voice: WhaleVoice | WhaleSampleVoice = WhaleSampleVoice(config)
+    elif voice_mode == "ufo":
+        voice = WhaleVoice(config)
+    else:
+        raise ValueError(f"unknown whale voice mode: {voice_mode}")
     stop_event = threading.Event()
     event_queue: queue.SimpleQueue[MidiEvent | BaseException] = queue.SimpleQueue()
     midi_process: subprocess.Popen[str] | None = None
@@ -485,6 +502,7 @@ def run_live(
                     "sample_rate_hz": config.sample_rate,
                     "block_frames": config.block_frames,
                     "master_gain": config.master_gain,
+                    "voice_mode": voice_mode,
                     "pcm_pipe_capacity_bytes": pipe_capacity_bytes,
                     "initialization_blocks": initialization_blocks,
                     "realtime_pacing": True,
@@ -537,7 +555,7 @@ def service_ready(status: dict[str, object]) -> bool:
     )
 
 
-def start_service(args: argparse.Namespace) -> int:
+def start_service(args: argparse.Namespace, *, announce: bool = True) -> int:
     if service_active():
         raise RuntimeError(f"{UNIT_NAME} is already active")
     port = resolve_midi_port(args.midi_port)
@@ -551,6 +569,8 @@ def start_service(args: argparse.Namespace) -> int:
         "notify",
         "--setenv",
         f"{MANAGED_NOTIFY_REQUIRED_ENV}=1",
+        "--setenv",
+        f"{VOICE_MODE_ENV}={args.voice_mode}",
         "--unit",
         UNIT_NAME.removesuffix(".service"),
         "--property",
@@ -582,6 +602,8 @@ def start_service(args: argparse.Namespace) -> int:
         str(args.gain),
         "--latency-frames",
         str(args.latency_frames),
+        "--voice-mode",
+        args.voice_mode,
     ]
     if args.target:
         command.extend(["--target", args.target])
@@ -594,11 +616,17 @@ def start_service(args: argparse.Namespace) -> int:
     for _attempt in range(20):
         last_status = service_status()
         if service_ready(last_status):
-            print(
-                json.dumps(
-                    {"state": "ready", "unit": UNIT_NAME, "midi_port": port.address}
+            if announce:
+                print(
+                    json.dumps(
+                        {
+                            "state": "ready",
+                            "unit": UNIT_NAME,
+                            "midi_port": port.address,
+                            "voice_mode": args.voice_mode,
+                        }
+                    )
                 )
-            )
             return 0
         if last_status["active_state"] in {"failed", "inactive"}:
             break
@@ -609,14 +637,16 @@ def start_service(args: argparse.Namespace) -> int:
     )
 
 
-def stop_service() -> int:
+def stop_service(*, announce: bool = True) -> int:
     if not service_active():
-        print(json.dumps({"state": "inactive", "unit": UNIT_NAME}))
+        if announce:
+            print(json.dumps({"state": "inactive", "unit": UNIT_NAME}))
         return 0
     result = run_capture(["systemctl", "--user", "stop", UNIT_NAME])
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "systemctl stop failed")
-    print(json.dumps({"state": "stopped", "unit": UNIT_NAME}))
+    if announce:
+        print(json.dumps({"state": "stopped", "unit": UNIT_NAME}))
     return 0
 
 
@@ -632,6 +662,7 @@ def service_status() -> dict[str, object]:
             "--property=SubState",
             "--property=Result",
             "--property=ExecMainStatus",
+            "--property=Environment",
         ]
     )
     values: dict[str, str] = {}
@@ -653,15 +684,54 @@ def service_status() -> dict[str, object]:
         "sub_state": values.get("SubState", "unknown"),
         "result": values.get("Result", "unknown"),
         "exec_main_status": values.get("ExecMainStatus", "unknown"),
+        "voice_mode": next(
+            (
+                item.split("=", 1)[1]
+                for item in values.get("Environment", "").split()
+                if item.startswith(f"{VOICE_MODE_ENV}=")
+            ),
+            None,
+        ),
     }
 
 
+def render_voice_timeline(
+    voice: WhaleVoice | WhaleSampleVoice,
+    events: list[tuple[float, MidiEvent]],
+    duration_seconds: float,
+) -> list[float]:
+    sample_rate = voice.config.sample_rate
+    cursor = 0
+    output: list[float] = []
+    for timestamp, event in sorted(events, key=lambda item: item[0]):
+        target = min(
+            round(timestamp * sample_rate), round(duration_seconds * sample_rate)
+        )
+        if target > cursor:
+            output.extend(voice.render(target - cursor))
+            cursor = target
+        voice.dispatch(event)
+    total = round(duration_seconds * sample_rate)
+    if cursor < total:
+        output.extend(voice.render(total - cursor))
+    return output
+
+
 def create_demo(
-    path: pathlib.Path, duration_seconds: float, gain: float
+    path: pathlib.Path,
+    duration_seconds: float,
+    gain: float,
+    voice_mode: str = DEFAULT_VOICE_MODE,
 ) -> dict[str, object]:
     config = WhaleVoiceConfig(master_gain=gain)
     events = [event for event in default_demo_events() if event[0] <= duration_seconds]
-    samples = render_timeline(events, duration_seconds, config)
+    if voice_mode == "realistic":
+        voice: WhaleVoice | WhaleSampleVoice = WhaleSampleVoice(config)
+        samples = render_voice_timeline(voice, events, duration_seconds)
+    elif voice_mode == "ufo":
+        samples = render_timeline(events, duration_seconds, config)
+    else:
+        raise ValueError(f"unknown whale voice mode: {voice_mode}")
     write_stereo_wav(path, samples, config.sample_rate)
     metrics = signal_metrics(samples)
     return {
@@ -669,6 +739,7 @@ def create_demo(
         "sample_rate_hz": config.sample_rate,
         "channels": 2,
         "duration_seconds": duration_seconds,
+        "voice_mode": voice_mode,
         **metrics,
     }
 
@@ -692,12 +763,14 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("output", type=pathlib.Path)
     demo.add_argument("--duration", type=float, default=12.0)
     demo.add_argument("--gain", type=bounded_gain, default=0.16)
+    demo.add_argument("--voice-mode", choices=VOICE_MODES, default=DEFAULT_VOICE_MODE)
 
     run = subparsers.add_parser("run", help="run in foreground until SIGINT/SIGTERM")
     run.add_argument("--midi-port", default="auto")
     run.add_argument("--target")
     run.add_argument("--gain", type=bounded_gain, default=0.16)
     run.add_argument("--latency-frames", type=int, default=128)
+    run.add_argument("--voice-mode", choices=VOICE_MODES, default=DEFAULT_VOICE_MODE)
 
     start = subparsers.add_parser(
         "start", help="start a bounded transient user service"
@@ -706,6 +779,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--target")
     start.add_argument("--gain", type=bounded_gain, default=0.16)
     start.add_argument("--latency-frames", type=int, default=128)
+    start.add_argument("--voice-mode", choices=VOICE_MODES, default=DEFAULT_VOICE_MODE)
     start.add_argument(
         "--runtime-max-seconds",
         type=int,
@@ -716,6 +790,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("stop", help="stop the managed user service")
     subparsers.add_parser("status", help="read managed service state")
+    toggle = subparsers.add_parser("toggle", help="toggle the managed whale voice")
+    toggle.add_argument("--voice-mode", choices=VOICE_MODES, default=DEFAULT_VOICE_MODE)
+    mode = subparsers.add_parser("mode", help="restart in realistic or UFO mode")
+    mode.add_argument("voice_mode", choices=VOICE_MODES)
     return parser
 
 
@@ -734,7 +812,7 @@ def main() -> int:
                 )
             print(
                 json.dumps(
-                    create_demo(args.output, args.duration, args.gain),
+                    create_demo(args.output, args.duration, args.gain, args.voice_mode),
                     indent=2,
                     sort_keys=True,
                 )
@@ -746,6 +824,7 @@ def main() -> int:
                 target=args.target,
                 gain=args.gain,
                 latency_frames=args.latency_frames,
+                voice_mode=args.voice_mode,
             )
         if args.command == "start":
             if not 32 <= args.latency_frames <= 2_048:
@@ -756,6 +835,32 @@ def main() -> int:
         if args.command == "status":
             print(json.dumps(service_status(), indent=2, sort_keys=True))
             return 0
+        if args.command == "toggle":
+            if service_active():
+                return stop_service()
+            return start_service(
+                argparse.Namespace(
+                    midi_port="auto",
+                    target=None,
+                    gain=0.16,
+                    latency_frames=128,
+                    runtime_max_seconds=MAX_MANAGED_RUNTIME_SECONDS,
+                    voice_mode=args.voice_mode,
+                )
+            )
+        if args.command == "mode":
+            if service_active():
+                stop_service(announce=False)
+            return start_service(
+                argparse.Namespace(
+                    midi_port="auto",
+                    target=None,
+                    gain=0.16,
+                    latency_frames=128,
+                    runtime_max_seconds=MAX_MANAGED_RUNTIME_SECONDS,
+                    voice_mode=args.voice_mode,
+                )
+            )
         raise AssertionError("unreachable command")
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         print(

@@ -671,6 +671,7 @@ class WhaleRuntimeTests(unittest.TestCase):
             gain=0.16,
             latency_frames=128,
             runtime_max_seconds=3600,
+            voice_mode="realistic",
         )
         port = whale_live.MidiPort(
             "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
@@ -719,6 +720,7 @@ class WhaleRuntimeTests(unittest.TestCase):
             gain=0.16,
             latency_frames=128,
             runtime_max_seconds=3600,
+            voice_mode="realistic",
         )
         port = whale_live.MidiPort(
             "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"

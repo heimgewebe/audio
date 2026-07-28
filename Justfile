@@ -36,3 +36,18 @@ whale-status:
 
 whale-stop:
     python3 scripts/whale_live.py stop
+
+whale-toggle:
+    python3 scripts/whale_live.py toggle
+
+whale-realistic:
+    python3 scripts/whale_live.py mode realistic
+
+whale-ufo:
+    python3 scripts/whale_live.py mode ufo
+
+whale-bank-build:
+    python3 scripts/build_whale_sample_bank.py
+
+whale-install-controls:
+    python3 scripts/install_whale_desktop_controls.py
