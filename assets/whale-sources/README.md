@@ -1,9 +1,17 @@
-# Buckelwal-Samplequellen
+# Buckelwal-Quellen und abgeleitete Klangmodelle
 
-Diese Dateien bilden den realistischen Standardklang von Buckelwal Live Voice.
-Die Rohdateien bleiben unverändert erhalten; `scripts/build_whale_sample_bank.py`
-erzeugt daraus deterministisch mono PCM16 bei 48 kHz, kurze normalisierte
-Phrasen und ein hashgebundenes Manifest.
+Die Rohdateien bleiben unverändert erhalten. Zwei deterministische Ableitungen
+nutzen denselben lizenz- und hashgebundenen Quellenbestand:
+
+- `scripts/build_whale_sample_bank.py` erzeugt unter `processed/` 19 kurze
+  Aufnahmephrasen für den Vergleichsmodus `realistic`;
+- `scripts/build_whale_morph_bank.py` erzeugt unter `morph/` periodengemittelte,
+  bandbegrenzte Einzelzyklus-Tabellen für den Standardmodus `morph`.
+
+Der Morphmodus spielt keine fertigen Aufnahmephrasen ab. Er übernimmt nur die
+wiederkehrende periodische Klangstruktur ausgewählter Buckelwalstimmen. Dadurch
+werden nichtperiodisches Meeresrauschen und die ursprüngliche Melodie nicht als
+fortlaufende Ebene in das Instrument übernommen.
 
 ## Quellen und Rechte
 
@@ -25,25 +33,26 @@ Phrasen und ein hashgebundenes Manifest.
 Die kanonischen Beschreibungsseiten, vollständigen Urheber, Lizenz-URIs,
 Bearbeitungshinweise, erwarteten Rohdateigrößen und SHA-256-Werte stehen in
 `SOURCES.json`. `NOTICE.md` stellt dieselben Angaben menschenlesbar neben die
-Audioassets; `processed/manifest.json` bindet den tatsächlich gebauten Stand.
+Audioassets. `processed/manifest.json` bindet die Aufnahmephrasen;
+`morph/manifest.json` bindet die daraus extrahierten periodischen Tabellen.
 Es wird keine Unterstützung oder Empfehlung durch Urheber, NPS, PLOS oder
 Wikimedia behauptet.
 
-Der Builder öffnet jede Rohdatei mit Symlink-Schutz, kopiert sie einmal in einen
-privaten Snapshot und prüft beim Kopieren Bytezahl und SHA-256. FFmpeg verarbeitet
-ausschließlich diesen verifizierten Snapshot. Absolute Pfade, Traversal, Symlinks
-und abweichende Dateimengen werden abgewiesen. Erst eine vollständig validierte
-Bank ersetzt das bisherige `processed/`-Verzeichnis atomar; ein Fehler lässt die
-alte Bank unverändert.
-
-## Klangvertrag
+## Samplebank-Vertrag
 
 - 19 extrahierte Originalphrasen;
 - 27 Tastaturzonen über A0 bis C8;
-- höchstens vier Halbtöne gesamte Tonhöhenverschiebung je Taste, Pitch Bend
-  eingeschlossen;
-- tiefe Tasten bevorzugen NPS-Moo-/Körperlaute;
-- mittlere Tasten bevorzugen Gesangsphrasen;
-- hohe Tasten bevorzugen Wheeze-/Atemlaute;
-- gehaltene Töne verwenden geloopte Originalphrasen mit Crossfade;
-- Legato wechselt Phrasen mit 90 ms Equal-Power-Crossfade.
+- höchstens vier Halbtöne gesamte Tonhöhenverschiebung je Taste;
+- geloopte Originalphrasen und 90-ms-Crossfades;
+- ausschließlich Vergleichsmodus `realistic`.
+
+## Morphbank-Vertrag
+
+- sieben interne Quellanker;
+- vollständige chromatische Klaviatur MIDI 21 bis 108;
+- A4 = 440 Hz in gleichstufiger Zwölftonteilung;
+- keine Samplezonen, Presets oder reservierten Tasten;
+- keine lange Aufnahmephrase und keine permanente Rauschschicht;
+- phasengleich gemittelte Stimmzyklen;
+- mehrere harmonisch bandbegrenzte Tabellenstufen mit SHA-256;
+- kontinuierliche Überblendung der Klangfarben und Bandbegrenzungsstufen.

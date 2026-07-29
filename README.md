@@ -15,11 +15,12 @@ werden standardmäßig nicht übernommen; nützliche Anforderungen und Testabsic
 werden gegen die neuen Verträge neu programmiert.
 
 Als erstes ausführbares Klangexperiment enthält das Repository
-**Buckelwal Live Voice**. Standard ist nun eine lokal gespeicherte,
-lizenzdokumentierte Samplebank aus echten Buckelwalaufnahmen. 19 natürliche
-Phrasen werden über 27 Tastaturzonen mit höchstens vier Halbtönen gesamter
-Tonhöhenverschiebung einschließlich Pitch Bend spielbar gemacht. Der frühere
-synthetische Klang bleibt ausdrücklich als separater `ufo`-Modus erhalten.
+**Buckelwal Live Voice**. Standard ist `morph`: eine monophone,
+quellengestützte Walstimme über alle 88 chromatischen Tasten von A0 bis C8.
+Kurze periodische Stimmzyklen aus lizenzierten Buckelwalaufnahmen werden
+phasengleich gemittelt, bandbegrenzt und stufenlos gemorpht. Es gibt keine
+Samplezonen, Presets, Steuertasten oder permanente Rauschschicht. Die früheren
+Modi `realistic` (Aufnahmephrasen) und `ufo` bleiben als Vergleiche erhalten.
 
 ## Bereiche
 
@@ -39,6 +40,7 @@ synthetische Klang bleibt ausdrücklich als separater `ufo`-Modus erhalten.
 - [Buckelwal-Samplequellen und Lizenzen](assets/whale-sources/README.md)
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
+- [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
 - [Read-only Baselines](docs/baselines/README.md)
 - [Systemwahrheit und Drift](docs/system-truth-workflow.md)
@@ -60,7 +62,9 @@ just check
 ./scripts/audio-physical status
 ./scripts/audio-plan desktop-mixed
 python3 scripts/whale_live.py doctor
-python3 scripts/whale_live.py start --voice-mode realistic
+python3 scripts/build_whale_morph_bank.py
+python3 scripts/whale_live.py start --voice-mode morph
+python3 scripts/whale_live.py mode realistic
 python3 scripts/whale_live.py mode ufo
 python3 scripts/whale_live.py toggle
 python3 scripts/whale_live.py demo /tmp/buckelwal-live-voice-v1-demo.wav

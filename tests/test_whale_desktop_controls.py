@@ -16,7 +16,11 @@ class WhaleDesktopControlTests(unittest.TestCase):
         self.assertFalse(control.active({"active_state": "inactive"}))
         self.assertEqual(
             control.describe({"active_state": "active", "voice_mode": "realistic"}),
-            "Status: active · Modus: realistisch",
+            "Status: active · Modus: Sample",
+        )
+        self.assertEqual(
+            control.describe({"state": "ready", "voice_mode": "morph"}),
+            "Status: ready · Modus: spielbar",
         )
         self.assertEqual(
             control.describe({"state": "ready", "voice_mode": "ufo"}),

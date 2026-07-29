@@ -929,15 +929,18 @@ class WhaleRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(audio["reference_sink"], "motu-m2")
         self.assertNotIn("--target", command)
-        self.assertEqual(profile["default_voice_mode"], "realistic")
+        self.assertEqual(profile["default_voice_mode"], "morph")
         self.assertEqual(
             profile["truth_boundary"]["current_backend"],
-            "licensed-humpback-sample-bank",
+            "source-derived-bandlimited-wavetable-morph",
         )
         self.assertEqual(
             profile["voice_modes"]["ufo"]["status"],
             "preserved-experimental-mode-not-realism-reference",
         )
+        self.assertEqual(profile["voice_modes"]["morph"]["keyboard_slot_count"], 0)
+        self.assertEqual(profile["voice_modes"]["morph"]["preset_count"], 0)
+        self.assertFalse(profile["voice_modes"]["morph"]["permanent_noise_layer"])
 
     def test_doctor_reports_missing_roland_without_claiming_readiness(self):
         completed = mock.Mock(returncode=0, stdout="active\n", stderr="")

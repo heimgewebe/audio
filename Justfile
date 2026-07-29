@@ -49,6 +49,9 @@ whale-stop:
 whale-toggle:
     python3 scripts/whale_live.py toggle
 
+whale-morph:
+    python3 scripts/whale_live.py mode morph
+
 whale-realistic:
     python3 scripts/whale_live.py mode realistic
 
@@ -57,6 +60,9 @@ whale-ufo:
 
 whale-bank-build:
     python3 scripts/build_whale_sample_bank.py
+
+whale-morph-bank-build:
+    python3 scripts/build_whale_morph_bank.py
 
 whale-install-controls:
     python3 scripts/install_whale_desktop_controls.py
