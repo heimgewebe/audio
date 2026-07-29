@@ -846,6 +846,22 @@ class AudioControl:
                 # truth boundary without changing the single-flight lock order.
                 self.invalidate()
                 try:
+                    if operation == "mode":
+                        (
+                            precondition_status,
+                            precondition_service,
+                            precondition_error,
+                        ) = self._whale_status()
+                        if precondition_status != "ok":
+                            raise ControlError(
+                                precondition_error
+                                or "Buckelwal-Dienstzustand ist nicht lesbar."
+                            )
+                        if precondition_service.get("active") is not True:
+                            raise ControlError(
+                                "Ein Moduswechsel benötigt eine bereits aktive "
+                                "Walstimme."
+                            )
                     result = self.runner.run(command, timeout=25)
                     report = parse_json_output(result, label="Buckelwal-Aktion")
                     if result.returncode != 0:

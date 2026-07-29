@@ -91,8 +91,12 @@ Der Control-Dienst ist die einzige Zustandsautorität der UI:
    `{"operation":"start","mode":"morph"}`.
 3. Das Backend validiert Aktion und Modus gegen eine feste dreiteilige
    Allowlist und das versionierte Buckelwalprofil.
-4. Das bestehende Laufzeitskript führt die Aktion aus.
+4. Ein Moduswechsel benötigt zusätzlich einen frisch als aktiv gelesenen
+   Wal-Dienst; erst dann führt das bestehende Laufzeitskript die Aktion aus.
 5. Erst ein neuer Backend-Snapshot bestimmt den sichtbaren Folgezustand.
+
+Auch nach einem Aktionsfehler liest der Browser vor Freigabe der Controls einen
+frischen Snapshot. Die ursprüngliche Fehlermeldung bleibt dabei sichtbar.
 
 Optimistisches Umschalten von Audiozustand ist unzulässig. Browserseitig
 gespeichert werden ausschließlich die Darstellungswünsche „Bewegung reduzieren“

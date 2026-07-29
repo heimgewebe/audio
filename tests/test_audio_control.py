@@ -518,6 +518,30 @@ class AudioControlTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ControlError, "nicht.*bestätigt"):
             controller.perform_whale_action({"operation": "start", "mode": "morph"})
 
+    def test_mode_action_requires_fresh_active_status_before_dispatch(self):
+        runner = FakeRunner()
+        runner.whale_active = True
+        runner.whale_mode = "realistic"
+        controller = self.controller(runner)
+        before = controller.snapshot()
+        self.assertTrue(before["whale"]["service"]["active"])
+
+        runner.whale_active = False
+        runner.whale_mode = None
+        with self.assertRaisesRegex(MODULE.ControlError, "bereits aktive"):
+            controller.perform_whale_action({"operation": "mode", "mode": "morph"})
+
+        self.assertFalse(
+            any(
+                pathlib.Path(call[1]).name == "whale_live.py" and call[2] == "mode"
+                for call, _timeout in runner.calls
+                if len(call) > 2
+            )
+        )
+        after = controller.snapshot()
+        self.assertFalse(after["whale"]["service"]["active"])
+        self.assertEqual(runner.doctor_calls, 2)
+
     def test_failed_mode_action_replaces_pre_action_cache_with_fresh_truth(self):
         runner = PartialModeFailureRunner()
         controller = self.controller(runner)
@@ -857,6 +881,17 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("state.loading", policy)
         self.assertIn("state.actionPending", policy)
         self.assertIn("state.interactionUntil", policy)
+        action_start = javascript.index("async function runWhaleAction")
+        action_end = javascript.index("function detailRow", action_start)
+        action = javascript[action_start:action_end]
+        self.assertIn('fetchJson("/api/v1/snapshot?refresh=1"', action)
+        readback = action.index('fetchJson("/api/v1/snapshot?refresh=1"')
+        self.assertLess(
+            action.index("renderAll()", readback),
+            action.index("showNotice(actionMessage)"),
+        )
+        self.assertIn('status: "unavailable"', action)
+        self.assertIn("service: {}", action)
 
     def test_specification_is_bound_to_exact_base_revision(self):
         text = (ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md").read_text()

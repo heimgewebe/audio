@@ -538,7 +538,38 @@ async function runWhaleAction(operation, mode) {
         : `Walstimme wurde als ${displayMode(mode)} aktiv zurückgelesen.`;
     showNotice(confirmation, "success");
   } catch (error) {
-    showNotice(error instanceof Error ? error.message : "Audioaktion wurde blockiert.");
+    const actionMessage =
+      error instanceof Error ? error.message : "Audioaktion wurde blockiert.";
+    try {
+      const snapshot = await fetchJson("/api/v1/snapshot?refresh=1", {
+        timeoutMs: 50000,
+      });
+      state.snapshot = snapshot;
+      renderAll();
+    } catch (readbackError) {
+      if (state.snapshot) {
+        state.snapshot = {
+          ...state.snapshot,
+          summary: {
+            ...state.snapshot.summary,
+            state: "attention",
+            active_whale: false,
+          },
+          whale: {
+            ...state.snapshot.whale,
+            status: "unavailable",
+            error:
+              readbackError instanceof Error
+                ? readbackError.message
+                : "Zustand nach der Audioaktion ist nicht lesbar.",
+            service: {},
+          },
+        };
+        renderAll();
+      }
+      renderAuthority(readbackError?.code === "snapshot_busy" ? "busy" : "offline");
+    }
+    showNotice(actionMessage);
   } finally {
     state.actionPending = false;
     if (state.snapshot) renderWhale();
