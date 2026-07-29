@@ -120,6 +120,8 @@ und „automatisch aktualisieren“. Sie besitzen keine Audiosemantik.
   Socket-I/O-Timeout;
 - feste Subprozess-Timeouts, begrenzte Gesamtausgabe und Kill der Prozessgruppe
   bei Überschreitung;
+- 90 Sekunden Browserdeadline für Wal-Aktionen gegenüber höchstens 73 Sekunden
+  Backendbudget aus Mode-Precheck, Mutation und autoritativem Readback;
 - Content Security Policy und weitere Browser-Sicherheitsheader;
 - Snapshotcache standardmäßig vier Sekunden, vor jeder Aktion invalidiert und
   auf jedem Abschlussweg frisch zurückgelesen;

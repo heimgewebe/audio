@@ -44,6 +44,8 @@ const PROFILE_GLYPHS = {
 };
 
 const INTERACTION_GRACE_MS = 1200;
+// The mode path may consume 8 s precheck + 25 s mutation + 40 s readback.
+const WHALE_ACTION_TIMEOUT_MS = 90000;
 
 const state = {
   snapshot: null,
@@ -540,7 +542,7 @@ async function runWhaleAction(operation, mode) {
         "X-Audio-Control-Token": state.snapshot.service.action_token,
       },
       body: JSON.stringify(payload),
-      timeoutMs: 70000,
+      timeoutMs: WHALE_ACTION_TIMEOUT_MS,
     });
     state.snapshot = result.snapshot;
     renderAll();

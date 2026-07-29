@@ -884,6 +884,9 @@ class AudioControlTests(unittest.TestCase):
         action_start = javascript.index("async function runWhaleAction")
         action_end = javascript.index("function detailRow", action_start)
         action = javascript[action_start:action_end]
+        self.assertIn("const WHALE_ACTION_TIMEOUT_MS = 90000;", javascript)
+        self.assertIn("timeoutMs: WHALE_ACTION_TIMEOUT_MS", action)
+        self.assertNotIn("timeoutMs: 70000", action)
         self.assertIn('fetchJson("/api/v1/snapshot?refresh=1"', action)
         readback = action.index('fetchJson("/api/v1/snapshot?refresh=1"')
         self.assertLess(
