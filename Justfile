@@ -1,6 +1,7 @@
 check:
     bash tests/test-audio-safety.sh
     bash scripts/check-audio-safety .
+    python3 scripts/audio_control.py check
     python3 -m unittest discover -s tests -v
     python3 -m compileall -q scripts tests
 
@@ -66,3 +67,18 @@ whale-morph-bank-build:
 
 whale-install-controls:
     python3 scripts/install_whale_desktop_controls.py
+
+control-check:
+    python3 scripts/audio_control.py check
+
+control-serve port="8765":
+    ./scripts/audio-control serve --port "{{port}}"
+
+control-start port="8765":
+    ./scripts/audio-control start --port "{{port}}"
+
+control-status:
+    ./scripts/audio-control status
+
+control-stop:
+    ./scripts/audio-control stop
