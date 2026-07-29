@@ -21,6 +21,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 
+from whale_morph_engine import WhaleMorphVoice, morph_bank_status
 from whale_sample_engine import WhaleSampleVoice, sample_bank_status
 from whale_live_engine import (
     DEFAULT_BLOCK_FRAMES,
@@ -53,8 +54,8 @@ GAIN_ENV = "AUDIO_BUCKELWAL_GAIN"
 LATENCY_FRAMES_ENV = "AUDIO_BUCKELWAL_LATENCY_FRAMES"
 RUNTIME_MAX_SECONDS_ENV = "AUDIO_BUCKELWAL_RUNTIME_MAX_SECONDS"
 DEFAULT_TARGET_SENTINEL = "__current_pipewire_default__"
-VOICE_MODES = ("realistic", "ufo")
-DEFAULT_VOICE_MODE = "realistic"
+VOICE_MODES = ("morph", "realistic", "ufo")
+DEFAULT_VOICE_MODE = "morph"
 SERVICE_START_TIMEOUT_SECONDS = 15
 MAX_PENDING_MIDI_EVENTS = 256
 MAX_MIDI_EVENTS_PER_BLOCK = 64
@@ -183,6 +184,9 @@ def runtime_doctor() -> dict[str, object]:
     if not pipewire_active:
         blocking_reasons.append("pipewire-inactive")
 
+    morph_bank = morph_bank_status()
+    if not morph_bank.get("ready"):
+        blocking_reasons.append("continuous-morph-bank-unavailable")
     bank = sample_bank_status()
     if not bank.get("ready"):
         blocking_reasons.append("realistic-sample-bank-unavailable")
@@ -199,6 +203,7 @@ def runtime_doctor() -> dict[str, object]:
         "roland_midi_port": asdict(roland_port) if roland_port else None,
         "default_voice_mode": DEFAULT_VOICE_MODE,
         "voice_modes": list(VOICE_MODES),
+        "continuous_morph_bank": morph_bank,
         "realistic_sample_bank": bank,
         "ready": not blocking_reasons,
         "blocking_reason": blocking_reasons[0] if blocking_reasons else None,
@@ -416,7 +421,7 @@ def notify_systemd_ready(status: str) -> bool:
 
 
 def _dispatch_pending_events(
-    voice: WhaleVoice | WhaleSampleVoice,
+    voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice,
     event_queue: queue.Queue[MidiEvent | BaseException],
     *,
     maximum_events: int = MAX_MIDI_EVENTS_PER_BLOCK,
@@ -455,8 +460,10 @@ def run_live(
 ) -> int:
     port = resolve_midi_port(midi_port)
     config = WhaleVoiceConfig(master_gain=gain, block_frames=latency_frames)
-    if voice_mode == "realistic":
-        voice: WhaleVoice | WhaleSampleVoice = WhaleSampleVoice(config)
+    if voice_mode == "morph":
+        voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice = WhaleMorphVoice(config)
+    elif voice_mode == "realistic":
+        voice = WhaleSampleVoice(config)
     elif voice_mode == "ufo":
         voice = WhaleVoice(config)
     else:
@@ -800,7 +807,7 @@ def restart_namespace_from_status(
 
 
 def render_voice_timeline(
-    voice: WhaleVoice | WhaleSampleVoice,
+    voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice,
     events: list[tuple[float, MidiEvent]],
     duration_seconds: float,
 ) -> list[float]:
@@ -829,8 +836,11 @@ def create_demo(
 ) -> dict[str, object]:
     config = WhaleVoiceConfig(master_gain=gain)
     events = [event for event in default_demo_events() if event[0] <= duration_seconds]
-    if voice_mode == "realistic":
-        voice: WhaleVoice | WhaleSampleVoice = WhaleSampleVoice(config)
+    if voice_mode == "morph":
+        voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice = WhaleMorphVoice(config)
+        samples = render_voice_timeline(voice, events, duration_seconds)
+    elif voice_mode == "realistic":
+        voice = WhaleSampleVoice(config)
         samples = render_voice_timeline(voice, events, duration_seconds)
     elif voice_mode == "ufo":
         samples = render_timeline(events, duration_seconds, config)
@@ -912,7 +922,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="read managed service state")
     toggle = subparsers.add_parser("toggle", help="toggle the managed whale voice")
     toggle.add_argument("--voice-mode", choices=VOICE_MODES, default=DEFAULT_VOICE_MODE)
-    mode = subparsers.add_parser("mode", help="restart in realistic or UFO mode")
+    mode = subparsers.add_parser("mode", help="restart in morph, realistic or UFO mode")
     mode.add_argument("voice_mode", choices=VOICE_MODES)
     return parser
 

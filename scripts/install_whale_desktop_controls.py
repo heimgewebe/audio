@@ -25,9 +25,14 @@ ACTIONS = {
         "Walstimme ein- oder ausschalten",
         "media-playback-start",
     ),
+    "morph": (
+        "Buckelwal – Spielbar",
+        "Durchgehende Walstimme über alle 88 Tasten",
+        "audio-card",
+    ),
     "realistic": (
-        "Buckelwal – Realistisch",
-        "Echte Buckelwalaufnahmen verwenden",
+        "Buckelwal – Sample-Vergleich",
+        "Frühere echte Aufnahmephrasen vergleichen",
         "audio-input-microphone",
     ),
     "ufo": (

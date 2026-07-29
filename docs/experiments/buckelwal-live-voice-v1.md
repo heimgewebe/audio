@@ -2,200 +2,167 @@
 
 ## Produktgrenze
 
-`Buckelwal Live Voice` macht das Roland FP-30X zu einem monophonen
-Gesteninstrument für eine einzelne Buckelwalstimme. Standard ist der Modus
-`realistic`: Er spielt lokal gespeicherte echte Buckelwalaufnahmen mit eng
-begrenzter Tonhöhenverschiebung. Der frühere Oszillatorsynthesizer bleibt als
-separater Modus `ufo` erhalten und wird nicht als realistischer Walgesang
-bezeichnet.
+`Buckelwal Live Voice` macht das Roland FP-30X zu einem monophonen Instrument
+für eine einzelne, durchgehend spielbare Walstimme. Standard ist `morph`.
 
-Die realistische Engine ist keine Rekonstruktion biologischer Stimmerzeugung.
-Sie erhält den natürlichen Charakter der Ausgangsaufnahmen, indem sie viele
-Originalphrasen über eng gestaffelte Tastaturzonen verteilt, statt ein einziges
-Signal über mehrere Oktaven zu verbiegen.
+Jede Taste von A0 bis C8 spielt ihren normalen chromatischen Ton in
+gleichstufiger Stimmung mit A4 = 440 Hz. Keine Taste wählt ein Sample, Preset
+oder Steuerkommando. Die zuletzt angeschlagene gehaltene Taste führt dieselbe
+phasenkontinuierliche Stimme.
 
-## Samplebank und Rechte
+Der Modus ist kein biologisches Modell des Stimmapparats eines Buckelwals.
+Er resynthetisiert periodische Klangstrukturen realer Buckelwalaufnahmen und
+überträgt sie auf ein musikalisch vollständig spielbares Instrument.
 
-Die Bank wird durch `scripts/build_whale_sample_bank.py` deterministisch aus
-acht dokumentierten Quellen gebaut:
+## Drei Vergleichsmodi
 
-- CC0 1.0;
-- Public Domain, U.S. National Park Service;
-- CC BY 2.5, PLOS ONE.
+| Modus | Rolle | Grenze |
+|---|---|---|
+| `morph` | neuer Standard und eigentliches Instrument | quellengestützte Resynthese, keine fertige Aufnahmephrase |
+| `realistic` | Vergleich mit echten Aufnahmephrasen | 19 Clips und 27 Tastaturzonen, daher kein frei geformter Walgesang |
+| `ufo` | historischer Synthesevergleich | vollständig spielbar, aber nicht aus Walstimmen abgeleitet |
 
-Quellseiten, vollständige Urheber, Lizenz-URIs, Bearbeitungshinweise,
-Rohdateigrößen und erwartete SHA-256-Werte stehen in
-`assets/whale-sources/SOURCES.json`; `assets/whale-sources/NOTICE.md` begleitet
-die weitergegebenen Dateien menschenlesbar. Die Rohdateien bleiben unverändert
-erhalten. Der Builder öffnet jede Rohdatei symlinkgesichert, erstellt beim
-Hash- und Größenabgleich einen privaten Snapshot und übergibt nur diesen an
-FFmpeg. Danach baut er in einem privaten Staging-Verzeichnis und ersetzt die
-produktive Bank erst nach vollständiger Validierung atomar. Er erzeugt 19 mono
-PCM16-Phrasen bei 48 kHz,
-normalisiert sie konservativ und versieht sie mit geloopten Mittelbereichen.
+Die Vergleichsmodi bleiben erhalten, damit Klangfortschritt nicht nur behauptet,
+sondern mit identischen MIDI-Gesten beurteilt werden kann.
+
+## Quellmodell
+
+`scripts/build_whale_morph_bank.py` erzeugt aus sieben fest gebundenen
+Quellclips das Modell
+`assets/whale-sources/morph/manifest.json`.
+
+Der Builder:
+
+1. prüft das bestehende Samplemanifest und jeden Quellhash;
+2. sucht periodische, phasenstabile Fenster;
+3. richtet mehrere Stimmzyklen aus und mittelt sie;
+4. entfernt Gleichanteile und normalisiert konservativ;
+5. erzeugt mehrere harmonisch bandbegrenzte Tabellen;
+6. bettet jede PCM16-Tabelle mit eigenem SHA-256 in das Manifest ein.
+
+Die Periodenmittelung übernimmt die wiederkehrende Walstimmenstruktur, nicht
+aber eine lange Melodie oder eine fortlaufende Unterwasser-Rauschschicht.
+
+Die sieben internen Anker sind **keine Presets und keine Tastaturzonen**. Die
+Laufzeit überblendet für jeden Zwischenwert kontinuierlich zwischen zwei
+benachbarten Klangfarben. Auch die bandbegrenzten Tabellenstufen werden weich
+überblendet, um harte Register- und Aliasgrenzen zu vermeiden.
 
 ## Spielmodell
 
-Das Instrument erzeugt bewusst keine Klavierakkorde. Die zuletzt angeschlagene
-gehaltene Taste steuert eine einzige Stimme.
-
-- **Anschlagstärke:** Lautheit und Einsatz der Originalphrase.
-- **Haltezeit:** Der natürliche Mittelteil wird mit Equal-Power-Crossfade
-  geloopt.
-- **Überlappte Tasten:** Wechsel zur passenden Originalphrase über einen
-  90-ms-Equal-Power-Crossfade.
-- **Abgesetzte Taste:** Start einer neuen Originalphrase.
-- **CC64 / Haltepedal:** Hält die Phrase; beim Freigeben beginnt ein natürlicher
-  Ausklang.
-- **CC1:** höchstens 2,5 Cent langsame Schwankung; kein Synthesizer-Vibrato.
+- **Taste:** exakte 12-TET-Zieltonhöhe.
+- **Anschlagstärke:** Einsatzzeit, Pegel und geringe spektrale Helligkeit.
+- **Kurzer Anschlag:** kurzer, geschlossener Ruf.
+- **Langer Anschlag:** zunehmend bewegte Klangfarbe und begrenzte Mikromodulation.
+- **Legato:** Gleitbewegung derselben Stimme ohne Phasenreset.
+- **Gleiche Taste erneut:** neuer Impuls bei gleichbleibender Tonhöhe.
+- **CC64:** erhält die Phrase; Pedalloslassen beginnt den Ausklang.
+- **CC1:** zusätzliche begrenzte Mikromodulation.
 - **CC11:** Expression.
 - **CC67:** Entfernung beziehungsweise Tiefe.
-- **CC120:** sofortige Stummschaltung.
-- **CC123:** normaler Ausklang aller Noten.
-- **Pitch Bend:** bis ±120 Cent Steuerweg, jedoch gemeinsam mit Tastenzone und
-  CC1-Flutter hart auf insgesamt ±4 Halbtöne begrenzt.
+- **CC120:** sofortige Stille.
+- **CC123:** natürlicher Ausklang aller Noten.
+- **Pitch Bend:** maximal zwei Halbtöne.
 
-## Nutzung der 88 Tasten
+Die Haltedauer wird nicht vorhergesagt. Die Engine entwickelt den Klang kausal,
+während die Taste tatsächlich gehalten wird. Ein Langton enthält deshalb keine
+wiederholte Aufnahmephrase und keine Loopnaht.
 
-Die Samplebank besitzt 27 Zonen für A0 bis C8. Jede Taste liegt höchstens vier
-Halbtöne vom Wurzelton ihrer Originalphrase entfernt.
+## Nutzung aller 88 Tasten
 
-| MIDI-Noten | nominelle Präferenz | Ausgangsmaterial |
-|---:|---|---|
-| 21–48 | tief | Moo-, Stöhn- und Körperlaute |
-| 49–84 | mittel | Gesangsphrasen verschiedener Aufnahmen und Populationen |
-| 85–108 | hoch | Wheeze-, Atem- und helle Ruflaute |
+| Taste | Frequenz |
+|---|---:|
+| A0 / MIDI 21 | 27,5 Hz |
+| A4 / MIDI 69 | 440 Hz |
+| C8 / MIDI 108 | ungefähr 4.186,01 Hz |
 
-Die tatsächliche Auswahl folgt zuerst dem nächsten Zonenwurzelton und nutzt die
-Registerfamilie nur als Gleichstandsentscheidung. Daher liegen die belegten
-Grenzzuweisungen 42/46 im Gesangsregister, 84 im hohen Register sowie 86/90
-wieder im Gesangsregister. Alle 27 Zonen und 19 Clips bleiben dadurch erreichbar.
+Alle Halbtonschritte besitzen dasselbe Frequenzverhältnis
+`2^(1/12)`. Die Klangfarbe bewegt sich stufenlos von körperhafteren zu
+obertonreicheren Quellankern, ohne die musikalische Stimmung zu verändern.
 
-Die Zonierung begrenzt den typischen Theremin-/UFO-Effekt großer
-Tonhöhenverschiebungen. Sie garantiert nicht, dass jede Taste wie eine
-musikalisch temperierte Tonhöhe wahrgenommen wird; Walrufe bleiben komplexe
-Geräusch- und Gesangsereignisse.
+Die extremen Tasten sind eine musikalische Extrapolation. Der Vertrag behauptet
+nicht, dass ein realer Buckelwal genau diese gesamte Acht-Oktaven-Spanne
+biologisch erzeugt.
 
 ## Bedienung
 
 ### Desktop
 
-Im GNOME-Anwendungsmenü sind installiert:
+- `Buckelwal – An/Aus` startet standardmäßig `morph`.
+- `Buckelwal – Spielbar` wählt `morph`.
+- `Buckelwal – Sample-Vergleich` wählt `realistic`.
+- `Buckelwal – UFO-Modus` wählt `ufo`.
+- `Buckelwal – Aus` beendet die Stimme.
+- `Buckelwal – Status` zeigt den autoritativen Dienstzustand.
 
-- `Buckelwal – An/Aus`;
-- `Buckelwal – Realistisch`;
-- `Buckelwal – UFO-Modus`;
-- `Buckelwal – Aus`;
-- `Buckelwal – Status`.
-
-`Super+Alt+W` schaltet die realistische Stimme ein oder aus. Desktopaktionen
-zeigen ihren Ausgang per Systembenachrichtigung.
-
-### Kommandozeile und Chat-Operator
+### Kommandozeile
 
 ```bash
-python3 scripts/whale_live.py start --voice-mode realistic
-python3 scripts/whale_live.py stop
-python3 scripts/whale_live.py toggle
+python3 scripts/build_whale_morph_bank.py
+python3 scripts/whale_live.py doctor
+python3 scripts/whale_live.py start --voice-mode morph
 python3 scripts/whale_live.py mode realistic
 python3 scripts/whale_live.py mode ufo
+python3 scripts/whale_live.py stop
 python3 scripts/whale_live.py status
 ```
 
-Die entsprechenden `just`-Ziele heißen `whale-start`, `whale-stop`,
-`whale-toggle`, `whale-realistic`, `whale-ufo` und `whale-status`.
+Die entsprechenden `just`-Ziele heißen unter anderem `whale-morph`,
+`whale-realistic`, `whale-ufo`, `whale-morph-bank-build`, `whale-toggle` und
+`whale-status`.
 
-## Betriebs- und Audiovertrag
+## Betriebs- und Sicherheitsvertrag
 
 Der Doctor verlangt PipeWire, `aseqdump`, `pw-cat`, `systemctl`, `systemd-run`,
-genau einen Roland-artigen MIDI-Port sowie eine vollständig hashgeprüfte
-Samplebank. Fehlende oder veränderte Samples blockieren den realistischen
+einen eindeutig erkannten Roland-Port sowie gültige Morph- und Samplebanken.
+Fehlende oder veränderte Quell- beziehungsweise Tabellenhashes blockieren den
 Start.
 
-Der verwaltete Start erzeugt
-`audio-buckelwal-live-voice-v1.service` als `Type=notify` mit:
+Der verwaltete Dienst behält die bisherigen Grenzen:
 
-- Laufzeitgrenze 60 bis 21.600 Sekunden mit kurzer JSON-Fehlermeldung;
-- 256 MiB Speichergrenze;
-- 80 Prozent CPU-Quote;
-- 32 Tasks;
-- begrenzter Journalrate;
-- MIDI-Queue maximal 256 Ereignisse, pro Audioblock höchstens 64 Dispatches;
-- READY erst nach mindestens 100 ms erfolgreichem MIDI-/PCM-Verbrauch.
-
-MIDI-Ereignisse werden nicht protokolliert. Es gibt kein `sfizz_jack` und keine
-unbeschränkte Logdatei.
+- Laufzeit 60 bis 21.600 Sekunden;
+- 256 MiB Speicher;
+- 80 Prozent eines CPU-Kerns;
+- höchstens 32 Tasks;
+- begrenzte Journalrate;
+- MIDI-Queue höchstens 256 Ereignisse;
+- höchstens 64 MIDI-Dispatches pro Audioblock;
+- READY erst nach belegtem MIDI- und PCM-Start;
+- kein `sfizz_jack`, keine unbegrenzte Logdatei und kein MIDI-Eventlogging.
 
 Audioformat:
 
 - 48.000 Hz;
-- Stereo Float32 an `pw-cat`;
+- Stereo Float32;
 - Standardblock 128 Frames;
-- 4.096-Byte-PCM-Pipe auf dem aktuellen Host;
-- nichtblockierende, abbrechbare Schreibschleife;
-- Standard-Master-Gain 0,16;
-- harter Maximalwert 0,25;
-- Standardausgabe aktuelles PipeWire-Ziel, derzeit MOTU M2.
+- Master-Gain 0,16, harte Obergrenze 0,25;
+- aktuelles PipeWire-Standardziel, sofern kein Ziel ausdrücklich gesetzt ist.
 
-Der globale PipeWire-Graph läuft weiterhin mit Quantum 1.024. Die interne
-128-Frame-Berechnung ist deshalb keine gemessene Hardwarelatenz. Eine
-Round-Trip-Angabe bleibt bis zur physischen Loopback-Messung unzulässig.
+## Automatisiert belegt
 
-## Abnahme am 28. Juli 2026
+- Morphmodell mit sieben periodischen Quellankern;
+- vollständiger Bereich MIDI 21 bis 108;
+- exakt null Samplezonen, Presets und Steuertasten;
+- exakt null Ausgabe und kein Zustandsfortschritt im Leerlauf;
+- alle 88 Tasten zielen auf ihre korrekte chromatische Frequenz;
+- phasenkontinuierliches Legato;
+- getrennte abgesetzte und wiederholte Artikulation;
+- Sustain, Pitch Bend, Panic und Release;
+- bitidentische Ausgabe und gleicher Zustand unabhängig von Render-Chunkgrößen;
+- frequenzabhängige harmonische Bandbegrenzung;
+- ausreichende Offline-Echtzeitreserve im Testvertrag.
 
-### Automatisiert und offline belegt
+## Physisch noch offen
 
-- 148/148 Repositorytests, beide Safety-Gates und Compileall bestanden.
-- 8 Quellen, 19 Phrasen, 27 Zonen; alle 88 Tasten höchstens vier Halbtöne vom
-  Zonenwurzelton entfernt.
-- deterministischer Schema-2-Bank-Neubau: Gesamt-Hash
-  `82f77f68f7fbce6e0f6b3f00805f57a1128df88bfda3bb6bcba9eb1b8eae1a0f`;
-  die 19 WAV-Dateien blieben gegenüber dem vorherigen Build bitidentisch.
-- Katalog-Hash `d5a9dad7f56ea9893c1d1c458578447721529b032c8c4c006eea245ef43687b8`;
-  Manifest-Hash `cdea5da13edf435a631043459eef2687cc973386dd28c287c33efbf13dc6fd67`.
-- Bankladezeit einschließlich Katalog-, Rohdatei- und Clipprüfung: 368,522 ms.
-- Sturmprobe mit 600 schnellen Wechseln, maximal drei ausblendenden
-  Altschichten und jüngstem koalesziertem Ziel: Median 379,457 µs, p99
-  729,814 µs, Maximum 1.233,397 µs bei 2.666,667 µs Frist.
-- stiller Block: Median 0,370 µs, p99 0,650 µs.
-- 12-Sekunden-Demo: Peak −25,137 dBFS, RMS ungefähr −41,37 dBFS, kein Clipping.
-- Sustain, Legato-Crossfade, Release, Panic, deterministische Ausgabe,
-  Samplehashes und Float32-Stereoformat sind getestet.
+Softwaretests können nicht belegen, dass das Ergebnis subjektiv überzeugend
+nach einem Buckelwal klingt. Offen bleiben:
 
-### Live belegt
+- Hörtest über Roland, MOTU M2, Focal und Receiver;
+- Wahrnehmung von A0 und C8;
+- Prüfung auf Orgel-, Buzz-, UFO- oder Aliascharakter;
+- Pegelabgleich gegen die Vergleichsmodi;
+- reale XRun- und Latenzmessung bei 48 kHz und 128 Frames.
 
-- Roland als ALSA-MIDI-Quelle erkannt; die Portnummer darf sich nach USB-Neustart
-  ändern und wird bei `auto` erneut aufgelöst.
-- realistische Engine als `active/running` mit `voice_mode=realistic`.
-- PipeWire-Ausgabe auf MOTU M2.
-- 40,9 MiB Service-Speicher, 47,1 MiB Prozess-Höchstwert, sechs Tasks,
-  null Neustarts.
-- stiller Livebetrieb ungefähr 1,08 Prozent eines CPU-Kerns.
-- stabiler Beobachtungsabschnitt: MOTU `3 → 3`, Fluidsynth `0 → 0`; keine
-  neuen PipeWire-Fehler beziehungsweise XRuns. Die drei absoluten MOTU-Zähler
-  entstanden vor dem beobachteten stabilen Abschnitt und werden nicht der
-  Engine zugerechnet.
-- Desktop-Umschaltung aus/an und Moduswechsel UFO/realistisch wurden mit
-  Status-Readback ausgeführt.
-
-### Noch subjektiv beziehungsweise physisch offen
-
-Der Nutzer muss Klangwirkung, Tastenzuordnung, Schleifenübergänge und Pedalgefühl
-am tatsächlichen Instrument beurteilen. Die Software kann belegen, dass echte
-Aufnahmen statt der Oszillatorbank laufen; sie kann nicht automatisch belegen,
-dass jede Phrase musikalisch überzeugend wirkt. Die physische
-Round-Trip-Latenz bleibt ebenfalls ungemessen.
-
-## Historischer UFO-Modus
-
-`--voice-mode ufo` enthält weiterhin den deterministischen Synthesekern mit
-integrierten Phasen, 88-Tasten-Frequenzabbildung, Legato und Retrigger-Fades.
-Er dient als experimenteller Klangmodus und Regressionstest, nicht als
-Buckelwal-Referenz.
-
-## Nächste Entwicklungsstufe
-
-1. subjektiv schwache oder auffällige Phrasen anhand realer Spieltests markieren;
-2. Loopgrenzen und Zonen nach diesen Belegen neu kuratieren;
-3. physische Loopback-Latenz am MOTU messen;
-4. danach optional Phrasen-, Themen- und Variationsgrammatik ergänzen.
+Diese Punkte werden nicht schöngerechnet. Sie bilden einen eigenen physischen
+Abnahmetask. Der vollständige Plan steht in
+`docs/plans/buckelwal-continuous-voice-v1.md`.

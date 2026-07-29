@@ -50,8 +50,10 @@ def active(status: dict[str, object]) -> bool:
 def describe(payload: dict[str, object]) -> str:
     state = payload.get("state") or payload.get("active_state") or "unbekannt"
     mode = payload.get("voice_mode")
-    if mode == "realistic":
-        mode = "realistisch"
+    if mode == "morph":
+        mode = "spielbar"
+    elif mode == "realistic":
+        mode = "Sample"
     elif mode == "ufo":
         mode = "UFO"
     return f"Status: {state}" + (f" · Modus: {mode}" if mode else "")
@@ -60,7 +62,7 @@ def describe(payload: dict[str, object]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("toggle", "on", "off", "realistic", "ufo", "status")
+        "action", choices=("toggle", "on", "off", "morph", "realistic", "ufo", "status")
     )
     args = parser.parse_args()
 
@@ -77,20 +79,23 @@ def main() -> int:
         if active(status):
             code, payload = run_live("stop")
         else:
-            code, payload = run_live("start", "--voice-mode", "realistic")
+            code, payload = run_live("start", "--voice-mode", "morph")
         notify("Buckelwal umgeschaltet", describe(payload))
     elif args.action == "on":
         if active(status):
             code, payload = 0, status
         else:
-            code, payload = run_live("start", "--voice-mode", "realistic")
+            code, payload = run_live("start", "--voice-mode", "morph")
         notify("Buckelwal eingeschaltet", describe(payload))
     else:
         mode = args.action
         code, payload = run_live("mode", mode)
-        title = (
-            "Buckelwal realistisch" if mode == "realistic" else "Buckelwal UFO-Modus"
-        )
+        titles = {
+            "morph": "Buckelwal spielbar",
+            "realistic": "Buckelwal Sample-Vergleich",
+            "ufo": "Buckelwal UFO-Vergleich",
+        }
+        title = titles[mode]
         notify(title, describe(payload))
 
     print(json.dumps(payload, indent=2, sort_keys=True))

@@ -1,10 +1,32 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "kind": "buckelwal_live_voice_profile",
   "name": "Buckelwal Live Voice",
-  "voice_model": "monophonic-last-note-priority",
-  "default_voice_mode": "realistic",
+  "voice_model": "monophonic-continuous-source-derived-last-note-priority",
+  "default_voice_mode": "morph",
   "voice_modes": {
+    "morph": {
+      "backend": "source-derived-bandlimited-wavetable-morph",
+      "manifest": "assets/whale-sources/morph/manifest.json",
+      "note_range": [
+        21,
+        108
+      ],
+      "tuning": "twelve-tone-equal-temperament-a4-440",
+      "keyboard_slot_count": 0,
+      "preset_count": 0,
+      "control_key_count": 0,
+      "voice_count": 1,
+      "source_anchor_count": 7,
+      "permanent_noise_layer": false,
+      "long_phrase_playback": false,
+      "timbre_mapping": "continuous-source-anchor-morph-across-full-keyboard",
+      "hold": "causal-continuous-articulation-development-without-sample-loop",
+      "legato": "phase-continuous-frequency-and-timbre-glide",
+      "detached_retrigger": "new-call-envelope-with-source-derived-cycle-reset",
+      "repeated_note": "phase-preserving-rearticulation",
+      "pitch_bend_range_semitones": 2
+    },
     "realistic": {
       "backend": "licensed-humpback-sample-bank",
       "source_catalog": "assets/whale-sources/SOURCES.json",
@@ -121,10 +143,14 @@
     }
   },
   "truth_boundary": {
-    "current_backend": "licensed-humpback-sample-bank",
+    "current_backend": "source-derived-bandlimited-wavetable-morph",
     "biological_voice_model_claim": false,
-    "realism_claim": "real-recording-playback-with-bounded-resampling-not-biological-resynthesis",
-    "preserved_alternative_backend": "deterministic-synthetic-ufo-mode",
+    "realism_claim": "source-derived-periodic-timbre-resynthesis-not-biological-model-and-not-recorded-phrase-playback",
+    "keyboard_contract": "all-88-keys-are-standard-chromatic-notes-with-no-presets-zones-or-control-keys",
+    "preserved_alternative_backends": [
+      "licensed-humpback-sample-bank",
+      "deterministic-synthetic-ufo-mode"
+    ],
     "stable_contract": "roland-gesture-semantics"
   }
 }
