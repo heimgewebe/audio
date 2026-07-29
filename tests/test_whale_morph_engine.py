@@ -130,6 +130,23 @@ class WhaleMorphVoiceTests(unittest.TestCase):
             samples = voice.render(512)
             self.assertGreater(self.rms(samples), 1e-5, note)
 
+    def test_out_of_range_notes_are_ignored_without_endpoint_or_stuck_voice(self):
+        voice = morph.WhaleMorphVoice(self.config)
+        before = {
+            key: copy.deepcopy(value)
+            for key, value in voice.__dict__.items()
+            if key != "bank"
+        }
+        for note in (0, 20, 109, 127):
+            voice.note_on(note, 100)
+            voice.note_off(note)
+        self.assertEqual(
+            before,
+            {key: value for key, value in voice.__dict__.items() if key != "bank"},
+        )
+        self.assertTrue(voice.silent)
+        self.assertEqual(voice.held_notes, {})
+
     def test_legato_keeps_one_phase_continuous_voice(self):
         voice = morph.WhaleMorphVoice(self.config)
         voice.note_on(48, 64)

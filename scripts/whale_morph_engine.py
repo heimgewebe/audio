@@ -372,7 +372,9 @@ class WhaleMorphVoice:
         return midi_note_frequency(note) * 2.0 ** (self.pitch_bend_cents / 1200.0)
 
     def note_on(self, note: int, velocity: int) -> None:
-        note = int(clamp(note, 21, 108))
+        if not 21 <= note <= 108:
+            return
+        note = int(note)
         velocity = int(clamp(velocity, 1, 127))
         detached = not self.gate and not self.held_notes
         repeated = self.gate and self.active_note == note
@@ -404,7 +406,9 @@ class WhaleMorphVoice:
             self.retrigger_strength = 1.0
 
     def note_off(self, note: int) -> None:
-        self.held_notes.pop(note, None)
+        if not 21 <= note <= 108:
+            return
+        self.held_notes.pop(int(note), None)
         if self.held_notes:
             next_note, (velocity, _order) = max(
                 self.held_notes.items(), key=lambda item: item[1][1]
