@@ -302,20 +302,34 @@
               </div>
               <label class="setting-row" for="motion-toggle">
                 <span>
-                  <strong>Bewegung reduzieren</strong>
-                  <small>Nur diese Browseransicht; kein Audiozustand.</small>
+                  <strong id="motion-toggle-label">Bewegung reduzieren</strong>
+                  <small id="motion-toggle-description">
+                    Nur diese Browseransicht; kein Audiozustand.
+                  </small>
                 </span>
-                <input id="motion-toggle" type="checkbox" role="switch">
+                <input
+                  id="motion-toggle"
+                  type="checkbox"
+                  role="switch"
+                  aria-labelledby="motion-toggle-label"
+                  aria-describedby="motion-toggle-description"
+                >
               </label>
               <label class="setting-row" for="auto-refresh-toggle">
                 <span>
-                  <strong>Automatisch aktualisieren</strong>
-                  <small>Alle acht Sekunden Backendzustand lesen.</small>
+                  <strong id="auto-refresh-toggle-label">
+                    Automatisch aktualisieren
+                  </strong>
+                  <small id="auto-refresh-toggle-description">
+                    Alle acht Sekunden Backendzustand lesen.
+                  </small>
                 </span>
                 <input
                   id="auto-refresh-toggle"
                   type="checkbox"
                   role="switch"
+                  aria-labelledby="auto-refresh-toggle-label"
+                  aria-describedby="auto-refresh-toggle-description"
                   checked
                 >
               </label>
