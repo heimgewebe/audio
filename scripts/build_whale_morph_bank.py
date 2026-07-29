@@ -13,6 +13,7 @@ import argparse
 import array
 import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -44,6 +45,18 @@ MIN_PERIODICITY = 0.58
 class AnchorSpec:
     note: int
     clip_id: str
+
+
+@dataclass(frozen=True)
+class SourceManifestSnapshot:
+    index: dict[str, dict[str, object]]
+    sha256: str
+
+
+@dataclass(frozen=True)
+class SourceClipSnapshot:
+    sha256: str
+    samples: array.array
 
 
 ANCHORS = (
@@ -109,24 +122,54 @@ def source_clip_path(parent: pathlib.Path, filename: str) -> pathlib.Path:
     return regular_file_path(parent / relative.name, "whale source clip")
 
 
-def sha256_path(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def load_json_object(path: pathlib.Path, label: str) -> dict[str, object]:
+def read_bound_regular_bytes(path: pathlib.Path, label: str) -> bytes:
     safe_path = regular_file_path(path, label)
-    value = json.loads(safe_path.read_text(encoding="utf-8"))
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(safe_path, flags)
+    except OSError as error:
+        raise RuntimeError(f"{label} could not be opened safely") from error
+    try:
+        opened = os.fstat(descriptor)
+        try:
+            current = safe_path.stat(follow_symlinks=False)
+        except FileNotFoundError as error:
+            raise RuntimeError(f"{label} changed while being opened") from error
+        if not stat.S_ISREG(opened.st_mode):
+            raise RuntimeError(f"{label} must be a regular non-symlink file")
+        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise RuntimeError(f"{label} changed while being opened")
+        with os.fdopen(descriptor, "rb", closefd=True) as handle:
+            descriptor = -1
+            return handle.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def sha256_path(path: pathlib.Path) -> str:
+    return sha256_bytes(read_bound_regular_bytes(path, "file to hash"))
+
+
+def load_json_object_bytes(payload: bytes, label: str) -> dict[str, object]:
+    value = json.loads(payload.decode("utf-8"))
     if not isinstance(value, dict):
         raise RuntimeError(f"{label} root must be an object")
     return value
 
 
-def load_source_index(path: pathlib.Path) -> dict[str, dict[str, object]]:
-    manifest = load_json_object(path, "whale sample manifest")
+def load_json_object(path: pathlib.Path, label: str) -> dict[str, object]:
+    return load_json_object_bytes(read_bound_regular_bytes(path, label), label)
+
+
+def parse_source_index(payload: bytes) -> dict[str, dict[str, object]]:
+    manifest = load_json_object_bytes(payload, "whale sample manifest")
     if (
         manifest.get("schema_version") != 2
         or manifest.get("kind") != "humpback_whale_sample_bank"
@@ -147,23 +190,52 @@ def load_source_index(path: pathlib.Path) -> dict[str, dict[str, object]]:
     return index
 
 
-def read_pcm16_mono(path: pathlib.Path) -> array.array:
-    safe_path = regular_file_path(path, "source clip")
-    with wave.open(str(safe_path), "rb") as handle:
+def load_source_manifest_snapshot(path: pathlib.Path) -> SourceManifestSnapshot:
+    payload = read_bound_regular_bytes(path, "whale sample manifest")
+    return SourceManifestSnapshot(index=parse_source_index(payload), sha256=sha256_bytes(payload))
+
+
+def load_source_index(path: pathlib.Path) -> dict[str, dict[str, object]]:
+    return load_source_manifest_snapshot(path).index
+
+
+def read_pcm16_mono_bytes(payload: bytes, label: str) -> array.array:
+    with wave.open(io.BytesIO(payload), "rb") as handle:
         if (
             handle.getnchannels() != 1
             or handle.getsampwidth() != 2
             or handle.getframerate() != SAMPLE_RATE
         ):
-            raise RuntimeError(f"unexpected source clip format: {path}")
-        payload = handle.readframes(handle.getnframes())
+            raise RuntimeError(f"unexpected source clip format: {label}")
+        pcm_payload = handle.readframes(handle.getnframes())
     samples = array.array("h")
-    samples.frombytes(payload)
+    samples.frombytes(pcm_payload)
     if struct.pack("=H", 1) != struct.pack("<H", 1):
         samples.byteswap()
     if len(samples) < SAMPLE_RATE:
-        raise RuntimeError(f"source clip is too short: {safe_path}")
+        raise RuntimeError(f"source clip is too short: {label}")
     return samples
+
+
+def read_pcm16_mono(path: pathlib.Path) -> array.array:
+    safe_path = regular_file_path(path, "source clip")
+    return read_pcm16_mono_bytes(
+        read_bound_regular_bytes(safe_path, "source clip"),
+        str(safe_path),
+    )
+
+
+def load_source_clip_snapshot(
+    path: pathlib.Path, expected_sha: str, clip_id: str
+) -> SourceClipSnapshot:
+    payload = read_bound_regular_bytes(path, "source clip")
+    actual_sha = sha256_bytes(payload)
+    if actual_sha != expected_sha:
+        raise RuntimeError(f"source clip hash mismatch: {clip_id}")
+    return SourceClipSnapshot(
+        sha256=actual_sha,
+        samples=read_pcm16_mono_bytes(payload, str(path)),
+    )
 
 
 def normalized_correlation(values: list[float], lag: int) -> float:
@@ -324,7 +396,8 @@ def encode_table(values: list[float]) -> dict[str, object]:
 
 
 def build(source_manifest: pathlib.Path) -> dict[str, object]:
-    source_index = load_source_index(source_manifest)
+    source_snapshot = load_source_manifest_snapshot(source_manifest)
+    source_index = source_snapshot.index
     processed = source_manifest.parent
     anchors: list[dict[str, object]] = []
     for spec in ANCHORS:
@@ -341,10 +414,9 @@ def build(source_manifest: pathlib.Path) -> dict[str, object]:
         ):
             raise RuntimeError(f"source clip metadata is incomplete: {spec.clip_id}")
         path = source_clip_path(processed, filename)
-        actual_sha = sha256_path(path)
-        if actual_sha != expected_sha:
-            raise RuntimeError(f"source clip hash mismatch: {spec.clip_id}")
-        samples = read_pcm16_mono(path)
+        clip_snapshot = load_source_clip_snapshot(path, expected_sha, spec.clip_id)
+        actual_sha = clip_snapshot.sha256
+        samples = clip_snapshot.samples
         window_start, period, periodicity = find_period(samples)
         if periodicity < MIN_PERIODICITY:
             raise RuntimeError(
@@ -381,7 +453,7 @@ def build(source_manifest: pathlib.Path) -> dict[str, object]:
         "tuning": "twelve-tone-equal-temperament-a4-440",
         "voice_count": 1,
         "source_sample_manifest": str(source_manifest.relative_to(ROOT)),
-        "source_sample_manifest_sha256": sha256_path(source_manifest),
+        "source_sample_manifest_sha256": source_snapshot.sha256,
         "extraction": {
             "method": "phase-aligned-period-averaging-with-harmonic-bandlimiting",
             "analysis_rate_hz": ANALYSIS_RATE,
