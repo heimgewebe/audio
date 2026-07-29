@@ -234,6 +234,8 @@ function renderAll() {
 function renderHome() {
   const snapshot = state.snapshot;
   const summary = snapshot.summary;
+  const whaleStatusReadable = snapshot.whale.status === "ok";
+  const activeWhale = whaleStatusReadable && summary.active_whale;
   const card = byId("home-state-card");
   card.replaceChildren();
 
@@ -270,7 +272,11 @@ function renderHome() {
     foot,
     "span",
     "",
-    summary.active_whale ? "Walstimme läuft" : "Walstimme ruht",
+    whaleStatusReadable
+      ? activeWhale
+        ? "Walstimme läuft"
+        : "Walstimme ruht"
+      : "Walstatus nicht lesbar",
   );
   const diagnosis = element("a", "text-link", "Diagnose →");
   diagnosis.href = "#diagnose";
@@ -281,10 +287,16 @@ function renderHome() {
     {
       route: "spielen",
       glyph: "♬",
-      title: summary.active_whale ? "Walstimme steuern" : "Walstimme spielen",
-      detail: summary.active_whale
-        ? `Aktiv: ${displayMode(snapshot.whale.service.voice_mode)}`
-        : `Inaktiv · Startmodus ${displayMode(snapshot.whale.contract.default_mode)}`,
+      title: whaleStatusReadable
+        ? activeWhale
+          ? "Walstimme steuern"
+          : "Walstimme spielen"
+        : "Walstatus prüfen",
+      detail: whaleStatusReadable
+        ? activeWhale
+          ? `Aktiv: ${displayMode(snapshot.whale.service.voice_mode)}`
+          : `Inaktiv · Startmodus ${displayMode(snapshot.whale.contract.default_mode)}`
+        : "Zustand nicht lesbar · keine Inaktivitätsannahme",
     },
     {
       route: "hoeren",

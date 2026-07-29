@@ -149,7 +149,8 @@ Der Snapshot trägt `schema_version`, `api_version`, Erzeugungszeit,
 Runtime-HEAD und die revisionsgebundene Spezifikationsbasis. Fehler des Doctors
 oder Dienst-Readbacks werden als `unavailable` beziehungsweise `degraded`
 sichtbar; unvollständige Erfolgsschemata und systemd-Übergangszustände werden
-nicht als „inaktiv“ oder „gesund“ umgedeutet.
+nicht als „inaktiv“ oder „gesund“ umgedeutet. Das gilt auch für die
+Zusammenfassung und Aufgabenkarten der Startansicht.
 API-Fehler tragen ein einheitliches `audio_control_error`-Objekt mit stabilem
 Code und menschenlesbarer Nachricht.
 

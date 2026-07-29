@@ -893,6 +893,15 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('status: "unavailable"', action)
         self.assertIn("service: {}", action)
 
+    def test_home_view_preserves_unreadable_whale_truth(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        home_start = javascript.index("function renderHome()")
+        home_end = javascript.index("function insightCard", home_start)
+        home = javascript[home_start:home_end]
+        self.assertIn('snapshot.whale.status === "ok"', home)
+        self.assertIn('"Walstatus nicht lesbar"', home)
+        self.assertIn('"Zustand nicht lesbar · keine Inaktivitätsannahme"', home)
+
     def test_specification_is_bound_to_exact_base_revision(self):
         text = (ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md").read_text()
         self.assertIn(MODULE.SPEC_BASE_REVISION, text)
