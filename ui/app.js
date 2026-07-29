@@ -768,7 +768,10 @@ function closeDialog() {
 function renderSounds() {
   const target = byId("sound-library");
   const whale = state.snapshot.whale;
-  const activeMode = whale.service.voice_mode;
+  const activeMode =
+    whale.status === "ok" && whale.service?.active === true
+      ? whale.service.voice_mode
+      : null;
   const cards = (whale.contract.modes || []).map((mode, index) => {
     const card = element("article", `sound-card${index === 0 ? " featured" : ""}`);
     const top = element("div", "card-topline");

@@ -859,6 +859,13 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn(None, parser.route_labels)
         html = (ROOT / "ui" / "index.html").read_text()
         self.assertIn('rel="icon" href="data:,"', html)
+        self.assertIn('aria-labelledby="motion-toggle-label"', html)
+        self.assertIn('aria-describedby="motion-toggle-description"', html)
+        self.assertIn('aria-labelledby="auto-refresh-toggle-label"', html)
+        self.assertIn('aria-describedby="auto-refresh-toggle-description"', html)
+        styles = (ROOT / "ui" / "styles.css").read_text()
+        self.assertIn("*::before,", styles)
+        self.assertIn("*::after {\n  box-sizing: border-box;", styles)
         javascript = (ROOT / "ui" / "app.js").read_text()
         self.assertNotIn("innerHTML", javascript)
         self.assertNotIn(".style.overflow", javascript)
@@ -904,6 +911,18 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('snapshot.whale.status === "ok"', home)
         self.assertIn('"Walstatus nicht lesbar"', home)
         self.assertIn('"Zustand nicht lesbar · keine Inaktivitätsannahme"', home)
+
+    def test_sound_library_requires_confirmed_active_whale_truth(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        sounds_start = javascript.index("function renderSounds()")
+        sounds_end = javascript.index("function soundModeDescription", sounds_start)
+        sounds = javascript[sounds_start:sounds_end]
+        self.assertIn(
+            'whale.status === "ok" && whale.service?.active === true',
+            sounds,
+        )
+        self.assertIn("? whale.service.voice_mode", sounds)
+        self.assertIn(": null;", sounds)
 
     def test_specification_is_bound_to_exact_base_revision(self):
         text = (ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md").read_text()
