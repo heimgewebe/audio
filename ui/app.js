@@ -43,6 +43,8 @@ const PROFILE_GLYPHS = {
   experimental: "≋",
 };
 
+const INTERACTION_GRACE_MS = 1200;
+
 const state = {
   snapshot: null,
   route: "start",
@@ -50,6 +52,7 @@ const state = {
   actionPending: false,
   autoRefresh: true,
   timer: null,
+  interactionUntil: 0,
   lastDialogTrigger: null,
   dialogRequest: 0,
 };
@@ -1015,18 +1018,28 @@ function savePreference(key, value) {
   }
 }
 
+function markTransientInteraction() {
+  state.interactionUntil = window.performance.now() + INTERACTION_GRACE_MS;
+}
+
+function autoRefreshBlocked() {
+  return (
+    !byId("dialog-backdrop").hidden ||
+    state.loading ||
+    state.actionPending ||
+    window.performance.now() < state.interactionUntil
+  );
+}
+
+function autoRefreshTick() {
+  if (state.autoRefresh && !document.hidden && !autoRefreshBlocked()) {
+    refreshSnapshot(false);
+  }
+}
+
 function scheduleAutoRefresh() {
   if (state.timer) window.clearInterval(state.timer);
-  state.timer = window.setInterval(() => {
-    const active = document.activeElement;
-    const interactionInProgress =
-      !byId("dialog-backdrop").hidden ||
-      active?.matches("a[href], button, input, select, textarea") ||
-      Boolean(active?.closest("[role='dialog']"));
-    if (state.autoRefresh && !document.hidden && !interactionInProgress) {
-      refreshSnapshot(false);
-    }
-  }, 8000);
+  state.timer = window.setInterval(autoRefreshTick, 8000);
 }
 
 function keepDialogFocus(event) {
@@ -1047,6 +1060,9 @@ function keepDialogFocus(event) {
 
 function wireEvents() {
   window.addEventListener("hashchange", applyRoute);
+  document.addEventListener("pointerdown", markTransientInteraction, {
+    passive: true,
+  });
   byId("refresh-button").addEventListener("click", () => refreshSnapshot(true));
   byId("diagnostic-refresh").addEventListener("click", () => refreshSnapshot(true));
   byId("dialog-close").addEventListener("click", closeDialog);
@@ -1054,6 +1070,7 @@ function wireEvents() {
     if (event.target === byId("dialog-backdrop")) closeDialog();
   });
   document.addEventListener("keydown", (event) => {
+    markTransientInteraction();
     if (event.key === "Escape" && !byId("dialog-backdrop").hidden) closeDialog();
     keepDialogFocus(event);
   });

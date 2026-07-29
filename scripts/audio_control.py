@@ -768,6 +768,13 @@ class AudioControl:
             self._cached_snapshot = None
             self._cached_at = 0.0
 
+    def _readback_after_mutation(self) -> dict[str, Any]:
+        try:
+            return self._cache_snapshot(self._build_snapshot())
+        except Exception:
+            self.invalidate()
+            raise
+
     def profile_plan(self, profile_id: str) -> dict[str, Any]:
         profiles = {profile["id"]: profile for profile in read_profiles()}
         if profile_id not in profiles:
@@ -835,14 +842,27 @@ class AudioControl:
                     "Eine Zustandsabfrage verhindert den sicheren Aktions-Readback."
                 )
             try:
-                result = self.runner.run(command, timeout=25)
-                report = parse_json_output(result, label="Buckelwal-Aktion")
-                if result.returncode != 0:
-                    raise ControlError(
-                        safe_error_message(report, "Buckelwal-Aktion wurde blockiert.")
-                    )
+                # The snapshot lock makes invalidation, mutation and readback one
+                # truth boundary without changing the single-flight lock order.
                 self.invalidate()
-                snapshot = self._cache_snapshot(self._build_snapshot())
+                try:
+                    result = self.runner.run(command, timeout=25)
+                    report = parse_json_output(result, label="Buckelwal-Aktion")
+                    if result.returncode != 0:
+                        raise ControlError(
+                            safe_error_message(
+                                report, "Buckelwal-Aktion wurde blockiert."
+                            )
+                        )
+                except Exception:
+                    try:
+                        self._readback_after_mutation()
+                    except Exception:
+                        # The action cause stays primary; the empty cache forces
+                        # the next ordinary snapshot to retry the failed readback.
+                        pass
+                    raise
+                snapshot = self._readback_after_mutation()
                 whale = snapshot.get("whale", {})
                 service = whale.get("service", {})
                 status_ok = whale.get("status") == "ok"

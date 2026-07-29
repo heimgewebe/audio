@@ -117,7 +117,8 @@ und „automatisch aktualisieren“. Sie besitzen keine Audiosemantik.
 - feste Subprozess-Timeouts, begrenzte Gesamtausgabe und Kill der Prozessgruppe
   bei Überschreitung;
 - Content Security Policy und weitere Browser-Sicherheitsheader;
-- Snapshotcache standardmäßig vier Sekunden, explizit invalidiert nach Aktion;
+- Snapshotcache standardmäßig vier Sekunden, vor jeder Aktion invalidiert und
+  auf jedem Abschlussweg frisch zurückgelesen;
 - maximal 128 MiB Speicher, 50 Prozent eines CPU-Kerns, 32 Tasks;
 - maximal 21.600 Sekunden Laufzeit und begrenzte Journalrate;
 - Ownership-Marker mit Start-Readback; `stop` verändert keine gleichnamige

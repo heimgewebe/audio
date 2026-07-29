@@ -231,6 +231,47 @@ class UnconfirmedActionRunner(FakeRunner):
         return super().run(argv, timeout=timeout)
 
 
+class PartialModeFailureRunner(FakeRunner):
+    def __init__(self):
+        super().__init__()
+        self.whale_active = True
+        self.whale_mode = "realistic"
+
+    def run(self, argv, *, timeout):
+        script = pathlib.Path(argv[1]).name if len(argv) > 1 else ""
+        if script == "whale_live.py" and argv[2] == "mode":
+            self.calls.append((tuple(argv), timeout))
+            self.whale_active = False
+            self.whale_mode = None
+            return self.result(
+                argv,
+                {"error": "Ersatzstart gescheitert."},
+                returncode=1,
+            )
+        return super().run(argv, timeout=timeout)
+
+
+class UnreadableActionReadbackRunner(FakeRunner):
+    def __init__(self):
+        super().__init__()
+        self.fail_next_status = False
+
+    def run(self, argv, *, timeout):
+        script = pathlib.Path(argv[1]).name if len(argv) > 1 else ""
+        if script == "whale_live.py" and argv[2] == "status" and self.fail_next_status:
+            self.calls.append((tuple(argv), timeout))
+            self.fail_next_status = False
+            return self.result(
+                argv,
+                {"error": "Status-Readback gescheitert."},
+                returncode=1,
+            )
+        result = super().run(argv, timeout=timeout)
+        if script == "whale_live.py" and argv[2] == "start":
+            self.fail_next_status = True
+        return result
+
+
 class MalformedWhaleStatusRunner(FakeRunner):
     def run(self, argv, *, timeout):
         script = pathlib.Path(argv[1]).name if len(argv) > 1 else ""
@@ -476,6 +517,51 @@ class AudioControlTests(unittest.TestCase):
         controller = self.controller(UnconfirmedActionRunner())
         with self.assertRaisesRegex(MODULE.ControlError, "nicht.*bestätigt"):
             controller.perform_whale_action({"operation": "start", "mode": "morph"})
+
+    def test_failed_mode_action_replaces_pre_action_cache_with_fresh_truth(self):
+        runner = PartialModeFailureRunner()
+        controller = self.controller(runner)
+        before = controller.snapshot()
+        self.assertTrue(before["whale"]["service"]["active"])
+        self.assertEqual(before["whale"]["service"]["voice_mode"], "realistic")
+
+        with self.assertRaisesRegex(MODULE.ControlError, "Ersatzstart gescheitert"):
+            controller.perform_whale_action({"operation": "mode", "mode": "morph"})
+
+        after = controller.snapshot()
+        self.assertFalse(after["whale"]["service"]["active"])
+        self.assertEqual(runner.doctor_calls, 2)
+
+    def test_action_readback_failure_is_cached_only_as_unavailable(self):
+        runner = UnreadableActionReadbackRunner()
+        controller = self.controller(runner)
+        controller.snapshot()
+
+        with self.assertRaisesRegex(MODULE.ControlError, "nicht.*bestätigt"):
+            controller.perform_whale_action({"operation": "start", "mode": "morph"})
+
+        after = controller.snapshot()
+        self.assertEqual(after["whale"]["status"], "unavailable")
+        self.assertEqual(after["whale"]["service"], {})
+        self.assertEqual(runner.doctor_calls, 2)
+
+    def test_failed_action_keeps_its_cause_when_readback_cannot_be_built(self):
+        runner = PartialModeFailureRunner()
+        controller = self.controller(runner)
+        controller.snapshot()
+
+        with mock.patch.object(
+            MODULE,
+            "read_profiles",
+            side_effect=MODULE.ControlError("Readback-Vertrag unlesbar."),
+        ) as read_profiles:
+            with self.assertRaisesRegex(MODULE.ControlError, "Ersatzstart gescheitert"):
+                controller.perform_whale_action({"operation": "mode", "mode": "morph"})
+            read_profiles.assert_called_once_with()
+            self.assertIsNone(controller._cached_snapshot)
+
+        after = controller.snapshot()
+        self.assertFalse(after["whale"]["service"]["active"])
 
     def test_whale_action_reserves_readback_before_mutation(self):
         runner = FakeRunner()
@@ -760,6 +846,17 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('"snapshot_busy"', javascript)
         self.assertIn("Backend beschäftigt", javascript)
         self.assertIn("/api/v1/actions/whale", javascript)
+
+    def test_auto_refresh_policy_does_not_treat_persistent_focus_as_interaction(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        policy_start = javascript.index("function autoRefreshBlocked()")
+        policy_end = javascript.index("function autoRefreshTick()", policy_start)
+        policy = javascript[policy_start:policy_end]
+        self.assertNotIn("activeElement", policy)
+        self.assertIn('!byId("dialog-backdrop").hidden', policy)
+        self.assertIn("state.loading", policy)
+        self.assertIn("state.actionPending", policy)
+        self.assertIn("state.interactionUntil", policy)
 
     def test_specification_is_bound_to_exact_base_revision(self):
         text = (ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md").read_text()
