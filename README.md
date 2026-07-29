@@ -32,6 +32,16 @@ Modi `realistic` (Aufnahmephrasen) und `ufo` bleiben als Vergleiche erhalten.
 - Doctor, Wahrheitskette, Drift, Diff, Apply, Rollback und Recovery
 - harte Grenzen für Logs, Prozesse, große Assets und Geheimnisse
 
+## Audiozentrale
+
+Die lokale **Audiozentrale** ordnet den Bestand nach Aufgaben statt DAW-Spuren:
+Start, Spielen, Aufnehmen, Hören, Klänge, Verbindungen, Diagnose und
+Einstellungen. Ein loopback-gebundener Control-Dienst bleibt
+Zustandsautorität; der Browser verarbeitet kein kritisches Audio. In der ersten
+Stufe ist nur der bereits verwaltete Buckelwaldienst schaltbar. Profilplanung
+ist read-only, Aufnahme, Dauersong und Profil-Apply bleiben sichtbar
+fail-closed.
+
 ## Dokumente
 
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
@@ -41,6 +51,7 @@ Modi `realistic` (Aufnahmephrasen) und `ufo` bleiben als Vergleiche erhalten.
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)
+- [Spezifikation der lokalen Audiozentrale](docs/plans/local-audio-control-ui-v1.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
 - [Read-only Baselines](docs/baselines/README.md)
 - [Systemwahrheit und Drift](docs/system-truth-workflow.md)
@@ -68,4 +79,9 @@ python3 scripts/whale_live.py mode realistic
 python3 scripts/whale_live.py mode ufo
 python3 scripts/whale_live.py toggle
 python3 scripts/whale_live.py demo /tmp/buckelwal-live-voice-v1-demo.wav
+./scripts/audio-control check
+./scripts/audio-control start
+./scripts/audio-control status
+# Oberfläche danach lokal unter http://127.0.0.1:8765/
+./scripts/audio-control stop
 ```
