@@ -59,6 +59,18 @@ def doctor_results():
             "2\troland\tPipeWire\ts24le 2ch 44100Hz\n",
             "",
         ),
+        result(
+            ("aconnect", "-l"),
+            0,
+            "client 20: 'Roland Digital Piano' [type=kernel]\n",
+            "",
+        ),
+        result(
+            ("amidi", "-l"),
+            0,
+            "Dir Device    Name\nIO  hw:3,0,0  Roland Digital Piano\n",
+            "",
+        ),
         result(("systemctl", "is-active", "bluetooth"), 3, "inactive\n", ""),
     ]
 
