@@ -36,6 +36,75 @@ class LaboratoryGateTests(unittest.TestCase):
             },
         }
 
+    def xrun_evidence(
+        self,
+        *,
+        xrun_delta=0,
+        graph_fingerprint="c" * 64,
+        rate_hz=48000,
+        quantum_frames=128,
+    ):
+        started = "2026-07-27T12:00:00+00:00"
+        ended = "2026-07-27T12:01:00+00:00"
+        argv = list(MODULE.xrun_journal_argv(started, ended))
+        graph = {
+            "graph_fingerprint": graph_fingerprint,
+            "rate_hz": rate_hz,
+            "quantum_frames": quantum_frames,
+        }
+        return {
+            "schema_version": 1,
+            "kind": "pipewire_xrun_observation",
+            "gate": "xrun-stability-test",
+            "result": "pass",
+            "measured_at": ended,
+            "physical_state_sha256": None,
+            "requested_duration_seconds": 60,
+            "duration_seconds": 60,
+            "observation_started_at": started,
+            "observation_ended_at": ended,
+            "xrun_delta": xrun_delta,
+            "rate_hz": rate_hz,
+            "quantum_frames": quantum_frames,
+            "graph_fingerprint": graph_fingerprint,
+            "graph_before": {
+                **graph,
+                "report_sha256": "a" * 64,
+                "truth_chain_sha256": "b" * 64,
+            },
+            "graph_after": {
+                **graph,
+                "report_sha256": "d" * 64,
+                "truth_chain_sha256": "e" * 64,
+            },
+            "journal": {
+                "source": "journalctl-user-audio-units",
+                "query_argv": argv,
+                "query_argv_sha256": MODULE.canonical_value_sha256(argv),
+                "returncode": 0,
+                "stdout_sha256": "f" * 64,
+                "stdout_total_bytes": 0,
+                "stdout_truncated": False,
+                "line_count": 0,
+                "max_lines": MODULE.MAX_XRUN_JOURNAL_LINES,
+                "xrun_line_count": xrun_delta,
+                "xrun_lines_sha256": MODULE.canonical_value_sha256([]),
+                "complete": True,
+            },
+        }
+
+    def test_xrun_journal_window_covers_fractional_utc_bounds(self):
+        argv = list(
+            MODULE.xrun_journal_argv(
+                "2026-07-27T14:00:00.900000+02:00",
+                "2026-07-27T14:01:00.100000+02:00",
+            )
+        )
+        since = argv.index("--since")
+        until = argv.index("--until")
+        self.assertEqual(argv[since + 1], "2026-07-27 12:00:00 UTC")
+        self.assertEqual(argv[until + 1], "2026-07-27 12:01:01 UTC")
+
 
     def test_planned_profiles_do_not_invalidate_operational_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -146,16 +215,7 @@ class LaboratoryGateTests(unittest.TestCase):
             "measured_at": "2026-07-27T12:00:00+00:00",
             "physical_state_sha256": None,
         }
-        xrun = {
-            **common,
-            "kind": "pipewire_xrun_observation",
-            "gate": "xrun-stability-test",
-            "duration_seconds": 60,
-            "xrun_delta": 1,
-            "rate_hz": 48000,
-            "quantum_frames": 128,
-            "graph_fingerprint": "b" * 64,
-        }
+        xrun = self.xrun_evidence(xrun_delta=1)
         with self.assertRaises(ValueError):
             MODULE.validate_evidence("xrun-stability-test", xrun)
         qobuz = {
@@ -233,26 +293,40 @@ class LaboratoryGateTests(unittest.TestCase):
             MODULE.validate_evidence("loopback-latency-measurement", evidence)
 
     def test_rejects_boolean_and_float_xrun_delta(self):
-        base = {
-            "schema_version": 1,
-            "kind": "pipewire_xrun_observation",
-            "gate": "xrun-stability-test",
-            "result": "pass",
-            "measured_at": "2026-07-27T12:00:00+00:00",
-            "physical_state_sha256": None,
-            "duration_seconds": 60,
-            "rate_hz": 48000,
-            "quantum_frames": 128,
-            "graph_fingerprint": "c" * 64,
-        }
+        base = self.xrun_evidence()
         for malformed in (False, 0.0, True, 1.0):
             with self.subTest(xrun_delta=malformed):
                 evidence = {**base, "xrun_delta": malformed}
                 with self.assertRaises(ValueError):
                     MODULE.validate_evidence("xrun-stability-test", evidence)
+        MODULE.validate_evidence("xrun-stability-test", base)
+
+    def test_xrun_requires_bound_journal_and_keeps_legacy_state_readable(self):
+        evidence = self.xrun_evidence()
+        MODULE.validate_evidence("xrun-stability-test", evidence)
+        tampered = json.loads(json.dumps(evidence))
+        tampered["journal"]["query_argv"][-1] = "7"
+        with self.assertRaisesRegex(ValueError, "journal query"):
+            MODULE.validate_evidence("xrun-stability-test", tampered)
+
+        legacy = {
+            "schema_version": 1,
+            "kind": "pipewire_xrun_observation",
+            "gate": "xrun-stability-test",
+            "result": "pass",
+            "measured_at": "2026-07-27T12:01:00+00:00",
+            "physical_state_sha256": None,
+            "duration_seconds": 60,
+            "xrun_delta": 0,
+            "rate_hz": 48000,
+            "quantum_frames": 128,
+            "graph_fingerprint": "c" * 64,
+        }
         MODULE.validate_evidence(
-            "xrun-stability-test", {**base, "xrun_delta": 0}
+            "xrun-stability-test", legacy, allow_legacy_xrun=True
         )
+        with self.assertRaisesRegex(ValueError, "legacy XRun"):
+            MODULE.validate_evidence("xrun-stability-test", legacy)
 
     def test_rejects_zero_delay_or_identical_loopback_sources(self):
         evidence = {

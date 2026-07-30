@@ -46,6 +46,39 @@ Sampleratenentscheidungen werden mit `policy-decision` als ausdrückliche
 Operatorentscheidung dokumentiert. Eine Entscheidung belegt weder
 Bit-Perfect-Wiedergabe noch das Ausbleiben von Resampling.
 
+## Gebundene XRun-Beobachtung
+
+Eine XRun-Freigabe darf nicht aus einer manuell eingetragenen Zahl entstehen.
+`xrun-observation` bindet deshalb eine mindestens 60 Sekunden lange Beobachtung
+an zwei verifizierte Systemwahrheitsberichte, den unveränderten Graphen und ein
+begrenztes Journalfenster.
+
+Vor dem Lauf müssen Rate, Quantum und Graph-Fingerprint aus demselben aktuellen
+Truth-Report gelesen werden:
+
+```bash
+./scripts/audio-truth capture --output /tmp/audio-truth.json
+jq '.doctor.graph | {force_rate_hz, force_quantum_frames}' /tmp/audio-truth.json
+jq -r '.runtime.graph_fingerprint' /tmp/audio-truth.json
+
+./scripts/create-audio-evidence xrun-observation \
+  --duration-seconds 60 \
+  --expected-rate-hz 48000 \
+  --expected-quantum-frames 1024 \
+  --expected-graph-fingerprint SHA256_AUS_DEM_TRUTH_REPORT \
+  --output /tmp/xrun-evidence.json
+./scripts/audio-lab-gate record xrun-stability-test \
+  /tmp/xrun-evidence.json --replace
+```
+
+Die Beispielwerte `48000` und `1024` dürfen nicht blind übernommen werden. Der
+Lauf bricht ab, wenn sich Graph, Rate oder Quantum ändern, die Journalabfrage
+fehlschlägt oder abgeschnitten wird, das Zeitfenster zu kurz ist oder neue
+XRun-, Underrun-, Overrun- beziehungsweise Dropout-Meldungen auftreten. Er
+startet weder Wiedergabe noch Routing. Alte ungebundene XRun-Belege bleiben zur
+Migration lesbar, lösen das Gate aber nicht mehr und können nicht neu gespeichert
+werden.
+
 ## Speicherung
 
 ```bash
