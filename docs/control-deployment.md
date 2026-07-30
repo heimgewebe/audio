@@ -35,6 +35,13 @@ autoritative Commitidentität.
 10. Der aktuelle und die zwei jüngsten gültigen Vorgängerreleases bleiben für
     Rollback und Diagnose erhalten; ältere gültige Releases werden entfernt.
 
+Beim ersten Selbstupdate einer älteren Installation kann `runtime.env` noch
+fehlen. Der UI-Dienst startet dann mit sicheren Defaults und übernimmt nur den
+bisher konfigurierten Port aus `~/.config/audio-control-deploy.env`. Die
+Bind-Adresse bleibt fest auf `127.0.0.1`. Sobald der neue Deployer läuft,
+erzeugt er `runtime.env`; diese releasegebundene Konfiguration hat anschließend
+Vorrang vor dem Migrationsfallback.
+
 Der normale Abstand zwischen Merge und beginnendem Deployment beträgt höchstens
 etwa 60 Sekunden zuzüglich lokaler Prüfung. Ein unveränderter, gesunder Release
 wird nicht jede Minute neu gestartet.

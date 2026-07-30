@@ -13,8 +13,8 @@ Environment=AUDIO_CONTROL_PORT=8765
 Environment=AUDIO_CONTROL_MANAGED_BY=audio-control-autodeploy-v1
 # Die bisherige Installer-Konfiguration bewahrt einen abweichenden Alt-Port.
 EnvironmentFile=-%h/.config/audio-control-deploy.env
-# Steady-State-Vertrag: EnvironmentFile=%h/.config/audio-control-ui/runtime.env
-# Das optionale Präfix ist nur für die Migration von Installationen ohne diese Datei nötig.
+# Die releasegebundene Laufzeitkonfiguration überschreibt den Altbestand.
+# Optional nur, damit der erste Upgrade-Lauf vor ihrer Erzeugung starten kann.
 EnvironmentFile=-%h/.config/audio-control-ui/runtime.env
 WorkingDirectory=%h/.local/share/audio-control-ui/current
 ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py serve --host 127.0.0.1 --port ${AUDIO_CONTROL_PORT}

@@ -443,16 +443,37 @@ class AudioControlDeployTests(unittest.TestCase):
 
     def test_systemd_contract_is_persistent_and_revision_bound(self):
         service = (ROOT / "systemd" / "user" / "audio-control-ui-v1.service").read_text()
+        service_directives = [
+            line.strip()
+            for line in service.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        exec_start = next(
+            line for line in service_directives if line.startswith("ExecStart=")
+        )
         deploy = (ROOT / "systemd" / "user" / "audio-control-deploy.service").read_text()
         timer = (ROOT / "systemd" / "user" / "audio-control-deploy.timer").read_text()
         installer = (ROOT / "scripts" / "install_audio_control_autodeploy.py").read_text()
 
         self.assertIn("%h/.local/share/audio-control-ui/current", service)
-        self.assertIn(
-            "EnvironmentFile=%h/.config/audio-control-ui/runtime.env", service
+        legacy_environment = "EnvironmentFile=-%h/.config/audio-control-deploy.env"
+        runtime_environment = (
+            "EnvironmentFile=-%h/.config/audio-control-ui/runtime.env"
         )
-        self.assertIn("${AUDIO_CONTROL_HOST}", service)
-        self.assertIn("${AUDIO_CONTROL_PORT}", service)
+        self.assertIn("Environment=AUDIO_CONTROL_PORT=8765", service_directives)
+        self.assertIn(legacy_environment, service_directives)
+        self.assertIn(runtime_environment, service_directives)
+        self.assertLess(
+            service_directives.index(legacy_environment),
+            service_directives.index(runtime_environment),
+        )
+        self.assertNotIn(
+            "ConditionPathExists=%h/.config/audio-control-ui/runtime.env",
+            service_directives,
+        )
+        self.assertIn("--host 127.0.0.1", exec_start)
+        self.assertNotIn("--host ${AUDIO_CONTROL_HOST}", exec_start)
+        self.assertIn("--port ${AUDIO_CONTROL_PORT}", exec_start)
         self.assertNotIn("--port 8765", service)
         self.assertIn("Restart=on-failure", service)
         self.assertNotIn("RuntimeMaxSec", service)
