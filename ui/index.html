@@ -4,11 +4,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#101a1a">
+    <meta name="theme-color" content="#0d1414">
     <link rel="icon" href="data:,">
     <meta
       name="description"
-      content="Lokale, aufgabenorientierte Audiozentrale für den Heim-PC."
+      content="Lokale Audiozentrale für den Heim-PC."
     >
     <title>Audiozentrale</title>
     <link rel="stylesheet" href="/styles.css">
@@ -76,8 +76,8 @@
 
       <main id="main-content" tabindex="-1">
         <header class="topbar">
-          <div>
-            <p class="eyebrow" id="view-eyebrow">Dein Audio heute</p>
+          <div class="view-heading">
+            <p class="eyebrow" id="view-eyebrow">Übersicht</p>
             <h1 id="view-title" tabindex="-1">Start</h1>
           </div>
           <div class="topbar-actions">
@@ -109,89 +109,58 @@
         ></div>
 
         <section class="view is-active" id="view-start" data-view="start">
-          <div class="hero-grid">
-            <article class="hero-card">
-              <div class="hero-copy">
-                <p class="eyebrow accent">Aufgaben statt Spuren</p>
-                <h2>Was möchtest du hören oder machen?</h2>
-                <p>
-                  Eine ruhige Oberfläche für deinen lokalen Audioweg.
-                  Keine Timeline, kein Mixer, keine DAW.
-                </p>
-              </div>
-            </article>
+          <div class="overview-grid">
             <article class="state-card" id="home-state-card">
               <div class="skeleton skeleton-title"></div>
               <div class="skeleton skeleton-line"></div>
-              <div class="skeleton skeleton-line short"></div>
             </article>
+            <div class="metric-grid home-metrics" id="home-metrics"></div>
           </div>
 
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Direkt loslegen</p>
-              <h2>Häufige Aufgaben</h2>
-            </div>
+          <div class="section-heading compact">
+            <h2>Aktionen</h2>
           </div>
           <div class="task-grid" id="home-tasks"></div>
 
           <div class="section-heading compact">
-            <div>
-              <p class="eyebrow">Im Blick</p>
-              <h2>Systemhinweise</h2>
-            </div>
-            <a class="text-link" href="#diagnose">Alle ansehen <span>→</span></a>
+            <h2>Hinweise</h2>
+            <a class="text-link" href="#diagnose">Diagnose <span>→</span></a>
           </div>
           <div class="insight-grid" id="home-insights"></div>
         </section>
 
         <section class="view" id="view-spielen" data-view="spielen" hidden>
-          <div class="page-intro">
+          <div class="view-toolbar">
             <div>
-              <p class="eyebrow accent">Instrumente</p>
-              <h2>Spielen, ohne den Referenzbetrieb zu verbiegen.</h2>
-              <p>
-                Der Control-Dienst startet und liest die verwaltete Laufzeit.
-                MIDI und Audio bleiben vollständig außerhalb des Browsers.
-              </p>
+              <p class="eyebrow">Live-Instrument</p>
+              <h2>Walstimme</h2>
             </div>
             <div class="intro-stat" id="play-intro-stat"></div>
           </div>
           <div id="whale-control"></div>
           <div class="section-heading compact">
-            <div>
-              <p class="eyebrow">Bereitschaft</p>
-              <h2>Spielprofile</h2>
-            </div>
+            <h2>Spielprofile</h2>
           </div>
           <div class="profile-grid" id="playing-profiles"></div>
         </section>
 
         <section class="view" id="view-aufnehmen" data-view="aufnehmen" hidden>
-          <div class="page-intro">
+          <div class="view-toolbar">
             <div>
-              <p class="eyebrow accent">Sicher erfassen</p>
-              <h2>Erst Quelle und Headroom, dann Aufnahme.</h2>
-              <p>
-                Die aktuelle Stufe prüft Profilpläne read-only. Ein roter
-                Aufnahmeknopf erscheint erst mit belastbarem Recordervertrag.
-              </p>
+              <p class="eyebrow">Aufnahme</p>
+              <h2>Quellen und Profile</h2>
             </div>
-            <span class="boundary-pill">Noch kein Recorder-Apply</span>
+            <span class="boundary-pill">Kein Recorder-Apply</span>
           </div>
           <div class="callout" id="recording-boundary"></div>
           <div class="profile-grid" id="recording-profiles"></div>
         </section>
 
         <section class="view" id="view-hoeren" data-view="hoeren" hidden>
-          <div class="page-intro">
+          <div class="view-toolbar">
             <div>
-              <p class="eyebrow accent">Wiedergabewege</p>
-              <h2>Vom gemischten Desktop bis zum bewussten Hören.</h2>
-              <p>
-                Jeder Weg zeigt seinen Zweck und seine offenen Belege.
-                Profilwechsel bleiben geplant, bis Apply und Rollback existieren.
-              </p>
+              <p class="eyebrow">Wiedergabe</p>
+              <h2>Hörwege</h2>
             </div>
             <div class="intro-stat" id="listen-intro-stat"></div>
           </div>
@@ -199,14 +168,10 @@
         </section>
 
         <section class="view" id="view-klaenge" data-view="klaenge" hidden>
-          <div class="page-intro">
+          <div class="view-toolbar">
             <div>
-              <p class="eyebrow accent">Klanglabor</p>
-              <h2>Charakter wählen, Grenzen sichtbar lassen.</h2>
-              <p>
-                Walgesang ist ausführbar. Dauersong bleibt als isolierte,
-                ressourcenbegrenzte Kreativlaufzeit in Planung.
-              </p>
+              <p class="eyebrow">Klangquellen</p>
+              <h2>Verfügbare Systeme</h2>
             </div>
           </div>
           <div class="sound-grid" id="sound-library"></div>
@@ -218,35 +183,24 @@
           data-view="verbindungen"
           hidden
         >
-          <div class="page-intro">
+          <div class="view-toolbar">
             <div>
-              <p class="eyebrow accent">Signalweg</p>
-              <h2>Was verbunden ist – und was Software nicht wissen kann.</h2>
-              <p>
-                Gerätebeobachtung und physische Wahrheit sind getrennt.
-                Fehlende Kabel- oder Schalterbelege werden nicht erraten.
-              </p>
+              <p class="eyebrow">Geräte</p>
+              <h2>Signalweg</h2>
             </div>
           </div>
           <div class="connection-map" id="connection-map"></div>
           <div class="section-heading compact">
-            <div>
-              <p class="eyebrow">Offene Außenwelt</p>
-              <h2>Physische Belege</h2>
-            </div>
+            <h2>Offene physische Belege</h2>
           </div>
           <div class="fact-list" id="physical-facts"></div>
         </section>
 
         <section class="view" id="view-diagnose" data-view="diagnose" hidden>
-          <div class="page-intro">
+          <div class="view-toolbar">
             <div>
-              <p class="eyebrow accent">Read-only Doctor</p>
-              <h2>Beobachtung ohne heimliche Reparatur.</h2>
-              <p>
-                Warnungen, Graphzustand und Werkzeugverfügbarkeit stammen aus
-                einer frischen Backend-Abfrage.
-              </p>
+              <p class="eyebrow">Read-only Doctor</p>
+              <h2>Systemzustand</h2>
             </div>
             <button class="secondary-button" id="diagnostic-refresh" type="button">
               Neu prüfen
@@ -256,19 +210,13 @@
           <div class="diagnostic-layout">
             <div>
               <div class="section-heading compact">
-                <div>
-                  <p class="eyebrow">Befunde</p>
-                  <h2>Hinweise</h2>
-                </div>
+                <h2>Hinweise</h2>
               </div>
               <div class="warning-list" id="warning-list"></div>
             </div>
             <div>
               <div class="section-heading compact">
-                <div>
-                  <p class="eyebrow">Werkzeuge</p>
-                  <h2>Abfragegesundheit</h2>
-                </div>
+                <h2>Werkzeuge</h2>
               </div>
               <div class="command-list" id="command-health"></div>
             </div>
@@ -281,30 +229,23 @@
           data-view="einstellungen"
           hidden
         >
-          <div class="page-intro">
+          <div class="view-toolbar">
             <div>
-              <p class="eyebrow accent">Dienst &amp; Darstellung</p>
-              <h2>Wenige Einstellungen, klare Zuständigkeit.</h2>
-              <p>
-                Audiozustand kommt ausschließlich vom lokalen Backend.
-                Darstellungsoptionen verändern keinen Klangpfad.
-              </p>
+              <p class="eyebrow">Konfiguration</p>
+              <h2>Dienst und Ansicht</h2>
             </div>
           </div>
           <div class="settings-grid">
             <article class="panel" id="service-settings"></article>
             <article class="panel">
               <div class="panel-heading">
-                <div>
-                  <p class="eyebrow">Darstellung</p>
-                  <h2>Lokale Ansicht</h2>
-                </div>
+                <h2>Browseransicht</h2>
               </div>
               <label class="setting-row" for="motion-toggle">
                 <span>
                   <strong id="motion-toggle-label">Bewegung reduzieren</strong>
                   <small id="motion-toggle-description">
-                    Nur diese Browseransicht; kein Audiozustand.
+                    Nur diese Browseransicht.
                   </small>
                 </span>
                 <input
@@ -335,16 +276,6 @@
               </label>
             </article>
           </div>
-          <article class="boundary-card">
-            <p class="eyebrow">Architekturgrenze</p>
-            <h2>Der Browser ist Fernbedienung, nicht Audiomotor.</h2>
-            <p>
-              Keine Aufnahme, kein Resampling, kein Monitoring und kein
-              sicherheitskritischer Zustand laufen in dieser Seite. Aktionen
-              sind klein, allowlistet und werden anschließend autoritativ
-              zurückgelesen.
-            </p>
-          </article>
         </section>
       </main>
     </div>

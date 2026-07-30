@@ -878,6 +878,27 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("Backend beschäftigt", javascript)
         self.assertIn("/api/v1/actions/whale", javascript)
 
+    def test_static_surface_prioritizes_compact_functional_controls(self):
+        html = (ROOT / "ui" / "index.html").read_text()
+        self.assertNotIn("hero-card", html)
+        self.assertNotIn("page-intro", html)
+        self.assertNotIn("boundary-card", html)
+        self.assertNotIn("Was möchtest du hören oder machen?", html)
+        self.assertIn('id="home-metrics"', html)
+        self.assertIn('class="view-toolbar"', html)
+
+        styles = (ROOT / "ui" / "styles.css").read_text()
+        self.assertNotIn(".hero-card", styles)
+        self.assertNotIn(".page-intro", styles)
+        self.assertIn(".overview-grid", styles)
+        self.assertIn(".mode-choice:has(input:focus-visible)", styles)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", styles)
+
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        self.assertIn('byId("home-metrics")', javascript)
+        self.assertIn('["Rate", graph.force_rate_hz', javascript)
+        self.assertIn('["Quantum",', javascript)
+
     def test_auto_refresh_policy_does_not_treat_persistent_focus_as_interaction(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         policy_start = javascript.index("function autoRefreshBlocked()")

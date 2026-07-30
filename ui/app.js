@@ -1,14 +1,14 @@
 "use strict";
 
 const ROUTES = {
-  start: { title: "Start", eyebrow: "Dein Audio heute" },
-  spielen: { title: "Spielen", eyebrow: "Instrumente & Gesten" },
-  aufnehmen: { title: "Aufnehmen", eyebrow: "Quellen & Sicherheit" },
-  hoeren: { title: "Hören", eyebrow: "Wiedergabewege" },
-  klaenge: { title: "Klänge", eyebrow: "Klanglabor" },
-  verbindungen: { title: "Verbindungen", eyebrow: "Geräte & Signalweg" },
-  diagnose: { title: "Diagnose", eyebrow: "Beobachteter Zustand" },
-  einstellungen: { title: "Einstellungen", eyebrow: "Dienst & Darstellung" },
+  start: { title: "Start", eyebrow: "Übersicht" },
+  spielen: { title: "Spielen", eyebrow: "Live-Instrument" },
+  aufnehmen: { title: "Aufnehmen", eyebrow: "Quellen" },
+  hoeren: { title: "Hören", eyebrow: "Wiedergabe" },
+  klaenge: { title: "Klänge", eyebrow: "Systeme" },
+  verbindungen: { title: "Verbindungen", eyebrow: "Signalweg" },
+  diagnose: { title: "Diagnose", eyebrow: "Doctor" },
+  einstellungen: { title: "Einstellungen", eyebrow: "Konfiguration" },
 };
 
 const MODE_LABELS = {
@@ -236,35 +236,35 @@ function renderAll() {
 function renderHome() {
   const snapshot = state.snapshot;
   const summary = snapshot.summary;
+  const doctor = snapshot.doctor || {};
+  const graph = doctor.graph || {};
+  const commands = Array.isArray(doctor.command_health)
+    ? doctor.command_health
+    : [];
+  const availableCommands = commands.filter((item) => item.available).length;
   const whaleStatusReadable = snapshot.whale.status === "ok";
   const activeWhale = whaleStatusReadable && summary.active_whale;
   const card = byId("home-state-card");
   card.replaceChildren();
 
+  const stable = summary.state === "stable";
   const statusSymbol = element(
     "span",
-    `state-symbol${summary.state === "stable" ? "" : " attention"}`,
-    summary.state === "stable" ? "✓" : "!",
+    `state-symbol${stable ? "" : " attention"}`,
+    stable ? "✓" : "!",
   );
   statusSymbol.setAttribute("aria-hidden", "true");
   card.append(statusSymbol);
 
   const copy = element("div");
-  appendText(
-    copy,
-    "h2",
-    "",
-    summary.state === "stable" ? "Der Grundzustand ist ruhig." : "Ein Blick lohnt sich.",
-  );
+  appendText(copy, "h2", "", stable ? "Stabil" : "Aufmerksamkeit");
   let detail;
-  if (snapshot.doctor.status !== "ok") {
-    detail = "Der Audio-Doctor ist gerade nicht vollständig lesbar.";
+  if (doctor.status !== "ok") {
+    detail = "Doctor nicht vollständig lesbar";
   } else if (summary.high_warning_count > 0) {
-    detail = `${summary.high_warning_count} wichtiger Befund braucht Aufmerksamkeit.`;
-  } else if (summary.warning_count > 0) {
-    detail = `${summary.warning_count} Hinweise sind dokumentiert, ohne automatische Reparatur.`;
+    detail = `${summary.high_warning_count} wichtiger Befund`;
   } else {
-    detail = "Keine Doctor-Warnung im zuletzt gelesenen Zustand.";
+    detail = `${summary.warning_count} Hinweise · ${summary.physical_unknown_count} physische Fakten offen`;
   }
   appendText(copy, "p", "", detail);
   card.append(copy);
@@ -276,46 +276,64 @@ function renderHome() {
     "",
     whaleStatusReadable
       ? activeWhale
-        ? "Walstimme läuft"
-        : "Walstimme ruht"
+        ? `Wal: ${displayMode(snapshot.whale.service.voice_mode)} aktiv`
+        : "Wal: inaktiv"
       : "Walstatus nicht lesbar",
   );
-  const diagnosis = element("a", "text-link", "Diagnose →");
+  const diagnosis = element("a", "text-link", "Details →");
   diagnosis.href = "#diagnose";
   foot.append(diagnosis);
   card.append(foot);
+
+  const metrics = [
+    ["Rate", graph.force_rate_hz ? `${graph.force_rate_hz} Hz` : "—", "PipeWire"],
+    [
+      "Quantum",
+      graph.force_quantum_frames ? String(graph.force_quantum_frames) : "—",
+      "Frames",
+    ],
+    ["Senke", formatEndpoint(graph.default_sink), "Standardziel"],
+    ["Quelle", formatEndpoint(graph.default_source), "Standardquelle"],
+    ["Werkzeuge", `${availableCommands}/${commands.length}`, "Doctor"],
+    ["Offene Fakten", String(summary.physical_unknown_count), "physisch"],
+  ];
+  byId("home-metrics").replaceChildren(
+    ...metrics.map(([label, value, description]) => {
+      const metric = element("article", "metric-card");
+      appendText(metric, "p", "eyebrow", label);
+      appendText(metric, "strong", "", value);
+      appendText(metric, "span", "", description);
+      return metric;
+    }),
+  );
 
   const tasks = [
     {
       route: "spielen",
       glyph: "♬",
-      title: whaleStatusReadable
-        ? activeWhale
-          ? "Walstimme steuern"
-          : "Walstimme spielen"
-        : "Walstatus prüfen",
+      title: "Walstimme",
       detail: whaleStatusReadable
         ? activeWhale
-          ? `Aktiv: ${displayMode(snapshot.whale.service.voice_mode)}`
-          : `Inaktiv · Startmodus ${displayMode(snapshot.whale.contract.default_mode)}`
+          ? `${displayMode(snapshot.whale.service.voice_mode)} · aktiv`
+          : `${displayMode(snapshot.whale.contract.default_mode)} · inaktiv`
         : "Zustand nicht lesbar · keine Inaktivitätsannahme",
     },
     {
       route: "hoeren",
       glyph: "◖",
-      title: "Bewusst hören",
-      detail: `${profilesFor("listening").length} Wiedergabewege vergleichen`,
+      title: "Hörwege",
+      detail: `${profilesFor("listening").length} Profile`,
     },
     {
       route: "aufnehmen",
       glyph: "●",
-      title: "Aufnahme planen",
-      detail: "Quelle, Gate und Headroom prüfen",
+      title: "Aufnahme",
+      detail: `${profilesFor("recording").length} Profile · Planprüfung`,
     },
     {
       route: "verbindungen",
       glyph: "⌁",
-      title: "Signalweg ansehen",
+      title: "Signalweg",
       detail: `${summary.physical_unknown_count} physische Fakten offen`,
     },
   ];
@@ -328,7 +346,10 @@ function renderHome() {
         "aria-hidden",
         "true",
       );
-      appendText(cardLink, "span", "task-arrow", "↗").setAttribute("aria-hidden", "true");
+      appendText(cardLink, "span", "task-arrow", "↗").setAttribute(
+        "aria-hidden",
+        "true",
+      );
       appendText(cardLink, "h3", "", task.title);
       appendText(cardLink, "p", "", task.detail);
       return cardLink;
@@ -336,22 +357,18 @@ function renderHome() {
   );
 
   const insightGrid = byId("home-insights");
-  const warnings = Array.isArray(snapshot.doctor.warnings)
-    ? snapshot.doctor.warnings.slice(0, 3)
+  const warnings = Array.isArray(doctor.warnings)
+    ? doctor.warnings.slice(0, 3)
     : [];
   if (warnings.length === 0) {
     insightGrid.replaceChildren(
-      insightCard("Doctor", "Keine gemeldeten Warnungen.", "ok"),
+      insightCard("doctor", doctor.status === "ok" ? "Keine Warnungen" : "Nicht lesbar", doctor.status === "ok" ? "ok" : "high"),
       insightCard(
-        "Physische Wahrheit",
-        `${summary.physical_unknown_count} Fakten bleiben explizit offen.`,
+        "physical",
+        `${summary.physical_unknown_count} Fakten offen`,
         summary.physical_unknown_count ? "medium" : "ok",
       ),
-      insightCard(
-        "Browsergrenze",
-        "Kein kritisches Audio wird hier verarbeitet.",
-        "ok",
-      ),
+      insightCard("authority", "Browser verarbeitet kein Audio", "ok"),
     );
     return;
   }
@@ -359,7 +376,7 @@ function renderHome() {
     ...warnings.map((warning) =>
       insightCard(
         warning.code || "Hinweis",
-        warning.detail || "Doctor-Hinweis ohne Detail.",
+        warning.detail || "Doctor-Hinweis ohne Detail",
         warning.severity || "medium",
       ),
     ),
@@ -415,15 +432,26 @@ function renderWhale() {
   const main = element("article", "whale-main");
   const title = element("div", "whale-title");
   const copy = element("div");
-  appendText(copy, "p", "eyebrow", "Buckelwal Live Voice");
-  appendText(copy, "h2", "", active ? "Die Walstimme ist wach." : "Eine Stimme, ein Instrument.");
+  appendText(copy, "p", "eyebrow", "Walstimme");
+  appendText(
+    copy,
+    "h2",
+    "",
+    active
+      ? `${displayMode(currentMode)} · aktiv`
+      : statusReadable
+        ? "Inaktiv"
+        : "Status offen",
+  );
   appendText(
     copy,
     "p",
     "",
     active
-      ? `Der Backend-Readback meldet ${displayMode(currentMode)} als laufenden Modus.`
-      : `${keyboard.key_count} Tasten von ${keyboard.lowest_key} bis ${keyboard.highest_key}; der Start bleibt bis zum Backend-Readback offen.`,
+      ? `${service.midi_port || "MIDI automatisch"} → ${service.target || "PipeWire-Standard"}`
+      : statusReadable
+        ? `${keyboard.key_count} Tasten · ${keyboard.lowest_key}–${keyboard.highest_key}`
+        : "Kein verlässlicher Laufzeit-Readback",
   );
   title.append(copy);
   const statusPill = element(
@@ -605,7 +633,7 @@ function renderProfiles() {
   const recording = state.snapshot.recording;
   const boundary = byId("recording-boundary");
   boundary.replaceChildren();
-  appendText(boundary, "strong", "", "Sicherheitsgrenze dieser Stufe");
+  appendText(boundary, "strong", "", "Aufnahmepfad");
   appendText(boundary, "p", "", recording.detail);
 
   const listening = profilesFor("listening");
