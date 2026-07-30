@@ -109,6 +109,41 @@ Der Beobachter startet, stoppt oder verändert keinen Dienst. Alte Belege mit
 nur frei gesetzten Wahrheitswerten bleiben lesbar, lösen das Gate jedoch nicht
 mehr und können nicht neu gespeichert werden.
 
+## Gebundene Qobuz-Ratenbeobachtung
+
+`qobuz-rate-observation` beobachtet ausschließlich den kanonischen
+Mopidy-Qobuz-Pfad. Der Beobachter startet keine Wiedergabe. Während des
+begrenzten Startfensters muss deshalb ein Qobuz-Titel in Mopidy neu begonnen
+werden. Ein bereits vor dem Beobachter laufender Titel zählt erst nach Stop und
+Neustart oder nach einem Trackwechsel.
+
+```bash
+./scripts/create-audio-evidence qobuz-rate-observation \
+  --start-timeout-seconds 60 \
+  --duration-seconds 60 \
+  --output /tmp/qobuz-rate-evidence.json
+./scripts/audio-lab-gate record qobuz-rate-proof \
+  /tmp/qobuz-rate-evidence.json --replace
+```
+
+Ein positiver Beleg bindet aus demselben Beobachtungsfenster:
+
+- die Qobuz-Track-ID und tatsächlich ausgelieferte FLAC-Rate aus einem neuen
+  `Mopidy-Qobuz-Hires`-Journalereignis;
+- eine datensparsame Trackidentität mit Hashes statt Titel- und Künstlertext;
+- den aktiven Mopidy-Pulse-Stream und dessen PCM-Rate;
+- PipeWire-Graphrate, Quantum und Graph-Fingerprint vor und nach dem Lauf;
+- die Rate der aktuellen Standardsenke sowie die unveränderte Streamroute;
+- mindestens 60 Sekunden kontinuierliche Wiedergabe mit monotoner Position;
+- die exakten Bytes von Beobachter, Gate-Validator und Systemwahrheit.
+
+Nur wenn Track-, Stream-, Graph- und Endpunktrate identisch sind, gilt
+`resampling_observed` als falsch. Browser-Qobuz wird ausdrücklich nicht durch
+diesen Beleg abgedeckt. Fehlt ein neuer Mopidy-Qobuz-Titel, ändert sich die
+Route oder wird kein neues DownloadableTrack-Ereignis gefunden, entsteht ein
+strukturierter Fail-Beleg. Alte frei eingetragene Qobuz-Raten bleiben zur
+Migration lesbar, lösen das Gate aber nicht mehr.
+
 ## Speicherung
 
 ```bash

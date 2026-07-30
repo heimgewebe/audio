@@ -22,6 +22,7 @@ CATALOG_PATH = ROOT / "inventory" / "laboratory-gates.v1.json"
 PROFILE_PATH = ROOT / "profiles" / "audio-profiles.v1.json"
 PHYSICAL_SCRIPT = ROOT / "scripts" / "physical_verification.py"
 PLUGIN_HOST_OBSERVER_PATH = ROOT / "scripts" / "plugin_host_observer.py"
+QOBUZ_RATE_OBSERVER_PATH = ROOT / "scripts" / "qobuz_rate_observer.py"
 SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
 MAX_EVIDENCE_BYTES = 131_072
 MAX_STATE_BYTES = 524_288
@@ -44,6 +45,25 @@ PLUGIN_HOST_EXECUTABLES = frozenset(
     {"carla", "easyeffects", "sfizz", "sfizz_jack", "fluidsynth", "qsynth"}
 )
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
+MAX_QOBUZ_JOURNAL_LINES = 5_000
+QOBUZ_URI_RE = re.compile(r"^qobuz:track:(?P<track_id>[0-9]+)$")
+QOBUZ_METHOD = "bounded-mopidy-qobuz-pulse-pipewire-observation-v1"
+QOBUZ_RPC_PAYLOAD = (
+    {"jsonrpc": "2.0", "id": 1, "method": "core.playback.get_state"},
+    {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "core.playback.get_current_track",
+    },
+    {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "core.playback.get_time_position",
+    },
+)
+QOBUZ_PACTL_INFO_ARGV = ("pactl", "--format=json", "info")
+QOBUZ_PACTL_SINKS_ARGV = ("pactl", "--format=json", "list", "sinks")
+QOBUZ_PACTL_INPUTS_ARGV = ("pactl", "--format=json", "list", "sink-inputs")
 
 
 def load_module(name: str, path: pathlib.Path):
@@ -209,6 +229,27 @@ def plugin_host_journal_argv(
         )
     )
     return tuple(argv)
+
+
+def qobuz_journal_argv(started_at: str, ended_at: str) -> tuple[str, ...]:
+    started = parse_timestamp(started_at, "Qobuz wait start")
+    ended = parse_timestamp(ended_at, "Qobuz observation end")
+    if ended <= started:
+        raise ValueError("Qobuz observation end must follow the wait start")
+    return (
+        "journalctl",
+        "--user",
+        "-u",
+        "mopidy.service",
+        "--since",
+        journal_timestamp(started, round_up=False),
+        "--until",
+        journal_timestamp(ended, round_up=True),
+        "--no-pager",
+        "--output=json",
+        "-n",
+        str(MAX_QOBUZ_JOURNAL_LINES + 1),
+    )
 
 
 def load_catalog() -> dict[str, dict[str, Any]]:
@@ -458,25 +499,350 @@ def validate_policy_decision(evidence: dict[str, Any]) -> None:
     _bounded_text(evidence.get("justification"), "justification", 10, 1000)
 
 
+def has_bound_qobuz_observation(evidence: dict[str, Any]) -> bool:
+    return all(
+        key in evidence
+        for key in (
+            "requested_duration_seconds",
+            "start_timeout_seconds",
+            "wait_started_at",
+            "wait_duration_seconds",
+            "baseline",
+            "baseline_departure_observed",
+            "observation_started_at",
+            "observation_ended_at",
+            "duration_seconds",
+            "track_identity",
+            "stream_rate_hz",
+            "blockers",
+            "implementation",
+            "truth_before",
+            "truth_after",
+            "pulse_before",
+            "pulse_after",
+            "journal",
+            "playback",
+        )
+    )
+
+
+def _validate_qobuz_query(binding: Any, expected_argv: tuple[str, ...], label: str) -> None:
+    if not isinstance(binding, dict):
+        raise ValueError(f"Qobuz {label} query binding is missing")
+    expected_list = list(expected_argv)
+    if binding.get("query_argv") != expected_list:
+        raise ValueError(f"Qobuz {label} query argv mismatch")
+    if (
+        _sha256(binding.get("query_argv_sha256"), f"Qobuz {label} argv SHA-256")
+        != canonical_value_sha256(expected_list)
+    ):
+        raise ValueError(f"Qobuz {label} query digest mismatch")
+    _sha256(binding.get("stdout_sha256"), f"Qobuz {label} stdout SHA-256")
+    _sha256(binding.get("stderr_sha256"), f"Qobuz {label} stderr SHA-256")
+    _nonnegative_int(binding.get("stdout_total_bytes"), f"Qobuz {label} stdout bytes")
+    _nonnegative_int(binding.get("stderr_total_bytes"), f"Qobuz {label} stderr bytes")
+    if binding.get("complete") is not True:
+        raise ValueError(f"Qobuz {label} query is incomplete")
+
+
+def _validate_qobuz_pulse(snapshot: Any, label: str) -> tuple[tuple[Any, ...], int]:
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"Qobuz {label} Pulse snapshot is missing")
+    if snapshot.get("blockers") != []:
+        raise ValueError(f"Qobuz {label} Pulse snapshot contains blockers")
+    sink = snapshot.get("default_sink")
+    stream = snapshot.get("mopidy_stream")
+    if not isinstance(sink, dict) or not isinstance(stream, dict):
+        raise ValueError(f"Qobuz {label} Pulse route is incomplete")
+    sink_name = _bounded_text(sink.get("name"), f"Qobuz {label} sink name", 1, 512)
+    sink_index = _positive_int(sink.get("index"), f"Qobuz {label} sink index")
+    endpoint_rate = _positive_int(sink.get("rate_hz"), f"Qobuz {label} sink rate")
+    _sha256(
+        sink.get("sample_specification_sha256"),
+        f"Qobuz {label} sink sample-spec SHA-256",
+    )
+    stream_index = _positive_int(
+        stream.get("index"), f"Qobuz {label} stream index"
+    )
+    stream_sink = _positive_int(
+        stream.get("sink_index"), f"Qobuz {label} stream sink"
+    )
+    if stream_sink != sink_index:
+        raise ValueError(f"Qobuz {label} stream is not on the default sink")
+    stream_rate = _positive_int(
+        stream.get("rate_hz"), f"Qobuz {label} stream rate"
+    )
+    for key in (
+        "sample_specification_sha256",
+        "application_name_sha256",
+        "application_binary_sha256",
+        "media_name_sha256",
+    ):
+        value = stream.get(key)
+        if value is not None:
+            _sha256(value, f"Qobuz {label} stream {key}")
+    queries = snapshot.get("queries")
+    if not isinstance(queries, dict):
+        raise ValueError(f"Qobuz {label} Pulse query set is missing")
+    _validate_qobuz_query(
+        queries.get("info"), QOBUZ_PACTL_INFO_ARGV, f"{label} info"
+    )
+    _validate_qobuz_query(
+        queries.get("sinks"),
+        QOBUZ_PACTL_SINKS_ARGV,
+        f"{label} sinks",
+    )
+    _validate_qobuz_query(
+        queries.get("sink_inputs"),
+        QOBUZ_PACTL_INPUTS_ARGV,
+        f"{label} sink-inputs",
+    )
+    identity = (sink_name, sink_index, stream_index, stream_sink, stream_rate)
+    return identity, endpoint_rate
+
+
 def validate_qobuz_rate(evidence: dict[str, Any]) -> None:
-    _positive_int(evidence.get("track_rate_hz"), "track_rate_hz")
-    _sha256(evidence.get("track_fingerprint"), "track_fingerprint")
-    _positive_int(evidence.get("graph_rate_hz"), "graph_rate_hz")
-    _positive_int(evidence.get("endpoint_rate_hz"), "endpoint_rate_hz")
+    track_rate = _positive_int(evidence.get("track_rate_hz"), "track_rate_hz")
+    track_fingerprint = _sha256(evidence.get("track_fingerprint"), "track_fingerprint")
+    stream_rate = evidence.get("stream_rate_hz")
+    if stream_rate is not None:
+        stream_rate = _positive_int(stream_rate, "stream_rate_hz")
+    graph_rate = _positive_int(evidence.get("graph_rate_hz"), "graph_rate_hz")
+    endpoint_rate = _positive_int(evidence.get("endpoint_rate_hz"), "endpoint_rate_hz")
     resampling = evidence.get("resampling_observed")
     if not isinstance(resampling, bool):
         raise ValueError("resampling_observed must be boolean")
     if resampling:
         raise ValueError("Qobuz rate proof observed resampling")
     rates = {
-        evidence["track_rate_hz"],
-        evidence["graph_rate_hz"],
-        evidence["endpoint_rate_hz"],
+        track_rate,
+        graph_rate,
+        endpoint_rate,
     }
+    if stream_rate is not None:
+        rates.add(stream_rate)
     if len(rates) != 1:
-        raise ValueError("Qobuz track, graph and endpoint rates do not match")
-    _bounded_text(evidence.get("method"), "method", 5, 500)
-    _sha256(evidence.get("graph_fingerprint"), "graph_fingerprint")
+        raise ValueError("Qobuz track, stream, graph and endpoint rates do not match")
+    method = _bounded_text(evidence.get("method"), "method", 5, 500)
+    graph_fingerprint_value = _sha256(
+        evidence.get("graph_fingerprint"), "graph_fingerprint"
+    )
+    if not has_bound_qobuz_observation(evidence):
+        return
+    if method != QOBUZ_METHOD:
+        raise ValueError("Qobuz observation method is not canonical")
+    requested = _positive_int(
+        evidence.get("requested_duration_seconds"), "requested_duration_seconds"
+    )
+    if requested < 60 or requested > 3_600:
+        raise ValueError("Qobuz observation must cover 60 to 3600 seconds")
+    start_timeout = _nonnegative_int(
+        evidence.get("start_timeout_seconds"), "start_timeout_seconds"
+    )
+    if start_timeout > 3_600:
+        raise ValueError("Qobuz start timeout exceeds 3600 seconds")
+    wait_started = parse_timestamp(evidence.get("wait_started_at"), "Qobuz wait start")
+    wait_duration = _number(
+        evidence.get("wait_duration_seconds"), "wait_duration_seconds"
+    )
+    if wait_duration < 0 or wait_duration > start_timeout + 2.0:
+        raise ValueError("Qobuz wait duration exceeds the start timeout")
+    baseline = evidence.get("baseline")
+    if not isinstance(baseline, dict):
+        raise ValueError("Qobuz baseline binding is missing")
+    baseline_state = baseline.get("state")
+    if baseline_state not in {"playing", "paused", "stopped"}:
+        raise ValueError("Qobuz baseline playback state is invalid")
+    baseline_position = baseline.get("position_ms")
+    if baseline_position is not None:
+        _nonnegative_int(baseline_position, "Qobuz baseline position")
+    baseline_fingerprint = baseline.get("track_fingerprint")
+    if baseline_fingerprint is not None:
+        baseline_fingerprint = _sha256(
+            baseline_fingerprint, "Qobuz baseline track fingerprint"
+        )
+    _sha256(
+        baseline.get("rpc_response_sha256"),
+        "Qobuz baseline RPC response SHA-256",
+    )
+    departure_observed = evidence.get("baseline_departure_observed")
+    if not isinstance(departure_observed, bool):
+        raise ValueError("Qobuz baseline departure flag is not boolean")
+    if baseline_fingerprint is None and departure_observed is not True:
+        raise ValueError("Qobuz empty baseline must be marked departed")
+    if (
+        baseline_state == "playing"
+        and baseline_fingerprint == track_fingerprint
+        and departure_observed is not True
+    ):
+        raise ValueError("Qobuz preexisting playing track was not restarted")
+    started = parse_timestamp(
+        evidence.get("observation_started_at"), "Qobuz observation start"
+    )
+    ended = parse_timestamp(
+        evidence.get("observation_ended_at"), "Qobuz observation end"
+    )
+    if not wait_started <= started < ended:
+        raise ValueError("Qobuz observation timestamps are inconsistent")
+    wall_wait_duration = (started - wait_started).total_seconds()
+    if wall_wait_duration > start_timeout + 2.0:
+        raise ValueError("Qobuz wall-clock wait exceeds the start timeout")
+    if abs(wall_wait_duration - wait_duration) > 2.0:
+        raise ValueError("Qobuz wait duration contradicts its timestamps")
+    duration = _number(evidence.get("duration_seconds"), "duration_seconds")
+    if duration < requested or abs((ended - started).total_seconds() - duration) > 2.0:
+        raise ValueError("Qobuz observation duration is inconsistent")
+    measured = parse_timestamp(evidence.get("measured_at"), "evidence measured_at")
+    if abs((measured - ended).total_seconds()) > 2.0:
+        raise ValueError("Qobuz measured_at does not match the observation end")
+    if evidence.get("blockers") != []:
+        raise ValueError("Qobuz passing evidence contains blockers")
+
+    identity = evidence.get("track_identity")
+    if not isinstance(identity, dict):
+        raise ValueError("Qobuz track identity is missing")
+    uri = _bounded_text(identity.get("uri"), "Qobuz track URI", 15, 255)
+    uri_match = QOBUZ_URI_RE.fullmatch(uri)
+    if uri_match is None or identity.get("track_id") != uri_match.group("track_id"):
+        raise ValueError("Qobuz track URI and track ID disagree")
+    identity_copy = dict(identity)
+    identity_fingerprint = _sha256(
+        identity_copy.pop("fingerprint", None), "Qobuz identity fingerprint"
+    )
+    if identity_fingerprint != canonical_value_sha256(identity_copy):
+        raise ValueError("Qobuz track identity fingerprint mismatch")
+    if track_fingerprint != identity_fingerprint:
+        raise ValueError("Qobuz top-level track fingerprint mismatch")
+    for key in ("name_sha256", "album_sha256"):
+        if identity.get(key) is not None:
+            _sha256(identity.get(key), f"Qobuz track {key}")
+    _sha256(identity.get("artists_sha256"), "Qobuz artists SHA-256")
+    _nonnegative_int(identity.get("artist_count"), "Qobuz artist count")
+    if identity.get("length_ms") is not None:
+        _positive_int(identity.get("length_ms"), "Qobuz track length_ms")
+
+    implementation = evidence.get("implementation")
+    if not isinstance(implementation, dict):
+        raise ValueError("Qobuz implementation binding is missing")
+    expected_implementation = {
+        "qobuz_rate_observer_sha256": sha256_file(QOBUZ_RATE_OBSERVER_PATH),
+        "laboratory_gate_sha256": sha256_file(pathlib.Path(__file__)),
+        "system_truth_sha256": sha256_file(SYSTEM_TRUTH_PATH),
+    }
+    for key, expected in expected_implementation.items():
+        if _sha256(implementation.get(key), f"Qobuz {key}") != expected:
+            raise ValueError(f"Qobuz implementation binding changed: {key}")
+
+    truth_identities: list[tuple[Any, ...]] = []
+    for label in ("truth_before", "truth_after"):
+        binding = evidence.get(label)
+        if not isinstance(binding, dict):
+            raise ValueError(f"Qobuz {label} truth binding is missing")
+        _sha256(binding.get("report_sha256"), f"Qobuz {label} report SHA-256")
+        _sha256(
+            binding.get("truth_chain_sha256"),
+            f"Qobuz {label} truth-chain SHA-256",
+        )
+        observed_graph = _sha256(
+            binding.get("graph_fingerprint"), f"Qobuz {label} graph fingerprint"
+        )
+        observed_rate = _positive_int(
+            binding.get("rate_hz"), f"Qobuz {label} graph rate"
+        )
+        observed_quantum = _positive_int(
+            binding.get("quantum_frames"), f"Qobuz {label} graph quantum"
+        )
+        truth_identities.append((observed_graph, observed_rate, observed_quantum))
+    if truth_identities[0] != truth_identities[1]:
+        raise ValueError("Qobuz graph changed during observation")
+    if truth_identities[0][0] != graph_fingerprint_value:
+        raise ValueError("Qobuz graph fingerprint contradicts truth binding")
+    if truth_identities[0][1] != graph_rate:
+        raise ValueError("Qobuz graph rate contradicts truth binding")
+
+    pulse_before, before_endpoint = _validate_qobuz_pulse(
+        evidence.get("pulse_before"), "before"
+    )
+    pulse_after, after_endpoint = _validate_qobuz_pulse(
+        evidence.get("pulse_after"), "after"
+    )
+    if pulse_before != pulse_after or before_endpoint != after_endpoint:
+        raise ValueError("Qobuz Pulse route changed during observation")
+    if pulse_before[-1] != stream_rate or before_endpoint != endpoint_rate:
+        raise ValueError("Qobuz top-level Pulse rates contradict the snapshots")
+
+    journal = evidence.get("journal")
+    if not isinstance(journal, dict):
+        raise ValueError("Qobuz journal binding is missing")
+    if journal.get("source") != "mopidy-service-qobuz-downloadable-event":
+        raise ValueError("Qobuz journal source is unknown")
+    expected_argv = list(
+        qobuz_journal_argv(evidence["wait_started_at"], evidence["observation_ended_at"])
+    )
+    if journal.get("query_argv") != expected_argv:
+        raise ValueError("Qobuz journal query does not match the observation")
+    if (
+        _sha256(journal.get("query_argv_sha256"), "Qobuz journal argv SHA-256")
+        != canonical_value_sha256(expected_argv)
+    ):
+        raise ValueError("Qobuz journal query digest mismatch")
+    if journal.get("returncode") != 0 or journal.get("complete") is not True:
+        raise ValueError("Qobuz journal query is incomplete")
+    if journal.get("stdout_truncated") is not False:
+        raise ValueError("Qobuz journal output is truncated")
+    line_count = _nonnegative_int(journal.get("line_count"), "Qobuz journal lines")
+    max_lines = _positive_int(journal.get("max_lines"), "Qobuz journal max lines")
+    if max_lines != MAX_QOBUZ_JOURNAL_LINES or line_count > max_lines:
+        raise ValueError("Qobuz journal line bound is invalid")
+    _sha256(journal.get("stdout_sha256"), "Qobuz journal stdout SHA-256")
+    _nonnegative_int(journal.get("stdout_total_bytes"), "Qobuz journal bytes")
+    event_count = _positive_int(
+        journal.get("matching_event_count"), "Qobuz matching event count"
+    )
+    event = journal.get("event")
+    if not isinstance(event, dict) or event_count != 1:
+        raise ValueError("Qobuz downloadable event is missing")
+    matching_events_sha256 = _sha256(
+        journal.get("matching_events_sha256"),
+        "Qobuz matching events SHA-256",
+    )
+    if matching_events_sha256 != canonical_value_sha256([event]):
+        raise ValueError("Qobuz matching event digest mismatch")
+    if event.get("track_id") != identity.get("track_id"):
+        raise ValueError("Qobuz downloadable event has another track ID")
+    if event.get("extension") != "FLAC":
+        raise ValueError("Qobuz downloadable event is not FLAC")
+    _positive_int(event.get("bit_depth"), "Qobuz bit depth")
+    if _positive_int(event.get("rate_hz"), "Qobuz event rate") != track_rate:
+        raise ValueError("Qobuz downloadable event rate mismatch")
+    event_time = parse_timestamp(event.get("observed_at"), "Qobuz event timestamp")
+    if event_time < wait_started or event_time > ended:
+        raise ValueError("Qobuz downloadable event is outside the observation window")
+    _sha256(event.get("message_sha256"), "Qobuz event message SHA-256")
+
+    playback = evidence.get("playback")
+    if not isinstance(playback, dict):
+        raise ValueError("Qobuz playback binding is missing")
+    sample_count = _positive_int(playback.get("sample_count"), "Qobuz sample count")
+    if sample_count < 2 or playback.get("position_monotonic") is not True:
+        raise ValueError("Qobuz playback was not continuously observed")
+    first_position = _nonnegative_int(
+        playback.get("first_position_ms"), "Qobuz first position"
+    )
+    last_position = _nonnegative_int(
+        playback.get("last_position_ms"), "Qobuz last position"
+    )
+    if last_position < first_position:
+        raise ValueError("Qobuz playback position moved backwards")
+    request_sha256 = _sha256(
+        playback.get("rpc_request_sha256"), "Qobuz RPC request SHA-256"
+    )
+    if request_sha256 != canonical_value_sha256(QOBUZ_RPC_PAYLOAD):
+        raise ValueError("Qobuz RPC request does not contain the canonical getters")
+    _sha256(
+        playback.get("rpc_response_chain_sha256"),
+        "Qobuz RPC response-chain SHA-256",
+    )
 
 
 def has_bound_plugin_host_observation(evidence: dict[str, Any]) -> bool:
@@ -696,6 +1062,7 @@ def validate_evidence(
     *,
     allow_legacy_xrun: bool = False,
     allow_legacy_plugin_host: bool = False,
+    allow_legacy_qobuz: bool = False,
 ) -> dict[str, Any]:
     catalog = load_catalog()
     if gate not in catalog:
@@ -715,6 +1082,9 @@ def validate_evidence(
     ):
         if not allow_legacy_plugin_host:
             raise ValueError("legacy plugin-host evidence lacks a bounded observation")
+    if gate == "qobuz-rate-proof" and not has_bound_qobuz_observation(evidence):
+        if not allow_legacy_qobuz:
+            raise ValueError("legacy Qobuz evidence lacks a bounded observation")
     return spec
 
 
@@ -753,6 +1123,7 @@ def validate_state(path: pathlib.Path, state: dict[str, Any]) -> None:
             evidence,
             allow_legacy_xrun=True,
             allow_legacy_plugin_host=True,
+            allow_legacy_qobuz=True,
         )
         if receipt.get("evidence_sha256") != canonical_sha256(evidence):
             raise ValueError(f"laboratory evidence digest mismatch: {gate}")
@@ -868,6 +1239,13 @@ def gate_resolution(
                 evidence
             ):
                 invalidated[gate] = "legacy-unbound-plugin-host-evidence"
+                continue
+        if gate == "qobuz-rate-proof":
+            evidence = receipt.get("evidence")
+            if not isinstance(evidence, dict) or not has_bound_qobuz_observation(
+                evidence
+            ):
+                invalidated[gate] = "legacy-unbound-qobuz-evidence"
                 continue
         if catalog[gate].get("binds_physical_state") is True:
             if physical_sha is None:

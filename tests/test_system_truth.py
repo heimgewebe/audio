@@ -16,6 +16,15 @@ assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
+QOBUZ_SPEC = importlib.util.spec_from_file_location(
+    "qobuz_rate_observer_for_system_truth_test",
+    ROOT / "scripts/qobuz_rate_observer.py",
+)
+QOBUZ = importlib.util.module_from_spec(QOBUZ_SPEC)
+assert QOBUZ_SPEC and QOBUZ_SPEC.loader
+sys.modules[QOBUZ_SPEC.name] = QOBUZ
+QOBUZ_SPEC.loader.exec_module(QOBUZ)
+
 
 def doctor_results():
     result = MODULE.DOCTOR.CommandResult
@@ -485,27 +494,161 @@ class SystemTruthTests(unittest.TestCase):
         self.assertEqual(gates["runtime-storage-observation"]["status"], "degraded")
 
     def test_qobuz_proof_requires_matching_current_track_context(self):
-        track = "a" * 64
         graph = {
             "default_sink": "motu-m2",
             "default_source": "roland-fp-30x",
             "force_rate_hz": 48000,
             "force_quantum_frames": 1024,
         }
+        graph_fingerprint = MODULE.LABORATORY.graph_fingerprint(graph)
+        identity = QOBUZ._track_identity(
+            {
+                "uri": "qobuz:track:123456",
+                "name": "Bound test track",
+                "album": {"name": "Bound test album"},
+                "artists": [{"name": "Bound test artist"}],
+                "length": 180000,
+            }
+        )
+        track = identity["fingerprint"]
+        wait_started = "2026-07-28T00:00:00+00:00"
+        observation_started = "2026-07-28T00:01:00+00:00"
+        observation_ended = "2026-07-28T00:02:00+00:00"
+
+        def query(argv, marker):
+            return {
+                "query_argv": list(argv),
+                "query_argv_sha256": MODULE.LABORATORY.canonical_value_sha256(
+                    list(argv)
+                ),
+                "stdout_sha256": marker * 64,
+                "stdout_total_bytes": 100,
+                "stderr_sha256": "0" * 64,
+                "stderr_total_bytes": 0,
+                "complete": True,
+            }
+
+        pulse = {
+            "default_sink": {
+                "name": "alsa_output.usb-MOTU_M2.Direct_sink",
+                "index": 6415,
+                "rate_hz": 48000,
+                "sample_specification_sha256": "2" * 64,
+            },
+            "mopidy_stream": {
+                "index": 9001,
+                "sink_index": 6415,
+                "rate_hz": 48000,
+                "sample_specification_sha256": "3" * 64,
+                "application_name_sha256": "4" * 64,
+                "application_binary_sha256": "5" * 64,
+                "media_name_sha256": "6" * 64,
+            },
+            "blockers": [],
+            "queries": {
+                "info": query(QOBUZ.PACTL_INFO_ARGV, "7"),
+                "sinks": query(QOBUZ.PACTL_SINKS_ARGV, "8"),
+                "sink_inputs": query(QOBUZ.PACTL_INPUTS_ARGV, "9"),
+            },
+        }
+        journal_argv = MODULE.LABORATORY.qobuz_journal_argv(
+            wait_started, observation_ended
+        )
+        event = {
+            "track_id": "123456",
+            "extension": "FLAC",
+            "bit_depth": 24,
+            "rate_hz": 48000,
+            "observed_at": "2026-07-28T00:00:30+00:00",
+            "message_sha256": "e" * 64,
+        }
         evidence = {
             "schema_version": 1,
             "kind": "qobuz_rate_observation",
             "gate": "qobuz-rate-proof",
             "result": "pass",
-            "measured_at": "2026-07-28T00:00:00+00:00",
+            "measured_at": observation_ended,
+            "requested_duration_seconds": 60,
+            "start_timeout_seconds": 60,
+            "wait_started_at": wait_started,
+            "wait_duration_seconds": 60.0,
+            "baseline": {
+                "state": "stopped",
+                "position_ms": 0,
+                "track_fingerprint": None,
+                "rpc_response_sha256": "0" * 64,
+            },
+            "baseline_departure_observed": True,
+            "observation_started_at": observation_started,
+            "observation_ended_at": observation_ended,
+            "duration_seconds": 60.0,
+            "track_identity": identity,
             "track_rate_hz": 48000,
             "track_fingerprint": track,
+            "stream_rate_hz": 48000,
             "graph_rate_hz": 48000,
             "endpoint_rate_hz": 48000,
             "resampling_observed": False,
-            "method": "read-only current-track rate observation",
-            "graph_fingerprint": MODULE.LABORATORY.graph_fingerprint(graph),
+            "method": MODULE.LABORATORY.QOBUZ_METHOD,
+            "graph_fingerprint": graph_fingerprint,
             "physical_state_sha256": None,
+            "blockers": [],
+            "implementation": {
+                "qobuz_rate_observer_sha256": MODULE.LABORATORY.sha256_file(
+                    ROOT / "scripts/qobuz_rate_observer.py"
+                ),
+                "laboratory_gate_sha256": MODULE.LABORATORY.sha256_file(
+                    ROOT / "scripts/laboratory_gate.py"
+                ),
+                "system_truth_sha256": MODULE.LABORATORY.sha256_file(
+                    ROOT / "scripts/system_truth.py"
+                ),
+            },
+            "truth_before": {
+                "report_sha256": "a" * 64,
+                "truth_chain_sha256": "b" * 64,
+                "graph_fingerprint": graph_fingerprint,
+                "rate_hz": 48000,
+                "quantum_frames": 1024,
+            },
+            "truth_after": {
+                "report_sha256": "c" * 64,
+                "truth_chain_sha256": "d" * 64,
+                "graph_fingerprint": graph_fingerprint,
+                "rate_hz": 48000,
+                "quantum_frames": 1024,
+            },
+            "pulse_before": copy.deepcopy(pulse),
+            "pulse_after": copy.deepcopy(pulse),
+            "journal": {
+                "source": "mopidy-service-qobuz-downloadable-event",
+                "query_argv": list(journal_argv),
+                "query_argv_sha256": MODULE.LABORATORY.canonical_value_sha256(
+                    list(journal_argv)
+                ),
+                "returncode": 0,
+                "stdout_sha256": "e" * 64,
+                "stdout_total_bytes": 100,
+                "stdout_truncated": False,
+                "line_count": 1,
+                "max_lines": MODULE.LABORATORY.MAX_QOBUZ_JOURNAL_LINES,
+                "matching_event_count": 1,
+                "matching_events_sha256": (
+                    MODULE.LABORATORY.canonical_value_sha256([event])
+                ),
+                "event": event,
+                "complete": True,
+            },
+            "playback": {
+                "sample_count": 2,
+                "first_position_ms": 1000,
+                "last_position_ms": 61000,
+                "position_monotonic": True,
+                "rpc_request_sha256": MODULE.LABORATORY.canonical_value_sha256(
+                    MODULE.LABORATORY.QOBUZ_RPC_PAYLOAD
+                ),
+                "rpc_response_chain_sha256": "2" * 64,
+            },
         }
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
