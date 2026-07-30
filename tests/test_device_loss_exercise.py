@@ -175,6 +175,21 @@ class DeviceLossExerciseTests(unittest.TestCase):
             self.assertEqual(roland["identity_strength"], "model-port")
             self.assertIsNone(roland["serial_sha256"])
 
+    def test_motu_without_serial_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for key, value in {
+                "idVendor": "07fd",
+                "idProduct": "0008",
+                "busnum": "1",
+                "devpath": "9.2",
+                "manufacturer": "MOTU",
+                "product": "M2",
+            }.items():
+                (root / key).write_text(value)
+            with self.assertRaisesRegex(ValueError, "requires its USB serial"):
+                MODULE._identity_for("motu_m2", root)
+
     def test_observe_passes_only_after_loss_and_matching_recovery(self):
         evidence = self.evidence()
         baseline = evidence["baseline"]

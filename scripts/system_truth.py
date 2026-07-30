@@ -1712,6 +1712,13 @@ def required_followups(changed_fields: set[str]) -> list[str]:
         )
     if "roland_present" in changed_fields:
         followups.add("roland-device-loss-exercise")
+    if "device_exercise_identity" in changed_fields:
+        followups.update(
+            {
+                "motu-device-loss-exercise",
+                "roland-device-loss-exercise",
+            }
+        )
     return sorted(followups)
 
 

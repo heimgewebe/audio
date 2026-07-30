@@ -234,6 +234,8 @@ def _identity_for(device: str, usb_parent: pathlib.Path) -> dict[str, Any] | Non
             "serial_sha256": sha256_bytes(serial.encode("utf-8")),
         }
     else:
+        if device != "roland_fp_30x":
+            raise ValueError("MOTU identity requires its USB serial")
         if not port_path or not bus_number:
             raise ValueError("device has neither serial nor complete USB port identity")
         strength = "model-port"

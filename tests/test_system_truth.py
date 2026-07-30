@@ -1002,6 +1002,15 @@ class SystemTruthTests(unittest.TestCase):
         self.assertIn("motu-device-loss-exercise", followups)
         self.assertIn("roland-device-loss-exercise", followups)
 
+    def test_device_identity_drift_requests_both_exercises(self):
+        followups = MODULE.required_followups(
+            {"device_exercise_identity"}
+        )
+        self.assertEqual(
+            followups,
+            ["motu-device-loss-exercise", "roland-device-loss-exercise"],
+        )
+
     def test_service_limit_drift_is_material_and_requests_revalidation(self):
         before = self.report()
         after = copy.deepcopy(before)
