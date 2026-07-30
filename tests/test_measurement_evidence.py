@@ -67,7 +67,13 @@ class MeasurementEvidenceTests(unittest.TestCase):
             failed = MODULE.voice_level_evidence(low, physical)
             self.assertEqual(passed["result"], "pass")
             self.assertEqual(failed["result"], "fail")
-            MODULE.LAB.validate_evidence("voice-level-measurement", passed)
+            with self.assertRaisesRegex(ValueError, "legacy voice evidence"):
+                MODULE.LAB.validate_evidence("voice-level-measurement", passed)
+            MODULE.LAB.validate_evidence(
+                "voice-level-measurement",
+                passed,
+                allow_legacy_voice=True,
+            )
 
     def test_loopback_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

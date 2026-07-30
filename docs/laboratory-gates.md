@@ -16,11 +16,39 @@ sind Teil des Zustands. Belege für Stimmpegel und Loopback-Latenz sind außerde
 an den Hash des physischen Zustands gebunden. Ändert sich dieser Zustand,
 werden die betreffenden Gates automatisch als ungültig ausgewiesen.
 
+## Gebundene Live-Stimmpegelmessung
+
+Der kanonische Stimmpegelbeleg wird direkt von der seriengebundenen
+MOTU-M2-Quelle aufgenommen:
+
+```bash
+./scripts/create-audio-evidence voice-capture \
+  --duration-seconds 15 \
+  --wav-output /tmp/voice-reference.wav \
+  --output /tmp/voice-reference-evidence.json
+./scripts/audio-lab-gate record voice-level-measurement \
+  /tmp/voice-reference-evidence.json --replace
+```
+
+Während des 15-Sekunden-Fensters wird die lauteste realistische
+Stimm-Darbietung gesprochen. Ein positiver Beleg verlangt eine eindeutige,
+unveränderte MOTU-M2-Quelle mit Serienkennung, 48 kHz, Stereo, 32-Bit-PCM,
+Software-Aufnahmepegel 0 dB, mindestens acht Sekunden Aufnahme, keine
+geclippten Samples und Spitzen zwischen -12 und -6 dBFS. WAV und JSON werden
+privat mit Modus `0600` geschrieben. Serienkennung und PipeWire-Knotenname
+erscheinen im Beleg nur als SHA-256.
+
+Verschwindet das MOTU, wechselt seine Identität, ist die Quelle stumm oder
+nicht auf 0 dB, endet die Messung fail-closed. Der Befehl verändert weder
+Routing noch Hardware-Gain noch Monitoring-Pegel.
+
 ## Offline-Belege
 
 `create-audio-evidence voice-level AUFNAHME.wav` analysiert eine vorhandene
-WAV-Datei. Ein positiver Beleg verlangt Spitzen zwischen -12 und -6 dBFS und
-null geclippte Samples.
+WAV-Datei weiterhin diagnostisch. Ein positives Analyseergebnis verlangt
+Spitzen zwischen -12 und -6 dBFS und null geclippte Samples. Da eine beliebige
+Datei jedoch keine laufende MOTU-Quelle beweist, kann dieser alte ungebundene
+Beleg `voice-level-measurement` nicht mehr auflösen.
 
 Der geplante Graph-Fingerprint wird vor der Messung aus dem Zielprofil gelesen:
 
