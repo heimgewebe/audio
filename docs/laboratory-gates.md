@@ -172,22 +172,57 @@ Route oder wird kein neues DownloadableTrack-Ereignis gefunden, entsteht ein
 strukturierter Fail-Beleg. Alte frei eingetragene Qobuz-Raten bleiben zur
 Migration lesbar, lösen das Gate aber nicht mehr.
 
-## Speicherung
+## Gebundene Sampleratenentscheidungen
+
+Die beiden Policy-Gates werden nicht mehr durch frei formulierte Texte
+freigegeben. Der Beobachter bindet seine Entscheidung an den aktuellen
+Systemwahrheitsbericht, die realen PipeWire/Pulse-Endpunkte, die relevanten
+Profile und die exakten Implementierungsbytes:
 
 ```bash
-./scripts/audio-lab-gate init
-./scripts/create-audio-evidence policy-decision resampling-decision graph-48k \
-  "Roland wird für den gemischten Betrieb kontrolliert auf 48 kHz umgesetzt." \
-  > /tmp/resampling-evidence.json
-./scripts/audio-lab-gate record resampling-decision /tmp/resampling-evidence.json
-./scripts/audio-plan piano-digital-recording
+./scripts/create-audio-evidence rate-policy-observation \
+  rate-policy-decision \
+  --output /tmp/rate-policy-evidence.json
+./scripts/create-audio-evidence rate-policy-observation \
+  resampling-decision \
+  --output /tmp/resampling-evidence.json
+
+./scripts/audio-lab-gate record rate-policy-decision \
+  /tmp/rate-policy-evidence.json --replace
+./scripts/audio-lab-gate record resampling-decision \
+  /tmp/resampling-evidence.json --replace
 ```
 
-Keiner dieser Befehle startet Wiedergabe, ändert Routing oder wendet ein Profil
-an. XRun-, Qobuz- und Plugin-Host-Gates akzeptieren nur ihre streng typisierten
-Belegformate. Das Qobuz-Gate wird nur bei übereinstimmender Track-, Graph- und
-Endpunktrate ohne beobachtetes Resampling erfüllt. Passende aktive Beobachter
-bleiben separate Arbeitsschritte.
+Der kanonische Vertrag lautet:
+
+- gemischte Wiedergabe, Aufnahme, Referenzhören und Softwareinstrumente nutzen
+  einen stabilen 48-kHz-Graphen;
+- das Roland FP-30X liefert digitales Audio mit 44,1 kHz und wird einmalig im
+  PipeWire-Pfad auf 48 kHz umgesetzt;
+- MIDI wird nicht resampelt;
+- eine zusätzliche absichtliche Resampling-Stufe ist verboten;
+- Qobuz darf nur im exklusiven Profil tracknativ laufen, wenn ein passender
+  `qobuz-rate-proof` vorliegt und paralleles Mischen ausgeschlossen ist;
+- ohne diesen Beleg bleibt auch Qobuz auf dem stabilen 48-kHz-Fallback.
+
+Ein positiver Beleg verlangt echte MOTU-Ein-/Ausgänge ausschließlich bei
+48 kHz, echte Roland-Ein-/Ausgänge ausschließlich bei 44,1 kHz, einen
+48-kHz-Systemgraphen, MOTU als Standardquelle und Standardsenke sowie exakt
+passende Profilverträge. Monitorquellen werden nicht als Eingänge gezählt.
+Gerätekennungen und Knotennamen erscheinen nur als SHA-256.
+
+Die Befehle lesen ausschließlich. Sie schalten weder die Graphsamplerate noch
+Profile oder Routing um. Sie belegen auch keine Bitgenauigkeit, keine
+Resamplertransparenz und keine Latenz- oder XRun-Eignung bei einem anderen
+Quantum. Alte freie `policy-decision`-Belege bleiben zur Migration lesbar,
+werden aber als `legacy-unbound-policy-evidence` entwertet.
+
+## Speicherung
+
+`audio-lab-gate` speichert validierte Belege atomar und privat mit Modus `0600`.
+XRun-, Qobuz-, Voice-, Plugin-Host- und Sampleraten-Gates akzeptieren nur ihre
+streng typisierten Belegformate. Passende aktive Beobachter bleiben getrennte
+Arbeitsschritte.
 
 
 ## Graph- und Trackbindung

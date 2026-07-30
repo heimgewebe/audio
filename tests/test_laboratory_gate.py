@@ -230,7 +230,7 @@ class LaboratoryGateTests(unittest.TestCase):
             after = MODULE.operational_profile_catalog_sha256(path)
             self.assertEqual(before, after)
 
-    def test_private_state_and_policy_gate(self):
+    def test_private_state_preserves_legacy_policy_as_invalidated(self):
         with tempfile.TemporaryDirectory() as directory:
             state_path = pathlib.Path(directory) / "gates.json"
             state = MODULE.empty_state()
@@ -244,20 +244,26 @@ class LaboratoryGateTests(unittest.TestCase):
                 "decision": "graph-48k",
                 "justification": "Gemischter Betrieb verwendet kontrolliertes Resampling.",
             }
-            MODULE.record_gate(
-                state,
-                "resampling-decision",
-                evidence,
-                pathlib.Path(directory) / "missing-physical.json",
-            )
+            recorded_at = "2026-07-27T12:01:00+00:00"
+            state["gates"]["resampling-decision"] = {
+                "status": "passed",
+                "recorded_at": recorded_at,
+                "evidence_sha256": MODULE.canonical_sha256(evidence),
+                "physical_state_sha256": None,
+                "evidence": evidence,
+            }
+            state["updated_at"] = recorded_at
             MODULE.atomic_write_private(state_path, state)
             self.assertEqual(state_path.stat().st_mode & 0o777, 0o600)
             loaded = MODULE.read_state(state_path)
             resolved, invalidated = MODULE.gate_resolution(
                 loaded, pathlib.Path(directory) / "missing-physical.json"
             )
-            self.assertIn("resampling-decision", resolved)
-            self.assertEqual(invalidated, {})
+            self.assertNotIn("resampling-decision", resolved)
+            self.assertEqual(
+                invalidated["resampling-decision"],
+                "legacy-unbound-policy-evidence",
+            )
 
     def test_physical_change_invalidates_measurement(self):
         with tempfile.TemporaryDirectory() as directory:

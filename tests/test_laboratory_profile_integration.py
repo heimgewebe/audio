@@ -36,23 +36,28 @@ class LaboratoryProfileIntegrationTests(unittest.TestCase):
                 physical, MODULE.PHYSICAL.empty_state()
             )
             state = MODULE.LABORATORY.empty_state()
-            evidence = {
-                "schema_version": 1,
-                "kind": "audio_policy_decision",
-                "gate": "resampling-decision",
-                "result": "pass",
-                "measured_at": "2026-07-27T12:00:00+00:00",
+            state["gates"]["resampling-decision"] = {
+                "status": "passed",
+                "recorded_at": "2026-07-27T12:00:00+00:00",
+                "evidence_sha256": "a" * 64,
                 "physical_state_sha256": None,
-                "decision": "graph-48k",
-                "justification": "Gemischte Sitzungen verwenden kontrolliertes Resampling.",
+                "evidence": {},
             }
-            MODULE.LABORATORY.record_gate(
-                state, "resampling-decision", evidence, physical
-            )
-            MODULE.LABORATORY.atomic_write_private(gates, state)
-            result = MODULE.plan(
-                "piano-digital-recording", physical, gates
-            )
+            with (
+                mock.patch.object(
+                    MODULE.LABORATORY,
+                    "read_state",
+                    return_value=state,
+                ),
+                mock.patch.object(
+                    MODULE.LABORATORY,
+                    "gate_resolution",
+                    return_value=({"resampling-decision"}, {}),
+                ),
+            ):
+                result = MODULE.plan(
+                    "piano-digital-recording", physical, gates
+                )
             self.assertTrue(result["ready_for_laboratory_apply"])
             self.assertEqual(
                 result["resolved_laboratory_gates"], ["resampling-decision"]
