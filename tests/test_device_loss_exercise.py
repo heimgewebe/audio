@@ -298,6 +298,34 @@ class DeviceLossExerciseTests(unittest.TestCase):
                 "implementation-changed",
             )
 
+    def test_sound_class_scan_error_degrades_without_false_presence(self):
+        with mock.patch.object(
+            MODULE,
+            "_control_entries",
+            side_effect=OSError("unavailable"),
+        ):
+            snapshot = MODULE.scan_device("motu_m2")
+        self.assertFalse(snapshot["complete"])
+        self.assertFalse(snapshot["present"])
+        self.assertEqual(snapshot["errors"], ["sound-class-scan-failed"])
+
+    def test_private_io_rejects_symlink_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            target = root / "target"
+            target.mkdir()
+            direct = target / "state.json"
+            MODULE.atomic_write_private(direct, MODULE.empty_state())
+            alias = root / "alias"
+            alias.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(OSError):
+                MODULE.atomic_write_private(
+                    alias / "new.json",
+                    MODULE.empty_state(),
+                )
+            with self.assertRaises(OSError):
+                MODULE.load_json(alias / "state.json", MODULE.MAX_STATE_BYTES)
+
 
 if __name__ == "__main__":
     unittest.main()

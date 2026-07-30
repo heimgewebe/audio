@@ -10,8 +10,8 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import stat
-import tempfile
 import time
 from typing import Any
 
@@ -77,6 +77,40 @@ def sha256_json(value: Any) -> str:
 
 def sha256_file(path: pathlib.Path) -> str:
     return sha256_bytes(path.read_bytes())
+
+
+def absolute_without_resolution(path: pathlib.Path) -> pathlib.Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = pathlib.Path.cwd() / expanded
+    if any(part in {"", ".", ".."} for part in expanded.parts[1:]):
+        raise ValueError(f"unsafe path component: {path}")
+    return expanded
+
+
+def open_directory_chain(
+    path: pathlib.Path,
+    *,
+    create: bool = False,
+) -> tuple[pathlib.Path, int]:
+    absolute = absolute_without_resolution(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.open("/", flags)
+    try:
+        for component in absolute.parts[1:]:
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(component, 0o700, dir_fd=descriptor)
+                child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return absolute, descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
 
 
 def parse_timestamp(value: Any, label: str) -> dt.datetime:
@@ -252,7 +286,7 @@ def scan_device(device: str) -> dict[str, Any]:
     entries: list[os.DirEntry[str]] = []
     try:
         entries = _control_entries()
-    except ValueError:
+    except (OSError, ValueError):
         errors.append("sound-class-scan-failed")
     for entry in entries:
         try:
@@ -784,12 +818,41 @@ def empty_state() -> dict[str, Any]:
     }
 
 
+def secure_read_bytes(path: pathlib.Path, maximum_bytes: int) -> bytes:
+    absolute = absolute_without_resolution(path)
+    _, parent_fd = open_directory_chain(absolute.parent)
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            absolute.name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("device exercise input must be a regular file")
+        if metadata.st_size > maximum_bytes:
+            raise ValueError("device exercise JSON exceeds the byte limit")
+        chunks: list[bytes] = []
+        remaining = maximum_bytes + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        if len(payload) > maximum_bytes:
+            raise ValueError("device exercise JSON exceeds the byte limit")
+        return payload
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(parent_fd)
+
+
 def load_json(path: pathlib.Path, maximum_bytes: int) -> dict[str, Any]:
-    if path.is_symlink():
-        raise ValueError("device exercise JSON must not be a symbolic link")
-    if path.stat().st_size > maximum_bytes:
-        raise ValueError("device exercise JSON exceeds the byte limit")
-    payload = json.loads(path.read_text())
+    payload = json.loads(secure_read_bytes(path, maximum_bytes).decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("device exercise JSON root must be an object")
     return payload
@@ -844,8 +907,7 @@ def read_state(path: pathlib.Path = DEFAULT_STATE) -> dict[str, Any]:
 
 
 def atomic_write_private(path: pathlib.Path, payload: dict[str, Any]) -> None:
-    if path.is_symlink():
-        raise ValueError("device exercise output must not be a symbolic link")
+    absolute = absolute_without_resolution(path)
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -854,27 +916,49 @@ def atomic_write_private(path: pathlib.Path, payload: dict[str, Any]) -> None:
     ).encode("utf-8") + b"\n"
     if len(encoded) > MAX_STATE_BYTES:
         raise ValueError("device exercise output exceeds the byte limit")
-    parent_existed = path.parent.exists()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not parent_existed:
-        path.parent.chmod(0o700)
-    temporary: pathlib.Path | None = None
+    _, parent_fd = open_directory_chain(absolute.parent, create=True)
+    temporary_name = f".{absolute.name}.{secrets.token_hex(12)}.tmp"
+    descriptor = -1
     try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary = pathlib.Path(handle.name)
-        temporary.chmod(0o600)
-        temporary.replace(path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            existing = os.stat(
+                absolute.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and not stat.S_ISREG(existing.st_mode):
+            raise ValueError("device exercise output must be a regular file")
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o600)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(
+            temporary_name,
+            absolute.name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.fsync(parent_fd)
     finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        os.close(parent_fd)
 
 
 def implementation_current(evidence: dict[str, Any]) -> bool:
