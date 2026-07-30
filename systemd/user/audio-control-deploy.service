@@ -1,0 +1,24 @@
+[Unit]
+Description=Audiozentrale aus origin/main aktualisieren
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/audio-control-deploy.env
+ExecStart=/usr/bin/python3 %h/.local/libexec/audio-control-deploy.py sync
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/audio-control-ui %h/.local/state/audio-control-deploy %h/.local/libexec %h/.config/systemd/user
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+MemoryMax=536870912
+CPUQuota=100%
+TasksMax=64

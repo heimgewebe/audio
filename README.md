@@ -52,6 +52,7 @@ fail-closed.
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)
 - [Spezifikation der lokalen Audiozentrale](docs/plans/local-audio-control-ui-v1.md)
+- [Deployment der Audiozentrale](docs/control-deployment.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
 - [Read-only Baselines](docs/baselines/README.md)
 - [Systemwahrheit und Drift](docs/system-truth-workflow.md)
