@@ -318,11 +318,15 @@ def reconcile_runtime_environment(
             raise DeployError(f"UI-Laufzeitkonfiguration ist nicht vertrauenswürdig: {path}")
         previous_payload = path.read_bytes()
         previous_mode = stat.S_IMODE(path.stat().st_mode)
-        if hashlib.sha256(previous_payload).hexdigest() == expected_sha:
+        if (
+            hashlib.sha256(previous_payload).hexdigest() == expected_sha
+            and previous_mode == 0o600
+        ):
             return {
                 "path": str(path),
                 "changed": False,
                 "sha256": expected_sha,
+                "mode": "0o600",
                 "host": host,
                 "port": port,
             }, None
@@ -336,6 +340,7 @@ def reconcile_runtime_environment(
         "path": str(path),
         "changed": True,
         "sha256": expected_sha,
+        "mode": "0o600",
         "host": host,
         "port": port,
     }, backup

@@ -684,6 +684,33 @@ class AudioControlDeployTests(unittest.TestCase):
             for commit in commits[1:]:
                 self.assertTrue((releases / commit).is_dir())
 
+    def test_runtime_environment_repairs_mode_only_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "runtime.env"
+            payload = MODULE.runtime_environment_payload("127.0.0.1", 8765)
+            path.write_bytes(payload)
+            path.chmod(0o644)
+
+            report, backup = MODULE.reconcile_runtime_environment(
+                path, host="127.0.0.1", port=8765
+            )
+
+            self.assertTrue(report["changed"])
+            self.assertEqual(report["mode"], "0o600")
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertIsNotNone(backup)
+            assert backup is not None
+            self.assertEqual(backup["payload"], payload)
+            self.assertEqual(backup["mode"], 0o644)
+
+            unchanged, second_backup = MODULE.reconcile_runtime_environment(
+                path, host="127.0.0.1", port=8765
+            )
+            self.assertFalse(unchanged["changed"])
+            self.assertEqual(unchanged["mode"], "0o600")
+            self.assertIsNone(second_backup)
+
     def test_systemd_contract_is_persistent_and_revision_bound(self):
         service = (ROOT / "systemd" / "user" / "audio-control-ui-v1.service").read_text()
         service_directives = [
