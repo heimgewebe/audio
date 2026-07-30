@@ -14,12 +14,14 @@ import os
 import stat
 import tempfile
 import sys
+import time
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 LEVEL_PATH = ROOT / "scripts" / "level_analyzer.py"
 LATENCY_PATH = ROOT / "scripts" / "latency_analyzer.py"
 LAB_PATH = ROOT / "scripts" / "laboratory_gate.py"
+SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
 MAX_SOURCE_BYTES = 536_870_912
 
 
@@ -35,6 +37,7 @@ def load_module(name: str, path: pathlib.Path):
 LEVEL = load_module("level_analyzer_for_evidence", LEVEL_PATH)
 LATENCY = load_module("latency_analyzer_for_evidence", LATENCY_PATH)
 LAB = load_module("laboratory_gate_for_evidence", LAB_PATH)
+SYSTEM_TRUTH = load_module("system_truth_for_evidence", SYSTEM_TRUTH_PATH)
 
 
 @contextlib.contextmanager
@@ -97,6 +100,18 @@ def file_binding(path: pathlib.Path) -> dict[str, object]:
 
 def measured_at() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def monotonic_now() -> float:
+    return time.monotonic()
+
+
+def sleep_for(seconds: int) -> None:
+    time.sleep(seconds)
 
 
 def physical_sha(path: pathlib.Path) -> str:
@@ -211,6 +226,181 @@ def policy_decision_evidence(
     return payload
 
 
+def _positive_int(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
+def _sha256(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or value != value.lower()
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{label} must be a lowercase hexadecimal SHA-256")
+    return value
+
+
+def graph_observation_binding(report: dict[str, Any]) -> dict[str, Any]:
+    SYSTEM_TRUTH.verify_report(report)
+    doctor = report.get("doctor")
+    runtime = report.get("runtime")
+    if not isinstance(doctor, dict) or not isinstance(runtime, dict):
+        raise ValueError("truth report has no doctor or runtime projection")
+    graph = doctor.get("graph")
+    if not isinstance(graph, dict):
+        raise ValueError("truth report has no graph projection")
+    return {
+        "report_sha256": _sha256(report.get("report_sha256"), "truth report SHA-256"),
+        "truth_chain_sha256": _sha256(
+            report.get("truth_chain_sha256"), "truth-chain SHA-256"
+        ),
+        "graph_fingerprint": _sha256(
+            runtime.get("graph_fingerprint"), "graph fingerprint"
+        ),
+        "rate_hz": _positive_int(graph.get("force_rate_hz"), "graph rate_hz"),
+        "quantum_frames": _positive_int(
+            graph.get("force_quantum_frames"), "graph quantum_frames"
+        ),
+    }
+
+
+def _require_expected_graph(
+    binding: dict[str, Any],
+    expected_rate_hz: int,
+    expected_quantum_frames: int,
+    expected_graph_fingerprint: str,
+) -> None:
+    if binding["rate_hz"] != expected_rate_hz:
+        raise ValueError("observed graph rate does not match the expected rate")
+    if binding["quantum_frames"] != expected_quantum_frames:
+        raise ValueError("observed graph quantum does not match the expected quantum")
+    if binding["graph_fingerprint"] != expected_graph_fingerprint:
+        raise ValueError("observed graph fingerprint does not match the expected graph")
+
+
+def xrun_observation_evidence(
+    duration_seconds: int,
+    expected_rate_hz: int,
+    expected_quantum_frames: int,
+    expected_graph_fingerprint: str,
+) -> dict[str, Any]:
+    duration_seconds = _positive_int(duration_seconds, "duration_seconds")
+    if duration_seconds < 60 or duration_seconds > 86_400:
+        raise ValueError("XRun observation must cover 60 to 86400 seconds")
+    expected_rate_hz = _positive_int(expected_rate_hz, "expected_rate_hz")
+    expected_quantum_frames = _positive_int(
+        expected_quantum_frames, "expected_quantum_frames"
+    )
+    expected_graph_fingerprint = _sha256(
+        expected_graph_fingerprint, "expected graph fingerprint"
+    )
+
+    before = graph_observation_binding(SYSTEM_TRUTH.build_report())
+    _require_expected_graph(
+        before,
+        expected_rate_hz,
+        expected_quantum_frames,
+        expected_graph_fingerprint,
+    )
+    started_at = utc_now()
+    started_monotonic = monotonic_now()
+    sleep_for(duration_seconds)
+    ended_monotonic = monotonic_now()
+    ended_at = utc_now()
+    actual_duration = ended_monotonic - started_monotonic
+    if actual_duration < duration_seconds:
+        raise ValueError("XRun observation ended before the requested duration")
+
+    after = graph_observation_binding(SYSTEM_TRUTH.build_report())
+    _require_expected_graph(
+        after,
+        expected_rate_hz,
+        expected_quantum_frames,
+        expected_graph_fingerprint,
+    )
+    for field in ("graph_fingerprint", "rate_hz", "quantum_frames"):
+        if before[field] != after[field]:
+            raise ValueError(f"audio graph changed during XRun observation: {field}")
+
+    started_text = started_at.isoformat()
+    ended_text = ended_at.isoformat()
+    argv = LAB.xrun_journal_argv(started_text, ended_text)
+    SYSTEM_TRUTH.assert_read_only_commands((argv,))
+    result = SYSTEM_TRUTH.run_read_only(argv)
+    if result.argv != argv:
+        raise ValueError("bounded XRun journal result is bound to another command")
+    if result.error is not None or result.returncode != 0:
+        raise ValueError("bounded XRun journal query failed")
+    if result.stdout_truncated or result.stderr_truncated:
+        raise ValueError("bounded XRun journal query was truncated")
+    lines = result.stdout.splitlines()
+    if len(lines) > LAB.MAX_XRUN_JOURNAL_LINES:
+        raise ValueError("XRun journal window exceeds the line limit")
+    xrun_lines = [
+        line.strip() for line in lines if SYSTEM_TRUTH.XRUN_PATTERN.search(line)
+    ]
+    payload = {
+        "schema_version": 1,
+        "kind": "pipewire_xrun_observation",
+        "gate": "xrun-stability-test",
+        "result": "pass" if not xrun_lines else "fail",
+        "measured_at": ended_text,
+        "physical_state_sha256": None,
+        "requested_duration_seconds": duration_seconds,
+        "duration_seconds": round(actual_duration, 3),
+        "observation_started_at": started_text,
+        "observation_ended_at": ended_text,
+        "xrun_delta": len(xrun_lines),
+        "rate_hz": expected_rate_hz,
+        "quantum_frames": expected_quantum_frames,
+        "graph_fingerprint": expected_graph_fingerprint,
+        "graph_before": before,
+        "graph_after": after,
+        "journal": {
+            "source": "journalctl-user-audio-units",
+            "query_argv": list(argv),
+            "query_argv_sha256": LAB.canonical_value_sha256(list(argv)),
+            "returncode": result.returncode,
+            "stdout_sha256": result.stdout_sha256,
+            "stdout_total_bytes": result.stdout_total_bytes,
+            "stdout_truncated": result.stdout_truncated,
+            "line_count": len(lines),
+            "max_lines": LAB.MAX_XRUN_JOURNAL_LINES,
+            "xrun_line_count": len(xrun_lines),
+            "xrun_lines_sha256": LAB.canonical_value_sha256(xrun_lines),
+            "complete": True,
+        },
+        "does_not_establish": [
+            "absence of audio defects not reported as XRuns",
+            "stability outside the bounded observation window",
+            "subjective playback quality",
+        ],
+    }
+    return payload
+
+
+def emit_evidence(
+    payload: dict[str, Any], output: pathlib.Path | None = None
+) -> dict[str, Any] | None:
+    if output is None:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return None
+    SYSTEM_TRUTH.atomic_write_private(output, payload)
+    receipt = {
+        "schema_version": 1,
+        "kind": "audio_evidence_output_receipt",
+        "output_basename": output.name,
+        "evidence_kind": payload.get("kind"),
+        "evidence_result": payload.get("result"),
+        "evidence_sha256": LAB.canonical_sha256(payload),
+    }
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    return receipt
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -238,6 +428,13 @@ def main() -> int:
     policy.add_argument("decision")
     policy.add_argument("justification")
 
+    xrun = sub.add_parser("xrun-observation")
+    xrun.add_argument("--duration-seconds", type=int, default=60)
+    xrun.add_argument("--expected-rate-hz", type=int, required=True)
+    xrun.add_argument("--expected-quantum-frames", type=int, required=True)
+    xrun.add_argument("--expected-graph-fingerprint", required=True)
+    xrun.add_argument("--output", type=pathlib.Path)
+
     args = parser.parse_args()
     if args.command == "voice-level":
         result = voice_level_evidence(args.wav, args.physical_state)
@@ -250,11 +447,19 @@ def main() -> int:
             args.quantum_frames,
             args.graph_fingerprint,
         )
+    elif args.command == "xrun-observation":
+        result = xrun_observation_evidence(
+            args.duration_seconds,
+            args.expected_rate_hz,
+            args.expected_quantum_frames,
+            args.expected_graph_fingerprint,
+        )
     else:
         result = policy_decision_evidence(
             args.gate, args.decision, args.justification
         )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    output = args.output if args.command == "xrun-observation" else None
+    emit_evidence(result, output)
     return 0
 
 

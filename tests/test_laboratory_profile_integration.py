@@ -102,20 +102,58 @@ class LaboratoryProfileIntegrationTests(unittest.TestCase):
                     "peak_detection_confidence": 1.0,
                 },
             }
+            xrun_graph = MODULE.LABORATORY.graph_fingerprint(planned_graph)
+            xrun_started = "2026-07-27T12:00:00+00:00"
+            xrun_ended = "2026-07-27T12:01:00+00:00"
+            xrun_argv = list(
+                MODULE.LABORATORY.xrun_journal_argv(xrun_started, xrun_ended)
+            )
+            xrun_binding = {
+                "graph_fingerprint": xrun_graph,
+                "rate_hz": 48000,
+                "quantum_frames": 128,
+            }
             xrun = {
                 "schema_version": 1,
                 "kind": "pipewire_xrun_observation",
                 "gate": "xrun-stability-test",
                 "result": "pass",
-                "measured_at": "2026-07-27T12:00:00+00:00",
+                "measured_at": xrun_ended,
                 "physical_state_sha256": None,
+                "requested_duration_seconds": 60,
                 "duration_seconds": 60,
+                "observation_started_at": xrun_started,
+                "observation_ended_at": xrun_ended,
                 "xrun_delta": 0,
                 "rate_hz": 48000,
                 "quantum_frames": 128,
-                "graph_fingerprint": MODULE.LABORATORY.graph_fingerprint(
-                    planned_graph
-                ),
+                "graph_fingerprint": xrun_graph,
+                "graph_before": {
+                    **xrun_binding,
+                    "report_sha256": "a" * 64,
+                    "truth_chain_sha256": "b" * 64,
+                },
+                "graph_after": {
+                    **xrun_binding,
+                    "report_sha256": "c" * 64,
+                    "truth_chain_sha256": "d" * 64,
+                },
+                "journal": {
+                    "source": "journalctl-user-audio-units",
+                    "query_argv": xrun_argv,
+                    "query_argv_sha256": MODULE.LABORATORY.canonical_value_sha256(
+                        xrun_argv
+                    ),
+                    "returncode": 0,
+                    "stdout_sha256": "e" * 64,
+                    "stdout_total_bytes": 0,
+                    "stdout_truncated": False,
+                    "line_count": 0,
+                    "max_lines": MODULE.LABORATORY.MAX_XRUN_JOURNAL_LINES,
+                    "xrun_line_count": 0,
+                    "xrun_lines_sha256": MODULE.LABORATORY.canonical_value_sha256([]),
+                    "complete": True,
+                },
             }
             MODULE.LABORATORY.record_gate(
                 state, "loopback-latency-measurement", loopback, physical

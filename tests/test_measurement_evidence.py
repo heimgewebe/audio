@@ -1,4 +1,6 @@
+import datetime as dt
 import importlib.util
+import json
 import pathlib
 import struct
 import tempfile
@@ -31,6 +33,27 @@ class MeasurementEvidenceTests(unittest.TestCase):
             handle.writeframes(
                 b"".join(struct.pack("<h", sample) for sample in samples)
             )
+
+    def truth_report(
+        self,
+        *,
+        graph_fingerprint="c" * 64,
+        rate_hz=48000,
+        quantum_frames=1024,
+        report_sha256="a" * 64,
+        truth_chain_sha256="b" * 64,
+    ):
+        return {
+            "report_sha256": report_sha256,
+            "truth_chain_sha256": truth_chain_sha256,
+            "runtime": {"graph_fingerprint": graph_fingerprint},
+            "doctor": {
+                "graph": {
+                    "force_rate_hz": rate_hz,
+                    "force_quantum_frames": quantum_frames,
+                }
+            },
+        }
 
     def test_voice_evidence_pass_and_fail(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -79,6 +102,85 @@ class MeasurementEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(evidence["result"], "pass")
         MODULE.LAB.validate_evidence("resampling-decision", evidence)
+
+    def test_xrun_observation_is_bound_to_graph_and_journal(self):
+        started = dt.datetime(2026, 7, 30, 8, 0, tzinfo=dt.timezone.utc)
+        ended = started + dt.timedelta(seconds=60)
+        argv = MODULE.LAB.xrun_journal_argv(started.isoformat(), ended.isoformat())
+        command_result = MODULE.SYSTEM_TRUTH.CommandResult(
+            argv=argv,
+            returncode=0,
+            stdout="quiet\n",
+            stderr="",
+            duration_ms=1,
+            stdout_total_bytes=6,
+            stderr_total_bytes=0,
+            stdout_sha256="f" * 64,
+            stderr_sha256="e" * 64,
+        )
+        before = self.truth_report()
+        after = self.truth_report(
+            report_sha256="d" * 64, truth_chain_sha256="e" * 64
+        )
+        with (
+            mock.patch.object(
+                MODULE.SYSTEM_TRUTH, "build_report", side_effect=[before, after]
+            ),
+            mock.patch.object(MODULE.SYSTEM_TRUTH, "verify_report"),
+            mock.patch.object(MODULE, "utc_now", side_effect=[started, ended]),
+            mock.patch.object(MODULE, "monotonic_now", side_effect=[10.0, 70.0]),
+            mock.patch.object(MODULE, "sleep_for") as sleep,
+            mock.patch.object(
+                MODULE.SYSTEM_TRUTH, "run_read_only", return_value=command_result
+            ),
+        ):
+            evidence = MODULE.xrun_observation_evidence(
+                60, 48000, 1024, "c" * 64
+            )
+        sleep.assert_called_once_with(60)
+        self.assertEqual(evidence["result"], "pass")
+        self.assertEqual(evidence["journal"]["query_argv"], list(argv))
+        self.assertEqual(evidence["graph_before"]["report_sha256"], "a" * 64)
+        self.assertEqual(evidence["graph_after"]["report_sha256"], "d" * 64)
+        MODULE.LAB.validate_evidence("xrun-stability-test", evidence)
+
+    def test_xrun_observation_rejects_graph_drift(self):
+        started = dt.datetime(2026, 7, 30, 8, 0, tzinfo=dt.timezone.utc)
+        ended = started + dt.timedelta(seconds=60)
+        before = self.truth_report()
+        after = self.truth_report(
+            graph_fingerprint="d" * 64,
+            report_sha256="d" * 64,
+            truth_chain_sha256="e" * 64,
+        )
+        with (
+            mock.patch.object(
+                MODULE.SYSTEM_TRUTH, "build_report", side_effect=[before, after]
+            ),
+            mock.patch.object(MODULE.SYSTEM_TRUTH, "verify_report"),
+            mock.patch.object(MODULE, "utc_now", side_effect=[started, ended]),
+            mock.patch.object(MODULE, "monotonic_now", side_effect=[10.0, 70.0]),
+            mock.patch.object(MODULE, "sleep_for"),
+        ):
+            with self.assertRaisesRegex(ValueError, "expected graph"):
+                MODULE.xrun_observation_evidence(60, 48000, 1024, "c" * 64)
+
+    def test_emit_evidence_writes_private_hash_bound_output(self):
+        payload = {
+            "schema_version": 1,
+            "kind": "pipewire_xrun_observation",
+            "result": "pass",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "evidence.json"
+            with mock.patch("builtins.print"):
+                receipt = MODULE.emit_evidence(payload, output)
+            self.assertEqual(json.loads(output.read_text()), payload)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                receipt["evidence_sha256"], MODULE.LAB.canonical_sha256(payload)
+            )
+            self.assertEqual(receipt["output_basename"], "evidence.json")
 
     def test_rejects_symlink_source(self):
         with tempfile.TemporaryDirectory() as directory:

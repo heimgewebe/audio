@@ -238,18 +238,56 @@ class SystemTruthTests(unittest.TestCase):
             "force_rate_hz": 48000,
             "force_quantum_frames": 128,
         }
+        graph_fingerprint = MODULE.LABORATORY.graph_fingerprint(graph)
+        started = "2026-07-28T00:00:00+00:00"
+        ended = "2026-07-28T00:01:00+00:00"
+        journal_argv = list(MODULE.LABORATORY.xrun_journal_argv(started, ended))
+        graph_binding = {
+            "graph_fingerprint": graph_fingerprint,
+            "rate_hz": 48000,
+            "quantum_frames": 128,
+        }
         evidence = {
             "schema_version": 1,
             "kind": "pipewire_xrun_observation",
             "gate": "xrun-stability-test",
             "result": "pass",
-            "measured_at": "2026-07-28T00:00:00+00:00",
+            "measured_at": ended,
+            "requested_duration_seconds": 60,
             "duration_seconds": 60,
+            "observation_started_at": started,
+            "observation_ended_at": ended,
             "xrun_delta": 0,
             "rate_hz": 48000,
             "quantum_frames": 128,
-            "graph_fingerprint": MODULE.LABORATORY.graph_fingerprint(graph),
+            "graph_fingerprint": graph_fingerprint,
             "physical_state_sha256": None,
+            "graph_before": {
+                **graph_binding,
+                "report_sha256": "a" * 64,
+                "truth_chain_sha256": "b" * 64,
+            },
+            "graph_after": {
+                **graph_binding,
+                "report_sha256": "c" * 64,
+                "truth_chain_sha256": "d" * 64,
+            },
+            "journal": {
+                "source": "journalctl-user-audio-units",
+                "query_argv": journal_argv,
+                "query_argv_sha256": MODULE.LABORATORY.canonical_value_sha256(
+                    journal_argv
+                ),
+                "returncode": 0,
+                "stdout_sha256": "e" * 64,
+                "stdout_total_bytes": 0,
+                "stdout_truncated": False,
+                "line_count": 0,
+                "max_lines": MODULE.LABORATORY.MAX_XRUN_JOURNAL_LINES,
+                "xrun_line_count": 0,
+                "xrun_lines_sha256": MODULE.LABORATORY.canonical_value_sha256([]),
+                "complete": True,
+            },
         }
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

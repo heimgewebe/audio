@@ -26,6 +26,14 @@ MAX_STATE_BYTES = 524_288
 DEFAULT_STATE = pathlib.Path(
     os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")
 ) / "audio" / "laboratory" / "gates.v1.json"
+MAX_XRUN_JOURNAL_LINES = 5_000
+XRUN_JOURNAL_UNITS = (
+    "pipewire",
+    "pipewire-pulse",
+    "wireplumber",
+    "mopidy",
+    "easyeffects",
+)
 
 
 def load_module(name: str, path: pathlib.Path):
@@ -56,6 +64,13 @@ def sha256_file(path: pathlib.Path) -> str:
 
 
 def canonical_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_value_sha256(payload: Any) -> str:
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
@@ -118,6 +133,39 @@ def parse_timestamp(raw: Any, label: str) -> dt.datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{label} must include a timezone")
     return value
+
+
+def journal_timestamp(value: dt.datetime, *, round_up: bool) -> str:
+    normalized = value.astimezone(dt.timezone.utc)
+    if round_up and normalized.microsecond:
+        normalized += dt.timedelta(seconds=1)
+    normalized = normalized.replace(microsecond=0)
+    return normalized.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def xrun_journal_argv(started_at: str, ended_at: str) -> tuple[str, ...]:
+    started = parse_timestamp(started_at, "XRun observation start")
+    ended = parse_timestamp(ended_at, "XRun observation end")
+    if ended <= started:
+        raise ValueError("XRun observation end must follow the start")
+    journal_start = journal_timestamp(started, round_up=False)
+    journal_end = journal_timestamp(ended, round_up=True)
+    argv: list[str] = ["journalctl", "--user"]
+    for unit in XRUN_JOURNAL_UNITS:
+        argv.extend(("-u", unit))
+    argv.extend(
+        (
+            "--since",
+            journal_start,
+            "--until",
+            journal_end,
+            "--no-pager",
+            "--output=cat",
+            "-n",
+            str(MAX_XRUN_JOURNAL_LINES + 1),
+        )
+    )
+    return tuple(argv)
 
 
 def load_catalog() -> dict[str, dict[str, Any]]:
@@ -249,6 +297,20 @@ def validate_loopback_latency(evidence: dict[str, Any]) -> None:
         raise ValueError("reference and recorded WAV must contain different bytes")
 
 
+def has_bound_xrun_observation(evidence: dict[str, Any]) -> bool:
+    return all(
+        key in evidence
+        for key in (
+            "requested_duration_seconds",
+            "observation_started_at",
+            "observation_ended_at",
+            "graph_before",
+            "graph_after",
+            "journal",
+        )
+    )
+
+
 def validate_xrun_observation(evidence: dict[str, Any]) -> None:
     duration = _number(evidence.get("duration_seconds"), "duration_seconds")
     if duration < 60 or duration > 86_400:
@@ -256,9 +318,96 @@ def validate_xrun_observation(evidence: dict[str, Any]) -> None:
     xrun_delta = _nonnegative_int(evidence.get("xrun_delta"), "xrun_delta")
     if xrun_delta != 0:
         raise ValueError("XRun observation contains new XRuns")
-    _positive_int(evidence.get("rate_hz"), "rate_hz")
-    _positive_int(evidence.get("quantum_frames"), "quantum_frames")
-    _sha256(evidence.get("graph_fingerprint"), "graph_fingerprint")
+    rate_hz = _positive_int(evidence.get("rate_hz"), "rate_hz")
+    quantum_frames = _positive_int(evidence.get("quantum_frames"), "quantum_frames")
+    graph_fingerprint_value = _sha256(
+        evidence.get("graph_fingerprint"), "graph_fingerprint"
+    )
+    if not has_bound_xrun_observation(evidence):
+        return
+
+    requested = _positive_int(
+        evidence.get("requested_duration_seconds"), "requested_duration_seconds"
+    )
+    if requested < 60 or requested > 86_400:
+        raise ValueError("requested XRun duration must cover 60 to 86400 seconds")
+    if duration < requested:
+        raise ValueError("XRun observation is shorter than the requested duration")
+    started = parse_timestamp(
+        evidence.get("observation_started_at"), "XRun observation start"
+    )
+    ended = parse_timestamp(
+        evidence.get("observation_ended_at"), "XRun observation end"
+    )
+    observed_duration = (ended - started).total_seconds()
+    if observed_duration < requested:
+        raise ValueError("XRun timestamps are shorter than the requested duration")
+    if abs(observed_duration - duration) > 2.0:
+        raise ValueError("XRun duration contradicts the observation timestamps")
+    measured = parse_timestamp(evidence.get("measured_at"), "evidence measured_at")
+    if abs((measured - ended).total_seconds()) > 2.0:
+        raise ValueError("XRun measured_at does not match the observation end")
+
+    for name in ("graph_before", "graph_after"):
+        binding = evidence.get(name)
+        if not isinstance(binding, dict):
+            raise ValueError(f"XRun evidence has no {name} binding")
+        _sha256(binding.get("report_sha256"), f"{name} report SHA-256")
+        _sha256(binding.get("truth_chain_sha256"), f"{name} truth-chain SHA-256")
+        if (
+            _sha256(binding.get("graph_fingerprint"), f"{name} graph fingerprint")
+            != graph_fingerprint_value
+        ):
+            raise ValueError(f"{name} graph fingerprint contradicts the observation")
+        if _positive_int(binding.get("rate_hz"), f"{name} rate_hz") != rate_hz:
+            raise ValueError(f"{name} rate contradicts the observation")
+        if (
+            _positive_int(binding.get("quantum_frames"), f"{name} quantum_frames")
+            != quantum_frames
+        ):
+            raise ValueError(f"{name} quantum contradicts the observation")
+
+    journal = evidence.get("journal")
+    if not isinstance(journal, dict):
+        raise ValueError("XRun evidence has no journal binding")
+    if journal.get("source") != "journalctl-user-audio-units":
+        raise ValueError("XRun evidence has an unknown journal source")
+    expected_argv = list(
+        xrun_journal_argv(
+            evidence["observation_started_at"], evidence["observation_ended_at"]
+        )
+    )
+    if journal.get("query_argv") != expected_argv:
+        raise ValueError("XRun journal query does not match the observation window")
+    if (
+        _sha256(journal.get("query_argv_sha256"), "XRun query SHA-256")
+        != canonical_value_sha256(expected_argv)
+    ):
+        raise ValueError("XRun journal query digest mismatch")
+    if journal.get("returncode") != 0:
+        raise ValueError("XRun journal query did not complete successfully")
+    if journal.get("stdout_truncated") is not False:
+        raise ValueError("XRun journal output is truncated")
+    if journal.get("complete") is not True:
+        raise ValueError("XRun journal observation is incomplete")
+    max_lines = _positive_int(journal.get("max_lines"), "XRun journal max_lines")
+    if max_lines != MAX_XRUN_JOURNAL_LINES:
+        raise ValueError("XRun journal line limit does not match the contract")
+    line_count = _nonnegative_int(journal.get("line_count"), "XRun journal line_count")
+    if line_count > max_lines:
+        raise ValueError("XRun journal observation exceeds the line limit")
+    _nonnegative_int(journal.get("stdout_total_bytes"), "XRun journal bytes")
+    _sha256(journal.get("stdout_sha256"), "XRun journal output SHA-256")
+    xrun_line_count = _nonnegative_int(
+        journal.get("xrun_line_count"), "XRun journal xrun_line_count"
+    )
+    if xrun_line_count != xrun_delta:
+        raise ValueError("XRun journal count contradicts xrun_delta")
+    xrun_lines_sha256 = _sha256(
+        journal.get("xrun_lines_sha256"), "XRun line-set SHA-256"
+    )
+    if xrun_delta == 0 and xrun_lines_sha256 != canonical_value_sha256([]):
+        raise ValueError("zero-XRun evidence has a non-empty XRun line digest")
 
 
 def validate_policy_decision(evidence: dict[str, Any]) -> None:
@@ -309,7 +458,12 @@ VALIDATORS = {
 }
 
 
-def validate_evidence(gate: str, evidence: dict[str, Any]) -> dict[str, Any]:
+def validate_evidence(
+    gate: str,
+    evidence: dict[str, Any],
+    *,
+    allow_legacy_xrun: bool = False,
+) -> dict[str, Any]:
     catalog = load_catalog()
     if gate not in catalog:
         raise ValueError(f"unknown laboratory gate: {gate}")
@@ -320,6 +474,9 @@ def validate_evidence(gate: str, evidence: dict[str, Any]) -> dict[str, Any]:
     if validator is None:
         raise ValueError(f"unknown laboratory validator: {validator_name}")
     validator(evidence)
+    if gate == "xrun-stability-test" and not has_bound_xrun_observation(evidence):
+        if not allow_legacy_xrun:
+            raise ValueError("legacy XRun evidence lacks a bounded journal observation")
     return spec
 
 
@@ -353,7 +510,7 @@ def validate_state(path: pathlib.Path, state: dict[str, Any]) -> None:
         evidence = receipt.get("evidence")
         if not isinstance(evidence, dict):
             raise ValueError(f"laboratory receipt has no evidence: {gate}")
-        validate_evidence(gate, evidence)
+        validate_evidence(gate, evidence, allow_legacy_xrun=True)
         if receipt.get("evidence_sha256") != canonical_sha256(evidence):
             raise ValueError(f"laboratory evidence digest mismatch: {gate}")
         recorded_times.append(
@@ -457,6 +614,11 @@ def gate_resolution(
     catalog = load_catalog()
     physical_sha: str | None = None
     for gate, receipt in state.get("gates", {}).items():
+        if gate == "xrun-stability-test":
+            evidence = receipt.get("evidence")
+            if not isinstance(evidence, dict) or not has_bound_xrun_observation(evidence):
+                invalidated[gate] = "legacy-unbound-xrun-evidence"
+                continue
         if catalog[gate].get("binds_physical_state") is True:
             if physical_sha is None:
                 if not physical_state_path.exists():
