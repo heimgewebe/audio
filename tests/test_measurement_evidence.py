@@ -107,7 +107,13 @@ class MeasurementEvidenceTests(unittest.TestCase):
             "Der gemeinsame Graph bleibt für gemischte Sitzungen auf 48 kHz.",
         )
         self.assertEqual(evidence["result"], "pass")
-        MODULE.LAB.validate_evidence("resampling-decision", evidence)
+        with self.assertRaisesRegex(ValueError, "legacy policy evidence"):
+            MODULE.LAB.validate_evidence("resampling-decision", evidence)
+        MODULE.LAB.validate_evidence(
+            "resampling-decision",
+            evidence,
+            allow_legacy_policy=True,
+        )
 
     def test_xrun_observation_is_bound_to_graph_and_journal(self):
         started = dt.datetime(2026, 7, 30, 8, 0, tzinfo=dt.timezone.utc)

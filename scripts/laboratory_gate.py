@@ -82,6 +82,116 @@ VOICE_MIN_CAPTURE_SECONDS = 8
 VOICE_MAX_CAPTURE_SECONDS = 20
 VOICE_MAX_STDERR_BYTES = 65_536
 VOICE_STARTUP_TIMEOUT_SECONDS = 5
+RATE_POLICY_OBSERVER_PATH = ROOT / "scripts" / "rate_policy_observer.py"
+RATE_POLICY_METHOD = "bound-audio-rate-policy-v1"
+RATE_POLICY_PACTL_SOURCES_ARGV = ("pactl", "--format=json", "list", "sources")
+RATE_POLICY_PACTL_SINKS_ARGV = ("pactl", "--format=json", "list", "sinks")
+RATE_POLICY_PROFILE_NAMES = (
+    "desktop-mixed",
+    "reference-listening",
+    "voice-recording",
+    "piano-digital-recording",
+    "qobuz-exclusive",
+)
+RATE_POLICY_PROFILE_CONTRACT = {
+    "desktop-mixed": {
+        "desired": {
+            "default_sink": "motu-m2",
+            "rate_hz": 48_000,
+            "quantum_frames": 1024,
+            "resampling": "allowed",
+        },
+        "required_laboratory_gates": [],
+        "operational_status": "available",
+    },
+    "reference-listening": {
+        "desired": {
+            "default_sink": "motu-m2",
+            "rate_policy": "measure-before-decision",
+            "quantum_frames": 1024,
+            "dsp": "bypass",
+        },
+        "required_laboratory_gates": ["rate-policy-decision"],
+        "operational_status": "available",
+    },
+    "voice-recording": {
+        "desired": {
+            "default_sink": "motu-m2",
+            "default_source": "motu-m2",
+            "rate_hz": 48_000,
+            "quantum_candidate_frames": 512,
+            "recording_peak_dbfs": [-12, -6],
+        },
+        "required_laboratory_gates": ["voice-level-measurement"],
+        "operational_status": "available",
+    },
+    "piano-digital-recording": {
+        "desired": {
+            "default_sink": "motu-m2",
+            "rate_hz": 48_000,
+            "quantum_candidate_frames": 512,
+            "roland_audio_rate_hz": 44_100,
+        },
+        "required_laboratory_gates": ["resampling-decision"],
+        "operational_status": "available",
+    },
+    "qobuz-exclusive": {
+        "desired": {
+            "rate_policy": "track-native-if-proven",
+            "parallel_mixing": "forbidden",
+        },
+        "required_laboratory_gates": ["qobuz-rate-proof"],
+        "operational_status": "available",
+    },
+}
+RATE_POLICY_DECISIONS = {
+    "rate-policy-decision": "fixed-48k-default-track-native-exclusive-if-proven",
+    "resampling-decision": "roland-44k1-single-stage-to-48k",
+}
+RATE_POLICY_JUSTIFICATIONS = {
+    "rate-policy-decision": (
+        "Use a stable 48 kHz graph for mixed playback, recording and software "
+        "instruments. Permit track-native Qobuz only in the exclusive profile "
+        "after a matching qobuz-rate-proof; otherwise fall back to 48 kHz."
+    ),
+    "resampling-decision": (
+        "Convert Roland FP-30X digital audio once from its observed 44.1 kHz "
+        "endpoint rate into the 48 kHz recording graph. Keep MIDI independent "
+        "and forbid an additional intentional resampling stage."
+    ),
+}
+RATE_POLICY_PAYLOADS = {
+    "rate-policy-decision": {
+        "default_graph_rate_hz": 48_000,
+        "mixed_playback_rate_hz": 48_000,
+        "reference_listening_rate_hz": 48_000,
+        "qobuz_exclusive": {
+            "mode": "track-native-if-proven",
+            "requires_gate": "qobuz-rate-proof",
+            "parallel_mixing": "forbidden",
+            "fallback_rate_hz": 48_000,
+        },
+        "automatic_rate_switching_without_proof": False,
+    },
+    "resampling-decision": {
+        "source_device": "roland_fp_30x",
+        "source_rate_hz": 44_100,
+        "target_graph_rate_hz": 48_000,
+        "resampling_stage": "pipewire-single-stage",
+        "midi_path_resampled": False,
+        "additional_intentional_resampling_stage": "forbidden",
+        "qobuz_policy_independent": True,
+    },
+}
+RATE_POLICY_CRITERIA = {
+    "required_graph_rate_hz": 48_000,
+    "required_motu_endpoint_rate_hz": 48_000,
+    "required_roland_endpoint_rate_hz": 44_100,
+    "required_profiles": list(RATE_POLICY_PROFILE_NAMES),
+    "qobuz_native_requires_gate": "qobuz-rate-proof",
+    "parallel_mixing_at_track_native": False,
+    "single_roland_resampling_stage": True,
+}
 
 
 def load_module(name: str, path: pathlib.Path):
@@ -706,6 +816,310 @@ def validate_policy_decision(evidence: dict[str, Any]) -> None:
     _bounded_text(evidence.get("justification"), "justification", 10, 1000)
 
 
+def has_bound_policy_decision(evidence: dict[str, Any]) -> bool:
+    return all(
+        key in evidence
+        for key in (
+            "method",
+            "policy",
+            "truth",
+            "endpoints",
+            "profiles",
+            "criteria",
+            "implementation",
+            "blockers",
+        )
+    )
+
+
+def _validate_rate_policy_query(
+    binding: Any,
+    expected_argv: tuple[str, ...],
+    label: str,
+    *,
+    require_current: bool = True,
+) -> None:
+    if not isinstance(binding, dict):
+        raise ValueError(f"rate-policy {label} query binding is missing")
+    observed_argv = binding.get("query_argv")
+    if (
+        not isinstance(observed_argv, list)
+        or not observed_argv
+        or any(not isinstance(item, str) or not item for item in observed_argv)
+    ):
+        raise ValueError(f"rate-policy {label} query vector is invalid")
+    if require_current and observed_argv != list(expected_argv):
+        raise ValueError(f"rate-policy {label} query vector mismatch")
+    observed_digest = _sha256(
+        binding.get("query_argv_sha256"),
+        f"rate-policy {label} query digest",
+    )
+    if observed_digest != canonical_value_sha256(observed_argv):
+        raise ValueError(f"rate-policy {label} query digest mismatch")
+    if binding.get("returncode") != 0 or binding.get("complete") is not True:
+        raise ValueError(f"rate-policy {label} query is incomplete")
+    _sha256(binding.get("stdout_sha256"), f"rate-policy {label} stdout digest")
+    _nonnegative_int(
+        binding.get("stdout_total_bytes"),
+        f"rate-policy {label} stdout bytes",
+    )
+    _sha256(binding.get("stderr_sha256"), f"rate-policy {label} stderr digest")
+    _nonnegative_int(
+        binding.get("stderr_total_bytes"),
+        f"rate-policy {label} stderr bytes",
+    )
+
+
+def _validate_rate_endpoint_snapshot(
+    snapshot: Any,
+    *,
+    require_current: bool = True,
+) -> None:
+    if not isinstance(snapshot, dict):
+        raise ValueError("rate-policy endpoint snapshot is missing")
+    if (
+        snapshot.get("schema_version") != 1
+        or snapshot.get("kind") != "audio_rate_endpoint_snapshot"
+    ):
+        raise ValueError("rate-policy endpoint snapshot schema is invalid")
+    parse_timestamp(snapshot.get("observed_at"), "rate-policy endpoint timestamp")
+    if snapshot.get("complete") is not True or snapshot.get("blockers") != []:
+        raise ValueError("rate-policy endpoint snapshot is incomplete")
+    counts = snapshot.get("counts")
+    rates = snapshot.get("rate_sets_hz")
+    endpoints = snapshot.get("endpoints")
+    queries = snapshot.get("queries")
+    if not all(isinstance(value, dict) for value in (counts, rates, queries)):
+        raise ValueError("rate-policy endpoint projections are invalid")
+    if not isinstance(endpoints, list):
+        raise ValueError("rate-policy endpoint list is invalid")
+    devices = ("motu_m2", "roland_fp_30x")
+    if set(counts) != set(devices) or set(rates) != set(devices):
+        raise ValueError("rate-policy endpoint device set is invalid")
+    normalized_rates: dict[str, list[int]] = {}
+    for device in devices:
+        if _positive_int(counts.get(device), f"rate-policy {device} count") < 2:
+            raise ValueError(f"rate-policy {device} endpoint set is incomplete")
+        values = rates.get(device)
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"rate-policy {device} rate set is invalid")
+        normalized = [
+            _positive_int(value, f"rate-policy {device} rate")
+            for value in values
+        ]
+        if normalized != sorted(set(normalized)):
+            raise ValueError(f"rate-policy {device} rate set is not canonical")
+        normalized_rates[device] = normalized
+    if len(endpoints) != counts["motu_m2"] + counts["roland_fp_30x"]:
+        raise ValueError("rate-policy endpoint count is inconsistent")
+    observed_directions: dict[str, set[str]] = {
+        "motu_m2": set(),
+        "roland_fp_30x": set(),
+    }
+    observed_rates: dict[str, set[int]] = {
+        "motu_m2": set(),
+        "roland_fp_30x": set(),
+    }
+    for index, endpoint in enumerate(endpoints):
+        if not isinstance(endpoint, dict):
+            raise ValueError(f"rate-policy endpoint {index} is invalid")
+        device = endpoint.get("device")
+        direction = endpoint.get("direction")
+        if device not in observed_directions or direction not in {"source", "sink"}:
+            raise ValueError(f"rate-policy endpoint {index} identity is invalid")
+        rate_hz = _positive_int(
+            endpoint.get("rate_hz"),
+            "rate-policy endpoint rate",
+        )
+        _positive_int(endpoint.get("channels"), "rate-policy endpoint channels")
+        _bounded_text(
+            endpoint.get("sample_format"),
+            "rate-policy endpoint sample format",
+            2,
+            32,
+        )
+        _sha256(endpoint.get("node_name_sha256"), "rate-policy node digest")
+        _sha256(endpoint.get("device_serial_sha256"), "rate-policy serial digest")
+        fingerprint = _sha256(
+            endpoint.get("fingerprint"),
+            "rate-policy endpoint fingerprint",
+        )
+        if fingerprint != canonical_value_sha256(
+            {key: value for key, value in endpoint.items() if key != "fingerprint"}
+        ):
+            raise ValueError(f"rate-policy endpoint {index} fingerprint mismatch")
+        observed_directions[device].add(direction)
+        observed_rates[device].add(rate_hz)
+    if any(value != {"source", "sink"} for value in observed_directions.values()):
+        raise ValueError("rate-policy source/sink coverage is incomplete")
+    calculated_rates = {
+        device: sorted(observed_rates[device])
+        for device in devices
+    }
+    if calculated_rates != normalized_rates:
+        raise ValueError("rate-policy endpoint rate projection is inconsistent")
+    if require_current and normalized_rates != {
+        "motu_m2": [48_000],
+        "roland_fp_30x": [44_100],
+    }:
+        raise ValueError("rate-policy endpoint rate sets do not match the contract")
+    _validate_rate_policy_query(
+        queries.get("source"),
+        RATE_POLICY_PACTL_SOURCES_ARGV,
+        "source",
+        require_current=require_current,
+    )
+    _validate_rate_policy_query(
+        queries.get("sink"),
+        RATE_POLICY_PACTL_SINKS_ARGV,
+        "sink",
+        require_current=require_current,
+    )
+    snapshot_digest = _sha256(
+        snapshot.get("snapshot_sha256"),
+        "rate-policy endpoint snapshot digest",
+    )
+    if snapshot_digest != canonical_value_sha256(
+        {key: value for key, value in snapshot.items() if key != "snapshot_sha256"}
+    ):
+        raise ValueError("rate-policy endpoint snapshot digest mismatch")
+
+
+def validate_bound_policy_decision(
+    evidence: dict[str, Any],
+    *,
+    require_current: bool = True,
+) -> None:
+    gate = evidence.get("gate")
+    if gate not in RATE_POLICY_DECISIONS:
+        raise ValueError("rate-policy evidence targets another gate")
+    if evidence.get("authority") != "bound-observed-rate-policy":
+        raise ValueError("rate-policy authority is invalid")
+    method = _bounded_text(evidence.get("method"), "rate-policy method", 2, 120)
+    decision = _bounded_text(evidence.get("decision"), "decision", 2, 120)
+    justification = _bounded_text(
+        evidence.get("justification"),
+        "justification",
+        10,
+        1000,
+    )
+    policy = evidence.get("policy")
+    criteria = evidence.get("criteria")
+    if not isinstance(policy, dict) or not policy:
+        raise ValueError("rate-policy payload is missing")
+    if not isinstance(criteria, dict) or not criteria:
+        raise ValueError("rate-policy criteria are missing")
+    if require_current:
+        if method != RATE_POLICY_METHOD:
+            raise ValueError("rate-policy method is not canonical")
+        if decision != RATE_POLICY_DECISIONS[gate]:
+            raise ValueError("rate-policy decision does not match the gate")
+        if justification != RATE_POLICY_JUSTIFICATIONS[gate]:
+            raise ValueError("rate-policy justification does not match the contract")
+        if policy != RATE_POLICY_PAYLOADS[gate]:
+            raise ValueError("rate-policy payload does not match the contract")
+        if criteria != RATE_POLICY_CRITERIA:
+            raise ValueError("rate-policy criteria do not match the contract")
+    if evidence.get("blockers") != []:
+        raise ValueError("passing rate-policy evidence contains blockers")
+    truth = evidence.get("truth")
+    if not isinstance(truth, dict):
+        raise ValueError("rate-policy truth binding is missing")
+    for field in ("report_sha256", "truth_chain_sha256", "graph_fingerprint"):
+        _sha256(truth.get(field), f"rate-policy {field}")
+    graph_rate = _positive_int(truth.get("graph_rate_hz"), "rate-policy graph rate")
+    _positive_int(truth.get("graph_quantum_frames"), "rate-policy graph quantum")
+    default_sink = _bounded_text(
+        truth.get("default_sink"),
+        "rate-policy default sink",
+        2,
+        256,
+    )
+    default_source = _bounded_text(
+        truth.get("default_source"),
+        "rate-policy default source",
+        2,
+        256,
+    )
+    if require_current and graph_rate != 48_000:
+        raise ValueError("rate-policy graph is not 48 kHz")
+    if require_current and default_sink != "motu-m2":
+        raise ValueError("rate-policy default sink is not MOTU")
+    if require_current and default_source != "motu-m2":
+        raise ValueError("rate-policy default source is not MOTU")
+    hardware = truth.get("hardware")
+    if not isinstance(hardware, dict) or not all(
+        hardware.get(device) is True
+        for device in ("motu_m2", "roland_fp_30x")
+    ):
+        raise ValueError("rate-policy hardware projection is incomplete")
+    warning_codes = truth.get("warning_codes")
+    if not isinstance(warning_codes, list) or any(
+        not isinstance(item, str) for item in warning_codes
+    ):
+        raise ValueError("rate-policy warning projection is invalid")
+    _validate_rate_endpoint_snapshot(
+        evidence.get("endpoints"),
+        require_current=require_current,
+    )
+    profiles = evidence.get("profiles")
+    if not isinstance(profiles, dict):
+        raise ValueError("rate-policy profile binding is missing")
+    profile_catalog_sha = _sha256(
+        profiles.get("profile_catalog_sha256"),
+        "rate-policy profile catalog digest",
+    )
+    operational_sha = _sha256(
+        profiles.get("operational_profile_catalog_sha256"),
+        "rate-policy operational catalog digest",
+    )
+    selected_profiles = profiles.get("selected_profiles")
+    if not isinstance(selected_profiles, dict) or not selected_profiles:
+        raise ValueError("rate-policy selected profile binding is invalid")
+    selected_sha = _sha256(
+        profiles.get("selected_profiles_sha256"),
+        "rate-policy selected profile digest",
+    )
+    if selected_sha != canonical_value_sha256(selected_profiles):
+        raise ValueError("rate-policy selected profile digest mismatch")
+    if require_current and selected_profiles != RATE_POLICY_PROFILE_CONTRACT:
+        raise ValueError("rate-policy selected profiles do not match the contract")
+    implementation = evidence.get("implementation")
+    if not isinstance(implementation, dict):
+        raise ValueError("rate-policy implementation binding is missing")
+    observed_implementation = {
+        key: _sha256(implementation.get(key), f"rate-policy {key}")
+        for key in (
+            "rate_policy_observer_sha256",
+            "laboratory_gate_sha256",
+            "system_truth_sha256",
+            "profile_catalog_sha256",
+        )
+    }
+    if implementation.get("profile_catalog_sha256") != profile_catalog_sha:
+        raise ValueError("rate-policy profile catalog bindings disagree")
+    if require_current:
+        expected_implementation = {
+            "rate_policy_observer_sha256": sha256_file(RATE_POLICY_OBSERVER_PATH),
+            "laboratory_gate_sha256": sha256_file(pathlib.Path(__file__)),
+            "system_truth_sha256": sha256_file(SYSTEM_TRUTH_PATH),
+            "profile_catalog_sha256": sha256_file(PROFILE_PATH),
+        }
+        if observed_implementation != expected_implementation:
+            raise ValueError("rate-policy implementation binding changed")
+        if profile_catalog_sha != sha256_file(PROFILE_PATH):
+            raise ValueError("rate-policy profile catalog changed")
+        if operational_sha != operational_profile_catalog_sha256():
+            raise ValueError("rate-policy operational profile catalog changed")
+
+def policy_decision_binding_current(evidence: dict[str, Any]) -> bool:
+    try:
+        validate_bound_policy_decision(evidence, require_current=True)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def has_bound_qobuz_observation(evidence: dict[str, Any]) -> bool:
     return all(
         key in evidence
@@ -1268,6 +1682,8 @@ def validate_evidence(
     evidence: dict[str, Any],
     *,
     allow_legacy_voice: bool = False,
+    allow_legacy_policy: bool = False,
+    allow_stale_policy: bool = False,
     allow_legacy_xrun: bool = False,
     allow_legacy_plugin_host: bool = False,
     allow_legacy_qobuz: bool = False,
@@ -1288,6 +1704,16 @@ def validate_evidence(
         elif not allow_legacy_voice:
             raise ValueError(
                 "legacy voice evidence lacks a bounded MOTU live capture"
+            )
+    if gate in RATE_POLICY_DECISIONS:
+        if has_bound_policy_decision(evidence):
+            validate_bound_policy_decision(
+                evidence,
+                require_current=not allow_stale_policy,
+            )
+        elif not allow_legacy_policy:
+            raise ValueError(
+                "legacy policy evidence lacks bound rate observations"
             )
     if gate == "xrun-stability-test" and not has_bound_xrun_observation(evidence):
         if not allow_legacy_xrun:
@@ -1337,6 +1763,8 @@ def validate_state(path: pathlib.Path, state: dict[str, Any]) -> None:
             gate,
             evidence,
             allow_legacy_voice=True,
+            allow_legacy_policy=True,
+            allow_stale_policy=True,
             allow_legacy_xrun=True,
             allow_legacy_plugin_host=True,
             allow_legacy_qobuz=True,
@@ -1450,6 +1878,16 @@ def gate_resolution(
                 evidence
             ):
                 invalidated[gate] = "legacy-unbound-voice-evidence"
+                continue
+        if gate in RATE_POLICY_DECISIONS:
+            evidence = receipt.get("evidence")
+            if not isinstance(evidence, dict) or not has_bound_policy_decision(
+                evidence
+            ):
+                invalidated[gate] = "legacy-unbound-policy-evidence"
+                continue
+            if not policy_decision_binding_current(evidence):
+                invalidated[gate] = "policy-binding-changed"
                 continue
         if gate == "xrun-stability-test":
             evidence = receipt.get("evidence")

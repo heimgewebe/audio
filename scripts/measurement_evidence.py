@@ -25,6 +25,7 @@ SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
 PLUGIN_HOST_PATH = ROOT / "scripts" / "plugin_host_observer.py"
 QOBUZ_RATE_PATH = ROOT / "scripts" / "qobuz_rate_observer.py"
 VOICE_CAPTURE_PATH = ROOT / "scripts" / "voice_capture_observer.py"
+RATE_POLICY_PATH = ROOT / "scripts" / "rate_policy_observer.py"
 MAX_SOURCE_BYTES = 536_870_912
 
 
@@ -45,6 +46,9 @@ PLUGIN_HOST = load_module("plugin_host_observer_for_evidence", PLUGIN_HOST_PATH)
 QOBUZ_RATE = load_module("qobuz_rate_observer_for_evidence", QOBUZ_RATE_PATH)
 VOICE_CAPTURE = load_module(
     "voice_capture_observer_for_evidence", VOICE_CAPTURE_PATH
+)
+RATE_POLICY = load_module(
+    "rate_policy_observer_for_evidence", RATE_POLICY_PATH
 )
 
 
@@ -230,7 +234,7 @@ def policy_decision_evidence(
             "profile-apply-authority",
         ],
     }
-    LAB.validate_evidence(gate, payload)
+    LAB.validate_evidence(gate, payload, allow_legacy_policy=True)
     return payload
 
 
@@ -437,6 +441,10 @@ def main() -> int:
         "--physical-state", type=pathlib.Path, default=LAB.PHYSICAL.DEFAULT_STATE
     )
 
+    rate_policy = sub.add_parser("rate-policy-observation")
+    rate_policy.add_argument("gate", choices=sorted(LAB.RATE_POLICY_DECISIONS))
+    rate_policy.add_argument("--output", type=pathlib.Path)
+
     policy = sub.add_parser("policy-decision")
     policy.add_argument(
         "gate", choices=("rate-policy-decision", "resampling-decision")
@@ -478,6 +486,8 @@ def main() -> int:
             args.quantum_frames,
             args.graph_fingerprint,
         )
+    elif args.command == "rate-policy-observation":
+        result = RATE_POLICY.rate_policy_evidence(args.gate)
     elif args.command == "xrun-observation":
         result = xrun_observation_evidence(
             args.duration_seconds,
@@ -501,6 +511,7 @@ def main() -> int:
         if args.command
         in {
             "voice-capture",
+            "rate-policy-observation",
             "xrun-observation",
             "managed-plugin-host-observation",
             "qobuz-rate-observation",
