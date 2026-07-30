@@ -53,6 +53,9 @@ PHYSICAL = load_module(
 LABORATORY = load_module(
     "laboratory_gate_for_system_truth", ROOT / "scripts/laboratory_gate.py"
 )
+DEVICE_LOSS = load_module(
+    "device_loss_exercise_for_system_truth", ROOT / "scripts/device_loss_exercise.py"
+)
 
 CONTRACT_PATHS: dict[str, pathlib.Path] = {
     "signal_path": ROOT / "inventory/signal-path.v1.json",
@@ -746,6 +749,48 @@ def physical_projection(state_path: pathlib.Path) -> dict[str, Any]:
     }
 
 
+def empty_device_exercise_projection() -> dict[str, Any]:
+    state = DEVICE_LOSS.empty_state()
+    current = {
+        device: {
+            "observed_at": None,
+            "observation_sha256": None,
+            "complete": False,
+            "present": False,
+            "ambiguous": False,
+            "match_count": 0,
+            "identity_strength": None,
+            "identity_fingerprint": None,
+        }
+        for device in sorted(DEVICE_LOSS.DEVICE_SPECS)
+    }
+    state_sha256 = sha256_json(state)
+    current_identity_sha256 = sha256_json(
+        DEVICE_LOSS.current_identity_binding(current)
+    )
+    truth_binding_sha256 = sha256_json(
+        {
+            "state_sha256": state_sha256,
+            "current_identity_sha256": current_identity_sha256,
+        }
+    )
+    return {
+        "state_sha256": state_sha256,
+        "current": current,
+        "current_identity_sha256": current_identity_sha256,
+        "truth_binding_sha256": truth_binding_sha256,
+        "resolved": [],
+        "invalidated": {},
+        "unresolved": sorted(DEVICE_LOSS.DEVICE_SPECS),
+        "recorded_count": 0,
+        "resolved_count": 0,
+        "total_count": len(DEVICE_LOSS.DEVICE_SPECS),
+        "complete": False,
+        "receipts": {},
+        "authority": "validated-private-device-exercise-state",
+    }
+
+
 def normalize_qobuz_context(
     track_fingerprint: str | None, track_rate_hz: int | None
 ) -> dict[str, Any] | None:
@@ -919,7 +964,9 @@ def build_gate_status(
     laboratory: dict[str, Any],
     runtime: dict[str, Any],
     contracts: dict[str, Any],
+    device_exercises: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    device_exercises = device_exercises or empty_device_exercise_projection()
     unresolved = set(physical["unresolved"])
     safe_required = {
         "motu_output_to_lake_people",
@@ -981,6 +1028,33 @@ def build_gate_status(
     policy_missing = sorted(
         {"rate-policy-decision", "resampling-decision"} - resolved
     )
+    resolved_devices = set(device_exercises["resolved"])
+    invalidated_devices = device_exercises["invalidated"]
+    missing_devices = set(DEVICE_LOSS.DEVICE_SPECS) - resolved_devices
+    device_blockers: list[str] = []
+    for device in sorted(missing_devices):
+        followup = DEVICE_LOSS.DEVICE_SPECS[device]["followup_id"]
+        reason = invalidated_devices.get(device)
+        device_blockers.append(
+            f"{followup}: {reason}" if reason else followup
+        )
+    device_evidence = [
+        device_exercises["receipts"][device]["evidence_sha256"]
+        for device in sorted(resolved_devices)
+    ]
+    if not missing_devices:
+        device_status = "pass"
+        device_detail = (
+            "Validated private exercises prove loss and recovery for MOTU and Roland."
+        )
+    elif invalidated_devices:
+        device_status = "invalidated"
+        device_detail = "Stored device exercises are invalid under the current code."
+    else:
+        device_status = "exercise-required"
+        device_detail = (
+            "MOTU and Roland require explicit physical loss/recovery exercises."
+        )
     return {
         "single-truth-model": _gate(
             "pass",
@@ -990,6 +1064,7 @@ def build_gate_status(
                 runtime["graph_fingerprint"],
                 physical["state_sha256"],
                 laboratory["state_sha256"],
+                device_exercises["truth_binding_sha256"],
             ],
         ),
         "host-read-boundary": _gate(
@@ -1022,9 +1097,10 @@ def build_gate_status(
             laboratory, "managed-plugin-host-proof", "validation-required"
         ),
         "device-loss-baseline": _gate(
-            "exercise-required",
-            "Current presence is observed; unplug/replug and identity change require explicit exercises.",
-            blockers=["motu-device-loss-exercise", "roland-device-loss-exercise"],
+            device_status,
+            device_detail,
+            blockers=device_blockers,
+            evidence=device_evidence,
         ),
         "runtime-storage-observation": _gate(
             "pass" if not runtime_failures else "degraded",
@@ -1104,7 +1180,9 @@ def compute_truth_chain(
     physical: dict[str, Any],
     laboratory: dict[str, Any],
     playback: dict[str, Any],
+    device_exercises: dict[str, Any] | None = None,
 ) -> str:
+    device_exercises = device_exercises or empty_device_exercise_projection()
     return sha256_json(
         {
             "contracts": contracts["aggregate_sha256"],
@@ -1112,6 +1190,7 @@ def compute_truth_chain(
             "physical": physical["state_sha256"],
             "laboratory": laboratory["state_sha256"],
             "playback": sha256_json(playback),
+            "device_exercises": device_exercises["truth_binding_sha256"],
             "runtime": sha256_json(
                 {
                     "services": runtime["services"],
@@ -1135,6 +1214,7 @@ def build_report(
     *,
     physical_state: pathlib.Path = PHYSICAL.DEFAULT_STATE,
     laboratory_state: pathlib.Path = LABORATORY.DEFAULT_STATE,
+    device_exercise_state: pathlib.Path = DEVICE_LOSS.DEFAULT_STATE,
     qobuz_track_fingerprint: str | None = None,
     qobuz_track_rate_hz: int | None = None,
     generated_at: str | None = None,
@@ -1162,6 +1242,7 @@ def build_report(
         doctor_report.get("graph", {}),
         playback["qobuz_current_track"],
     )
+    device_exercises = DEVICE_LOSS.truth_projection(device_exercise_state)
     contracts = contract_projection()
     runtime = build_runtime_projection(runtime_results, doctor_report)
     generated = generated_at or dt.datetime.now(dt.timezone.utc).isoformat()
@@ -1175,9 +1256,17 @@ def build_report(
         "doctor": doctor_report,
         "physical": physical,
         "laboratory": laboratory,
+        "device_exercises": device_exercises,
         "playback": playback,
         "runtime": runtime,
-        "gates": build_gate_status(doctor_report, physical, laboratory, runtime, contracts),
+        "gates": build_gate_status(
+            doctor_report,
+            physical,
+            laboratory,
+            runtime,
+            contracts,
+            device_exercises,
+        ),
         "commands": [
             command_record(result) for result in [*doctor_capture, *runtime_results]
         ],
@@ -1188,12 +1277,19 @@ def build_report(
             "round-trip latency from buffer duration",
             "xrun-free operation without validated evidence",
             "bit-perfect Qobuz playback without qobuz-rate-proof",
+            "device recovery without recorded physical loss/recovery exercises",
+            "identical Roland replacement on the same USB port",
             "profile apply or runtime mutation authority",
             "authenticity without an externally pinned or signed report digest",
         ],
     }
     report["truth_chain_sha256"] = compute_truth_chain(
-        contracts, runtime, physical, laboratory, playback
+        contracts,
+        runtime,
+        physical,
+        laboratory,
+        playback,
+        device_exercises,
     )
     report["report_sha256"] = sha256_json(report_digest_core(report))
     return report
@@ -1202,6 +1298,138 @@ def build_report(
 def validate_sha(value: Any, label: str) -> None:
     if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
         raise ValueError(f"{label} is missing or invalid")
+
+
+def validate_device_exercise_projection(projection: Any) -> None:
+    if not isinstance(projection, dict):
+        raise ValueError("device exercise projection is missing")
+    state_sha256 = projection.get("state_sha256")
+    validate_sha(state_sha256, "device exercise state digest")
+    current = projection.get("current")
+    if not isinstance(current, dict):
+        raise ValueError("current device identity projection is missing")
+    catalog = set(DEVICE_LOSS.DEVICE_SPECS)
+    if set(current) != catalog:
+        raise ValueError("current device identity set does not match the catalog")
+    for device, item in current.items():
+        if not isinstance(item, dict):
+            raise ValueError(f"current device identity is invalid: {device}")
+        DEVICE_LOSS.parse_timestamp(
+            item.get("observed_at"),
+            f"current device observed_at: {device}",
+        )
+        validate_sha(
+            item.get("observation_sha256"),
+            f"current device observation digest: {device}",
+        )
+        for field in ("complete", "present", "ambiguous"):
+            if not isinstance(item.get(field), bool):
+                raise ValueError(f"current device {field} is invalid: {device}")
+        match_count = item.get("match_count")
+        if (
+            isinstance(match_count, bool)
+            or not isinstance(match_count, int)
+            or match_count < 0
+        ):
+            raise ValueError(f"current device match count is invalid: {device}")
+        identity_strength = item.get("identity_strength")
+        identity_fingerprint = item.get("identity_fingerprint")
+        if identity_strength is None and identity_fingerprint is None:
+            pass
+        elif identity_strength in {"serial", "model-port"}:
+            validate_sha(
+                identity_fingerprint,
+                f"current device identity digest: {device}",
+            )
+        else:
+            raise ValueError(f"current device identity pair is invalid: {device}")
+    current_identity_sha256 = projection.get("current_identity_sha256")
+    validate_sha(
+        current_identity_sha256,
+        "current device identity aggregate",
+    )
+    expected_current_identity = sha256_json(
+        DEVICE_LOSS.current_identity_binding(current)
+    )
+    if current_identity_sha256 != expected_current_identity:
+        raise ValueError("current device identity aggregate mismatch")
+    truth_binding_sha256 = projection.get("truth_binding_sha256")
+    validate_sha(truth_binding_sha256, "device exercise truth binding")
+    expected_truth_binding = sha256_json(
+        {
+            "state_sha256": state_sha256,
+            "current_identity_sha256": current_identity_sha256,
+        }
+    )
+    if truth_binding_sha256 != expected_truth_binding:
+        raise ValueError("device exercise truth binding mismatch")
+    if projection.get("authority") != "validated-private-device-exercise-state":
+        raise ValueError("device exercise authority is invalid")
+    resolved_raw = projection.get("resolved")
+    unresolved_raw = projection.get("unresolved")
+    invalidated_raw = projection.get("invalidated")
+    receipts = projection.get("receipts")
+    if (
+        not isinstance(resolved_raw, list)
+        or not isinstance(unresolved_raw, list)
+        or not isinstance(invalidated_raw, dict)
+        or not isinstance(receipts, dict)
+    ):
+        raise ValueError("device exercise sets are invalid")
+    if any(not isinstance(item, str) for item in resolved_raw + unresolved_raw):
+        raise ValueError("device exercise set contains a non-string device")
+    resolved = set(resolved_raw)
+    unresolved = set(unresolved_raw)
+    invalidated = set(invalidated_raw)
+    if resolved | unresolved != catalog:
+        raise ValueError("device exercise sets do not cover the device catalog")
+    if resolved & unresolved or resolved & invalidated:
+        raise ValueError("device exercise sets overlap")
+    if not invalidated <= unresolved:
+        raise ValueError("invalidated device exercise is not unresolved")
+    if set(receipts) - catalog:
+        raise ValueError("device exercise receipts contain an unknown device")
+    if not resolved <= set(receipts) or not invalidated <= set(receipts):
+        raise ValueError("device exercise receipt set is incomplete")
+    if projection.get("resolved_count") != len(resolved):
+        raise ValueError("device exercise resolved count mismatch")
+    if projection.get("recorded_count") != len(receipts):
+        raise ValueError("device exercise recorded count mismatch")
+    if projection.get("total_count") != len(catalog):
+        raise ValueError("device exercise total count mismatch")
+    if projection.get("complete") is not (resolved == catalog):
+        raise ValueError("device exercise completeness mismatch")
+    for device, receipt in receipts.items():
+        if not isinstance(receipt, dict) or receipt.get("status") != "passed":
+            raise ValueError(f"device exercise receipt is invalid: {device}")
+        DEVICE_LOSS.parse_timestamp(
+            receipt.get("recorded_at"),
+            f"device exercise recorded_at: {device}",
+        )
+        validate_sha(
+            receipt.get("evidence_sha256"),
+            f"device exercise evidence digest: {device}",
+        )
+        identity_fingerprint = receipt.get("identity_fingerprint")
+        validate_sha(
+            identity_fingerprint,
+            f"device exercise identity digest: {device}",
+        )
+        if receipt.get("identity_strength") not in {"serial", "model-port"}:
+            raise ValueError(f"device exercise identity strength is invalid: {device}")
+        if device in resolved:
+            current_item = current[device]
+            if (
+                current_item.get("complete") is not True
+                or current_item.get("present") is not True
+                or current_item.get("match_count") != 1
+                or current_item.get("identity_fingerprint")
+                != identity_fingerprint
+            ):
+                raise ValueError(f"resolved device identity is not current: {device}")
+    for device, reason in invalidated_raw.items():
+        if not isinstance(reason, str) or not reason:
+            raise ValueError(f"device exercise invalidation is empty: {device}")
 
 
 def verify_report(report: dict[str, Any]) -> None:
@@ -1220,12 +1448,21 @@ def verify_report(report: dict[str, Any]) -> None:
     doctor = report.get("doctor")
     physical = report.get("physical")
     laboratory = report.get("laboratory")
+    device_exercises = report.get("device_exercises")
     playback = report.get("playback")
     if not all(
         isinstance(value, dict)
-        for value in (runtime, doctor, physical, laboratory, playback)
+        for value in (
+            runtime,
+            doctor,
+            physical,
+            laboratory,
+            device_exercises,
+            playback,
+        )
     ):
         raise ValueError("truth report projections are incomplete")
+    validate_device_exercise_projection(device_exercises)
     if runtime.get("graph_fingerprint") != graph_fingerprint(doctor):
         raise ValueError("doctor graph fingerprint mismatch")
     if runtime.get("process_fingerprint") != process_fingerprint(runtime.get("processes", [])):
@@ -1366,12 +1603,24 @@ def verify_report(report: dict[str, Any]) -> None:
     ]
     if doctor_health != expected_doctor_health:
         raise ValueError("Doctor command-health projection mismatch")
-    expected_gates = build_gate_status(doctor, physical, laboratory, runtime, contracts)
+    expected_gates = build_gate_status(
+        doctor,
+        physical,
+        laboratory,
+        runtime,
+        contracts,
+        device_exercises,
+    )
     if report.get("gates") != expected_gates:
         raise ValueError("gate projection mismatch")
     validate_sha(report.get("truth_chain_sha256"), "truth chain digest")
     expected_chain = compute_truth_chain(
-        contracts, runtime, physical, laboratory, playback
+        contracts,
+        runtime,
+        physical,
+        laboratory,
+        playback,
+        device_exercises,
     )
     if report["truth_chain_sha256"] != expected_chain:
         raise ValueError("truth chain digest mismatch")
@@ -1463,6 +1712,13 @@ def required_followups(changed_fields: set[str]) -> list[str]:
         )
     if "roland_present" in changed_fields:
         followups.add("roland-device-loss-exercise")
+    if "device_exercise_identity" in changed_fields:
+        followups.update(
+            {
+                "motu-device-loss-exercise",
+                "roland-device-loss-exercise",
+            }
+        )
     return sorted(followups)
 
 
@@ -1473,6 +1729,14 @@ def build_drift_report(before: dict[str, Any], after: dict[str, Any]) -> dict[st
         "contract_aggregate": ("contracts", "aggregate_sha256"),
         "physical_state": ("physical", "state_sha256"),
         "laboratory_state": ("laboratory", "state_sha256"),
+        "device_exercise_state": (
+            "device_exercises",
+            "state_sha256",
+        ),
+        "device_exercise_identity": (
+            "device_exercises",
+            "current_identity_sha256",
+        ),
         "graph_fingerprint": ("runtime", "graph_fingerprint"),
         "motu_present": ("doctor", "hardware", "motu_m2"),
         "roland_present": ("doctor", "hardware", "roland_fp_30x"),
@@ -1606,6 +1870,11 @@ def main(argv: list[str] | None = None) -> int:
     capture.add_argument("--output", type=pathlib.Path, required=True)
     capture.add_argument("--physical-state", type=pathlib.Path, default=PHYSICAL.DEFAULT_STATE)
     capture.add_argument("--laboratory-state", type=pathlib.Path, default=LABORATORY.DEFAULT_STATE)
+    capture.add_argument(
+        "--device-exercise-state",
+        type=pathlib.Path,
+        default=DEVICE_LOSS.DEFAULT_STATE,
+    )
     capture.add_argument("--qobuz-track-fingerprint")
     capture.add_argument("--qobuz-track-rate-hz", type=int)
     compare = sub.add_parser("compare")
@@ -1619,6 +1888,7 @@ def main(argv: list[str] | None = None) -> int:
         report = build_report(
             physical_state=args.physical_state,
             laboratory_state=args.laboratory_state,
+            device_exercise_state=args.device_exercise_state,
             qobuz_track_fingerprint=args.qobuz_track_fingerprint,
             qobuz_track_rate_hz=args.qobuz_track_rate_hz,
         )
