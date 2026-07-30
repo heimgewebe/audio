@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -181,8 +182,280 @@ class SystemTruthTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "report digest mismatch"):
             MODULE.verify_report(changed)
 
+    def test_unreadable_laboratory_state_stays_unknown_instead_of_aborting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            physical_path = root / "physical.json"
+            state_path = root / "laboratory.json"
+            state = MODULE.LABORATORY.empty_state()
+            state["profile_catalog_sha256"] = "f" * 64
+            MODULE.LABORATORY.atomic_write_private(state_path, state)
+            with self.assertRaisesRegex(ValueError, "audio profile catalog changed"):
+                MODULE.LABORATORY.read_state(state_path)
+            report = MODULE.build_report(
+                doctor_results(),
+                runtime_results(),
+                physical_state=physical_path,
+                laboratory_state=state_path,
+                generated_at="2026-07-28T00:00:00+00:00",
+            )
+        laboratory = report["laboratory"]
+        self.assertFalse(laboratory["state_readable"])
+        self.assertEqual(laboratory["state_status"], "invalid")
+        self.assertEqual(laboratory["state_issue_code"], "laboratory-state-catalog-changed")
+        self.assertEqual(laboratory["resolved"], [])
+        self.assertIsNone(laboratory["state_sha256"])
+        self.assertEqual(
+            laboratory["invalidated"]["xrun-stability-test"],
+            "laboratory-state-catalog-changed",
+        )
+        truth_model = report["gates"]["single-truth-model"]
+        self.assertEqual(truth_model["status"], "unknown")
+        self.assertTrue(
+            any("laboratory-state" in blocker for blocker in truth_model["blockers"])
+        )
+        self.assertEqual(report["gates"]["latency-xrun-baseline"]["status"], "invalidated")
+        MODULE.verify_report(report)
+
+    def test_invalid_physical_state_stays_unknown_instead_of_aborting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            physical_path = root / "physical.json"
+            laboratory_path = root / "laboratory.json"
+            physical_path.write_text('{"schema_version": 1, "kind": "wrong"}')
+            physical_path.chmod(0o600)
+            with self.assertRaises(ValueError):
+                MODULE.PHYSICAL.read_state(physical_path)
+            report = MODULE.build_report(
+                doctor_results(),
+                runtime_results(),
+                physical_state=physical_path,
+                laboratory_state=laboratory_path,
+                generated_at="2026-07-28T00:00:00+00:00",
+            )
+        projection = report["physical"]
+        self.assertFalse(projection["state_readable"])
+        self.assertEqual(projection["resolved_count"], 0)
+        self.assertFalse(projection["complete"])
+        self.assertIsNone(projection["state_sha256"])
+        self.assertTrue(projection["unresolved"])
+        self.assertEqual(projection["state_status"], "invalid")
+        self.assertEqual(projection["state_issue_code"], "physical-state-contract-invalid")
+        self.assertEqual(report["gates"]["single-truth-model"]["status"], "unknown")
+        MODULE.verify_report(report)
+
+    def test_unreadable_laboratory_state_uses_stable_path_free_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            physical_path = root / "physical.json"
+            laboratory_path = root / "private-secret-laboratory.json"
+            with mock.patch.object(
+                MODULE.LABORATORY,
+                "read_state",
+                side_effect=PermissionError(str(laboratory_path)),
+            ):
+                report = MODULE.build_report(
+                    doctor_results(),
+                    runtime_results(),
+                    physical_state=physical_path,
+                    laboratory_state=laboratory_path,
+                    generated_at="2026-07-28T00:00:00+00:00",
+                )
+        laboratory = report["laboratory"]
+        self.assertEqual(laboratory["state_status"], "unreadable")
+        self.assertEqual(
+            laboratory["state_issue_code"], "laboratory-state-permission-denied"
+        )
+        self.assertEqual(laboratory["invalidated"], {})
+        self.assertNotIn(str(laboratory_path), str(report))
+        MODULE.verify_report(report)
+
+    def test_failed_state_requires_stable_code_and_forbids_digest(self):
+        with_digest = self.report()
+        with_digest["laboratory"]["state_readable"] = False
+        with_digest["laboratory"]["state_status"] = "invalid"
+        with_digest["laboratory"]["state_issue_code"] = "laboratory-state-invalid"
+        recompute(with_digest)
+        with self.assertRaisesRegex(ValueError, "must not carry a digest"):
+            MODULE.verify_report(with_digest)
+
+        without_code = self.report()
+        without_code["laboratory"]["state_readable"] = False
+        without_code["laboratory"]["state_status"] = "invalid"
+        without_code["laboratory"]["state_sha256"] = None
+        without_code["laboratory"]["state_issue_code"] = None
+        recompute(without_code)
+        with self.assertRaisesRegex(ValueError, "stable issue code"):
+            MODULE.verify_report(without_code)
+
+    def test_unreadable_device_exercise_state_stays_unknown_instead_of_aborting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            physical_path = root / "physical.json"
+            laboratory_path = root / "laboratory.json"
+            exercise_path = root / "device-exercises.json"
+            exercise_path.write_text(
+                '{"schema_version": 1, "kind": "wrong", "receipts": {}}',
+                encoding="utf-8",
+            )
+            exercise_path.chmod(0o600)
+            with self.assertRaises(ValueError):
+                MODULE.DEVICE_LOSS.read_state(exercise_path)
+            report = MODULE.build_report(
+                doctor_results(),
+                runtime_results(),
+                physical_state=physical_path,
+                laboratory_state=laboratory_path,
+                device_exercise_state=exercise_path,
+                generated_at="2026-07-28T00:00:00+00:00",
+            )
+        projection = report["device_exercises"]
+        self.assertFalse(projection["state_readable"])
+        self.assertIsNone(projection["state_sha256"])
+        self.assertEqual(projection["resolved"], [])
+        self.assertEqual(
+            set(projection["invalidated"]),
+            set(MODULE.DEVICE_LOSS.DEVICE_SPECS),
+        )
+        self.assertEqual(projection["state_status"], "invalid")
+        self.assertEqual(
+            projection["state_issue_code"], "device-exercise-state-contract-invalid"
+        )
+        self.assertEqual(report["gates"]["single-truth-model"]["status"], "unknown")
+        self.assertEqual(report["gates"]["device-loss-baseline"]["status"], "invalidated")
+        MODULE.verify_report(report)
+
+    def test_forged_failed_projections_cannot_claim_resolution(self):
+        report = self.report()
+        laboratory = report["laboratory"]
+        laboratory["state_readable"] = False
+        laboratory["state_status"] = "invalid"
+        laboratory["state_issue_code"] = "laboratory-state-invalid"
+        laboratory["state_sha256"] = None
+        laboratory["resolved"] = ["xrun-stability-test"]
+        laboratory["unresolved"] = sorted(
+            set(MODULE.LABORATORY.load_catalog()) - {"xrun-stability-test"}
+        )
+        laboratory["resolved_count"] = 1
+        laboratory["complete"] = False
+        recompute(report)
+        with self.assertRaisesRegex(
+            ValueError, "empty projection|receipt set|must use the state issue code"
+        ):
+            MODULE.verify_report(report)
+
+        physical_report = self.report()
+        physical = physical_report["physical"]
+        physical["state_readable"] = False
+        physical["state_status"] = "invalid"
+        physical["state_issue_code"] = "physical-state-invalid"
+        physical["state_sha256"] = None
+        physical["resolved_count"] = 1
+        physical["unresolved"] = physical["unresolved"][1:]
+        recompute(physical_report)
+        with self.assertRaisesRegex(ValueError, "empty projection|complete catalog"):
+            MODULE.verify_report(physical_report)
+
+    def test_failed_state_codes_are_component_bound_and_uniform(self):
+        wrong_component = self.report()
+        laboratory = wrong_component["laboratory"]
+        laboratory["state_readable"] = False
+        laboratory["state_status"] = "invalid"
+        laboratory["state_issue_code"] = "physical-state-invalid"
+        laboratory["state_sha256"] = None
+        laboratory["catalog_sha256"] = None
+        laboratory["profile_catalog_sha256"] = None
+        laboratory["resolved"] = []
+        laboratory["invalidated"] = {
+            gate: "physical-state-invalid" for gate in MODULE.LABORATORY.load_catalog()
+        }
+        laboratory["unresolved"] = sorted(MODULE.LABORATORY.load_catalog())
+        laboratory["recorded_count"] = 0
+        laboratory["resolved_count"] = 0
+        laboratory["total_count"] = len(MODULE.LABORATORY.load_catalog())
+        laboratory["complete"] = False
+        laboratory["receipts"] = {}
+        recompute(wrong_component)
+        with self.assertRaisesRegex(ValueError, "wrong component"):
+            MODULE.verify_report(wrong_component)
+
+        mixed_reasons = self.report()
+        laboratory = mixed_reasons["laboratory"]
+        laboratory["state_readable"] = False
+        laboratory["state_status"] = "invalid"
+        laboratory["state_issue_code"] = "laboratory-state-invalid"
+        laboratory["state_sha256"] = None
+        laboratory["catalog_sha256"] = None
+        laboratory["profile_catalog_sha256"] = None
+        laboratory["resolved"] = []
+        laboratory["invalidated"] = {
+            gate: "laboratory-state-invalid" for gate in MODULE.LABORATORY.load_catalog()
+        }
+        laboratory["invalidated"]["xrun-stability-test"] = "private/path/leak"
+        laboratory["unresolved"] = sorted(MODULE.LABORATORY.load_catalog())
+        laboratory["recorded_count"] = 0
+        laboratory["resolved_count"] = 0
+        laboratory["total_count"] = len(MODULE.LABORATORY.load_catalog())
+        laboratory["complete"] = False
+        laboratory["receipts"] = {}
+        recompute(mixed_reasons)
+        with self.assertRaisesRegex(ValueError, "must use the state issue code"):
+            MODULE.verify_report(mixed_reasons)
+
+    def test_gate_projection_is_rederived_for_failed_state(self):
+        report = self.report()
+        report["laboratory"]["state_readable"] = False
+        report["laboratory"]["state_status"] = "unreadable"
+        report["laboratory"]["state_issue_code"] = "laboratory-state-io-error"
+        report["laboratory"]["state_sha256"] = None
+        report["laboratory"]["catalog_sha256"] = None
+        report["laboratory"]["profile_catalog_sha256"] = None
+        report["laboratory"]["resolved"] = []
+        report["laboratory"]["invalidated"] = {}
+        report["laboratory"]["unresolved"] = sorted(MODULE.LABORATORY.load_catalog())
+        report["laboratory"]["recorded_count"] = 0
+        report["laboratory"]["resolved_count"] = 0
+        report["laboratory"]["total_count"] = len(MODULE.LABORATORY.load_catalog())
+        report["laboratory"]["complete"] = False
+        report["laboratory"]["receipts"] = {}
+        report["gates"]["single-truth-model"]["status"] = "pass"
+        recompute(report)
+        with self.assertRaisesRegex(ValueError, "gate projection mismatch"):
+            MODULE.verify_report(report)
+
+    def test_schema_v1_readable_report_remains_supported(self):
+        report = self.report()
+        report["schema_version"] = 1
+        for projection in (
+            report["physical"], report["laboratory"], report["device_exercises"]
+        ):
+            projection.pop("state_readable")
+            projection.pop("state_status")
+            projection.pop("state_issue_code")
+        recompute(report)
+        MODULE.verify_report(report)
+
+        missing_digest = copy.deepcopy(report)
+        missing_digest["laboratory"]["state_sha256"] = None
+        recompute(missing_digest)
+        with self.assertRaisesRegex(ValueError, "state digest"):
+            MODULE.verify_report(missing_digest)
+
+    def test_readiness_projection_separates_integrity_from_operation(self):
+        report = self.report()
+        readiness = MODULE.readiness_projection(report)
+        self.assertFalse(readiness["operationally_ready"])
+        self.assertIn("safe-listening-calibration", readiness["nonpassing_gates"])
+        self.assertEqual(
+            readiness["verification_scope"],
+            "structural-integrity-not-operational-readiness",
+        )
+
     def test_report_preserves_unresolved_physical_and_laboratory_gates(self):
         report = self.report()
+        self.assertTrue(report["physical"]["state_readable"])
+        self.assertTrue(report["laboratory"]["state_readable"])
+        self.assertTrue(report["device_exercises"]["state_readable"])
         self.assertEqual(report["physical"]["resolved_count"], 0)
         self.assertFalse(report["physical"]["complete"])
         self.assertEqual(report["laboratory"]["resolved_count"], 0)
@@ -269,6 +542,9 @@ class SystemTruthTests(unittest.TestCase):
                 },
             },
             "authority": "validated-private-device-exercise-state",
+            "state_readable": True,
+            "state_status": "readable",
+            "state_issue_code": None,
         }
         report["device_exercises"] = projection
         report["gates"] = MODULE.build_gate_status(
