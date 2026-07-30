@@ -79,6 +79,36 @@ startet weder Wiedergabe noch Routing. Alte ungebundene XRun-Belege bleiben zur
 Migration lesbar, lösen das Gate aber nicht mehr und können nicht neu gespeichert
 werden.
 
+## Gebundene Plugin-Host-Beobachtung
+
+`managed-plugin-host-observation` ermittelt aktive Plugin-Hosts aus einem
+begrenzten Prozess-Snapshot, bindet jeden Prozess über PID, Kernel-Startzeit,
+Befehlsdigest und cgroup an genau einen systemd-Benutzerdienst und beobachtet
+diesen Zustand mindestens 60 Sekunden.
+
+```bash
+./scripts/create-audio-evidence managed-plugin-host-observation \
+  --duration-seconds 60 \
+  --output /tmp/plugin-host-evidence.json
+./scripts/audio-lab-gate record managed-plugin-host-proof \
+  /tmp/plugin-host-evidence.json --replace
+```
+
+Ein positiver Beleg verlangt für jeden beobachteten Host:
+
+- unveränderte Prozessidentität und keinen Dienstneustart;
+- einen geladenen und laufenden systemd-Benutzerdienst;
+- `MemoryMax` bis 2 GiB, `TasksMax` bis 512 und `LimitNOFILE` bis 262.144;
+- journalgebundene Standardausgabe sowie dienstseitige Logratenbegrenzung;
+- ein vollständiges, auf die exakten Diensteinheiten begrenztes Journalfenster;
+- keinen eigenständig laufenden `sfizz_jack`-Prozess.
+
+Fehlende oder unendliche Grenzen erzeugen einen Fail-Beleg mit konkreten
+Blockern; sie werden nicht als unbekannte oder implizit sichere Werte geglättet.
+Der Beobachter startet, stoppt oder verändert keinen Dienst. Alte Belege mit
+nur frei gesetzten Wahrheitswerten bleiben lesbar, lösen das Gate jedoch nicht
+mehr und können nicht neu gespeichert werden.
+
 ## Speicherung
 
 ```bash

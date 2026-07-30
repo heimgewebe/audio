@@ -22,6 +22,7 @@ LEVEL_PATH = ROOT / "scripts" / "level_analyzer.py"
 LATENCY_PATH = ROOT / "scripts" / "latency_analyzer.py"
 LAB_PATH = ROOT / "scripts" / "laboratory_gate.py"
 SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
+PLUGIN_HOST_PATH = ROOT / "scripts" / "plugin_host_observer.py"
 MAX_SOURCE_BYTES = 536_870_912
 
 
@@ -38,6 +39,7 @@ LEVEL = load_module("level_analyzer_for_evidence", LEVEL_PATH)
 LATENCY = load_module("latency_analyzer_for_evidence", LATENCY_PATH)
 LAB = load_module("laboratory_gate_for_evidence", LAB_PATH)
 SYSTEM_TRUTH = load_module("system_truth_for_evidence", SYSTEM_TRUTH_PATH)
+PLUGIN_HOST = load_module("plugin_host_observer_for_evidence", PLUGIN_HOST_PATH)
 
 
 @contextlib.contextmanager
@@ -435,6 +437,10 @@ def main() -> int:
     xrun.add_argument("--expected-graph-fingerprint", required=True)
     xrun.add_argument("--output", type=pathlib.Path)
 
+    plugin_host = sub.add_parser("managed-plugin-host-observation")
+    plugin_host.add_argument("--duration-seconds", type=int, default=60)
+    plugin_host.add_argument("--output", type=pathlib.Path)
+
     args = parser.parse_args()
     if args.command == "voice-level":
         result = voice_level_evidence(args.wav, args.physical_state)
@@ -454,11 +460,17 @@ def main() -> int:
             args.expected_quantum_frames,
             args.expected_graph_fingerprint,
         )
+    elif args.command == "managed-plugin-host-observation":
+        result = PLUGIN_HOST.managed_plugin_host_evidence(args.duration_seconds)
     else:
         result = policy_decision_evidence(
             args.gate, args.decision, args.justification
         )
-    output = args.output if args.command == "xrun-observation" else None
+    output = (
+        args.output
+        if args.command in {"xrun-observation", "managed-plugin-host-observation"}
+        else None
+    )
     emit_evidence(result, output)
     return 0
 
