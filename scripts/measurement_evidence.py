@@ -23,6 +23,7 @@ LATENCY_PATH = ROOT / "scripts" / "latency_analyzer.py"
 LAB_PATH = ROOT / "scripts" / "laboratory_gate.py"
 SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
 PLUGIN_HOST_PATH = ROOT / "scripts" / "plugin_host_observer.py"
+QOBUZ_RATE_PATH = ROOT / "scripts" / "qobuz_rate_observer.py"
 MAX_SOURCE_BYTES = 536_870_912
 
 
@@ -40,6 +41,7 @@ LATENCY = load_module("latency_analyzer_for_evidence", LATENCY_PATH)
 LAB = load_module("laboratory_gate_for_evidence", LAB_PATH)
 SYSTEM_TRUTH = load_module("system_truth_for_evidence", SYSTEM_TRUTH_PATH)
 PLUGIN_HOST = load_module("plugin_host_observer_for_evidence", PLUGIN_HOST_PATH)
+QOBUZ_RATE = load_module("qobuz_rate_observer_for_evidence", QOBUZ_RATE_PATH)
 
 
 @contextlib.contextmanager
@@ -441,6 +443,11 @@ def main() -> int:
     plugin_host.add_argument("--duration-seconds", type=int, default=60)
     plugin_host.add_argument("--output", type=pathlib.Path)
 
+    qobuz = sub.add_parser("qobuz-rate-observation")
+    qobuz.add_argument("--duration-seconds", type=int, default=60)
+    qobuz.add_argument("--start-timeout-seconds", type=int, default=60)
+    qobuz.add_argument("--output", type=pathlib.Path)
+
     args = parser.parse_args()
     if args.command == "voice-level":
         result = voice_level_evidence(args.wav, args.physical_state)
@@ -462,13 +469,23 @@ def main() -> int:
         )
     elif args.command == "managed-plugin-host-observation":
         result = PLUGIN_HOST.managed_plugin_host_evidence(args.duration_seconds)
+    elif args.command == "qobuz-rate-observation":
+        result = QOBUZ_RATE.qobuz_rate_observation(
+            args.duration_seconds,
+            args.start_timeout_seconds,
+        )
     else:
         result = policy_decision_evidence(
             args.gate, args.decision, args.justification
         )
     output = (
         args.output
-        if args.command in {"xrun-observation", "managed-plugin-host-observation"}
+        if args.command
+        in {
+            "xrun-observation",
+            "managed-plugin-host-observation",
+            "qobuz-rate-observation",
+        }
         else None
     )
     emit_evidence(result, output)
