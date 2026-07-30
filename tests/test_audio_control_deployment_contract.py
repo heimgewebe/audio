@@ -5,11 +5,9 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 INDEX_PATH = ROOT / "ui" / "index.html"
 LEGACY_INDEX_BLOB_SHA = "4a1e80316512a24f780359c8f7e45194226c4f88"
-DEPLOYMENT_CONTRACT = (
-    '<meta\n'
-    '      name="audio-control-deployment-contract"\n'
-    '      content="revision-bound-v1"\n'
-    '    >'
+DEPLOYMENT_CONTRACT_PATTERN = (
+    r'<meta\s+name="audio-control-deployment-contract"\s+'
+    r'content="revision-bound-v1"\s*>'
 )
 
 
@@ -22,7 +20,7 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         ).hexdigest()
 
         self.assertNotEqual(git_blob, LEGACY_INDEX_BLOB_SHA)
-        self.assertIn(DEPLOYMENT_CONTRACT, payload.decode("utf-8"))
+        self.assertRegex(payload.decode("utf-8"), DEPLOYMENT_CONTRACT_PATTERN)
 
 
 if __name__ == "__main__":
