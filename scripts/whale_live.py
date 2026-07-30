@@ -22,6 +22,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from whale_morph_engine import WhaleMorphVoice, morph_bank_status
+from whale_organic_engine import OrganicWhaleMorphVoice
 from whale_sample_engine import WhaleSampleVoice, sample_bank_status
 from whale_live_engine import (
     DEFAULT_BLOCK_FRAMES,
@@ -54,7 +55,7 @@ GAIN_ENV = "AUDIO_BUCKELWAL_GAIN"
 LATENCY_FRAMES_ENV = "AUDIO_BUCKELWAL_LATENCY_FRAMES"
 RUNTIME_MAX_SECONDS_ENV = "AUDIO_BUCKELWAL_RUNTIME_MAX_SECONDS"
 DEFAULT_TARGET_SENTINEL = "__current_pipewire_default__"
-VOICE_MODES = ("morph", "realistic", "ufo")
+VOICE_MODES = ("morph", "organic", "realistic", "ufo")
 DEFAULT_VOICE_MODE = "morph"
 SERVICE_START_TIMEOUT_SECONDS = 15
 MAX_PENDING_MIDI_EVENTS = 256
@@ -421,7 +422,7 @@ def notify_systemd_ready(status: str) -> bool:
 
 
 def _dispatch_pending_events(
-    voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice,
+    voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice | OrganicWhaleMorphVoice,
     event_queue: queue.Queue[MidiEvent | BaseException],
     *,
     maximum_events: int = MAX_MIDI_EVENTS_PER_BLOCK,
@@ -461,7 +462,9 @@ def run_live(
     port = resolve_midi_port(midi_port)
     config = WhaleVoiceConfig(master_gain=gain, block_frames=latency_frames)
     if voice_mode == "morph":
-        voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice = WhaleMorphVoice(config)
+        voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice | OrganicWhaleMorphVoice = WhaleMorphVoice(config)
+    elif voice_mode == "organic":
+        voice = OrganicWhaleMorphVoice(config)
     elif voice_mode == "realistic":
         voice = WhaleSampleVoice(config)
     elif voice_mode == "ufo":
@@ -807,7 +810,7 @@ def restart_namespace_from_status(
 
 
 def render_voice_timeline(
-    voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice,
+    voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice | OrganicWhaleMorphVoice,
     events: list[tuple[float, MidiEvent]],
     duration_seconds: float,
 ) -> list[float]:
@@ -837,7 +840,10 @@ def create_demo(
     config = WhaleVoiceConfig(master_gain=gain)
     events = [event for event in default_demo_events() if event[0] <= duration_seconds]
     if voice_mode == "morph":
-        voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice = WhaleMorphVoice(config)
+        voice: WhaleVoice | WhaleSampleVoice | WhaleMorphVoice | OrganicWhaleMorphVoice = WhaleMorphVoice(config)
+        samples = render_voice_timeline(voice, events, duration_seconds)
+    elif voice_mode == "organic":
+        voice = OrganicWhaleMorphVoice(config)
         samples = render_voice_timeline(voice, events, duration_seconds)
     elif voice_mode == "realistic":
         voice = WhaleSampleVoice(config)
@@ -922,7 +928,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="read managed service state")
     toggle = subparsers.add_parser("toggle", help="toggle the managed whale voice")
     toggle.add_argument("--voice-mode", choices=VOICE_MODES, default=DEFAULT_VOICE_MODE)
-    mode = subparsers.add_parser("mode", help="restart in morph, realistic or UFO mode")
+    mode = subparsers.add_parser("mode", help="restart in morph, organic, realistic or UFO mode")
     mode.add_argument("voice_mode", choices=VOICE_MODES)
     return parser
 

@@ -14,11 +14,12 @@ Der Modus ist kein biologisches Modell des Stimmapparats eines Buckelwals.
 Er resynthetisiert periodische Klangstrukturen realer Buckelwalaufnahmen und
 überträgt sie auf ein musikalisch vollständig spielbares Instrument.
 
-## Drei Vergleichsmodi
+## Vier Spiel- und Vergleichsmodi
 
 | Modus | Rolle | Grenze |
 |---|---|---|
-| `morph` | neuer Standard und eigentliches Instrument | quellengestützte Resynthese, keine fertige Aufnahmephrase |
+| `morph` | Standard und kontrollierte Ausgangsstimme | quellengestützte Resynthese, keine fertige Aufnahmephrase |
+| `organic` | organischer Spielmodus | Morphbasis mit Formantträgheit, Subharmonik, signalgebundener Rauigkeit und endlichen Resonanzspuren |
 | `realistic` | Vergleich mit echten Aufnahmephrasen | 19 Clips und 27 Tastaturzonen, daher kein frei geformter Walgesang |
 | `ufo` | historischer Synthesevergleich | vollständig spielbar, aber nicht aus Walstimmen abgeleitet |
 
@@ -90,6 +91,7 @@ biologisch erzeugt.
 
 - `Buckelwal – An/Aus` startet standardmäßig `morph`.
 - `Buckelwal – Spielbar` wählt `morph`.
+- `Buckelwal – Organisch` wählt `organic`.
 - `Buckelwal – Sample-Vergleich` wählt `realistic`.
 - `Buckelwal – UFO-Modus` wählt `ufo`.
 - `Buckelwal – Aus` beendet die Stimme.
@@ -101,6 +103,7 @@ biologisch erzeugt.
 python3 scripts/build_whale_morph_bank.py
 python3 scripts/whale_live.py doctor
 python3 scripts/whale_live.py start --voice-mode morph
+python3 scripts/whale_live.py mode organic
 python3 scripts/whale_live.py mode realistic
 python3 scripts/whale_live.py mode ufo
 python3 scripts/whale_live.py stop
@@ -108,7 +111,7 @@ python3 scripts/whale_live.py status
 ```
 
 Die entsprechenden `just`-Ziele heißen unter anderem `whale-morph`,
-`whale-realistic`, `whale-ufo`, `whale-morph-bank-build`, `whale-toggle` und
+`whale-organic`, `whale-realistic`, `whale-ufo`, `whale-morph-bank-build`, `whale-toggle` und
 `whale-status`.
 
 ## Betriebs- und Sicherheitsvertrag
@@ -150,7 +153,11 @@ Audioformat:
 - Sustain, Pitch Bend, Panic und Release;
 - bitidentische Ausgabe und gleicher Zustand unabhängig von Render-Chunkgrößen;
 - frequenzabhängige harmonische Bandbegrenzung;
-- ausreichende Offline-Echtzeitreserve im Testvertrag.
+- ausreichende Offline-Echtzeitreserve im Testvertrag;
+- Organic-Modus mit exakter Leerlaufstille, chromatischer 88-Tasten-Abbildung,
+  deterministischer Gestenreaktion und endlicher modaler Nachspur;
+- reproduzierbarer A/B-Merkmalsvergleich gegen sechs quellengebundene echte
+  Buckelwalclips; Details stehen in `buckelwal-organic-v2.md`.
 
 ## Physisch noch offen
 

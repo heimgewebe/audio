@@ -13,6 +13,7 @@ const ROUTES = {
 
 const MODE_LABELS = {
   morph: "88-Tasten-Morph",
+  organic: "Organischer Wal",
   realistic: "Naturaufnahmen",
   ufo: "UFO-Vergleich",
 };
@@ -845,6 +846,9 @@ function renderSounds() {
 function soundModeDescription(mode) {
   if (mode.id === "morph") {
     return "Quellengestützte, chromatisch spielbare Morph-Stimme ohne Samplezonen.";
+  }
+  if (mode.id === "organic") {
+    return "Quellengestützte Morph-Stimme mit Formantträgheit, Subharmonik und unregelmäßiger Artikulation.";
   }
   if (mode.id === "realistic") {
     return "Lizenzierte Naturaufnahmen mit begrenzter Tonhöhenverschiebung.";

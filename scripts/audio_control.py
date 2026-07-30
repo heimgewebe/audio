@@ -56,7 +56,7 @@ STATIC_FILES = {
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
-ALLOWED_WHALE_MODES = frozenset({"morph", "realistic", "ufo"})
+ALLOWED_WHALE_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
 PROFILE_AREAS = {
     "desktop-mixed": "listening",
     "reference-listening": "listening",
@@ -563,6 +563,35 @@ def read_whale_contract() -> dict[str, Any]:
     }
     if any(morph.get(key) != value for key, value in morph_contract.items()):
         raise ControlError("Buckelwalprofil verletzt den 88-Tasten-Morph-Vertrag.")
+    organic = modes["organic"]
+    organic_contract = {
+        "backend": "source-derived-organic-resynthesis",
+        "base_backend": morph_contract["backend"],
+        "manifest": morph_contract["manifest"],
+        "note_range": morph_contract["note_range"],
+        "tuning": morph_contract["tuning"],
+        "keyboard_slot_count": 0,
+        "preset_count": 0,
+        "control_key_count": 0,
+        "voice_count": 1,
+        "permanent_noise_layer": False,
+        "long_phrase_playback": False,
+        "organic_features": [
+            "formant-inertia",
+            "subharmonic-body",
+            "deterministic-micro-instability",
+            "bounded-nonlinear-frequency-jumps",
+            "signal-excited-damped-vocal-modes",
+        ],
+        "comparison": "dependency-free-feature-comparison-against-source-bound-real-clips",
+        "hold": "causal-organic-development-without-sample-loop",
+        "legato": "phase-continuous-frequency-timbre-and-formant-glide",
+        "detached_retrigger": "gesture-seeded-new-call-with-damped-modal-tail",
+        "repeated_note": "phase-preserving-pulsed-rearticulation",
+        "pitch_bend_range_semitones": 2,
+    }
+    if any(organic.get(key) != value for key, value in organic_contract.items()):
+        raise ControlError("Buckelwalprofil verletzt den organischen 88-Tasten-Vertrag.")
     runtime = require_mapping(
         profile.get("runtime", {}),
         label="Buckelwal-Laufzeitvertrag",

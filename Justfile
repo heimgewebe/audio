@@ -53,6 +53,9 @@ whale-toggle:
 whale-morph:
     python3 scripts/whale_live.py mode morph
 
+whale-organic:
+    python3 scripts/whale_live.py mode organic
+
 whale-realistic:
     python3 scripts/whale_live.py mode realistic
 
