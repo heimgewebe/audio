@@ -1267,6 +1267,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                     "status": "serving",
                     "api_version": API_VERSION,
                     "authority": "local-backend",
+                    "runtime_head": current_revision(self.server.controller.runner),
                 },
                 head_only=head_only,
             )

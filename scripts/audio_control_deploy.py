@@ -31,7 +31,7 @@ DEFAULT_BRANCH = "main"
 DEFAULT_UNIT = "audio-control-ui-v1.service"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-UI_RUNTIME_ENV = pathlib.Path.home() / ".config" / "audio-control-ui" / "runtime.env"
+UI_RUNTIME_ENV = DEFAULT_STATE_ROOT / "runtime.env"
 UI_MANAGED_BY = "audio-control-autodeploy-v1"
 RUNTIME_FILES = {
     "scripts/audio_control_deploy.py": (
@@ -366,58 +366,94 @@ def install_release_runtime(
             + ", ".join(missing)
         )
 
-    deploy_source = release / "scripts" / "audio_control_deploy.py"
+    source_payloads: dict[str, bytes] = {}
+    candidates: list[dict[str, Any]] = []
+    for relative, (destination, mode) in RUNTIME_FILES.items():
+        source = release / relative
+        if source.is_symlink() or not source.is_file():
+            raise DeployError(f"Runtimequelle ist nicht vertrauenswürdig: {relative}")
+        payload = source.read_bytes()
+        source_payloads[relative] = payload
+        source_sha = hashlib.sha256(payload).hexdigest()
+        previous_payload: bytes | None = None
+        previous_mode: int | None = None
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_file():
+                raise DeployError(f"Runtimeziel ist nicht vertrauenswürdig: {destination}")
+            previous_payload = destination.read_bytes()
+            previous_mode = stat.S_IMODE(destination.stat().st_mode)
+            if (
+                hashlib.sha256(previous_payload).hexdigest() == source_sha
+                and previous_mode == mode
+            ):
+                continue
+        candidates.append(
+            {
+                "relative": relative,
+                "destination": destination,
+                "mode": mode,
+                "payload": payload,
+                "sha256": source_sha,
+                "previous_payload": previous_payload,
+                "previous_mode": previous_mode,
+            }
+        )
+
+    if not candidates:
+        return [], []
+
+    deploy_relative = "scripts/audio_control_deploy.py"
+    deploy_source = release / deploy_relative
     try:
         compile(
-            deploy_source.read_text(encoding="utf-8"),
+            source_payloads[deploy_relative].decode("utf-8"),
             str(deploy_source),
             "exec",
         )
-    except (OSError, SyntaxError, UnicodeDecodeError) as error:
+    except (SyntaxError, UnicodeDecodeError) as error:
         raise DeployError("Deploymechanismus des Releases ist nicht ausführbar.") from error
 
-    unit_sources = [
-        release / relative
-        for relative in RUNTIME_FILES
-        if relative.endswith((".service", ".timer"))
-    ]
-    run_command(
-        ["systemd-analyze", "--user", "verify", *map(str, unit_sources)],
-        timeout=30,
-    )
+    with tempfile.TemporaryDirectory(prefix="audio-control-units-") as directory:
+        unit_root = pathlib.Path(directory)
+        unit_snapshots: list[pathlib.Path] = []
+        for relative, payload in source_payloads.items():
+            if not relative.endswith((".service", ".timer")):
+                continue
+            snapshot = unit_root / pathlib.Path(relative).name
+            snapshot.write_bytes(payload)
+            snapshot.chmod(0o600)
+            unit_snapshots.append(snapshot)
+        run_command(
+            [
+                "systemd-analyze",
+                "--user",
+                "verify",
+                *map(str, unit_snapshots),
+            ],
+            timeout=30,
+        )
 
     updates: list[dict[str, Any]] = []
     backups: list[dict[str, Any]] = []
     try:
-        for relative, (destination, mode) in RUNTIME_FILES.items():
-            source = release / relative
-            if source.is_symlink() or not source.is_file():
-                raise DeployError(f"Runtimequelle ist nicht vertrauenswürdig: {relative}")
-            payload = source.read_bytes()
-            source_sha = hashlib.sha256(payload).hexdigest()
-            previous_payload: bytes | None = None
-            previous_mode: int | None = None
-            if destination.exists():
-                if destination.is_symlink() or not destination.is_file():
-                    raise DeployError(f"Runtimeziel ist nicht vertrauenswürdig: {destination}")
-                previous_payload = destination.read_bytes()
-                previous_mode = stat.S_IMODE(destination.stat().st_mode)
-                if hashlib.sha256(previous_payload).hexdigest() == source_sha:
-                    continue
+        for candidate in candidates:
+            destination = candidate["destination"]
             backups.append(
                 {
                     "path": str(destination),
-                    "payload": previous_payload,
-                    "mode": previous_mode,
+                    "payload": candidate["previous_payload"],
+                    "mode": candidate["previous_mode"],
                 }
             )
-            atomic_replace_bytes(destination, payload, mode)
+            atomic_replace_bytes(
+                destination, candidate["payload"], int(candidate["mode"])
+            )
             updates.append(
                 {
-                    "source": relative,
+                    "source": candidate["relative"],
                     "destination": str(destination),
-                    "sha256": source_sha,
-                    "mode": oct(mode),
+                    "sha256": candidate["sha256"],
+                    "mode": oct(int(candidate["mode"])),
                 }
             )
     except Exception:
@@ -680,9 +716,9 @@ def service_command(action: str, unit: str, *, check: bool = True) -> CommandRes
 
 def activate_service(unit: str) -> list[dict[str, Any]]:
     results = [
-        service_command("stop", unit, check=False),
-        service_command("reset-failed", unit, check=False),
         run_command(["systemctl", "--user", "daemon-reload"], timeout=30),
+        service_command("stop", unit),
+        service_command("reset-failed", unit, check=False),
         service_command("start", unit),
     ]
     return [result.receipt() for result in results]
@@ -712,6 +748,8 @@ def verify_service(
     port: int,
     attempts: int = 40,
 ) -> dict[str, Any]:
+    marker = verify_release_marker(release)
+    expected_commit = marker["commit"]
     expected_static = {
         endpoint: {
             "sha256": sha256_path(release / relative),
@@ -756,6 +794,11 @@ def verify_service(
                         last_error = f"Healthstatus ist {health.get('status')!r}"
                     elif health.get("authority") != "local-backend":
                         last_error = "Healthantwort stammt nicht vom lokalen Backend"
+                    elif health.get("runtime_head") != expected_commit:
+                        last_error = (
+                            "Healthrevision ist "
+                            f"{health.get('runtime_head')!r} statt {expected_commit}"
+                        )
                     else:
                         return {
                             "url": f"http://{host}:{port}/",
@@ -896,6 +939,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         runtime_environment: dict[str, Any] = {}
         runtime_environment_backup: dict[str, Any] | None = None
         service_receipts: list[dict[str, Any]] = []
+        service_activation_attempted = False
+        runtime_unit_changed = False
+        timer_updated = False
         retention: dict[str, Any] = {"keep": DEFAULT_RELEASE_RETENTION, "removed": [], "warnings": []}
         try:
             runtime_environment, runtime_environment_backup = reconcile_runtime_environment(
@@ -903,10 +949,23 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 host=args.host,
                 port=args.port,
             )
-            if changed:
-                runtime_updates, runtime_backups = install_release_runtime(release)
-            restart_required = changed or bool(runtime_environment.get("changed"))
+            runtime_updates, runtime_backups = install_release_runtime(release)
+            updated_sources = {update["source"] for update in runtime_updates}
+            runtime_unit_changed = any(
+                source.endswith((".service", ".timer"))
+                for source in updated_sources
+            )
+            ui_unit_updated = (
+                "systemd/user/audio-control-ui-v1.service" in updated_sources
+            )
+            timer_updated = "systemd/user/audio-control-deploy.timer" in updated_sources
+            restart_required = (
+                changed
+                or bool(runtime_environment.get("changed"))
+                or ui_unit_updated
+            )
             if restart_required:
+                service_activation_attempted = True
                 service_receipts = activate_service(args.unit)
                 service = verify_service(
                     release,
@@ -914,6 +973,13 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     port=args.port,
                 )
             else:
+                if runtime_unit_changed:
+                    runtime_activation.append(
+                        run_command(
+                            ["systemctl", "--user", "daemon-reload"],
+                            timeout=30,
+                        ).receipt()
+                    )
                 try:
                     service = verify_service(
                         release,
@@ -922,13 +988,14 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                         attempts=2,
                     )
                 except DeployError:
+                    service_activation_attempted = True
                     service_receipts = activate_service(args.unit)
                     service = verify_service(
                         release,
                         host=args.host,
                         port=args.port,
                     )
-            if any(update["source"].endswith(".timer") for update in runtime_updates):
+            if timer_updated:
                 runtime_activation.append(
                     run_command(
                         ["systemctl", "--user", "restart", "audio-control-deploy.timer"],
@@ -940,13 +1007,23 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             restore_runtime_environment(runtime_environment_backup)
             if runtime_backups:
                 restore_release_runtime(runtime_backups)
-                with contextlib.suppress(Exception):
-                    run_command(["systemctl", "--user", "daemon-reload"], timeout=30)
-                with contextlib.suppress(Exception):
-                    run_command(
-                        ["systemctl", "--user", "restart", "audio-control-deploy.timer"],
-                        timeout=30,
-                    )
+                if runtime_unit_changed:
+                    with contextlib.suppress(Exception):
+                        run_command(
+                            ["systemctl", "--user", "daemon-reload"],
+                            timeout=30,
+                        )
+                if timer_updated:
+                    with contextlib.suppress(Exception):
+                        run_command(
+                            [
+                                "systemctl",
+                                "--user",
+                                "restart",
+                                "audio-control-deploy.timer",
+                            ],
+                            timeout=30,
+                        )
             if changed:
                 if previous:
                     switch_current(deploy_root, previous)
@@ -955,7 +1032,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 else:
                     remove_current(deploy_root)
                     stop_service(args.unit)
-            elif runtime_environment_backup is not None:
+            elif runtime_environment_backup is not None or service_activation_attempted:
                 with contextlib.suppress(Exception):
                     activate_service(args.unit)
             raise

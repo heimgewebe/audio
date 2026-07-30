@@ -15,7 +15,7 @@ Environment=AUDIO_CONTROL_MANAGED_BY=audio-control-autodeploy-v1
 EnvironmentFile=-%h/.config/audio-control-deploy.env
 # Die releasegebundene Laufzeitkonfiguration überschreibt den Altbestand.
 # Optional nur, damit der erste Upgrade-Lauf vor ihrer Erzeugung starten kann.
-EnvironmentFile=-%h/.config/audio-control-ui/runtime.env
+EnvironmentFile=-%h/.local/state/audio-control-deploy/runtime.env
 WorkingDirectory=%h/.local/share/audio-control-ui/current
 ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py serve --host 127.0.0.1 --port ${AUDIO_CONTROL_PORT}
 Restart=on-failure

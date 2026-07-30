@@ -111,6 +111,25 @@ class AudioControlDeployTests(unittest.TestCase):
             with self.assertRaises(MODULE.DeployError):
                 MODULE.verify_release_marker(release, expected_commit=commit)
 
+    def test_service_activation_fails_closed_when_stop_fails(self):
+        daemon_reload = MODULE.CommandResult(
+            ("systemctl", "--user", "daemon-reload"), 0, "", "", 0.1
+        )
+        with (
+            mock.patch.object(MODULE, "run_command", return_value=daemon_reload) as run,
+            mock.patch.object(
+                MODULE,
+                "service_command",
+                side_effect=MODULE.DeployError("stop failed"),
+            ) as service,
+            self.assertRaises(MODULE.DeployError),
+        ):
+            MODULE.activate_service("audio-control-ui-v1.service")
+        run.assert_called_once_with(
+            ["systemctl", "--user", "daemon-reload"], timeout=30
+        )
+        service.assert_called_once_with("stop", "audio-control-ui-v1.service")
+
     def test_service_readback_binds_html_javascript_css_and_health(self):
         commit = "c" * 40
         with tempfile.TemporaryDirectory() as directory:
@@ -135,7 +154,11 @@ class AudioControlDeployTests(unittest.TestCase):
                 "/api/v1/health": (
                     200,
                     json.dumps(
-                        {"status": "serving", "authority": "local-backend"}
+                        {
+                            "status": "serving",
+                            "authority": "local-backend",
+                            "runtime_head": commit,
+                        }
                     ).encode(),
                     "application/json",
                 ),
@@ -151,6 +174,34 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertEqual(set(report["static_sha256"]), {"/", "/app.js", "/styles.css"})
 
             payloads["/app.js"] = (200, b"stale", "application/javascript")
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "fetch_bytes",
+                    side_effect=lambda _host, _port, path: payloads[path],
+                ),
+                self.assertRaises(MODULE.DeployError),
+            ):
+                MODULE.verify_service(
+                    release, host="127.0.0.1", port=8765, attempts=1
+                )
+
+            payloads["/app.js"] = (
+                200,
+                (release / "ui" / "app.js").read_bytes(),
+                "application/javascript; charset=utf-8",
+            )
+            payloads["/api/v1/health"] = (
+                200,
+                json.dumps(
+                    {
+                        "status": "serving",
+                        "authority": "local-backend",
+                        "runtime_head": "d" * 40,
+                    }
+                ).encode(),
+                "application/json",
+            )
             with (
                 mock.patch.object(
                     MODULE,
@@ -241,6 +292,135 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertEqual(report["service_commands"], [])
             self.assertFalse(report["runtime_environment"]["changed"])
             activate.assert_not_called()
+
+    def test_unchanged_release_reconciles_stale_deploy_runtime(self):
+        commit = "4" * 40
+        update = {
+            "source": "scripts/audio_control_deploy.py",
+            "destination": "/tmp/audio-control-deploy.py",
+            "sha256": "5" * 64,
+            "mode": "0o700",
+        }
+        backup = {
+            "path": update["destination"],
+            "payload": b"old",
+            "mode": 0o700,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            release = args.deploy_root / "releases" / commit
+            release.mkdir(parents=True)
+            service = {"url": "http://127.0.0.1:8765/"}
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(MODULE, "read_current_commit", return_value=commit),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_release",
+                    return_value=(release, [], False),
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "reconcile_runtime_environment",
+                    return_value=(
+                        {"changed": False, "host": "127.0.0.1", "port": 8765},
+                        None,
+                    ),
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "install_release_runtime",
+                    return_value=([update], [backup]),
+                ) as install_runtime,
+                mock.patch.object(MODULE, "verify_service", return_value=service),
+                mock.patch.object(MODULE, "activate_service") as activate,
+                mock.patch.object(
+                    MODULE,
+                    "prune_releases",
+                    return_value={"keep": 3, "removed": [], "warnings": []},
+                ),
+            ):
+                report = MODULE.sync(args)
+            self.assertFalse(report["changed"])
+            self.assertEqual(report["runtime_updates"], [update])
+            install_runtime.assert_called_once_with(release)
+            activate.assert_not_called()
+
+    def test_unchanged_ui_unit_drift_restarts_service(self):
+        commit = "6" * 40
+        update = {
+            "source": "systemd/user/audio-control-ui-v1.service",
+            "destination": "/tmp/audio-control-ui-v1.service",
+            "sha256": "7" * 64,
+            "mode": "0o600",
+        }
+        backup = {
+            "path": update["destination"],
+            "payload": b"old-unit",
+            "mode": 0o600,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            release = args.deploy_root / "releases" / commit
+            release.mkdir(parents=True)
+            service = {"url": "http://127.0.0.1:8765/"}
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(MODULE, "read_current_commit", return_value=commit),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_release",
+                    return_value=(release, [], False),
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "reconcile_runtime_environment",
+                    return_value=(
+                        {"changed": False, "host": "127.0.0.1", "port": 8765},
+                        None,
+                    ),
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "install_release_runtime",
+                    return_value=([update], [backup]),
+                ),
+                mock.patch.object(
+                    MODULE, "activate_service", return_value=[]
+                ) as activate,
+                mock.patch.object(MODULE, "verify_service", return_value=service),
+                mock.patch.object(
+                    MODULE,
+                    "prune_releases",
+                    return_value={"keep": 3, "removed": [], "warnings": []},
+                ),
+            ):
+                report = MODULE.sync(args)
+            self.assertFalse(report["changed"])
+            self.assertEqual(report["runtime_updates"], [update])
+            activate.assert_called_once_with(args.unit)
 
     def test_changed_release_rolls_pointer_back_after_failed_readback(self):
         old_commit = "e" * 40
@@ -368,6 +548,22 @@ class AudioControlDeployTests(unittest.TestCase):
             with self.subTest(port=port), self.assertRaises(MODULE.DeployError):
                 MODULE.runtime_environment_payload("127.0.0.1", port)
 
+    def test_runtime_environment_is_created_in_existing_state_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_root = pathlib.Path(directory) / "state"
+            state_root.mkdir()
+            runtime_env = state_root / "runtime.env"
+            report, backup = MODULE.reconcile_runtime_environment(
+                runtime_env, host="127.0.0.1", port=8765
+            )
+            self.assertTrue(report["changed"])
+            self.assertIsNone(backup["payload"])
+            self.assertEqual(runtime_env.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                runtime_env.read_bytes(),
+                MODULE.runtime_environment_payload("127.0.0.1", 8765),
+            )
+
     def test_runtime_environment_failure_restores_config_and_service(self):
         commit = "3" * 40
         with tempfile.TemporaryDirectory() as directory:
@@ -419,6 +615,45 @@ class AudioControlDeployTests(unittest.TestCase):
             restore.assert_called_once_with(backup)
             self.assertEqual(activate.call_count, 2)
 
+    def test_release_runtime_validation_uses_bound_snapshots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            release = root / "release"
+            destinations = root / "installed"
+            runtime_files = {}
+            expected_units = {}
+            for relative, (_destination, mode) in MODULE.RUNTIME_FILES.items():
+                source = release / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                if relative.endswith(".py"):
+                    payload = b"print('deploy')\n"
+                else:
+                    payload = f"# bound {relative}\n".encode()
+                    expected_units[pathlib.Path(relative).name] = payload
+                source.write_bytes(payload)
+                destination = destinations / pathlib.Path(relative).name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(b"stale")
+                destination.chmod(mode)
+                runtime_files[relative] = (destination, mode)
+
+            def verify(argv, **_kwargs):
+                self.assertEqual(argv[:3], ["systemd-analyze", "--user", "verify"])
+                observed = {
+                    pathlib.Path(value).name: pathlib.Path(value).read_bytes()
+                    for value in argv[3:]
+                }
+                self.assertEqual(observed, expected_units)
+                return MODULE.CommandResult(tuple(argv), 0, "", "", 0.1)
+
+            with (
+                mock.patch.object(MODULE, "RUNTIME_FILES", runtime_files),
+                mock.patch.object(MODULE, "run_command", side_effect=verify),
+            ):
+                updates, backups = MODULE.install_release_runtime(release)
+            self.assertEqual(len(updates), len(runtime_files))
+            self.assertEqual(len(backups), len(runtime_files))
+
     def test_release_runtime_update_requires_complete_bound_set(self):
         with tempfile.TemporaryDirectory() as directory:
             release = pathlib.Path(directory)
@@ -466,7 +701,7 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertIn("%h/.local/share/audio-control-ui/current", service)
         legacy_environment = "EnvironmentFile=-%h/.config/audio-control-deploy.env"
         runtime_environment = (
-            "EnvironmentFile=-%h/.config/audio-control-ui/runtime.env"
+            "EnvironmentFile=-%h/.local/state/audio-control-deploy/runtime.env"
         )
         self.assertIn("Environment=AUDIO_CONTROL_PORT=8765", service_directives)
         self.assertIn(legacy_environment, service_directives)
@@ -476,7 +711,7 @@ class AudioControlDeployTests(unittest.TestCase):
             service_directives.index(runtime_environment),
         )
         self.assertNotIn(
-            "ConditionPathExists=%h/.config/audio-control-ui/runtime.env",
+            "ConditionPathExists=%h/.local/state/audio-control-deploy/runtime.env",
             service_directives,
         )
         self.assertIn("--host 127.0.0.1", exec_start)
@@ -489,13 +724,18 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertIn("audio-control-deploy.py sync", deploy)
         self.assertIn("%h/.local/libexec", deploy)
         self.assertIn("%h/.config/systemd/user", deploy)
-        self.assertIn("%h/.config/audio-control-ui", deploy)
+        self.assertNotIn("%h/.config/audio-control-ui", deploy)
+        self.assertIn("%h/.local/state/audio-control-deploy", deploy)
         self.assertEqual(len(MODULE.RUNTIME_FILES), 4)
         self.assertEqual(MODULE.DEFAULT_RELEASE_RETENTION, 3)
         self.assertIn("OnUnitActiveSec=60s", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("--expected-commit", installer)
-        self.assertIn('config_root / "audio-control-ui"', installer)
+        self.assertNotIn('config_root / "audio-control-ui"', installer)
+        deployer = (ROOT / "scripts" / "audio_control_deploy.py").read_text()
+        self.assertIn(
+            'UI_RUNTIME_ENV = DEFAULT_STATE_ROOT / "runtime.env"', deployer
+        )
         self.assertIn("validate_ui_endpoint(args.host, args.port)", installer)
         self.assertNotIn("shell=True", installer)
 

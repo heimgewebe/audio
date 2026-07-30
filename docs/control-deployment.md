@@ -23,16 +23,21 @@ autoritative Commitidentität.
    Python-Kompilierung und JavaScript-Syntaxprüfung.
 5. Der Zeiger `current` wird atomar auf den geprüften Release umgeschaltet.
 6. Host, Port und Laufzeitverwalter werden atomar in
-   `~/.config/audio-control-ui/runtime.env` gebunden. Version 1 bleibt absichtlich
-   auf `127.0.0.1` beschränkt; der Port ist zwischen 1024 und 65535 konfigurierbar.
-7. Der persistente Dienst `audio-control-ui-v1.service` wird bei einem neuen
-   Release oder geänderter Laufzeitkonfiguration neu gestartet.
-8. Das Deployment gilt erst als erfolgreich, wenn HTML, JavaScript und CSS
-   bytegenau zum Release passen und `/api/v1/health` den lokalen Backendvertrag
-   bestätigt.
-9. Bei einem Fehler werden Laufzeitkonfiguration, Releasezeiger,
-   Deploymechanismus und Dienst auf den vorherigen Stand zurückgesetzt.
-10. Der aktuelle und die zwei jüngsten gültigen Vorgängerreleases bleiben für
+   `~/.local/state/audio-control-deploy/runtime.env` gebunden. Version 1 bleibt
+   absichtlich auf `127.0.0.1` beschränkt; der Port ist zwischen 1024 und 65535
+   konfigurierbar.
+7. Deployskript und systemd-Units werden bei jedem Lauf gegen den gebundenen
+   Release abgeglichen. Byte- oder Modusdrift wird auch dann repariert, wenn der
+   Zielcommit unverändert ist; ein bereits identischer Stand bleibt ohne
+   Unit-Prüfung und ohne Neustart wirkungsfrei.
+8. Der persistente Dienst `audio-control-ui-v1.service` wird bei einem neuen
+   Release, geänderter Laufzeitkonfiguration oder geänderter UI-Unit neu gestartet.
+9. Das Deployment gilt erst als erfolgreich, wenn HTML, JavaScript und CSS
+   bytegenau zum Release passen und `/api/v1/health` zusätzlich exakt den
+   Zielcommit als laufende Backendrevision bestätigt.
+10. Bei einem Fehler werden Laufzeitkonfiguration, Releasezeiger,
+    Deploymechanismus und Dienst auf den vorherigen Stand zurückgesetzt.
+11. Der aktuelle und die zwei jüngsten gültigen Vorgängerreleases bleiben für
     Rollback und Diagnose erhalten; ältere gültige Releases werden entfernt.
 
 Beim ersten Selbstupdate einer älteren Installation kann `runtime.env` noch
@@ -40,7 +45,10 @@ fehlen. Der UI-Dienst startet dann mit sicheren Defaults und übernimmt nur den
 bisher konfigurierten Port aus `~/.config/audio-control-deploy.env`. Die
 Bind-Adresse bleibt fest auf `127.0.0.1`. Sobald der neue Deployer läuft,
 erzeugt er `runtime.env`; diese releasegebundene Konfiguration hat anschließend
-Vorrang vor dem Migrationsfallback.
+Vorrang vor dem Migrationsfallback. Die Datei liegt im bereits vorhandenen und
+für den Deploydienst schreibbaren State-Verzeichnis; deshalb braucht der
+Legacy-Upgradepfad weder einen neuen Konfigurationsordner noch eine breitere
+Schreibfreigabe unter `~/.config`.
 
 Version 1 bindet den persistenten Dienst und seine systemd-Sandbox fest an
 `~/.local/share/audio-control-ui` und

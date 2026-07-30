@@ -1013,6 +1013,7 @@ class AudioControlHTTPTests(unittest.TestCase):
         health = json.loads(payload)
         self.assertEqual(health["authority"], "local-backend")
         self.assertEqual(health["status"], "serving")
+        self.assertEqual(health["runtime_head"], "a" * 40)
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         self.assertIn("object-src 'none'", headers["Content-Security-Policy"])
         self.assertIn("media-src 'none'", headers["Content-Security-Policy"])
