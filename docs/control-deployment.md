@@ -7,7 +7,9 @@ Fetch- und Referenzmutationen laufen in einem privaten Bare-Repository unter
 
 Jeder auszuliefernde Stand wird unter
 `~/.local/share/audio-control-ui/releases/<commit>` als unveränderlicher,
-commitgebundener Release angelegt.
+commitgebundener Release angelegt. Der Releasebeleg
+`.audio-control-release.json` liefert dem laufenden Backend auch ohne `.git` die
+autoritative Commitidentität.
 
 ## Ablauf
 
@@ -20,14 +22,18 @@ commitgebundener Release angelegt.
 4. Vor jeder Wirkung laufen Control-Vertrag, Audio-Control-Tests,
    Python-Kompilierung und JavaScript-Syntaxprüfung.
 5. Der Zeiger `current` wird atomar auf den geprüften Release umgeschaltet.
-6. Der persistente Dienst `audio-control-ui-v1.service` wird neu gestartet.
-7. Das Deployment gilt erst als erfolgreich, wenn HTML, JavaScript und CSS
+6. Host, Port und Laufzeitverwalter werden atomar in
+   `~/.config/audio-control-ui/runtime.env` gebunden. Version 1 bleibt absichtlich
+   auf `127.0.0.1` beschränkt; der Port ist zwischen 1024 und 65535 konfigurierbar.
+7. Der persistente Dienst `audio-control-ui-v1.service` wird bei einem neuen
+   Release oder geänderter Laufzeitkonfiguration neu gestartet.
+8. Das Deployment gilt erst als erfolgreich, wenn HTML, JavaScript und CSS
    bytegenau zum Release passen und `/api/v1/health` den lokalen Backendvertrag
    bestätigt.
-8. Bei einem Fehler werden Releasezeiger, Deploymechanismus und Dienst auf den
-   vorherigen Stand zurückgesetzt.
-9. Der aktuelle und die zwei jüngsten gültigen Vorgängerreleases bleiben für
-   Rollback und Diagnose erhalten; ältere gültige Releases werden entfernt.
+9. Bei einem Fehler werden Laufzeitkonfiguration, Releasezeiger,
+   Deploymechanismus und Dienst auf den vorherigen Stand zurückgesetzt.
+10. Der aktuelle und die zwei jüngsten gültigen Vorgängerreleases bleiben für
+    Rollback und Diagnose erhalten; ältere gültige Releases werden entfernt.
 
 Der normale Abstand zwischen Merge und beginnendem Deployment beträgt höchstens
 etwa 60 Sekunden zuzüglich lokaler Prüfung. Ein unveränderter, gesunder Release

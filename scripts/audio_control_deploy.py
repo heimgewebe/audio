@@ -31,6 +31,8 @@ DEFAULT_BRANCH = "main"
 DEFAULT_UNIT = "audio-control-ui-v1.service"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+UI_RUNTIME_ENV = pathlib.Path.home() / ".config" / "audio-control-ui" / "runtime.env"
+UI_MANAGED_BY = "audio-control-autodeploy-v1"
 RUNTIME_FILES = {
     "scripts/audio_control_deploy.py": (
         pathlib.Path.home() / ".local" / "libexec" / "audio-control-deploy.py",
@@ -283,6 +285,72 @@ def atomic_replace_bytes(path: pathlib.Path, payload: bytes, mode: int) -> None:
     finally:
         with contextlib.suppress(FileNotFoundError):
             temporary.unlink()
+
+
+def validate_ui_endpoint(host: str, port: int) -> None:
+    if host != DEFAULT_HOST:
+        raise DeployError("Version 1 unterstützt als UI-Bind-Adresse nur 127.0.0.1.")
+    if not 1024 <= port <= 65535:
+        raise DeployError("UI-Port muss zwischen 1024 und 65535 liegen.")
+
+
+def runtime_environment_payload(host: str, port: int) -> bytes:
+    validate_ui_endpoint(host, port)
+    return (
+        f'AUDIO_CONTROL_HOST="{host}"\n'
+        f'AUDIO_CONTROL_PORT="{port}"\n'
+        f'AUDIO_CONTROL_MANAGED_BY="{UI_MANAGED_BY}"\n'
+    ).encode("utf-8")
+
+
+def reconcile_runtime_environment(
+    path: pathlib.Path,
+    *,
+    host: str,
+    port: int,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    payload = runtime_environment_payload(host, port)
+    expected_sha = hashlib.sha256(payload).hexdigest()
+    previous_payload: bytes | None = None
+    previous_mode: int | None = None
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise DeployError(f"UI-Laufzeitkonfiguration ist nicht vertrauenswürdig: {path}")
+        previous_payload = path.read_bytes()
+        previous_mode = stat.S_IMODE(path.stat().st_mode)
+        if hashlib.sha256(previous_payload).hexdigest() == expected_sha:
+            return {
+                "path": str(path),
+                "changed": False,
+                "sha256": expected_sha,
+                "host": host,
+                "port": port,
+            }, None
+    backup = {
+        "path": str(path),
+        "payload": previous_payload,
+        "mode": previous_mode,
+    }
+    atomic_replace_bytes(path, payload, 0o600)
+    return {
+        "path": str(path),
+        "changed": True,
+        "sha256": expected_sha,
+        "host": host,
+        "port": port,
+    }, backup
+
+
+def restore_runtime_environment(backup: dict[str, Any] | None) -> None:
+    if backup is None:
+        return
+    destination = pathlib.Path(backup["path"])
+    payload = backup["payload"]
+    if payload is None:
+        with contextlib.suppress(FileNotFoundError):
+            destination.unlink()
+        return
+    atomic_replace_bytes(destination, payload, int(backup["mode"] or 0o600))
 
 
 def install_release_runtime(
@@ -789,6 +857,7 @@ def resolve_target(
     ]
 
 def sync(args: argparse.Namespace) -> dict[str, Any]:
+    validate_ui_endpoint(args.host, args.port)
     source_repo = ensure_source_repo(args.source_repo)
     deploy_root = ensure_private_directory(args.deploy_root)
     state_root = ensure_private_directory(args.state_root)
@@ -821,11 +890,20 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         runtime_updates: list[dict[str, Any]] = []
         runtime_backups: list[dict[str, Any]] = []
         runtime_activation: list[dict[str, Any]] = []
+        runtime_environment: dict[str, Any] = {}
+        runtime_environment_backup: dict[str, Any] | None = None
         service_receipts: list[dict[str, Any]] = []
         retention: dict[str, Any] = {"keep": DEFAULT_RELEASE_RETENTION, "removed": [], "warnings": []}
         try:
+            runtime_environment, runtime_environment_backup = reconcile_runtime_environment(
+                UI_RUNTIME_ENV,
+                host=args.host,
+                port=args.port,
+            )
             if changed:
                 runtime_updates, runtime_backups = install_release_runtime(release)
+            restart_required = changed or bool(runtime_environment.get("changed"))
+            if restart_required:
                 service_receipts = activate_service(args.unit)
                 service = verify_service(
                     release,
@@ -856,6 +934,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 )
             retention = prune_releases(deploy_root, current_commit=commit)
         except Exception:
+            restore_runtime_environment(runtime_environment_backup)
             if runtime_backups:
                 restore_release_runtime(runtime_backups)
                 with contextlib.suppress(Exception):
@@ -873,6 +952,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 else:
                     remove_current(deploy_root)
                     stop_service(args.unit)
+            elif runtime_environment_backup is not None:
+                with contextlib.suppress(Exception):
+                    activate_service(args.unit)
             raise
         deployed_at = int(time.time())
         receipt = {
@@ -890,6 +972,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "git": git_receipts,
             "validation": validation_receipts,
             "runtime_updates": runtime_updates,
+            "runtime_environment": runtime_environment,
             "runtime_activation": runtime_activation,
             "service_commands": service_receipts,
             "release_retention": retention,

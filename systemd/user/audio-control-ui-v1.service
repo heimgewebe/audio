@@ -4,15 +4,14 @@ After=network.target
 StartLimitIntervalSec=30
 StartLimitBurst=5
 ConditionPathExists=%h/.local/share/audio-control-ui/current/scripts/audio_control.py
+ConditionPathExists=%h/.config/audio-control-ui/runtime.env
 
 [Service]
 Type=notify
 NotifyAccess=main
-Environment=AUDIO_CONTROL_HOST=127.0.0.1
-Environment=AUDIO_CONTROL_PORT=8765
-Environment=AUDIO_CONTROL_MANAGED_BY=audio-control-autodeploy-v1
+EnvironmentFile=%h/.config/audio-control-ui/runtime.env
 WorkingDirectory=%h/.local/share/audio-control-ui/current
-ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py serve --host 127.0.0.1 --port 8765
+ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py serve --host ${AUDIO_CONTROL_HOST} --port ${AUDIO_CONTROL_PORT}
 Restart=on-failure
 RestartSec=2s
 TimeoutStartSec=15s

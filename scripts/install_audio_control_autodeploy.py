@@ -134,12 +134,21 @@ def environment_line(name: str, value: str) -> str:
     return f'{name}="{escaped}"\n'
 
 
+def validate_ui_endpoint(host: str, port: int) -> None:
+    if host != "127.0.0.1":
+        raise InstallError("Version 1 unterstützt als UI-Bind-Adresse nur 127.0.0.1.")
+    if not 1024 <= port <= 65535:
+        raise InstallError("UI-Port muss zwischen 1024 und 65535 liegen.")
+
+
 def install(args: argparse.Namespace) -> dict[str, Any]:
+    validate_ui_endpoint(args.host, args.port)
     source_repo = validate_source_repo(args.source_repo)
     deploy_root = ensure_absolute_directory(args.deploy_root)
     state_root = ensure_absolute_directory(args.state_root)
     libexec = ensure_absolute_directory(pathlib.Path.home() / ".local" / "libexec")
     config_root = ensure_absolute_directory(pathlib.Path.home() / ".config")
+    runtime_config_root = ensure_absolute_directory(config_root / "audio-control-ui")
     unit_root = ensure_absolute_directory(
         pathlib.Path.home() / ".config" / "systemd" / "user"
     )
@@ -223,6 +232,7 @@ def install(args: argparse.Namespace) -> dict[str, Any]:
         "source_repo": str(source_repo),
         "deploy_root": str(deploy_root),
         "state_root": str(state_root),
+        "runtime_config_root": str(runtime_config_root),
         "installed": installed,
         "commands": commands,
         "timer_interval_seconds": 60,
