@@ -146,6 +146,7 @@ def recompute(report):
         report["physical"],
         report["laboratory"],
         report["playback"],
+        report["device_exercises"],
     )
     report["report_sha256"] = MODULE.sha256_json(MODULE.report_digest_core(report))
 
@@ -205,6 +206,96 @@ class SystemTruthTests(unittest.TestCase):
             "exercise-required",
         )
         self.assertIsNone(report["doctor"]["graph"]["round_trip_latency_ms"])
+
+    def test_device_loss_gate_requires_two_valid_exercise_receipts(self):
+        report = self.report()
+        current = {
+            "motu_m2": {
+                "observed_at": "2026-07-30T12:02:00+00:00",
+                "observation_sha256": "1" * 64,
+                "complete": True,
+                "present": True,
+                "ambiguous": False,
+                "match_count": 1,
+                "identity_strength": "serial",
+                "identity_fingerprint": "c" * 64,
+            },
+            "roland_fp_30x": {
+                "observed_at": "2026-07-30T12:02:01+00:00",
+                "observation_sha256": "2" * 64,
+                "complete": True,
+                "present": True,
+                "ambiguous": False,
+                "match_count": 1,
+                "identity_strength": "model-port",
+                "identity_fingerprint": "e" * 64,
+            },
+        }
+        state_sha256 = "a" * 64
+        current_identity_sha256 = MODULE.sha256_json(
+            MODULE.DEVICE_LOSS.current_identity_binding(current)
+        )
+        projection = {
+            "state_sha256": state_sha256,
+            "current": current,
+            "current_identity_sha256": current_identity_sha256,
+            "truth_binding_sha256": MODULE.sha256_json(
+                {
+                    "state_sha256": state_sha256,
+                    "current_identity_sha256": current_identity_sha256,
+                }
+            ),
+            "resolved": ["motu_m2", "roland_fp_30x"],
+            "invalidated": {},
+            "unresolved": [],
+            "recorded_count": 2,
+            "resolved_count": 2,
+            "total_count": 2,
+            "complete": True,
+            "receipts": {
+                "motu_m2": {
+                    "status": "passed",
+                    "recorded_at": "2026-07-30T12:00:00+00:00",
+                    "evidence_sha256": "b" * 64,
+                    "identity_strength": "serial",
+                    "identity_fingerprint": "c" * 64,
+                },
+                "roland_fp_30x": {
+                    "status": "passed",
+                    "recorded_at": "2026-07-30T12:01:00+00:00",
+                    "evidence_sha256": "d" * 64,
+                    "identity_strength": "model-port",
+                    "identity_fingerprint": "e" * 64,
+                },
+            },
+            "authority": "validated-private-device-exercise-state",
+        }
+        report["device_exercises"] = projection
+        report["gates"] = MODULE.build_gate_status(
+            report["doctor"],
+            report["physical"],
+            report["laboratory"],
+            report["runtime"],
+            report["contracts"],
+            projection,
+        )
+        recompute(report)
+        self.assertEqual(
+            report["gates"]["device-loss-baseline"]["status"],
+            "pass",
+        )
+        self.assertEqual(
+            report["gates"]["device-loss-baseline"]["evidence"],
+            ["b" * 64, "d" * 64],
+        )
+        MODULE.verify_report(report)
+        tampered = copy.deepcopy(report)
+        tampered["device_exercises"]["resolved"] = ["motu_m2"]
+        tampered["report_sha256"] = MODULE.sha256_json(
+            MODULE.report_digest_core(tampered)
+        )
+        with self.assertRaisesRegex(ValueError, "sets do not cover|count mismatch"):
+            MODULE.verify_report(tampered)
 
     def test_contract_aggregate_mismatch_is_rejected_even_with_new_outer_hash(self):
         report = self.report()
@@ -404,6 +495,7 @@ class SystemTruthTests(unittest.TestCase):
             report["laboratory"],
             report["runtime"],
             report["contracts"],
+            report["device_exercises"],
         )
         recompute(report)
         with self.assertRaisesRegex(ValueError, "runtime command-health"):
@@ -889,6 +981,7 @@ class SystemTruthTests(unittest.TestCase):
             after["laboratory"],
             after["runtime"],
             after["contracts"],
+            after["device_exercises"],
         )
         recompute(after)
         drift = MODULE.build_drift_report(before, after)
@@ -922,6 +1015,7 @@ class SystemTruthTests(unittest.TestCase):
             after["laboratory"],
             after["runtime"],
             after["contracts"],
+            after["device_exercises"],
         )
         recompute(after)
         drift = MODULE.build_drift_report(before, after)
@@ -946,6 +1040,7 @@ class SystemTruthTests(unittest.TestCase):
             after["laboratory"],
             after["runtime"],
             after["contracts"],
+            after["device_exercises"],
         )
         recompute(after)
         drift = MODULE.build_drift_report(before, after)

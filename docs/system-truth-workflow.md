@@ -101,6 +101,45 @@ Hörpegelkalibrierung oder Geräteverlustübungen stehen getrennt unter
 `required_followups`. Prozessänderungen gelten als materieller Drift. Der
 Vergleich ändert niemals Profile oder Dienste.
 
+## Geräteverlust und Wiederkehr
+
+Die Software trennt MOTU und Roland nicht über flüchtige ALSA-Kartennummern,
+sondern über USB-Hersteller- und Modellkennung. Beim MOTU bindet sie zusätzlich
+die Geräteseriennummer. Das Roland FP-30X stellt keine geräteeindeutige
+Serienkennung bereit; seine stärkste beobachtbare Identität ist deshalb
+Modell plus USB-Port. Ein identisches Ersatzgerät am selben Port kann damit
+nicht erkannt werden und bleibt ausdrücklich außerhalb des Belegs.
+
+Eine Übung verändert selbst nichts. Während des begrenzten Beobachtungsfensters
+muss das jeweilige Gerät physisch getrennt und wieder verbunden werden:
+
+```bash
+python3 scripts/audio-device-loss observe motu_m2 \
+  --loss-timeout-seconds 60 \
+  --recovery-timeout-seconds 60 \
+  --output /tmp/motu-device-loss.json
+python3 scripts/audio-device-loss record motu_m2 \
+  /tmp/motu-device-loss.json --replace
+
+python3 scripts/audio-device-loss observe roland_fp_30x \
+  --loss-timeout-seconds 60 \
+  --recovery-timeout-seconds 60 \
+  --output /tmp/roland-device-loss.json
+python3 scripts/audio-device-loss record roland_fp_30x \
+  /tmp/roland-device-loss.json --replace
+```
+
+Ein positiver Receipt verlangt eine eindeutige Ausgangspräsenz, zwei
+vollständige Abwesenheitsbeobachtungen, zwei übereinstimmende
+Wiederkehrbeobachtungen und eine unveränderte beobachtbare Identität. State und
+Belege werden privat mit Modus `0600` gespeichert. `device-loss-baseline` wird
+erst dann `pass`, wenn beide aktuellen Receipts gültig sind. Ändert sich der
+Beobachter- oder Systemwahrheitscode, werden ältere Receipts invalidiert und
+müssen erneut ausgeführt werden. Dasselbe gilt, wenn das aktuell beobachtete
+Gerät fehlt, nicht mehr eindeutig ist oder nicht mehr die im Receipt gebundene
+Identität besitzt. Beim Roland zählt wegen der fehlenden Serienkennung auch ein
+Wechsel des USB-Ports als Identitätsänderung.
+
 ## T001-Abschlussgrenze
 
 Die Werkzeuge schließen die maschinelle Wahrheits- und Driftinfrastruktur. Die
