@@ -23,6 +23,8 @@ PROFILE_PATH = ROOT / "profiles" / "audio-profiles.v1.json"
 PHYSICAL_SCRIPT = ROOT / "scripts" / "physical_verification.py"
 PLUGIN_HOST_OBSERVER_PATH = ROOT / "scripts" / "plugin_host_observer.py"
 QOBUZ_RATE_OBSERVER_PATH = ROOT / "scripts" / "qobuz_rate_observer.py"
+VOICE_CAPTURE_OBSERVER_PATH = ROOT / "scripts" / "voice_capture_observer.py"
+LEVEL_ANALYZER_PATH = ROOT / "scripts" / "level_analyzer.py"
 SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
 MAX_EVIDENCE_BYTES = 131_072
 MAX_STATE_BYTES = 524_288
@@ -64,6 +66,22 @@ QOBUZ_RPC_PAYLOAD = (
 QOBUZ_PACTL_INFO_ARGV = ("pactl", "--format=json", "info")
 QOBUZ_PACTL_SINKS_ARGV = ("pactl", "--format=json", "list", "sinks")
 QOBUZ_PACTL_INPUTS_ARGV = ("pactl", "--format=json", "list", "sink-inputs")
+VOICE_CAPTURE_METHOD = "bounded-motu-serial-live-voice-capture-v1"
+VOICE_PACTL_SOURCES_ARGV = ("pactl", "--format=json", "list", "sources")
+VOICE_PARECORD_FIXED_ARGUMENTS = (
+    "--record",
+    "--rate=48000",
+    "--format=s32le",
+    "--channels=2",
+    "--no-remix",
+    "--file-format=wav",
+    "--client-name=audio-voice-reference",
+    "--stream-name=voice-reference",
+)
+VOICE_MIN_CAPTURE_SECONDS = 8
+VOICE_MAX_CAPTURE_SECONDS = 20
+VOICE_MAX_STDERR_BYTES = 65_536
+VOICE_STARTUP_TIMEOUT_SECONDS = 5
 
 
 def load_module(name: str, path: pathlib.Path):
@@ -346,6 +364,195 @@ def validate_voice_level(evidence: dict[str, Any]) -> None:
         raise ValueError("voice evidence has no source WAV binding")
     _sha256(source.get("sha256"), "source WAV SHA-256")
     _positive_int(source.get("bytes"), "source WAV bytes")
+
+
+def has_bound_voice_capture(evidence: dict[str, Any]) -> bool:
+    return isinstance(evidence.get("capture_observation"), dict) and isinstance(
+        evidence.get("implementation"), dict
+    )
+
+
+def _validate_voice_source_snapshot(snapshot: Any, label: str) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"{label} voice source snapshot is missing")
+    if (
+        snapshot.get("schema_version") != 1
+        or snapshot.get("kind") != "audio_voice_source_snapshot"
+    ):
+        raise ValueError(f"{label} voice source snapshot schema is invalid")
+    parse_timestamp(snapshot.get("observed_at"), f"{label} voice source timestamp")
+    if (
+        snapshot.get("complete") is not True
+        or snapshot.get("present") is not True
+        or snapshot.get("match_count") != 1
+        or snapshot.get("ambiguous") is not False
+        or snapshot.get("errors") != []
+    ):
+        raise ValueError(f"{label} MOTU source is not uniquely ready")
+    identity = snapshot.get("identity")
+    if not isinstance(identity, dict):
+        raise ValueError(f"{label} MOTU source identity is missing")
+    if identity.get("vendor_id") != "07fd" or identity.get("product_id") != "0008":
+        raise ValueError(f"{label} source is not a MOTU M2")
+    for field in ("serial_sha256", "node_name_sha256", "bus_path_sha256"):
+        _sha256(identity.get(field), f"{label} {field}")
+    if identity.get("sample_format") != "s32le":
+        raise ValueError(f"{label} MOTU source is not s32le")
+    if _positive_int(identity.get("sample_rate_hz"), f"{label} source rate") != 48_000:
+        raise ValueError(f"{label} MOTU source is not 48 kHz")
+    if _positive_int(identity.get("channels"), f"{label} source channels") != 2:
+        raise ValueError(f"{label} MOTU source is not stereo")
+    if identity.get("muted") is not False:
+        raise ValueError(f"{label} MOTU source is muted")
+    if identity.get("unity_volume") is not True:
+        raise ValueError(f"{label} MOTU source is not at unity volume")
+    fingerprint = _sha256(identity.get("fingerprint"), f"{label} source fingerprint")
+    if fingerprint != canonical_value_sha256(
+        {key: value for key, value in identity.items() if key != "fingerprint"}
+    ):
+        raise ValueError(f"{label} MOTU source fingerprint mismatch")
+    query = snapshot.get("query")
+    if not isinstance(query, dict):
+        raise ValueError(f"{label} MOTU source query is missing")
+    expected_argv = list(VOICE_PACTL_SOURCES_ARGV)
+    if query.get("argv") != expected_argv:
+        raise ValueError(f"{label} MOTU source query vector mismatch")
+    if _sha256(query.get("argv_sha256"), f"{label} source query digest") != (
+        canonical_value_sha256(expected_argv)
+    ):
+        raise ValueError(f"{label} MOTU source query digest mismatch")
+    if query.get("returncode") != 0 or query.get("complete") is not True:
+        raise ValueError(f"{label} MOTU source query is incomplete")
+    _sha256(query.get("stdout_sha256"), f"{label} source output digest")
+    _nonnegative_int(query.get("stdout_total_bytes"), f"{label} source output bytes")
+    _sha256(query.get("stderr_sha256"), f"{label} source stderr digest")
+    observation_sha = _sha256(
+        snapshot.get("observation_sha256"), f"{label} source observation digest"
+    )
+    expected_observation = canonical_value_sha256(
+        {key: value for key, value in snapshot.items() if key != "observation_sha256"}
+    )
+    if observation_sha != expected_observation:
+        raise ValueError(f"{label} source observation digest mismatch")
+    return identity
+
+
+def validate_bound_voice_capture(evidence: dict[str, Any]) -> None:
+    observation = evidence.get("capture_observation")
+    if not isinstance(observation, dict):
+        raise ValueError("voice evidence has no bounded live capture")
+    if observation.get("method") != VOICE_CAPTURE_METHOD:
+        raise ValueError("voice capture method does not match the contract")
+    before = _validate_voice_source_snapshot(observation.get("before"), "before")
+    after = _validate_voice_source_snapshot(observation.get("after"), "after")
+    if before.get("fingerprint") != after.get("fingerprint"):
+        raise ValueError("MOTU source identity changed during voice capture")
+    if observation.get("stable_source_identity") is not True:
+        raise ValueError("voice capture does not assert stable MOTU identity")
+    process = observation.get("process")
+    if not isinstance(process, dict):
+        raise ValueError("voice capture process evidence is missing")
+    if process.get("method") != VOICE_CAPTURE_METHOD:
+        raise ValueError("voice capture process method mismatch")
+    requested = _positive_int(
+        process.get("requested_duration_seconds"),
+        "voice requested duration",
+    )
+    if requested < VOICE_MIN_CAPTURE_SECONDS or requested > VOICE_MAX_CAPTURE_SECONDS:
+        raise ValueError("voice capture duration is outside 8 to 20 seconds")
+    started = parse_timestamp(process.get("capture_started_at"), "voice capture start")
+    ended = parse_timestamp(process.get("capture_ended_at"), "voice capture end")
+    if ended <= started:
+        raise ValueError("voice capture timestamps are not ordered")
+    if process.get("stream_ready") is not True:
+        raise ValueError("voice capture stream never became ready")
+    ready_at = parse_timestamp(
+        process.get("stream_ready_at"), "voice capture stream ready"
+    )
+    if ready_at <= started or ready_at >= ended:
+        raise ValueError("voice capture readiness timestamp is outside the process")
+    startup = _number(process.get("startup_seconds"), "voice capture startup")
+    if startup > VOICE_STARTUP_TIMEOUT_SECONDS + 0.5:
+        raise ValueError("voice capture startup exceeds the timeout")
+    measured_startup = (ready_at - started).total_seconds()
+    if abs(measured_startup - startup) > 1.0:
+        raise ValueError("voice capture startup contradicts its timestamps")
+    duration = _number(process.get("duration_seconds"), "voice capture duration")
+    if duration < startup + requested - 0.5 or duration > startup + requested + 5:
+        raise ValueError("voice capture process duration contradicts the request")
+    command = process.get("command")
+    if not isinstance(command, dict):
+        raise ValueError("voice capture command binding is missing")
+    if command.get("executable") != "/usr/bin/parecord":
+        raise ValueError("voice capture executable is not canonical")
+    if command.get("fixed_arguments") != list(VOICE_PARECORD_FIXED_ARGUMENTS):
+        raise ValueError("voice capture fixed arguments do not match")
+    if command.get("device_name_sha256") != before.get("node_name_sha256"):
+        raise ValueError("voice capture command targets another source")
+    if command.get("output_role") != "private-temporary-wav":
+        raise ValueError("voice capture output role is invalid")
+    command_sha = _sha256(
+        command.get("contract_sha256"), "voice capture command contract digest"
+    )
+    if command_sha != canonical_value_sha256(
+        {key: value for key, value in command.items() if key != "contract_sha256"}
+    ):
+        raise ValueError("voice capture command contract digest mismatch")
+    if process.get("accepted_returncodes") != [0, -2]:
+        raise ValueError("voice capture accepted returncodes mismatch")
+    if process.get("returncode") not in {0, -2}:
+        raise ValueError("voice capture process did not exit cleanly")
+    if process.get("forced_kill") is not False or process.get("complete") is not True:
+        raise ValueError("voice capture process is incomplete")
+    stderr_bytes = _nonnegative_int(
+        process.get("stderr_bytes"), "voice capture stderr bytes"
+    )
+    if stderr_bytes > VOICE_MAX_STDERR_BYTES:
+        raise ValueError("voice capture stderr exceeds the byte limit")
+    _sha256(process.get("stderr_sha256"), "voice capture stderr digest")
+    if process.get("stderr_truncated") is not False:
+        raise ValueError("voice capture stderr is truncated")
+    analysis = evidence.get("analysis")
+    if not isinstance(analysis, dict):
+        raise ValueError("voice capture analysis is missing")
+    if analysis.get("sample_rate_hz") != 48_000:
+        raise ValueError("voice capture WAV is not 48 kHz")
+    if analysis.get("channels") != 2 or analysis.get("bit_depth") != 32:
+        raise ValueError("voice capture WAV is not stereo 32-bit PCM")
+    wav_duration = _number(
+        analysis.get("duration_seconds"), "voice capture WAV duration"
+    )
+    if wav_duration < requested - 1 or wav_duration > requested + 2:
+        raise ValueError("voice capture WAV duration contradicts the request")
+    if evidence.get("blockers") != []:
+        raise ValueError("passing voice capture contains blockers")
+    criteria = evidence.get("criteria")
+    expected_criteria = {
+        "peak_dbfs_range": [-12.0, -6.0],
+        "maximum_clipped_samples_per_channel": 0,
+        "minimum_capture_duration_seconds": VOICE_MIN_CAPTURE_SECONDS,
+        "maximum_capture_duration_seconds": VOICE_MAX_CAPTURE_SECONDS,
+        "maximum_startup_seconds": VOICE_STARTUP_TIMEOUT_SECONDS,
+        "required_sample_rate_hz": 48_000,
+        "required_channels": 2,
+        "required_bit_depth": 32,
+        "requires_motu_serial_identity": True,
+        "requires_unity_capture_volume": True,
+        "requires_stable_source_identity": True,
+    }
+    if criteria != expected_criteria:
+        raise ValueError("voice capture criteria do not match the contract")
+    implementation = evidence.get("implementation")
+    if not isinstance(implementation, dict):
+        raise ValueError("voice capture implementation binding is missing")
+    expected_implementation = {
+        "voice_capture_observer_sha256": sha256_file(VOICE_CAPTURE_OBSERVER_PATH),
+        "laboratory_gate_sha256": sha256_file(pathlib.Path(__file__)),
+        "level_analyzer_sha256": sha256_file(LEVEL_ANALYZER_PATH),
+        "system_truth_sha256": sha256_file(SYSTEM_TRUTH_PATH),
+    }
+    if implementation != expected_implementation:
+        raise ValueError("voice capture implementation binding changed")
 
 
 def validate_loopback_latency(evidence: dict[str, Any]) -> None:
@@ -1060,6 +1267,7 @@ def validate_evidence(
     gate: str,
     evidence: dict[str, Any],
     *,
+    allow_legacy_voice: bool = False,
     allow_legacy_xrun: bool = False,
     allow_legacy_plugin_host: bool = False,
     allow_legacy_qobuz: bool = False,
@@ -1074,6 +1282,13 @@ def validate_evidence(
     if validator is None:
         raise ValueError(f"unknown laboratory validator: {validator_name}")
     validator(evidence)
+    if gate == "voice-level-measurement":
+        if has_bound_voice_capture(evidence):
+            validate_bound_voice_capture(evidence)
+        elif not allow_legacy_voice:
+            raise ValueError(
+                "legacy voice evidence lacks a bounded MOTU live capture"
+            )
     if gate == "xrun-stability-test" and not has_bound_xrun_observation(evidence):
         if not allow_legacy_xrun:
             raise ValueError("legacy XRun evidence lacks a bounded journal observation")
@@ -1121,6 +1336,7 @@ def validate_state(path: pathlib.Path, state: dict[str, Any]) -> None:
         validate_evidence(
             gate,
             evidence,
+            allow_legacy_voice=True,
             allow_legacy_xrun=True,
             allow_legacy_plugin_host=True,
             allow_legacy_qobuz=True,
@@ -1228,6 +1444,13 @@ def gate_resolution(
     catalog = load_catalog()
     physical_sha: str | None = None
     for gate, receipt in state.get("gates", {}).items():
+        if gate == "voice-level-measurement":
+            evidence = receipt.get("evidence")
+            if not isinstance(evidence, dict) or not has_bound_voice_capture(
+                evidence
+            ):
+                invalidated[gate] = "legacy-unbound-voice-evidence"
+                continue
         if gate == "xrun-stability-test":
             evidence = receipt.get("evidence")
             if not isinstance(evidence, dict) or not has_bound_xrun_observation(evidence):

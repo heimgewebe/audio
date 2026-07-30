@@ -24,6 +24,7 @@ LAB_PATH = ROOT / "scripts" / "laboratory_gate.py"
 SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
 PLUGIN_HOST_PATH = ROOT / "scripts" / "plugin_host_observer.py"
 QOBUZ_RATE_PATH = ROOT / "scripts" / "qobuz_rate_observer.py"
+VOICE_CAPTURE_PATH = ROOT / "scripts" / "voice_capture_observer.py"
 MAX_SOURCE_BYTES = 536_870_912
 
 
@@ -42,6 +43,9 @@ LAB = load_module("laboratory_gate_for_evidence", LAB_PATH)
 SYSTEM_TRUTH = load_module("system_truth_for_evidence", SYSTEM_TRUTH_PATH)
 PLUGIN_HOST = load_module("plugin_host_observer_for_evidence", PLUGIN_HOST_PATH)
 QOBUZ_RATE = load_module("qobuz_rate_observer_for_evidence", QOBUZ_RATE_PATH)
+VOICE_CAPTURE = load_module(
+    "voice_capture_observer_for_evidence", VOICE_CAPTURE_PATH
+)
 
 
 @contextlib.contextmanager
@@ -415,6 +419,14 @@ def main() -> int:
         "--physical-state", type=pathlib.Path, default=LAB.PHYSICAL.DEFAULT_STATE
     )
 
+    live_voice = sub.add_parser("voice-capture")
+    live_voice.add_argument("--duration-seconds", type=int, default=15)
+    live_voice.add_argument("--wav-output", type=pathlib.Path, required=True)
+    live_voice.add_argument("--output", type=pathlib.Path)
+    live_voice.add_argument(
+        "--physical-state", type=pathlib.Path, default=LAB.PHYSICAL.DEFAULT_STATE
+    )
+
     loopback = sub.add_parser("loopback-latency")
     loopback.add_argument("reference", type=pathlib.Path)
     loopback.add_argument("recorded", type=pathlib.Path)
@@ -451,6 +463,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "voice-level":
         result = voice_level_evidence(args.wav, args.physical_state)
+    elif args.command == "voice-capture":
+        result = VOICE_CAPTURE.capture_voice_evidence(
+            args.duration_seconds,
+            args.physical_state,
+            args.wav_output,
+        )
     elif args.command == "loopback-latency":
         result = loopback_latency_evidence(
             args.reference,
@@ -482,6 +500,7 @@ def main() -> int:
         args.output
         if args.command
         in {
+            "voice-capture",
             "xrun-observation",
             "managed-plugin-host-observation",
             "qobuz-rate-observation",

@@ -20,20 +20,124 @@ class LaboratoryGateTests(unittest.TestCase):
         return path
 
     def voice_evidence(self, physical):
+        identity = {
+            "vendor_id": "07fd",
+            "product_id": "0008",
+            "serial_sha256": "a" * 64,
+            "node_name_sha256": "b" * 64,
+            "bus_path_sha256": "c" * 64,
+            "sample_format": "s32le",
+            "sample_rate_hz": 48000,
+            "channels": 2,
+            "muted": False,
+            "unity_volume": True,
+        }
+        identity["fingerprint"] = MODULE.canonical_value_sha256(identity)
+        argv = list(MODULE.VOICE_PACTL_SOURCES_ARGV)
+
+        def snapshot(observed_at, output_sha):
+            value = {
+                "schema_version": 1,
+                "kind": "audio_voice_source_snapshot",
+                "observed_at": observed_at,
+                "complete": True,
+                "present": True,
+                "match_count": 1,
+                "ambiguous": False,
+                "errors": [],
+                "identity": identity,
+                "query": {
+                    "argv": argv,
+                    "argv_sha256": MODULE.canonical_value_sha256(argv),
+                    "returncode": 0,
+                    "complete": True,
+                    "stdout_sha256": output_sha,
+                    "stdout_total_bytes": 100,
+                    "stderr_sha256": "d" * 64,
+                },
+            }
+            value["observation_sha256"] = MODULE.canonical_value_sha256(value)
+            return value
+
+        command = {
+            "executable": "/usr/bin/parecord",
+            "fixed_arguments": list(MODULE.VOICE_PARECORD_FIXED_ARGUMENTS),
+            "device_name_sha256": identity["node_name_sha256"],
+            "output_role": "private-temporary-wav",
+        }
+        command["contract_sha256"] = MODULE.canonical_value_sha256(command)
         return {
             "schema_version": 1,
             "kind": "audio_level_measurement_evidence",
             "gate": "voice-level-measurement",
             "result": "pass",
-            "measured_at": "2026-07-27T12:00:00+00:00",
+            "measured_at": "2026-07-27T12:00:09+00:00",
             "physical_state_sha256": MODULE.sha256_file(physical),
-            "source_wav": {"sha256": "a" * 64, "bytes": 100},
+            "source_wav": {"name": "voice.wav", "sha256": "e" * 64, "bytes": 100},
             "analysis": {
                 "kind": "audio_level_analysis",
                 "sample_rate_hz": 48000,
+                "channels": 2,
+                "bit_depth": 32,
+                "duration_seconds": 8.0,
                 "maximum_peak_dbfs": -9.0,
-                "channels_analysis": [{"channel": 1, "clipped_samples": 0}],
+                "channels_analysis": [
+                    {"channel": 1, "clipped_samples": 0},
+                    {"channel": 2, "clipped_samples": 0},
+                ],
             },
+            "capture_observation": {
+                "method": MODULE.VOICE_CAPTURE_METHOD,
+                "before": snapshot("2026-07-27T12:00:00+00:00", "f" * 64),
+                "after": snapshot("2026-07-27T12:00:09.200000+00:00", "1" * 64),
+                "process": {
+                    "method": MODULE.VOICE_CAPTURE_METHOD,
+                    "requested_duration_seconds": 8,
+                    "capture_started_at": "2026-07-27T12:00:00+00:00",
+                    "capture_ended_at": "2026-07-27T12:00:09.100000+00:00",
+                    "duration_seconds": 9.1,
+                    "stream_ready": True,
+                    "stream_ready_at": "2026-07-27T12:00:01+00:00",
+                    "startup_seconds": 1.0,
+                    "command": command,
+                    "returncode": 0,
+                    "accepted_returncodes": [0, -2],
+                    "forced_kill": False,
+                    "stderr_bytes": 0,
+                    "stderr_sha256": "2" * 64,
+                    "stderr_truncated": False,
+                    "complete": True,
+                },
+                "stable_source_identity": True,
+            },
+            "implementation": {
+                "voice_capture_observer_sha256": MODULE.sha256_file(
+                    MODULE.VOICE_CAPTURE_OBSERVER_PATH
+                ),
+                "laboratory_gate_sha256": MODULE.sha256_file(
+                    pathlib.Path(MODULE.__file__)
+                ),
+                "level_analyzer_sha256": MODULE.sha256_file(
+                    MODULE.LEVEL_ANALYZER_PATH
+                ),
+                "system_truth_sha256": MODULE.sha256_file(
+                    MODULE.SYSTEM_TRUTH_PATH
+                ),
+            },
+            "criteria": {
+                "peak_dbfs_range": [-12.0, -6.0],
+                "maximum_clipped_samples_per_channel": 0,
+                "minimum_capture_duration_seconds": MODULE.VOICE_MIN_CAPTURE_SECONDS,
+                "maximum_capture_duration_seconds": MODULE.VOICE_MAX_CAPTURE_SECONDS,
+                "maximum_startup_seconds": MODULE.VOICE_STARTUP_TIMEOUT_SECONDS,
+                "required_sample_rate_hz": 48000,
+                "required_channels": 2,
+                "required_bit_depth": 32,
+                "requires_motu_serial_identity": True,
+                "requires_unity_capture_volume": True,
+                "requires_stable_source_identity": True,
+            },
+            "blockers": [],
         }
 
     def xrun_evidence(
