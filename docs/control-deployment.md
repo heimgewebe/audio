@@ -42,6 +42,14 @@ Bind-Adresse bleibt fest auf `127.0.0.1`. Sobald der neue Deployer läuft,
 erzeugt er `runtime.env`; diese releasegebundene Konfiguration hat anschließend
 Vorrang vor dem Migrationsfallback.
 
+Version 1 bindet den persistenten Dienst und seine systemd-Sandbox fest an
+`~/.local/share/audio-control-ui` und
+`~/.local/state/audio-control-deploy`. Abweichende Werte für `--deploy-root`,
+`--state-root`, `AUDIO_CONTROL_DEPLOY_ROOT` oder `AUDIO_CONTROL_STATE_ROOT`
+werden vor jeder Installations- oder Deploymentwirkung abgewiesen. Damit kann
+eine scheinbar erfolgreiche Installation nicht erst beim nächsten Timerlauf an
+statischen Dienstpfaden oder fehlenden Schreibfreigaben scheitern.
+
 Der normale Abstand zwischen Merge und beginnendem Deployment beträgt höchstens
 etwa 60 Sekunden zuzüglich lokaler Prüfung. Ein unveränderter, gesunder Release
 wird nicht jede Minute neu gestartet.

@@ -857,6 +857,9 @@ def resolve_target(
     ]
 
 def sync(args: argparse.Namespace) -> dict[str, Any]:
+    args.deploy_root, args.state_root = validate_runtime_roots(
+        args.deploy_root, args.state_root
+    )
     validate_ui_endpoint(args.host, args.port)
     source_repo = ensure_source_repo(args.source_repo)
     deploy_root = ensure_private_directory(args.deploy_root)
@@ -985,6 +988,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def status(args: argparse.Namespace) -> dict[str, Any]:
+    args.deploy_root, args.state_root = validate_runtime_roots(
+        args.deploy_root, args.state_root
+    )
     deploy_root = ensure_private_directory(args.deploy_root)
     state_root = ensure_private_directory(args.state_root)
     current = read_current_commit(deploy_root)
@@ -1029,6 +1035,29 @@ def parse_path(value: str) -> pathlib.Path:
     return pathlib.Path(value).expanduser()
 
 
+def normalized_absolute_path(path: pathlib.Path, *, label: str) -> pathlib.Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        raise DeployError(f"{label} muss absolut sein.")
+    return pathlib.Path(os.path.normpath(str(expanded)))
+
+
+def validate_runtime_roots(
+    deploy_root: pathlib.Path, state_root: pathlib.Path
+) -> tuple[pathlib.Path, pathlib.Path]:
+    deploy = normalized_absolute_path(deploy_root, label="Deploy-Root")
+    state = normalized_absolute_path(state_root, label="State-Root")
+    if deploy != DEFAULT_DEPLOY_ROOT:
+        raise DeployError(
+            f"Version 1 unterstützt nur den Deploy-Root {DEFAULT_DEPLOY_ROOT}."
+        )
+    if state != DEFAULT_STATE_ROOT:
+        raise DeployError(
+            f"Version 1 unterstützt nur den State-Root {DEFAULT_STATE_ROOT}."
+        )
+    return deploy, state
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1040,11 +1069,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--deploy-root",
         type=parse_path,
         default=parse_path(os.environ.get("AUDIO_CONTROL_DEPLOY_ROOT", str(DEFAULT_DEPLOY_ROOT))),
+        help=f"V1 ist fest auf {DEFAULT_DEPLOY_ROOT} gebunden",
     )
     parser.add_argument(
         "--state-root",
         type=parse_path,
         default=parse_path(os.environ.get("AUDIO_CONTROL_STATE_ROOT", str(DEFAULT_STATE_ROOT))),
+        help=f"V1 ist fest auf {DEFAULT_STATE_ROOT} gebunden",
     )
     parser.add_argument(
         "--remote", default=os.environ.get("AUDIO_CONTROL_REMOTE", DEFAULT_REMOTE)
@@ -1070,6 +1101,9 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     try:
+        args.deploy_root, args.state_root = validate_runtime_roots(
+            args.deploy_root, args.state_root
+        )
         if args.command == "sync":
             report = sync(args)
         elif args.command == "status":

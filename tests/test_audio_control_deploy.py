@@ -205,6 +205,8 @@ class AudioControlDeployTests(unittest.TestCase):
             release.mkdir(parents=True)
             service = {"url": "http://127.0.0.1:8765/"}
             with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
                 mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
                 mock.patch.object(
                     MODULE,
@@ -252,6 +254,8 @@ class AudioControlDeployTests(unittest.TestCase):
             release.mkdir(parents=True)
             switched = []
             with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
                 mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
                 mock.patch.object(
                     MODULE,
@@ -308,6 +312,8 @@ class AudioControlDeployTests(unittest.TestCase):
             release.mkdir(parents=True)
             switched = []
             with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
                 mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
                 mock.patch.object(
                     MODULE,
@@ -377,6 +383,8 @@ class AudioControlDeployTests(unittest.TestCase):
                 "mode": 0o600,
             }
             with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
                 mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
                 mock.patch.object(
                     MODULE,

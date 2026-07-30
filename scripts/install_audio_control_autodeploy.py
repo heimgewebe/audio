@@ -141,11 +141,37 @@ def validate_ui_endpoint(host: str, port: int) -> None:
         raise InstallError("UI-Port muss zwischen 1024 und 65535 liegen.")
 
 
+def normalized_absolute_path(path: pathlib.Path, *, label: str) -> pathlib.Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        raise InstallError(f"{label} muss absolut sein.")
+    return pathlib.Path(os.path.normpath(str(expanded)))
+
+
+def validate_runtime_roots(
+    deploy_root: pathlib.Path, state_root: pathlib.Path
+) -> tuple[pathlib.Path, pathlib.Path]:
+    deploy = normalized_absolute_path(deploy_root, label="Deploy-Root")
+    state = normalized_absolute_path(state_root, label="State-Root")
+    if deploy != DEFAULT_DEPLOY_ROOT:
+        raise InstallError(
+            f"Version 1 unterstützt nur den Deploy-Root {DEFAULT_DEPLOY_ROOT}."
+        )
+    if state != DEFAULT_STATE_ROOT:
+        raise InstallError(
+            f"Version 1 unterstützt nur den State-Root {DEFAULT_STATE_ROOT}."
+        )
+    return deploy, state
+
+
 def install(args: argparse.Namespace) -> dict[str, Any]:
     validate_ui_endpoint(args.host, args.port)
+    deploy_root, state_root = validate_runtime_roots(
+        args.deploy_root, args.state_root
+    )
     source_repo = validate_source_repo(args.source_repo)
-    deploy_root = ensure_absolute_directory(args.deploy_root)
-    state_root = ensure_absolute_directory(args.state_root)
+    deploy_root = ensure_absolute_directory(deploy_root)
+    state_root = ensure_absolute_directory(state_root)
     libexec = ensure_absolute_directory(pathlib.Path.home() / ".local" / "libexec")
     config_root = ensure_absolute_directory(pathlib.Path.home() / ".config")
     runtime_config_root = ensure_absolute_directory(config_root / "audio-control-ui")
@@ -246,8 +272,18 @@ def parse_path(value: str) -> pathlib.Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-repo", type=parse_path, default=DEFAULT_SOURCE_REPO)
-    parser.add_argument("--deploy-root", type=parse_path, default=DEFAULT_DEPLOY_ROOT)
-    parser.add_argument("--state-root", type=parse_path, default=DEFAULT_STATE_ROOT)
+    parser.add_argument(
+        "--deploy-root",
+        type=parse_path,
+        default=DEFAULT_DEPLOY_ROOT,
+        help=f"V1 ist fest auf {DEFAULT_DEPLOY_ROOT} gebunden",
+    )
+    parser.add_argument(
+        "--state-root",
+        type=parse_path,
+        default=DEFAULT_STATE_ROOT,
+        help=f"V1 ist fest auf {DEFAULT_STATE_ROOT} gebunden",
+    )
     parser.add_argument("--remote", default="origin")
     parser.add_argument("--branch", default="main")
     parser.add_argument("--host", default="127.0.0.1")
