@@ -30,6 +30,11 @@ ACTIONS = {
         "Durchgehende Walstimme über alle 88 Tasten",
         "audio-card",
     ),
+    "organic": (
+        "Buckelwal – Organisch",
+        "Quellengestützte Walstimme mit organischer Artikulation",
+        "audio-card",
+    ),
     "realistic": (
         "Buckelwal – Sample-Vergleich",
         "Frühere echte Aufnahmephrasen vergleichen",

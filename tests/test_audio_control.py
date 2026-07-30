@@ -419,7 +419,7 @@ class AudioControlTests(unittest.TestCase):
         )
         self.assertEqual(
             {mode["id"] for mode in snapshot["whale"]["contract"]["modes"]},
-            {"morph", "realistic", "ufo"},
+            {"morph", "organic", "realistic", "ufo"},
         )
 
     def test_snapshot_cache_and_explicit_refresh(self):
@@ -826,6 +826,50 @@ class AudioControlTests(unittest.TestCase):
                     with (
                         mock.patch.object(MODULE, "WHALE_PROFILE", path),
                         self.assertRaisesRegex(MODULE.ControlError, "88-Tasten"),
+                    ):
+                        MODULE.read_whale_contract()
+
+    def test_whale_contract_rejects_organic_mode_drift(self):
+        contract = json.loads(MODULE.WHALE_PROFILE.read_text(encoding="utf-8"))
+        required_fields = (
+            "backend",
+            "base_backend",
+            "manifest",
+            "note_range",
+            "tuning",
+            "keyboard_slot_count",
+            "preset_count",
+            "control_key_count",
+            "voice_count",
+            "permanent_noise_layer",
+            "long_phrase_playback",
+            "organic_features",
+            "comparison",
+            "hold",
+            "legato",
+            "detached_retrigger",
+            "repeated_note",
+            "pitch_bend_range_semitones",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = pathlib.Path(temporary_directory) / "whale.json"
+            for field in required_fields:
+                with self.subTest(field=field):
+                    drifted = json.loads(json.dumps(contract))
+                    original = drifted["voice_modes"]["organic"][field]
+                    if isinstance(original, bool):
+                        replacement = not original
+                    elif isinstance(original, int):
+                        replacement = original + 1
+                    elif isinstance(original, list):
+                        replacement = [*original, "drift"]
+                    else:
+                        replacement = f"{original}-drift"
+                    drifted["voice_modes"]["organic"][field] = replacement
+                    path.write_text(json.dumps(drifted), encoding="utf-8")
+                    with (
+                        mock.patch.object(MODULE, "WHALE_PROFILE", path),
+                        self.assertRaisesRegex(MODULE.ControlError, "organischen 88-Tasten"),
                     ):
                         MODULE.read_whale_contract()
 

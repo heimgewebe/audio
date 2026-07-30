@@ -52,6 +52,8 @@ def describe(payload: dict[str, object]) -> str:
     mode = payload.get("voice_mode")
     if mode == "morph":
         mode = "spielbar"
+    elif mode == "organic":
+        mode = "organisch"
     elif mode == "realistic":
         mode = "Sample"
     elif mode == "ufo":
@@ -62,7 +64,7 @@ def describe(payload: dict[str, object]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("toggle", "on", "off", "morph", "realistic", "ufo", "status")
+        "action", choices=("toggle", "on", "off", "morph", "organic", "realistic", "ufo", "status")
     )
     args = parser.parse_args()
 
@@ -92,6 +94,7 @@ def main() -> int:
         code, payload = run_live("mode", mode)
         titles = {
             "morph": "Buckelwal spielbar",
+            "organic": "Buckelwal organisch",
             "realistic": "Buckelwal Sample-Vergleich",
             "ufo": "Buckelwal UFO-Vergleich",
         }

@@ -24,10 +24,11 @@ vorhanden erfasst und nicht verändert. Die drei vorausliegenden Änderungen aus
 durchgehend spielbare 88-Tasten-Wal-Morph-Stimme und die immutable
 Quellsnapshot-Härtung des Builders.
 
-Die UI liest die Details der drei fest erlaubten Modi `morph`, `realistic` und
-`ufo` aus dem Buckelwalprofil. Backend und Profil müssen dieselbe vollständige
-Allowlist mit `morph` als Standard bestätigen. Die UI übernimmt oder verändert
-keinen Morph-Builder und erfindet keine weiteren Modi.
+Die UI liest die Details der vier fest erlaubten Modi `morph`, `organic`,
+`realistic` und `ufo` aus dem Buckelwalprofil. Backend und Profil müssen
+dieselbe vollständige Allowlist mit `morph` als Standard bestätigen. `organic`
+ist eine profilgebundene Erweiterung der Quellresynthese; die UI übernimmt oder
+verändert keine Klangengine und erfindet keine weiteren Modi.
 
 ## Produktentscheidung
 
@@ -89,7 +90,7 @@ Der Control-Dienst ist die einzige Zustandsautorität der UI:
 1. Der Browser lädt einen Snapshot.
 2. Eine Bedienhandlung sendet nur eine kleine Absicht wie
    `{"operation":"start","mode":"morph"}`.
-3. Das Backend validiert Aktion und Modus gegen eine feste dreiteilige
+3. Das Backend validiert Aktion und Modus gegen eine feste vierteilige
    Allowlist und das versionierte Buckelwalprofil.
 4. Ein Moduswechsel benötigt zusätzlich einen frisch als aktiv gelesenen
    Wal-Dienst; erst dann führt das bestehende Laufzeitskript die Aktion aus.
@@ -282,7 +283,7 @@ belegte Rückkehr zum Referenzzustand.
 
 - Der Dienst weist Nicht-Loopback-Binds und nichtlokale Hostheader ab.
 - Mutationen benötigen Same-Origin, JSON und den laufzeitgebundenen Token.
-- Die POST-API akzeptiert ausschließlich drei Walaktionen und bekannte Modi.
+- Die POST-API akzeptiert ausschließlich drei Walaktionen und die vier bekannten Modi.
 - Subprozesse werden ohne Shell, mit festen Pfaden, Timeouts und Ausgabelimit
   gestartet.
 - Gleichzeitige Mutationen und Snapshot-Builds werden abgewiesen; eine
@@ -308,8 +309,9 @@ belegte Rückkehr zum Referenzzustand.
 Die frühere revisionsbedingte Prüflücke ist geschlossen: Der Branch basiert auf
 `origin/main@0fb490a…` und enthält damit die Doctor-Fixturekorrektur aus #12
 sowie die Wal-Morph-Verträge und Builder-Härtung aus #13 und #14. Die UI prüft
-den dreiteiligen Modusvertrag, `morph` als Standard sowie Quellbackend,
-Anchorzahl, 88-Tasten-Abbildung und Spielgesten in ihren Regressionstests.
+den vierteiligen Modusvertrag, `morph` als Standard sowie die exakten Verträge
+für Morph- und Organic-Backend, Anchorzahl, 88-Tasten-Abbildung und Spielgesten
+in ihren Regressionstests.
 
 ## Risiken und offene Folgetasks
 

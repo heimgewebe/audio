@@ -1,0 +1,153 @@
+import math
+import pathlib
+import sys
+import time
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import whale_live_engine as live_engine  # noqa: E402
+import whale_morph_engine as morph  # noqa: E402
+import whale_organic_engine as organic  # noqa: E402
+
+
+class OrganicWhaleMorphVoiceTests(unittest.TestCase):
+    def setUp(self):
+        self.config = live_engine.WhaleVoiceConfig(
+            sample_rate=48_000,
+            block_frames=128,
+            master_gain=0.16,
+        )
+
+    @staticmethod
+    def rms(values):
+        return math.sqrt(sum(value * value for value in values) / len(values))
+
+    @staticmethod
+    def derivative_ratio(values):
+        signal = sum(value * value for value in values) or 1.0
+        derivative = sum(
+            (right - left) ** 2 for left, right in zip(values, values[1:])
+        )
+        return derivative / signal
+
+    def test_idle_is_exact_silence_without_permanent_noise(self):
+        voice = organic.OrganicWhaleMorphVoice(self.config)
+        self.assertEqual(voice.render(4096), [0.0] * 4096)
+        self.assertEqual(voice.render_f32_stereo(256), bytes(256 * 2 * 4))
+        self.assertTrue(voice.silent)
+
+    def test_all_88_keys_keep_exact_chromatic_targets(self):
+        voice = organic.OrganicWhaleMorphVoice(self.config)
+        for note in range(21, 109):
+            voice.control_change(120, 0)
+            voice.note_on(note, 80)
+            self.assertAlmostEqual(
+                voice.target_frequency,
+                morph.midi_note_frequency(note),
+                places=10,
+            )
+            self.assertGreater(self.rms(voice.render(512)), 1e-5)
+
+    def test_same_gestures_are_deterministic_across_fresh_voices(self):
+        left = organic.OrganicWhaleMorphVoice(self.config)
+        right = organic.OrganicWhaleMorphVoice(self.config)
+        events = [
+            live_engine.MidiEvent("note_on", note=45, velocity=48),
+            live_engine.MidiEvent("control_change", controller=1, value=61),
+            live_engine.MidiEvent("note_on", note=52, velocity=77),
+            live_engine.MidiEvent("pitch_bend", value=1800),
+        ]
+        left_output = []
+        right_output = []
+        for event in events:
+            left.dispatch(event)
+            right.dispatch(event)
+            left_output.extend(left.render(4096))
+            right_output.extend(right.render(4096))
+        self.assertEqual(left_output, right_output)
+
+    def test_controllers_do_not_promote_modulated_pitch_to_nominal_target(self):
+        voice = organic.OrganicWhaleMorphVoice(self.config)
+        voice.note_on(60, 76)
+        nominal = morph.midi_note_frequency(60)
+        voice.render(257)
+        self.assertNotEqual(voice.target_frequency, nominal)
+
+        for controller, value in ((1, 93), (11, 87), (64, 127), (67, 42)):
+            voice.control_change(controller, value)
+            self.assertAlmostEqual(
+                voice.organic_nominal_target_frequency,
+                nominal,
+                places=10,
+            )
+            self.assertAlmostEqual(voice.target_frequency, nominal, places=10)
+            voice.render(129)
+
+        voice.pitch_bend(4096)
+        expected = nominal * 2.0 ** (100.0 / 1200.0)
+        self.assertAlmostEqual(
+            voice.organic_nominal_target_frequency,
+            expected,
+            places=9,
+        )
+
+    def test_signal_bound_roughness_exceeds_plain_morph_without_level_spike(self):
+        plain = morph.WhaleMorphVoice(self.config)
+        shaped = organic.OrganicWhaleMorphVoice(self.config)
+        for voice in (plain, shaped):
+            voice.note_on(50, 84)
+            voice.control_change(1, 72)
+        plain_samples = plain.render(self.config.sample_rate * 2)
+        organic_samples = shaped.render(self.config.sample_rate * 2)
+        self.assertGreater(
+            self.derivative_ratio(organic_samples),
+            self.derivative_ratio(plain_samples) * 1.5,
+        )
+        self.assertLessEqual(max(abs(value) for value in organic_samples), 0.25)
+        self.assertGreater(self.rms(organic_samples), 1e-4)
+
+    def test_render_is_chunk_invariant(self):
+        one_shot = organic.OrganicWhaleMorphVoice(self.config)
+        chunked = organic.OrganicWhaleMorphVoice(self.config)
+        for voice in (one_shot, chunked):
+            voice.note_on(52, 80)
+            voice.control_change(1, 49)
+
+        total = 8192
+        expected = one_shot.render(total)
+        actual = []
+        sizes = (17, 111, 3, 509, 256, 729, 1, 2048, 73)
+        index = 0
+        while len(actual) < total:
+            size = min(sizes[index % len(sizes)], total - len(actual))
+            actual.extend(chunked.render(size))
+            index += 1
+
+        self.assertEqual(expected, actual)
+        self.assertEqual(
+            {key: value for key, value in one_shot.__dict__.items() if key != "bank"},
+            {key: value for key, value in chunked.__dict__.items() if key != "bank"},
+        )
+
+    def test_modal_tail_decays_to_exact_silence(self):
+        voice = organic.OrganicWhaleMorphVoice(self.config)
+        voice.note_on(43, 62)
+        voice.render(self.config.sample_rate)
+        voice.note_off(43)
+        voice.render(self.config.sample_rate * 8)
+        self.assertTrue(voice.silent)
+        self.assertEqual(voice.render(1024), [0.0] * 1024)
+
+    def test_one_second_render_retains_realtime_headroom(self):
+        voice = organic.OrganicWhaleMorphVoice(self.config)
+        voice.note_on(57, 80)
+        started = time.perf_counter()
+        voice.render(self.config.sample_rate)
+        duration = time.perf_counter() - started
+        self.assertLess(duration, 0.65)
+
+
+if __name__ == "__main__":
+    unittest.main()
