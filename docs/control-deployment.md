@@ -50,6 +50,14 @@ für den Deploydienst schreibbaren State-Verzeichnis; deshalb braucht der
 Legacy-Upgradepfad weder einen neuen Konfigurationsordner noch eine breitere
 Schreibfreigabe unter `~/.config`.
 
+Die Startseite enthält zusätzlich den unsichtbaren statischen Vertrag
+`audio-control-deployment-contract=revision-bound-v1`. Die Legacy-Version
+`1e759e0` kennt noch keine Backendrevision und prüft beim ersten Selbstupdate nur
+die drei Webdateien bytegenau. Der Marker macht diesen ersten Sprung auch dann
+unterscheidbar, wenn ein fehlgeschlagener Dienststopp den alten Prozess auf dem
+Port zurücklässt; der alte Deployer kann diesen Prozess dann nicht als neuen
+Release bestätigen.
+
 Version 1 bindet den persistenten Dienst und seine systemd-Sandbox fest an
 `~/.local/share/audio-control-ui` und
 `~/.local/state/audio-control-deploy`. Abweichende Werte für `--deploy-root`,
