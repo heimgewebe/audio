@@ -373,6 +373,25 @@ class AudioControlTests(unittest.TestCase):
             clock=lambda: 100.0,
         )
 
+    def test_release_marker_preserves_archived_commit_identity(self):
+        commit = "b" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / ".audio-control-release.json"
+            marker.write_text(json.dumps({"commit": commit}), encoding="utf-8")
+            runner = mock.Mock()
+            with mock.patch.object(MODULE, "RELEASE_MARKER", marker):
+                self.assertEqual(MODULE.current_revision(runner), commit)
+            runner.run.assert_not_called()
+
+    def test_invalid_release_marker_fails_closed_without_git_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = pathlib.Path(directory) / ".audio-control-release.json"
+            marker.write_text(json.dumps({"commit": "NOT-A-COMMIT"}), encoding="utf-8")
+            runner = mock.Mock()
+            with mock.patch.object(MODULE, "RELEASE_MARKER", marker):
+                self.assertEqual(MODULE.current_revision(runner), "unavailable")
+            runner.run.assert_not_called()
+
     def test_snapshot_keeps_backend_authority_and_fail_closed_capabilities(self):
         controller = self.controller()
         snapshot = controller.snapshot(refresh=True)
@@ -994,6 +1013,7 @@ class AudioControlHTTPTests(unittest.TestCase):
         health = json.loads(payload)
         self.assertEqual(health["authority"], "local-backend")
         self.assertEqual(health["status"], "serving")
+        self.assertEqual(health["runtime_head"], "a" * 40)
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         self.assertIn("object-src 'none'", headers["Content-Security-Policy"])
         self.assertIn("media-src 'none'", headers["Content-Security-Policy"])

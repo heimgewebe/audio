@@ -1,0 +1,43 @@
+[Unit]
+Description=Lokale Audiozentrale
+After=network.target
+StartLimitIntervalSec=30
+StartLimitBurst=5
+ConditionPathExists=%h/.local/share/audio-control-ui/current/scripts/audio_control.py
+
+[Service]
+Type=notify
+NotifyAccess=main
+# Sichere Defaults halten die erste Selbstaktualisierung vor runtime.env startfähig.
+Environment=AUDIO_CONTROL_PORT=8765
+Environment=AUDIO_CONTROL_MANAGED_BY=audio-control-autodeploy-v1
+# Die bisherige Installer-Konfiguration bewahrt einen abweichenden Alt-Port.
+EnvironmentFile=-%h/.config/audio-control-deploy.env
+# Die releasegebundene Laufzeitkonfiguration überschreibt den Altbestand.
+# Optional nur, damit der erste Upgrade-Lauf vor ihrer Erzeugung starten kann.
+EnvironmentFile=-%h/.local/state/audio-control-deploy/runtime.env
+WorkingDirectory=%h/.local/share/audio-control-ui/current
+ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py serve --host 127.0.0.1 --port ${AUDIO_CONTROL_PORT}
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=15s
+TimeoutStopSec=10s
+KillMode=mixed
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+UMask=0077
+MemoryMax=134217728
+CPUQuota=50%
+TasksMax=32
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=default.target

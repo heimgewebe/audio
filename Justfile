@@ -82,3 +82,13 @@ control-status:
 
 control-stop:
     ./scripts/audio-control stop
+
+
+control-deploy-install expected_commit="":
+    python3 scripts/install_audio_control_autodeploy.py {{ if expected_commit != "" { "--expected-commit " + expected_commit } else { "" } }}
+
+control-deploy-sync:
+    python3 "${HOME}/.local/libexec/audio-control-deploy.py" sync
+
+control-deploy-status:
+    python3 "${HOME}/.local/libexec/audio-control-deploy.py" status

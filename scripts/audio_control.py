@@ -41,6 +41,7 @@ UNIT_MANAGED_BY = "audio-control-ui-v1"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_CACHE_SECONDS = 4.0
+RELEASE_MARKER = ROOT / ".audio-control-release.json"
 MAX_REQUEST_BYTES = 4096
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
@@ -422,7 +423,35 @@ def bounded_runtime(value: str) -> int:
     return seconds
 
 
+def valid_commit_revision(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def release_marker_revision() -> str | None:
+    try:
+        metadata = RELEASE_MARKER.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "unavailable"
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        return "unavailable"
+    try:
+        release = load_json_object(RELEASE_MARKER)
+    except ControlError:
+        return "unavailable"
+    revision = release.get("commit")
+    return revision if valid_commit_revision(revision) else "unavailable"
+
+
 def current_revision(runner: CommandRunner) -> str:
+    bound_revision = release_marker_revision()
+    if bound_revision is not None:
+        return bound_revision
     try:
         result = runner.run(
             ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
@@ -431,7 +460,7 @@ def current_revision(runner: CommandRunner) -> str:
     except ControlError:
         return "unavailable"
     revision = result.stdout.strip()
-    if result.returncode == 0 and len(revision) == 40:
+    if result.returncode == 0 and valid_commit_revision(revision):
         return revision
     return "unavailable"
 
@@ -1238,6 +1267,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                     "status": "serving",
                     "api_version": API_VERSION,
                     "authority": "local-backend",
+                    "runtime_head": current_revision(self.server.controller.runner),
                 },
                 head_only=head_only,
             )
