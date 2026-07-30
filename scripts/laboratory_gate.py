@@ -21,6 +21,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "inventory" / "laboratory-gates.v1.json"
 PROFILE_PATH = ROOT / "profiles" / "audio-profiles.v1.json"
 PHYSICAL_SCRIPT = ROOT / "scripts" / "physical_verification.py"
+PLUGIN_HOST_OBSERVER_PATH = ROOT / "scripts" / "plugin_host_observer.py"
+SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
 MAX_EVIDENCE_BYTES = 131_072
 MAX_STATE_BYTES = 524_288
 DEFAULT_STATE = pathlib.Path(
@@ -34,6 +36,14 @@ XRUN_JOURNAL_UNITS = (
     "mopidy",
     "easyeffects",
 )
+MAX_PLUGIN_HOST_JOURNAL_LINES = 5_000
+MAX_PLUGIN_HOST_MEMORY_BYTES = 2_147_483_648
+MAX_PLUGIN_HOST_TASKS = 512
+MAX_PLUGIN_HOST_NOFILE = 262_144
+PLUGIN_HOST_EXECUTABLES = frozenset(
+    {"carla", "easyeffects", "sfizz", "sfizz_jack", "fluidsynth", "qsynth"}
+)
+SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
 
 
 def load_module(name: str, path: pathlib.Path):
@@ -163,6 +173,39 @@ def xrun_journal_argv(started_at: str, ended_at: str) -> tuple[str, ...]:
             "--output=cat",
             "-n",
             str(MAX_XRUN_JOURNAL_LINES + 1),
+        )
+    )
+    return tuple(argv)
+
+
+def plugin_host_journal_argv(
+    units: list[str], started_at: str, ended_at: str
+) -> tuple[str, ...]:
+    started = parse_timestamp(started_at, "plugin-host observation start")
+    ended = parse_timestamp(ended_at, "plugin-host observation end")
+    if ended <= started:
+        raise ValueError("plugin-host observation end must follow the start")
+    normalized_units = sorted(set(units))
+    if not normalized_units or len(normalized_units) > 16:
+        raise ValueError("plugin-host journal query requires 1 to 16 units")
+    for unit in normalized_units:
+        if SERVICE_RE.fullmatch(unit) is None:
+            raise ValueError("plugin-host journal unit is invalid")
+    journal_start = journal_timestamp(started, round_up=False)
+    journal_end = journal_timestamp(ended, round_up=True)
+    argv: list[str] = ["journalctl", "--user"]
+    for unit in normalized_units:
+        argv.extend(("-u", unit))
+    argv.extend(
+        (
+            "--since",
+            journal_start,
+            "--until",
+            journal_end,
+            "--no-pager",
+            "--output=cat",
+            "-n",
+            str(MAX_PLUGIN_HOST_JOURNAL_LINES + 1),
         )
     )
     return tuple(argv)
@@ -436,6 +479,95 @@ def validate_qobuz_rate(evidence: dict[str, Any]) -> None:
     _sha256(evidence.get("graph_fingerprint"), "graph_fingerprint")
 
 
+def has_bound_plugin_host_observation(evidence: dict[str, Any]) -> bool:
+    return all(
+        key in evidence
+        for key in (
+            "requested_duration_seconds",
+            "observation_started_at",
+            "observation_ended_at",
+            "bounded_resources",
+            "blockers",
+            "implementation",
+            "truth_before",
+            "truth_after",
+            "processes_before",
+            "processes_after",
+            "journal",
+        )
+    )
+
+
+def _validate_plugin_service(service: Any, unit: str, label: str) -> None:
+    if not isinstance(service, dict):
+        raise ValueError(f"plugin-host {label} has no service projection")
+    if service.get("unit") != unit:
+        raise ValueError(f"plugin-host {label} service identity mismatch")
+    if service.get("load_state") != "loaded":
+        raise ValueError(f"plugin-host {label} service is not loaded")
+    if service.get("active_state") != "active" or service.get("sub_state") != "running":
+        raise ValueError(f"plugin-host {label} service is not running")
+    _sha256(service.get("control_group_sha256"), f"{label} control-group SHA-256")
+    memory_max = _positive_int(service.get("memory_max_bytes"), f"{label} MemoryMax")
+    if memory_max > MAX_PLUGIN_HOST_MEMORY_BYTES:
+        raise ValueError(f"plugin-host {label} MemoryMax exceeds the contract")
+    memory_current = _nonnegative_int(
+        service.get("memory_current_bytes"), f"{label} MemoryCurrent"
+    )
+    if memory_current > memory_max:
+        raise ValueError(f"plugin-host {label} MemoryCurrent exceeds MemoryMax")
+    tasks_max = _positive_int(service.get("tasks_max"), f"{label} TasksMax")
+    if tasks_max > MAX_PLUGIN_HOST_TASKS:
+        raise ValueError(f"plugin-host {label} TasksMax exceeds the contract")
+    tasks_current = _nonnegative_int(
+        service.get("tasks_current"), f"{label} TasksCurrent"
+    )
+    if tasks_current > tasks_max:
+        raise ValueError(f"plugin-host {label} TasksCurrent exceeds TasksMax")
+    nofile = _positive_int(service.get("limit_nofile"), f"{label} LimitNOFILE")
+    if nofile > MAX_PLUGIN_HOST_NOFILE:
+        raise ValueError(f"plugin-host {label} LimitNOFILE exceeds the contract")
+    if service.get("standard_output") not in {"journal", "journal-or-kmsg"}:
+        raise ValueError(f"plugin-host {label} stdout is not journal-bound")
+    if service.get("standard_error") not in {"inherit", "journal", "journal-or-kmsg"}:
+        raise ValueError(f"plugin-host {label} stderr is not journal-bound")
+    _positive_int(
+        service.get("log_rate_limit_interval_usec"),
+        f"{label} LogRateLimitIntervalUSec",
+    )
+    _positive_int(service.get("log_rate_limit_burst"), f"{label} LogRateLimitBurst")
+    _nonnegative_int(service.get("restart_count"), f"{label} NRestarts")
+    _sha256(service.get("query_argv_sha256"), f"{label} query argv SHA-256")
+    _sha256(service.get("query_stdout_sha256"), f"{label} query output SHA-256")
+
+
+def _validate_plugin_process(record: Any, label: str) -> tuple[Any, ...]:
+    if not isinstance(record, dict):
+        raise ValueError(f"plugin-host {label} process is not an object")
+    executable = _bounded_text(record.get("executable"), f"{label} executable", 1, 64)
+    if executable not in PLUGIN_HOST_EXECUTABLES:
+        raise ValueError(f"plugin-host {label} executable is not catalogued")
+    pid = _positive_int(record.get("pid"), f"{label} pid")
+    _nonnegative_int(record.get("ppid"), f"{label} ppid")
+    _nonnegative_int(record.get("elapsed_seconds"), f"{label} elapsed_seconds")
+    start_ticks = _positive_int(
+        record.get("process_start_ticks"), f"{label} process_start_ticks"
+    )
+    command_sha = _sha256(record.get("command_sha256"), f"{label} command SHA-256")
+    unit = _bounded_text(record.get("unit"), f"{label} unit", 9, 255)
+    if SERVICE_RE.fullmatch(unit) is None:
+        raise ValueError(f"plugin-host {label} unit is invalid")
+    cgroup = _bounded_text(record.get("cgroup"), f"{label} cgroup", 2, 4096)
+    if not cgroup.endswith("/" + unit):
+        raise ValueError(f"plugin-host {label} cgroup does not end in its unit")
+    _sha256(record.get("cgroup_sha256"), f"{label} cgroup SHA-256")
+    service = record.get("service")
+    _validate_plugin_service(service, unit, label)
+    if service.get("control_group") != cgroup:
+        raise ValueError(f"plugin-host {label} service cgroup mismatch")
+    return (pid, start_ticks, executable, unit, command_sha)
+
+
 def validate_managed_plugin_host(evidence: dict[str, Any]) -> None:
     if evidence.get("managed_process") is not True:
         raise ValueError("plugin host is not managed")
@@ -446,6 +578,106 @@ def validate_managed_plugin_host(evidence: dict[str, Any]) -> None:
     duration = _number(evidence.get("runtime_seconds"), "runtime_seconds")
     if duration < 60 or duration > 86_400:
         raise ValueError("plugin-host validation must cover 60 to 86400 seconds")
+    if not has_bound_plugin_host_observation(evidence):
+        return
+    if evidence.get("bounded_resources") is not True:
+        raise ValueError("plugin host resources are not bounded")
+    requested = _positive_int(
+        evidence.get("requested_duration_seconds"), "requested_duration_seconds"
+    )
+    if requested < 60 or requested > 86_400 or duration < requested:
+        raise ValueError("plugin-host observation is shorter than requested")
+    started = parse_timestamp(
+        evidence.get("observation_started_at"), "plugin-host observation start"
+    )
+    ended = parse_timestamp(
+        evidence.get("observation_ended_at"), "plugin-host observation end"
+    )
+    if (ended - started).total_seconds() < requested:
+        raise ValueError("plugin-host timestamps are shorter than requested")
+    if abs((ended - started).total_seconds() - duration) > 2.0:
+        raise ValueError("plugin-host duration contradicts its timestamps")
+    measured = parse_timestamp(evidence.get("measured_at"), "evidence measured_at")
+    if abs((measured - ended).total_seconds()) > 2.0:
+        raise ValueError("plugin-host measured_at does not match the observation end")
+    if evidence.get("blockers") != []:
+        raise ValueError("plugin-host passing evidence contains blockers")
+    implementation = evidence.get("implementation")
+    if not isinstance(implementation, dict):
+        raise ValueError("plugin-host evidence has no implementation binding")
+    expected_implementation = {
+        "plugin_host_observer_sha256": sha256_file(PLUGIN_HOST_OBSERVER_PATH),
+        "laboratory_gate_sha256": sha256_file(pathlib.Path(__file__)),
+        "system_truth_sha256": sha256_file(SYSTEM_TRUTH_PATH),
+    }
+    for key, expected_sha256 in expected_implementation.items():
+        observed_sha256 = _sha256(
+            implementation.get(key), f"plugin-host {key}"
+        )
+        if observed_sha256 != expected_sha256:
+            raise ValueError(f"plugin-host implementation binding changed: {key}")
+    for label in ("truth_before", "truth_after"):
+        binding = evidence.get(label)
+        if not isinstance(binding, dict):
+            raise ValueError(f"plugin-host evidence has no {label} truth binding")
+        _sha256(binding.get("report_sha256"), f"{label} report SHA-256")
+        _sha256(binding.get("truth_chain_sha256"), f"{label} truth-chain SHA-256")
+        _sha256(binding.get("process_fingerprint"), f"{label} process fingerprint")
+    before = evidence.get("processes_before")
+    after = evidence.get("processes_after")
+    if not isinstance(before, list) or not isinstance(after, list) or not before:
+        raise ValueError("plugin-host observation has no process set")
+    process_count = _positive_int(evidence.get("process_count"), "process_count")
+    if len(before) != process_count or len(after) != process_count:
+        raise ValueError("plugin-host process count contradicts the process sets")
+    before_ids = [
+        _validate_plugin_process(record, f"before[{index}]")
+        for index, record in enumerate(before)
+    ]
+    after_ids = [
+        _validate_plugin_process(record, f"after[{index}]")
+        for index, record in enumerate(after)
+    ]
+    if before_ids != after_ids:
+        raise ValueError("plugin-host process identity changed during observation")
+    if [record["service"]["restart_count"] for record in before] != [
+        record["service"]["restart_count"] for record in after
+    ]:
+        raise ValueError("plugin-host restart count changed during observation")
+    journal = evidence.get("journal")
+    if not isinstance(journal, dict):
+        raise ValueError("plugin-host evidence has no journal binding")
+    units = sorted({record["unit"] for record in before})
+    if journal.get("source") != "journalctl-user-plugin-host-units":
+        raise ValueError("plugin-host evidence has an unknown journal source")
+    if journal.get("units") != units:
+        raise ValueError("plugin-host journal units contradict the process set")
+    expected_argv = list(
+        plugin_host_journal_argv(
+            units,
+            evidence["observation_started_at"],
+            evidence["observation_ended_at"],
+        )
+    )
+    if journal.get("query_argv") != expected_argv:
+        raise ValueError("plugin-host journal query does not match the observation")
+    if (
+        _sha256(journal.get("query_argv_sha256"), "plugin-host query SHA-256")
+        != canonical_value_sha256(expected_argv)
+    ):
+        raise ValueError("plugin-host journal query digest mismatch")
+    if journal.get("returncode") != 0 or journal.get("complete") is not True:
+        raise ValueError("plugin-host journal query is incomplete")
+    if journal.get("stdout_truncated") is not False:
+        raise ValueError("plugin-host journal output is truncated")
+    max_lines = _positive_int(journal.get("max_lines"), "plugin-host max_lines")
+    if max_lines != MAX_PLUGIN_HOST_JOURNAL_LINES:
+        raise ValueError("plugin-host journal line limit does not match the contract")
+    line_count = _nonnegative_int(journal.get("line_count"), "plugin-host line_count")
+    if line_count > max_lines:
+        raise ValueError("plugin-host journal exceeds the line limit")
+    _nonnegative_int(journal.get("stdout_total_bytes"), "plugin-host output bytes")
+    _sha256(journal.get("stdout_sha256"), "plugin-host output SHA-256")
 
 
 VALIDATORS = {
@@ -463,6 +695,7 @@ def validate_evidence(
     evidence: dict[str, Any],
     *,
     allow_legacy_xrun: bool = False,
+    allow_legacy_plugin_host: bool = False,
 ) -> dict[str, Any]:
     catalog = load_catalog()
     if gate not in catalog:
@@ -477,6 +710,11 @@ def validate_evidence(
     if gate == "xrun-stability-test" and not has_bound_xrun_observation(evidence):
         if not allow_legacy_xrun:
             raise ValueError("legacy XRun evidence lacks a bounded journal observation")
+    if gate == "managed-plugin-host-proof" and not has_bound_plugin_host_observation(
+        evidence
+    ):
+        if not allow_legacy_plugin_host:
+            raise ValueError("legacy plugin-host evidence lacks a bounded observation")
     return spec
 
 
@@ -510,7 +748,12 @@ def validate_state(path: pathlib.Path, state: dict[str, Any]) -> None:
         evidence = receipt.get("evidence")
         if not isinstance(evidence, dict):
             raise ValueError(f"laboratory receipt has no evidence: {gate}")
-        validate_evidence(gate, evidence, allow_legacy_xrun=True)
+        validate_evidence(
+            gate,
+            evidence,
+            allow_legacy_xrun=True,
+            allow_legacy_plugin_host=True,
+        )
         if receipt.get("evidence_sha256") != canonical_sha256(evidence):
             raise ValueError(f"laboratory evidence digest mismatch: {gate}")
         recorded_times.append(
@@ -618,6 +861,13 @@ def gate_resolution(
             evidence = receipt.get("evidence")
             if not isinstance(evidence, dict) or not has_bound_xrun_observation(evidence):
                 invalidated[gate] = "legacy-unbound-xrun-evidence"
+                continue
+        if gate == "managed-plugin-host-proof":
+            evidence = receipt.get("evidence")
+            if not isinstance(evidence, dict) or not has_bound_plugin_host_observation(
+                evidence
+            ):
+                invalidated[gate] = "legacy-unbound-plugin-host-evidence"
                 continue
         if catalog[gate].get("binds_physical_state") is True:
             if physical_sha is None:
