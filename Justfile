@@ -32,6 +32,24 @@ calibration-pack pack output:
 level wav:
     ./scripts/analyze-audio-level "{{wav}}"
 
+record-init:
+    ./scripts/audio-record init
+
+record-plan name maximum_seconds="1800":
+    ./scripts/audio-record plan "{{name}}" --maximum-seconds "{{maximum_seconds}}"
+
+record-start name plan_sha256 maximum_seconds="1800":
+    ./scripts/audio-record start "{{name}}" --maximum-seconds "{{maximum_seconds}}" --expected-plan-sha256 "{{plan_sha256}}"
+
+record-status:
+    ./scripts/audio-record status
+
+record-stop:
+    ./scripts/audio-record stop
+
+record-recover:
+    ./scripts/audio-record recover
+
 whale-doctor:
     python3 scripts/whale_live.py doctor
 

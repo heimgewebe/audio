@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "kind": "audio_recording_session_catalog",
+  "sessions": {
+    "voice-recording": {
+      "purpose": "Record the Rode NT1-A through the serial-bound MOTU M2 source after physical and level gates pass.",
+      "required_physical_facts": {
+        "rode_nt1a_connected": true,
+        "rode_nt1a_motu_input": [
+          "input-1",
+          "input-2"
+        ],
+        "motu_phantom_48v": "on",
+        "motu_input_gain_reference": "non-empty-string"
+      },
+      "required_laboratory_gates": [
+        "voice-level-measurement"
+      ],
+      "capture": {
+        "sample_rate_hz": 48000,
+        "sample_format": "s32le",
+        "channels": 2,
+        "channel_map": "front-left,front-right",
+        "container": "wav",
+        "minimum_duration_seconds": 1,
+        "maximum_duration_seconds": 14400,
+        "startup_timeout_seconds": 5,
+        "stop_grace_seconds": 8,
+        "bytes_per_sample": 4,
+        "header_and_metadata_allowance_bytes": 1048576,
+        "free_space_reserve_bytes": 1073741824,
+        "maximum_stderr_bytes": 65536
+      },
+      "source": {
+        "vendor_id": "07fd",
+        "product_id": "0008",
+        "serial_prefix": "MOTU_M2_",
+        "node_name_prefix": "alsa_input.usb-MOTU_M2_",
+        "required_sample_format": "s32le",
+        "required_sample_rate_hz": 48000,
+        "required_channels": 2,
+        "requires_unmuted": true,
+        "requires_unity_volume": true
+      },
+      "process": {
+        "stdin": "devnull",
+        "stdout": "devnull",
+        "stderr": "bounded-private-temporary-file",
+        "new_session": true,
+        "core_dumps": false,
+        "maximum_open_files": 64,
+        "partial_file_policy": "preserve-on-failure",
+        "publication_policy": "same-directory-hardlink-no-replace"
+      }
+    }
+  },
+  "rules": [
+    "planning is read-only",
+    "only one managed recording session may be active",
+    "start requires the exact current plan digest",
+    "stop and recovery require exact PID, start-time, executable and command-line identity",
+    "a partial file is never silently promoted after an unclean worker exit",
+    "the final WAV path is never overwritten",
+    "recordings and private receipts remain outside Git"
+  ]
+}

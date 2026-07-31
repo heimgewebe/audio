@@ -43,8 +43,16 @@ Start, Spielen, Aufnehmen, Hören, Klänge, Verbindungen, Diagnose und
 Einstellungen. Ein loopback-gebundener Control-Dienst bleibt
 Zustandsautorität; der Browser verarbeitet kein kritisches Audio. In der ersten
 Stufe ist nur der bereits verwaltete Buckelwaldienst schaltbar. Profilplanung
-ist read-only, Aufnahme, Dauersong und Profil-Apply bleiben sichtbar
-fail-closed.
+ist read-only; Dauersong und Profil-Apply bleiben sichtbar fail-closed.
+
+Der gehärtete Aufnahme-Kern ist per CLI vorhanden, aber weiterhin an die
+physischen Mikrofonfakten, die eindeutige MOTU-Quelle und das bestandene
+Stimmpegel-Gate gebunden. Er plant read-only, startet nur mit dem exakten
+Planhash, identifiziert seinen Prozess über PID, Startzeit und Executable,
+begrenzt Laufzeit und Dateigröße und veröffentlicht die WAV-Datei ohne
+Überschreiben. Ein Abbruch oder Rechnerausfall bleibt über `status` und
+`recover` nachvollziehbar; die Audiozentrale erhält erst nach physischer
+Abnahme Aufnahme-Schaltflächen.
 
 ## Dokumente
 
@@ -66,6 +74,7 @@ fail-closed.
 - [Round-Trip-Latenz](docs/latency.md)
 - [Physische Verifikation](docs/physical-verification-workflow.md)
 - [Kalibrier- und Messworkflow](docs/calibration-workflow.md)
+- [Gehärtete Aufnahmesitzungen](docs/recording-session-workflow.md)
 - [Read-only Profilplanung](docs/profile-planning.md)
 - [Aktuelle Heim-PC-Baseline](baselines/heim-pc/2026-07-27/README.md)
 
@@ -78,6 +87,9 @@ just check
 ./scripts/audio-truth verify ~/.local/state/audio/truth/latest.v1.json
 ./scripts/audio-physical status
 ./scripts/audio-plan desktop-mixed
+./scripts/audio-record plan stimme-01.wav --maximum-seconds 1800
+./scripts/audio-record status
+# Start erst nach bestandenem Plan mit --expected-plan-sha256.
 python3 scripts/whale_live.py doctor
 python3 scripts/build_whale_morph_bank.py
 python3 scripts/whale_live.py start --voice-mode morph
