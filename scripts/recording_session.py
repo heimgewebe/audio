@@ -351,18 +351,18 @@ def contract_bindings() -> list[dict[str, Any]]:
     return [_safe_regular_binding(path, maximum_bytes=MAX_BINDING_BYTES) for path in paths]
 
 
-def parecord_binding() -> dict[str, Any]:
-    if not PARECORD_PATH.is_file() or not os.access(PARECORD_PATH, os.X_OK):
-        raise RecordingError("/usr/bin/parecord is unavailable or not executable")
-    metadata = PARECORD_PATH.lstat()
+def parecord_binding(path: pathlib.Path = PARECORD_PATH) -> dict[str, Any]:
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise RecordingError(f"recording executable is unavailable: {path}")
+    metadata = path.lstat()
     link_target: str | None = None
-    resolved = PARECORD_PATH
+    resolved = path
     if stat.S_ISLNK(metadata.st_mode):
-        link_target = os.readlink(PARECORD_PATH)
-        resolved = PARECORD_PATH.resolve(strict=True)
+        link_target = os.readlink(path)
+        resolved = path.resolve(strict=True)
     binding = _safe_regular_binding(resolved, maximum_bytes=MAX_BINDING_BYTES)
     return {
-        "launcher": str(PARECORD_PATH),
+        "launcher": str(path),
         "launcher_symlink_target": link_target,
         "resolved": binding,
     }

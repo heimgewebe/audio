@@ -445,10 +445,24 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertIsNotNone(result["partial"])
 
     def test_parecord_binding_covers_launcher_and_resolved_binary(self) -> None:
-        binding = MODULE.parecord_binding()
-        self.assertEqual(binding["launcher"], "/usr/bin/parecord")
-        self.assertEqual(binding["resolved"]["path"], "/usr/bin/pacat")
-        self.assertEqual(len(binding["resolved"]["sha256"]), 64)
+        resolved = self.base / "pacat"
+        resolved.write_text("#!/bin/sh\nexit 0\n")
+        resolved.chmod(0o755)
+        launcher = self.base / "parecord"
+        launcher.symlink_to(resolved.name)
+
+        binding = MODULE.parecord_binding(launcher)
+
+        self.assertEqual(binding["launcher"], str(launcher))
+        self.assertEqual(binding["launcher_symlink_target"], resolved.name)
+        self.assertEqual(binding["resolved"]["path"], str(resolved))
+        self.assertEqual(
+            binding["resolved"]["sha256"], hashlib.sha256(resolved.read_bytes()).hexdigest()
+        )
+
+    def test_parecord_binding_rejects_missing_test_executable(self) -> None:
+        with self.assertRaises(MODULE.RecordingError):
+            MODULE.parecord_binding(self.base / "missing-parecord")
 
     def test_worker_cleanly_stops_fake_recorder_and_publishes_wav(self) -> None:
         fake = self.base / "fake-parecord"
