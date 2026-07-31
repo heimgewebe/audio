@@ -848,7 +848,7 @@ function soundModeDescription(mode) {
     return "Quellengestützte, chromatisch spielbare Morph-Stimme ohne Samplezonen.";
   }
   if (mode.id === "organic") {
-    return "Quellengestützte Morph-Stimme mit Formantträgheit, Subharmonik und unregelmäßiger Artikulation.";
+    return "Quellengestützte Walstimme mit kurzem Legato und kräftigem, grundtongebundenem Tiefbass.";
   }
   if (mode.id === "realistic") {
     return "Lizenzierte Naturaufnahmen mit begrenzter Tonhöhenverschiebung.";

@@ -32,6 +32,16 @@ class OrganicWhaleMorphVoiceTests(unittest.TestCase):
         )
         return derivative / signal
 
+    @staticmethod
+    def lowpass_rms(values, cutoff_hz=120.0, sample_rate=48_000):
+        alpha = 1.0 - math.exp(-2.0 * math.pi * cutoff_hz / sample_rate)
+        state = 0.0
+        energy = 0.0
+        for value in values:
+            state += (value - state) * alpha
+            energy += state * state
+        return math.sqrt(energy / len(values))
+
     def test_idle_is_exact_silence_without_permanent_noise(self):
         voice = organic.OrganicWhaleMorphVoice(self.config)
         self.assertEqual(voice.render(4096), [0.0] * 4096)
@@ -93,7 +103,7 @@ class OrganicWhaleMorphVoiceTests(unittest.TestCase):
             places=9,
         )
 
-    def test_signal_bound_roughness_exceeds_plain_morph_without_level_spike(self):
+    def test_mid_register_texture_is_organic_but_not_buzzy(self):
         plain = morph.WhaleMorphVoice(self.config)
         shaped = organic.OrganicWhaleMorphVoice(self.config)
         for voice in (plain, shaped):
@@ -101,12 +111,41 @@ class OrganicWhaleMorphVoiceTests(unittest.TestCase):
             voice.control_change(1, 72)
         plain_samples = plain.render(self.config.sample_rate * 2)
         organic_samples = shaped.render(self.config.sample_rate * 2)
-        self.assertGreater(
-            self.derivative_ratio(organic_samples),
-            self.derivative_ratio(plain_samples) * 1.5,
+        ratio = self.derivative_ratio(organic_samples) / self.derivative_ratio(
+            plain_samples
         )
+        self.assertGreater(ratio, 1.05)
+        self.assertLess(ratio, 1.55)
         self.assertLessEqual(max(abs(value) for value in organic_samples), 0.25)
         self.assertGreater(self.rms(organic_samples), 1e-4)
+
+    def test_low_register_has_material_deep_bass_body(self):
+        ratios = []
+        for note in (21, 33):
+            plain = morph.WhaleMorphVoice(self.config)
+            shaped = organic.OrganicWhaleMorphVoice(self.config)
+            for voice in (plain, shaped):
+                voice.note_on(note, 80)
+            plain_samples = plain.render(self.config.sample_rate)
+            organic_samples = shaped.render(self.config.sample_rate)
+            ratios.append(
+                self.lowpass_rms(organic_samples)
+                / self.lowpass_rms(plain_samples)
+            )
+            self.assertLessEqual(max(abs(value) for value in organic_samples), 0.25)
+        self.assertGreater(ratios[0], 1.55)
+        self.assertGreater(ratios[1], 1.80)
+
+    def test_extra_pitch_layer_avoids_theremin_sweeps(self):
+        voice = organic.OrganicWhaleMorphVoice(self.config)
+        voice.note_on(45, 80)
+        contours = []
+        for seconds in (0.0, 0.1, 0.5, 1.0, 2.0, 4.0, 8.0):
+            voice.note_age_frames = round(seconds * self.config.sample_rate)
+            contours.append(voice._macro_contour_cents())
+        self.assertLess(max(abs(value) for value in contours), 20.0)
+        voice.note_on(57, 80)
+        self.assertLessEqual(voice.glide_seconds, 0.18)
 
     def test_render_is_chunk_invariant(self):
         one_shot = organic.OrganicWhaleMorphVoice(self.config)

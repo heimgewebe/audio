@@ -844,6 +844,8 @@ class AudioControlTests(unittest.TestCase):
             "permanent_noise_layer",
             "long_phrase_playback",
             "organic_features",
+            "low_register",
+            "maximum_additional_pitch_drift_cents",
             "comparison",
             "hold",
             "legato",
