@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "kind": "audio_calibration_pack_catalog",
+  "packs": {
+    "headphone-reference": {
+      "purpose": "Prepare a bounded reference-level check for the MOTU M2, Lake People G111 Mk2 and Focal Clear MG path.",
+      "allowed_profiles": [
+        "reference-listening",
+        "desktop-mixed"
+      ],
+      "required_physical_facts": [
+        "motu_output_to_lake_people",
+        "lake_people_gain_setting",
+        "lake_people_volume_reference",
+        "focal_connected_output"
+      ],
+      "required_laboratory_gates": [],
+      "signal": {
+        "kind": "tone",
+        "sample_rate_hz": 48000,
+        "channels": 1,
+        "bit_depth": 16,
+        "dbfs": -20.0,
+        "duration_seconds": 5.0,
+        "frequency_hz": 1000.0
+      },
+      "safety_gates": [
+        "Lake People volume at minimum before playback",
+        "Only one analog control raised at a time",
+        "Stop immediately on unexpected loudness"
+      ],
+      "facts_or_receipts_to_record": [
+        "motu_output_to_lake_people",
+        "lake_people_gain_setting",
+        "lake_people_volume_reference",
+        "focal_connected_output"
+      ]
+    },
+    "voice-gain": {
+      "purpose": "Prepare a non-playing Rode NT1-A gain and phantom-power verification session.",
+      "allowed_profiles": [
+        "voice-recording"
+      ],
+      "required_physical_facts": [
+        "rode_nt1a_connected",
+        "rode_nt1a_motu_input",
+        "motu_phantom_48v",
+        "motu_input_gain_reference"
+      ],
+      "required_laboratory_gates": [
+        "voice-level-measurement"
+      ],
+      "signal": null,
+      "safety_gates": [
+        "Monitoring lowered",
+        "Input gain low",
+        "XLR connection visually checked",
+        "48 V visually checked on",
+        "Loudest realistic voice used"
+      ],
+      "facts_or_receipts_to_record": [
+        "rode_nt1a_connected",
+        "rode_nt1a_motu_input",
+        "motu_phantom_48v",
+        "motu_input_gain_reference"
+      ]
+    },
+    "receiver-reference": {
+      "purpose": "Prepare a bounded reference-level and routing check for the Pioneer receiver path.",
+      "allowed_profiles": [
+        "receiver"
+      ],
+      "required_physical_facts": [
+        "pioneer_pc_connection",
+        "pioneer_selected_input",
+        "pioneer_listening_mode",
+        "pioneer_reference_volume"
+      ],
+      "required_laboratory_gates": [],
+      "signal": {
+        "kind": "tone",
+        "sample_rate_hz": 48000,
+        "channels": 1,
+        "bit_depth": 16,
+        "dbfs": -20.0,
+        "duration_seconds": 5.0,
+        "frequency_hz": 1000.0
+      },
+      "safety_gates": [
+        "Receiver volume at minimum before playback",
+        "Stereo mode used until multichannel path is proven",
+        "Stop immediately on unexpected routing"
+      ],
+      "facts_or_receipts_to_record": [
+        "pioneer_pc_connection",
+        "pioneer_selected_input",
+        "pioneer_listening_mode",
+        "pioneer_reference_volume"
+      ]
+    },
+    "motu-loopback": {
+      "purpose": "Prepare a bounded physical loopback recording for measured round-trip latency.",
+      "allowed_profiles": [
+        "voice-recording",
+        "piano-software-live",
+        "production"
+      ],
+      "required_physical_facts": [],
+      "required_laboratory_gates": [
+        "loopback-latency-measurement"
+      ],
+      "signal": {
+        "kind": "impulse",
+        "sample_rate_hz": 48000,
+        "channels": 1,
+        "bit_depth": 16,
+        "dbfs": -20.0,
+        "duration_seconds": 1.0,
+        "frequency_hz": 1000.0
+      },
+      "safety_gates": [
+        "Headphones and receiver muted or lowered",
+        "Confirmed line output connected to a line input",
+        "48 V off on the loopback input",
+        "No microphone connected to the loopback input"
+      ],
+      "facts_or_receipts_to_record": [
+        "physical loopback cable and input/output pair in the measurement receipt"
+      ]
+    }
+  },
+  "rules": [
+    "pack creation never starts playback or recording",
+    "a pack is usable only at its exact clean Git revision and bound contract bytes",
+    "validation is read-only and fails on drift, tampering, symlinks, special files or unexpected files",
+    "physical observations and laboratory evidence remain separate private authorities"
+  ]
+}
