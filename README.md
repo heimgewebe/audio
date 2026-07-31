@@ -20,10 +20,11 @@ quellengestützte Walstimme über alle 88 chromatischen Tasten von A0 bis C8.
 Kurze periodische Stimmzyklen aus lizenzierten Buckelwalaufnahmen werden
 phasengleich gemittelt, bandbegrenzt und stufenlos gemorpht. Es gibt keine
 Samplezonen, Presets, Steuertasten oder permanente Rauschschicht. Der Modus
-`organic` ergänzt Formantträgheit, Subharmonik, signalgebundene Rauigkeit und
-gedämpfte Resonanzspuren; seine reproduzierbare Spielphrase wird gegen echte,
-quellengebundene Buckelwalclips vermessen. Die Modi `realistic`
-(Aufnahmephrasen) und `ufo` bleiben als Vergleiche erhalten.
+`organic` ergänzt Formantträgheit, kurze statt thereminartige Übergänge,
+gestengebundene Artikulation und einen starken grundtongebundenen Tiefbass;
+seine reproduzierbare Spielphrase wird gegen echte, quellengebundene
+Buckelwalclips vermessen. Die Modi `realistic` (Aufnahmephrasen) und `ufo`
+bleiben als Vergleiche erhalten.
 
 ## Bereiche
 
@@ -50,7 +51,7 @@ fail-closed.
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
 - [sfizz-Störfall](docs/incidents/2026-07-26-sfizz-stdin-eof-loop.md)
 - [Buckelwal Live Voice](docs/experiments/buckelwal-live-voice-v1.md)
-- [Organische Buckelwalstimme und A/B-Vergleich](docs/experiments/buckelwal-organic-v2.md)
+- [Organische Buckelwalstimme und A/B-Vergleich](docs/experiments/buckelwal-organic-v3.md)
 - [Buckelwal-Samplequellen und Lizenzen](assets/whale-sources/README.md)
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
