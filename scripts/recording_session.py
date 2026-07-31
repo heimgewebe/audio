@@ -35,6 +35,11 @@ PARECORD_PATH = pathlib.Path("/usr/bin/parecord")
 MAX_JSON_BYTES = 524_288
 MAX_BINDING_BYTES = 64_000_000
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+HEX64_RE = re.compile(r"[0-9a-f]{64}")
+SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
+ARTIFACT_DETAIL_FIELDS = frozenset(
+    {"channels", "bit_depth_container", "sample_rate_hz", "frames", "duration_seconds"}
+)
 DEFAULT_OUTPUT_ROOT = pathlib.Path(
     os.environ.get("AUDIO_RECORDING_ROOT", pathlib.Path.home() / "Music" / "Audio-Aufnahmen")
 )
@@ -104,6 +109,7 @@ def _read_bound_regular(
     maximum_bytes: int,
     require_private: bool,
     capture_content: bool,
+    include_identity: bool = False,
 ) -> tuple[dict[str, Any], bytes | None]:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -140,6 +146,8 @@ def _read_bound_regular(
             "bytes": total,
             "mode": f"{stat.S_IMODE(before.st_mode):04o}",
         }
+        if include_identity:
+            binding.update({"device": before.st_dev, "inode": before.st_ino})
         return binding, (b"".join(chunks) if chunks is not None else None)
     finally:
         os.close(descriptor)
@@ -150,12 +158,14 @@ def _safe_regular_binding(
     *,
     maximum_bytes: int = MAX_BINDING_BYTES,
     require_private: bool = False,
+    include_identity: bool = False,
 ) -> dict[str, Any]:
     binding, _content = _read_bound_regular(
         path,
         maximum_bytes=maximum_bytes,
         require_private=require_private,
         capture_content=False,
+        include_identity=include_identity,
     )
     return binding
 
@@ -768,15 +778,264 @@ def _terminate_exact_process(
     return not _identity_matches(expected)
 
 
-def _read_session(
-    state_root: pathlib.Path, session_id: str
-) -> tuple[dict[str, pathlib.Path], dict[str, Any], dict[str, Any]]:
-    paths = _session_paths(state_root, session_id)
-    spec, spec_binding = _safe_json_read_with_binding(
-        paths["spec"], require_private=True
+def _valid_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or not value or CONTROL_RE.search(value):
+        return False
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _validate_binding_shape(
+    value: Any,
+    *,
+    expected_path: pathlib.Path | None = None,
+    require_identity: bool = False,
+    detail_fields: frozenset[str] = frozenset(),
+) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise RecordingError("recording artifact binding is not an object")
+    if set(value) == {"path", "error"}:
+        if (
+            not isinstance(value.get("path"), str)
+            or CONTROL_RE.search(value["path"])
+            or not isinstance(value.get("error"), str)
+            or not value["error"]
+            or CONTROL_RE.search(value["error"])
+        ):
+            raise RecordingError("recording artifact error binding is invalid")
+        if expected_path is not None and pathlib.Path(value["path"]) != expected_path:
+            raise RecordingError("recording artifact path does not match the session")
+        return
+    required = {"path", "sha256", "bytes", "mode"}
+    if require_identity:
+        required |= {"device", "inode"}
+    if set(value) != required | detail_fields:
+        raise RecordingError("recording artifact binding fields are invalid")
+    path_value = value.get("path")
+    if not isinstance(path_value, str) or CONTROL_RE.search(path_value):
+        raise RecordingError("recording artifact path is invalid")
+    if expected_path is not None and pathlib.Path(path_value) != expected_path:
+        raise RecordingError("recording artifact path does not match the session")
+    if not isinstance(value.get("sha256"), str) or not HEX64_RE.fullmatch(
+        value["sha256"]
+    ):
+        raise RecordingError("recording artifact digest is invalid")
+    if (
+        isinstance(value.get("bytes"), bool)
+        or not isinstance(value.get("bytes"), int)
+        or value["bytes"] < 1
+        or value.get("mode") != "0600"
+    ):
+        raise RecordingError("recording artifact identity is invalid")
+    if require_identity and (
+        isinstance(value.get("device"), bool)
+        or not isinstance(value.get("device"), int)
+        or value["device"] < 0
+        or isinstance(value.get("inode"), bool)
+        or not isinstance(value.get("inode"), int)
+        or value["inode"] < 1
+    ):
+        raise RecordingError("recording artifact filesystem identity is invalid")
+
+
+def _validate_process_identity(value: Any) -> None:
+    required = {
+        "pid",
+        "start_ticks",
+        "executable",
+        "cmdline_sha256",
+        "process_group",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise RecordingError("recording process identity fields are invalid")
+    if any(
+        isinstance(value.get(key), bool)
+        or not isinstance(value.get(key), int)
+        or value[key] < minimum
+        for key, minimum in (("pid", 2), ("start_ticks", 1), ("process_group", 1))
+    ):
+        raise RecordingError("recording process numeric identity is invalid")
+    executable = value.get("executable")
+    if (
+        not isinstance(executable, str)
+        or not pathlib.Path(executable).is_absolute()
+        or CONTROL_RE.search(executable)
+    ):
+        raise RecordingError("recording process executable is invalid")
+    digest = value.get("cmdline_sha256")
+    if not isinstance(digest, str) or not HEX64_RE.fullmatch(digest):
+        raise RecordingError("recording process command identity is invalid")
+
+
+def _positive_integer(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value > 0
+
+
+def _non_negative_integer(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _validate_persisted_spec(
+    spec: dict[str, Any], *, state_root: pathlib.Path | None = None
+) -> None:
+    required = {
+        "schema_version",
+        "kind",
+        "session_id",
+        "created_at",
+        "plan_sha256",
+        "plan_identity",
+        "source_name",
+        "paths",
+    }
+    if set(spec) != required:
+        raise RecordingError("recording worker spec fields are invalid")
+    session_id = spec.get("session_id")
+    plan_sha = spec.get("plan_sha256")
+    plan = spec.get("plan_identity")
+    if (
+        spec.get("schema_version") != 1
+        or spec.get("kind") != "audio_recording_session_spec"
+        or not isinstance(session_id, str)
+        or not SESSION_ID_RE.fullmatch(session_id)
+        or not _valid_timestamp(spec.get("created_at"))
+        or not isinstance(plan_sha, str)
+        or not HEX64_RE.fullmatch(plan_sha)
+        or not isinstance(plan, dict)
+        or canonical_sha256(plan) != plan_sha
+    ):
+        raise RecordingError("recording worker spec schema is invalid")
+    expected_plan_fields = {
+        "schema_version",
+        "kind",
+        "session_type",
+        "output",
+        "capture",
+        "physical",
+        "laboratory",
+        "source",
+        "contracts",
+        "parecord",
+        "process",
+        "state_root",
+    }
+    if (
+        set(plan) != expected_plan_fields
+        or plan.get("schema_version") != 1
+        or plan.get("kind") != "audio_recording_plan_identity"
+        or plan.get("session_type") != "voice-recording"
+    ):
+        raise RecordingError("recording plan identity fields are invalid")
+    source_name = spec.get("source_name")
+    if (
+        not isinstance(source_name, str)
+        or not source_name
+        or len(source_name) > 4096
+        or CONTROL_RE.search(source_name)
+    ):
+        raise RecordingError("recording source name is invalid")
+    paths = spec.get("paths")
+    if not isinstance(paths, dict) or set(paths) != {"partial", "final", "result"}:
+        raise RecordingError("recording worker paths are invalid")
+    resolved: dict[str, pathlib.Path] = {}
+    for key, raw_path in paths.items():
+        if not isinstance(raw_path, str) or CONTROL_RE.search(raw_path):
+            raise RecordingError("recording worker path is invalid")
+        candidate = pathlib.Path(raw_path)
+        if not candidate.is_absolute() or lexical_absolute(candidate) != candidate:
+            raise RecordingError("recording worker path is not canonical absolute")
+        resolved[key] = candidate
+    output = plan.get("output")
+    if (
+        not isinstance(output, dict)
+        or set(output) != {"root", "name", "path", "mode", "overwrite"}
+        or output.get("mode") != "0600"
+        or output.get("overwrite") is not False
+    ):
+        raise RecordingError("recording worker output plan is invalid")
+    capture = plan.get("capture")
+    expected_capture_fields = {
+        "sample_rate_hz",
+        "sample_format",
+        "channels",
+        "channel_map",
+        "container",
+        "maximum_duration_seconds",
+        "maximum_file_bytes",
+        "startup_timeout_seconds",
+        "stop_grace_seconds",
+        "free_space_reserve_bytes",
+    }
+    maximum_duration = (
+        capture.get("maximum_duration_seconds") if isinstance(capture, dict) else None
     )
-    state = _safe_json_read(paths["state"], require_private=True)
-    required_state = {
+    maximum_bytes = capture.get("maximum_file_bytes") if isinstance(capture, dict) else None
+    if (
+        not isinstance(capture, dict)
+        or set(capture) != expected_capture_fields
+        or capture.get("sample_rate_hz") != 48_000
+        or capture.get("sample_format") != "s32le"
+        or capture.get("channels") != 2
+        or capture.get("channel_map") != "front-left,front-right"
+        or capture.get("container") != "wav"
+        or not _positive_integer(maximum_duration)
+        or maximum_duration > 14_400
+        or not _positive_integer(maximum_bytes)
+        or maximum_bytes != 48_000 * 2 * 4 * maximum_duration + 1_048_576
+        or not _positive_integer(capture.get("startup_timeout_seconds"))
+        or not _positive_integer(capture.get("stop_grace_seconds"))
+        or not _non_negative_integer(capture.get("free_space_reserve_bytes"))
+        or not isinstance(plan.get("physical"), dict)
+        or not isinstance(plan.get("laboratory"), dict)
+        or not isinstance(plan.get("source"), dict)
+        or not isinstance(plan.get("contracts"), list)
+        or not plan["contracts"]
+        or not isinstance(plan.get("parecord"), dict)
+        or not isinstance(plan.get("process"), dict)
+    ):
+        raise RecordingError("recording capture plan is invalid")
+    final = resolved["final"]
+    partial = resolved["partial"]
+    output_root = output.get("root")
+    output_name = output.get("name")
+    output_path = output.get("path")
+    if (
+        not isinstance(output_root, str)
+        or not isinstance(output_name, str)
+        or not isinstance(output_path, str)
+        or CONTROL_RE.search(output_root)
+        or CONTROL_RE.search(output_name)
+        or CONTROL_RE.search(output_path)
+        or pathlib.Path(output_root) != final.parent
+        or pathlib.Path(output_path) != final
+        or output_name != final.name
+        or partial.parent != final.parent
+        or partial.name != f".{final.stem}.{session_id}.partial.wav"
+    ):
+        raise RecordingError("recording worker paths do not match the plan")
+    raw_state_root = plan.get("state_root")
+    if not isinstance(raw_state_root, str) or CONTROL_RE.search(raw_state_root):
+        raise RecordingError("recording state root is invalid")
+    effective_root = pathlib.Path(raw_state_root)
+    if (
+        not effective_root.is_absolute()
+        or lexical_absolute(effective_root) != effective_root
+        or (state_root is not None and lexical_absolute(state_root) != effective_root)
+    ):
+        raise RecordingError("recording state root does not match the session")
+    if resolved["result"] != _session_paths(effective_root, session_id)["result"]:
+        raise RecordingError("recording result path does not match the session")
+
+
+def _validate_session_state(
+    state: dict[str, Any], *, session_id: str, spec_sha256: str
+) -> None:
+    required = {
         "schema_version",
         "kind",
         "session_id",
@@ -784,31 +1043,203 @@ def _read_session(
         "started_at",
         "process",
     }
-    state_fields = frozenset(state)
-    if state_fields not in {
-        frozenset(required_state),
-        frozenset(required_state | {"phase"}),
-    }:
+    fields = frozenset(state)
+    if fields not in {frozenset(required), frozenset(required | {"phase"})}:
         raise RecordingError("recording session state fields are invalid")
+    process = state.get("process")
+    phase = state.get("phase")
     if (
         state.get("schema_version") != 1
         or state.get("kind") != "audio_recording_session_state"
-        or state.get("phase") not in {None, "starting", "running"}
-        or (state.get("process") is not None and not isinstance(state.get("process"), dict))
+        or state.get("session_id") != session_id
+        or state.get("spec_sha256") != spec_sha256
+        or not _valid_timestamp(state.get("started_at"))
+        or phase not in {None, "starting", "running"}
     ):
         raise RecordingError("recording session state schema is invalid")
-    if state.get("spec_sha256") != spec_binding["sha256"]:
-        raise RecordingError("recording state does not bind the current session spec")
-    if spec.get("session_id") != session_id or state.get("session_id") != session_id:
-        raise RecordingError("recording session identity is inconsistent")
-    return paths, spec, state
+    if phase == "starting":
+        if process is not None:
+            raise RecordingError("starting recording state must not bind a process")
+    else:
+        _validate_process_identity(process)
 
+
+def _artifact_binding_fields(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value[key]
+        for key in ("path", "sha256", "bytes", "mode", "device", "inode")
+    }
+
+
+def _assert_artifact_binding_current(
+    value: Any,
+    *,
+    expected_path: pathlib.Path,
+    maximum_bytes: int,
+    detail_fields: frozenset[str] = frozenset(),
+) -> None:
+    _validate_binding_shape(
+        value,
+        expected_path=expected_path,
+        require_identity=True,
+        detail_fields=detail_fields,
+    )
+    if value is None or set(value) == {"path", "error"}:
+        return
+    try:
+        observed = _safe_regular_binding(
+            expected_path,
+            maximum_bytes=maximum_bytes,
+            require_private=True,
+            include_identity=True,
+        )
+    except RecordingError as exc:
+        raise RecordingError("recording artifact no longer matches its receipt") from exc
+    if observed != _artifact_binding_fields(value):
+        raise RecordingError("recording artifact no longer matches its receipt")
+
+
+def _validate_result(result: dict[str, Any], spec: dict[str, Any]) -> None:
+    common = {
+        "schema_version",
+        "kind",
+        "session_id",
+        "status",
+        "reason",
+        "plan_sha256",
+        "does_not_establish",
+    }
+    if (
+        result.get("schema_version") != 1
+        or result.get("kind") != "audio_recording_result"
+        or result.get("session_id") != spec.get("session_id")
+        or result.get("plan_sha256") != spec.get("plan_sha256")
+        or not isinstance(result.get("reason"), str)
+        or not result["reason"]
+        or CONTROL_RE.search(result["reason"])
+        or not isinstance(result.get("does_not_establish"), list)
+        or not result["does_not_establish"]
+        or any(
+            not isinstance(item, str) or not item or CONTROL_RE.search(item)
+            for item in result["does_not_establish"]
+        )
+    ):
+        raise RecordingError("recording result common schema is invalid")
+    status = result.get("status")
+    final_path = pathlib.Path(spec["paths"]["final"])
+    partial_path = pathlib.Path(spec["paths"]["partial"])
+    capture = spec["plan_identity"]["capture"]
+    maximum_bytes = int(capture["maximum_file_bytes"])
+    maximum_duration = int(capture["maximum_duration_seconds"])
+    if status == "completed":
+        expected = common | {"started_at", "completed_at", "process", "artifact"}
+        if set(result) != expected:
+            raise RecordingError("completed recording result fields are invalid")
+        started_at = result.get("started_at")
+        completed_at = result.get("completed_at")
+        if (
+            result.get("reason") not in {"requested-stop", "maximum-duration"}
+            or not _valid_timestamp(started_at)
+            or not _valid_timestamp(completed_at)
+            or dt.datetime.fromisoformat(completed_at)
+            < dt.datetime.fromisoformat(started_at)
+        ):
+            raise RecordingError("completed recording result timeline is invalid")
+        process = result.get("process")
+        if (
+            not isinstance(process, dict)
+            or set(process)
+            != {
+                "returncode",
+                "forced_kill",
+                "stderr_bytes",
+                "stderr_sha256",
+                "stderr_truncated",
+            }
+            or isinstance(process.get("returncode"), bool)
+            or not isinstance(process.get("returncode"), int)
+            or process.get("returncode") not in {0, -signal.SIGINT}
+            or process.get("forced_kill") is not False
+            or isinstance(process.get("stderr_bytes"), bool)
+            or not isinstance(process.get("stderr_bytes"), int)
+            or process["stderr_bytes"] < 0
+            or not isinstance(process.get("stderr_sha256"), str)
+            or not HEX64_RE.fullmatch(process["stderr_sha256"])
+            or process.get("stderr_truncated") is not False
+        ):
+            raise RecordingError("completed recording process receipt is invalid")
+        artifact = result.get("artifact")
+        _assert_artifact_binding_current(
+            artifact,
+            expected_path=final_path,
+            maximum_bytes=maximum_bytes,
+            detail_fields=ARTIFACT_DETAIL_FIELDS,
+        )
+        if (
+            not isinstance(artifact, dict)
+            or artifact.get("channels") != capture.get("channels")
+            or artifact.get("bit_depth_container") != 32
+            or artifact.get("sample_rate_hz") != capture.get("sample_rate_hz")
+            or isinstance(artifact.get("frames"), bool)
+            or not isinstance(artifact.get("frames"), int)
+            or artifact["frames"] < 1
+            or isinstance(artifact.get("duration_seconds"), bool)
+            or not isinstance(artifact.get("duration_seconds"), (int, float))
+            or artifact["duration_seconds"] <= 0
+            or artifact["duration_seconds"] > maximum_duration + 2
+        ):
+            raise RecordingError("completed recording artifact receipt is invalid")
+        return
+    if status != "failed-preserved":
+        raise RecordingError("recording result status is invalid")
+    recovery_fields = common | {"recovered_at", "partial", "final"}
+    worker_fields = common | {"failed_at", "error", "partial"}
+    fields = set(result)
+    if fields == recovery_fields:
+        if not _valid_timestamp(result.get("recovered_at")):
+            raise RecordingError("recovered recording timestamp is invalid")
+        _assert_artifact_binding_current(
+            result.get("final"), expected_path=final_path, maximum_bytes=maximum_bytes
+        )
+    elif fields == worker_fields:
+        if (
+            not _valid_timestamp(result.get("failed_at"))
+            or not isinstance(result.get("error"), str)
+            or not result["error"]
+            or CONTROL_RE.search(result["error"])
+        ):
+            raise RecordingError("failed recording result detail is invalid")
+    else:
+        raise RecordingError("failed recording result fields are invalid")
+    _assert_artifact_binding_current(
+        result.get("partial"), expected_path=partial_path, maximum_bytes=maximum_bytes
+    )
+
+
+def _read_session(
+    state_root: pathlib.Path, session_id: str
+) -> tuple[dict[str, pathlib.Path], dict[str, Any], dict[str, Any]]:
+    paths = _session_paths(state_root, session_id)
+    spec, spec_binding = _safe_json_read_with_binding(
+        paths["spec"], require_private=True
+    )
+    _validate_persisted_spec(spec, state_root=state_root)
+    state = _safe_json_read(paths["state"], require_private=True)
+    _validate_session_state(
+        state, session_id=session_id, spec_sha256=spec_binding["sha256"]
+    )
+    return paths, spec, state
 
 def _bounded_path_binding(path: pathlib.Path, maximum_bytes: int) -> dict[str, Any] | None:
     if not path.exists() and not path.is_symlink():
         return None
     try:
-        return _safe_regular_binding(path, maximum_bytes=maximum_bytes)
+        return _safe_regular_binding(
+            path,
+            maximum_bytes=maximum_bytes,
+            require_private=True,
+            include_identity=True,
+        )
     except RecordingError as exc:
         return {"path": str(path), "error": str(exc)}
 
@@ -822,6 +1253,7 @@ def session_status(
     result: dict[str, Any] | None = None
     if paths["result"].exists() or paths["result"].is_symlink():
         result = _safe_json_read(paths["result"], require_private=True)
+        _validate_result(result, spec)
     process = state.get("process")
     exact_alive = isinstance(process, dict) and _identity_matches(process)
     pid_alive = isinstance(process, dict) and _proc_identity(process.get("pid")) is not None
@@ -1115,35 +1547,19 @@ def recover_session(
 
 
 def _validate_spec(spec: dict[str, Any]) -> None:
-    if set(spec) != {
-        "schema_version",
-        "kind",
-        "session_id",
-        "created_at",
-        "plan_sha256",
-        "plan_identity",
-        "source_name",
-        "paths",
-    }:
-        raise RecordingError("recording worker spec fields are invalid")
-    if spec.get("schema_version") != 1 or spec.get("kind") != "audio_recording_session_spec":
-        raise RecordingError("recording worker spec schema is invalid")
-    if canonical_sha256(spec.get("plan_identity")) != spec.get("plan_sha256"):
-        raise RecordingError("recording worker plan digest is invalid")
+    _validate_persisted_spec(spec)
     if spec["plan_identity"].get("contracts") != contract_bindings():
         raise RecordingError("recording implementation contracts changed after planning")
     if spec["plan_identity"].get("parecord") != parecord_binding():
         raise RecordingError("parecord changed after planning")
-    source_name = spec.get("source_name")
-    identity = spec["plan_identity"]["source"]["identity"]
+    source_name = spec["source_name"]
+    identity = spec["plan_identity"].get("source", {}).get("identity")
     if (
-        not isinstance(source_name, str)
-        or not isinstance(identity, dict)
+        not isinstance(identity, dict)
         or hashlib.sha256(source_name.encode("utf-8")).hexdigest()
         != identity.get("node_name_sha256")
     ):
         raise RecordingError("private recording source does not match the plan")
-
 
 def _validate_recorded_wave(
     path: pathlib.Path, capture: dict[str, Any]
@@ -1204,6 +1620,8 @@ def _validate_recorded_wave(
         "sha256": digest.hexdigest(),
         "bytes": total,
         "mode": f"{stat.S_IMODE(before.st_mode):04o}",
+        "device": before.st_dev,
+        "inode": before.st_ino,
         "channels": channels,
         "bit_depth_container": sample_width * 8,
         "sample_rate_hz": rate,
@@ -1221,11 +1639,15 @@ def _publish_no_replace(
     if final.exists() or final.is_symlink():
         raise RecordingError("final recording path appeared during capture")
     binding_fields = {
-        key: expected_binding[key] for key in ("path", "sha256", "bytes", "mode")
+        key: expected_binding[key]
+        for key in ("path", "sha256", "bytes", "mode", "device", "inode")
     }
     try:
         observed_partial = _safe_regular_binding(
-            partial, maximum_bytes=max(1, int(binding_fields["bytes"]))
+            partial,
+            maximum_bytes=max(1, int(binding_fields["bytes"])),
+            require_private=True,
+            include_identity=True,
         )
     except RecordingError as exc:
         raise RecordingError(
@@ -1244,7 +1666,10 @@ def _publish_no_replace(
         )
         os.fsync(descriptor)
         final_binding = _safe_regular_binding(
-            final, maximum_bytes=max(1, int(binding_fields["bytes"]))
+            final,
+            maximum_bytes=max(1, int(binding_fields["bytes"])),
+            require_private=True,
+            include_identity=True,
         )
         expected_final = dict(binding_fields)
         expected_final["path"] = str(final)
@@ -1428,7 +1853,10 @@ def worker_run(
     artifact = _validate_recorded_wave(partial, capture)
     _publish_no_replace(partial, final, artifact)
     artifact = _safe_regular_binding(
-        final, maximum_bytes=int(capture["maximum_file_bytes"])
+        final,
+        maximum_bytes=int(capture["maximum_file_bytes"]),
+        require_private=True,
+        include_identity=True,
     ) | {
         key: artifact[key]
         for key in (
@@ -1474,6 +1902,7 @@ def worker_entry(spec_path: pathlib.Path, expected_spec_sha256: str) -> int:
         )
         if binding["sha256"] != expected_spec_sha256:
             raise RecordingError("recording worker spec digest changed")
+        _validate_persisted_spec(spec, state_root=spec_path.parent)
         result_path = _worker_result_path(spec)
         result = worker_run(spec)
         _atomic_private_json(result_path, result, create_only=True)

@@ -225,6 +225,19 @@ class RecordingSessionTest(unittest.TestCase):
         )
         self.assertEqual(binding["bytes"], path.stat().st_size)
 
+    def test_static_bindings_do_not_capture_inode_identity(self) -> None:
+        path = self.base / "bound.bin"
+        path.write_bytes(b"bound")
+        path.chmod(0o600)
+        static = MODULE._safe_regular_binding(path, require_private=True)
+        transient = MODULE._safe_regular_binding(
+            path, require_private=True, include_identity=True
+        )
+        self.assertNotIn("device", static)
+        self.assertNotIn("inode", static)
+        self.assertEqual(transient["device"], path.stat().st_dev)
+        self.assertEqual(transient["inode"], path.stat().st_ino)
+
     def test_laboratory_projection_binds_exact_physical_snapshot(self) -> None:
         gate = "voice-level-measurement"
         receipt = {
@@ -314,6 +327,72 @@ class RecordingSessionTest(unittest.TestCase):
             "maximum_file_bytes": 48_000 * 2 * 4 * maximum_seconds + 1_048_576,
         }
 
+    def persisted_spec(
+        self,
+        *,
+        session_id: str = "a" * 24,
+        name: str = "take.wav",
+        maximum_seconds: int = 60,
+    ) -> dict[str, object]:
+        plan_identity = self.ready_plan()["identity"]
+        final = self.output / name
+        plan_identity["output"] = {
+            "root": str(self.output),
+            "name": name,
+            "path": str(final),
+            "mode": "0600",
+            "overwrite": False,
+        }
+        capture = plan_identity["capture"]
+        capture["maximum_duration_seconds"] = maximum_seconds
+        capture["maximum_file_bytes"] = (
+            48_000 * 2 * 4 * maximum_seconds + 1_048_576
+        )
+        plan_identity["state_root"] = str(self.state)
+        paths = MODULE._session_paths(self.state, session_id)
+        return {
+            "schema_version": 1,
+            "kind": "audio_recording_session_spec",
+            "session_id": session_id,
+            "created_at": "2026-07-31T00:00:00+00:00",
+            "plan_sha256": MODULE.canonical_sha256(plan_identity),
+            "plan_identity": plan_identity,
+            "source_name": "redacted",
+            "paths": {
+                "partial": str(
+                    self.output / f".{final.stem}.{session_id}.partial.wav"
+                ),
+                "final": str(final),
+                "result": str(paths["result"]),
+            },
+        }
+
+    def completed_result(self, spec: dict[str, object]) -> dict[str, object]:
+        final = pathlib.Path(spec["paths"]["final"])
+        self.write_wave(final)
+        artifact = MODULE._validate_recorded_wave(
+            final, spec["plan_identity"]["capture"]
+        )
+        return {
+            "schema_version": 1,
+            "kind": "audio_recording_result",
+            "session_id": spec["session_id"],
+            "status": "completed",
+            "reason": "requested-stop",
+            "started_at": "2026-07-31T00:00:00+00:00",
+            "completed_at": "2026-07-31T00:00:01+00:00",
+            "plan_sha256": spec["plan_sha256"],
+            "process": {
+                "returncode": 0,
+                "forced_kill": False,
+                "stderr_bytes": 0,
+                "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                "stderr_truncated": False,
+            },
+            "artifact": artifact,
+            "does_not_establish": ["subjective-recording-quality"],
+        }
+
     def test_wave_validation_and_no_replace_publication(self) -> None:
         partial = self.output / ".partial.wav"
         final = self.output / "final.wav"
@@ -388,27 +467,10 @@ class RecordingSessionTest(unittest.TestCase):
         MODULE.ensure_private_directory(self.state)
         session_id = "a" * 24
         paths = MODULE._session_paths(self.state, session_id)
-        partial = self.output / ".take.partial.wav"
+        spec = self.persisted_spec(session_id=session_id, name="take.wav")
+        partial = pathlib.Path(spec["paths"]["partial"])
         partial.write_bytes(b"partial bytes")
         partial.chmod(0o600)
-        final = self.output / "take.wav"
-        plan_identity = {
-            "capture": {"maximum_file_bytes": 1_048_576},
-        }
-        spec = {
-            "schema_version": 1,
-            "kind": "audio_recording_session_spec",
-            "session_id": session_id,
-            "created_at": "2026-07-31T00:00:00+00:00",
-            "plan_sha256": MODULE.canonical_sha256(plan_identity),
-            "plan_identity": plan_identity,
-            "source_name": "redacted",
-            "paths": {
-                "partial": str(partial),
-                "final": str(final),
-                "result": str(paths["result"]),
-            },
-        }
         MODULE._atomic_private_json(paths["spec"], spec, create_only=True)
         spec_sha = MODULE._safe_regular_binding(paths["spec"], require_private=True)["sha256"]
         state = {
@@ -443,6 +505,92 @@ class RecordingSessionTest(unittest.TestCase):
         result = MODULE._safe_json_read(paths["result"], require_private=True)
         self.assertEqual(result["reason"], "worker-exited-without-terminal-receipt")
         self.assertIsNotNone(result["partial"])
+
+    def test_persisted_spec_binds_output_mode_and_state_root(self) -> None:
+        spec = self.persisted_spec()
+        MODULE._validate_persisted_spec(spec, state_root=self.state)
+
+        bad_mode = json.loads(json.dumps(spec))
+        bad_mode["plan_identity"]["output"]["mode"] = "0644"
+        bad_mode["plan_sha256"] = MODULE.canonical_sha256(
+            bad_mode["plan_identity"]
+        )
+        with self.assertRaisesRegex(MODULE.RecordingError, "output plan"):
+            MODULE._validate_persisted_spec(bad_mode, state_root=self.state)
+
+        bad_root = json.loads(json.dumps(spec))
+        bad_root["plan_identity"]["state_root"] = str(self.base / "other-state")
+        bad_root["plan_sha256"] = MODULE.canonical_sha256(
+            bad_root["plan_identity"]
+        )
+        with self.assertRaisesRegex(MODULE.RecordingError, "state root"):
+            MODULE._validate_persisted_spec(bad_root, state_root=self.state)
+
+    def test_session_state_rejects_malformed_process_identity(self) -> None:
+        state = {
+            "schema_version": 1,
+            "kind": "audio_recording_session_state",
+            "session_id": "a" * 24,
+            "spec_sha256": "b" * 64,
+            "started_at": "2026-07-31T00:00:00+00:00",
+            "phase": "running",
+            "process": {
+                "pid": 1234,
+                "start_ticks": 1,
+                "executable": "/usr/bin/python3",
+                "process_group": 1234,
+            },
+        }
+        with self.assertRaisesRegex(MODULE.RecordingError, "process identity"):
+            MODULE._validate_session_state(
+                state, session_id="a" * 24, spec_sha256="b" * 64
+            )
+
+    def test_completed_result_detects_invalid_exit_and_artifact_drift(self) -> None:
+        spec = self.persisted_spec(session_id="d" * 24, name="completed.wav")
+        result = self.completed_result(spec)
+        MODULE._validate_result(result, spec)
+
+        unknown_field = json.loads(json.dumps(result))
+        unknown_field["artifact"]["unexpected"] = True
+        with self.assertRaisesRegex(MODULE.RecordingError, "binding fields"):
+            MODULE._validate_result(unknown_field, spec)
+
+        reversed_timeline = json.loads(json.dumps(result))
+        reversed_timeline["completed_at"] = "2026-07-30T23:59:59+00:00"
+        with self.assertRaisesRegex(MODULE.RecordingError, "timeline"):
+            MODULE._validate_result(reversed_timeline, spec)
+
+        invalid_exit = json.loads(json.dumps(result))
+        invalid_exit["process"]["returncode"] = 1
+        with self.assertRaisesRegex(MODULE.RecordingError, "process receipt"):
+            MODULE._validate_result(invalid_exit, spec)
+
+        final = pathlib.Path(spec["paths"]["final"])
+        with final.open("ab") as handle:
+            handle.write(b"drift")
+        with self.assertRaisesRegex(MODULE.RecordingError, "no longer matches"):
+            MODULE._validate_result(result, spec)
+
+    def test_failed_result_rejects_artifact_path_substitution(self) -> None:
+        spec = self.persisted_spec(session_id="e" * 24, name="failed.wav")
+        result = {
+            "schema_version": 1,
+            "kind": "audio_recording_result",
+            "session_id": spec["session_id"],
+            "status": "failed-preserved",
+            "reason": "RecordingError",
+            "failed_at": "2026-07-31T00:00:01+00:00",
+            "error": "capture failed",
+            "plan_sha256": spec["plan_sha256"],
+            "partial": {
+                "path": str(self.output / "substituted.partial.wav"),
+                "error": "missing",
+            },
+            "does_not_establish": ["successful-recording"],
+        }
+        with self.assertRaisesRegex(MODULE.RecordingError, "path does not match"):
+            MODULE._validate_result(result, spec)
 
     def test_parecord_binding_covers_launcher_and_resolved_binary(self) -> None:
         resolved = self.base / "pacat"
@@ -552,7 +700,7 @@ class RecordingSessionTest(unittest.TestCase):
         plan["identity"]["source"]["identity"]["node_name_sha256"] = (
             hashlib.sha256(source_name.encode()).hexdigest()
         )
-        plan["plan_sha256"] = "a" * 64
+        plan["plan_sha256"] = MODULE.canonical_sha256(plan["identity"])
         with (
             mock.patch.object(MODULE, "build_plan", return_value=plan),
             mock.patch.object(
@@ -589,12 +737,13 @@ class RecordingSessionTest(unittest.TestCase):
         plan["identity"]["source"]["identity"]["node_name_sha256"] = (
             hashlib.sha256(source_name.encode()).hexdigest()
         )
-        plan["identity"]["capture"]["startup_timeout_seconds"] = 0
-        plan["plan_sha256"] = "b" * 64
+        plan["identity"]["capture"]["startup_timeout_seconds"] = 1
+        plan["plan_sha256"] = MODULE.canonical_sha256(plan["identity"])
         identity = {
             "pid": 43210,
-            "start_time_ticks": 98765,
+            "start_ticks": 98765,
             "executable": "/usr/bin/python3",
+            "cmdline_sha256": "c" * 64,
             "process_group": 43210,
         }
 
