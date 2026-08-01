@@ -21,6 +21,19 @@ from whale_morph_engine import (
 )
 
 TAIL_THRESHOLD = 2.0e-7
+STATE_TONAL = 0
+STATE_PULSED = 1
+STATE_ROUGH = 2
+STATE_BROKEN = 3
+STATE_COUNT = 4
+STATE_ONSET_SECONDS = 0.42
+STATE_CROSSFADE_SECONDS = 0.14
+STATE_PATTERNS = (
+    (STATE_TONAL, STATE_PULSED, STATE_ROUGH, STATE_TONAL, STATE_TONAL, STATE_PULSED, STATE_BROKEN, STATE_TONAL),
+    (STATE_TONAL, STATE_TONAL, STATE_ROUGH, STATE_PULSED, STATE_TONAL, STATE_BROKEN, STATE_TONAL, STATE_PULSED),
+    (STATE_TONAL, STATE_PULSED, STATE_TONAL, STATE_ROUGH, STATE_TONAL, STATE_TONAL, STATE_BROKEN, STATE_PULSED),
+    (STATE_TONAL, STATE_ROUGH, STATE_TONAL, STATE_PULSED, STATE_TONAL, STATE_BROKEN, STATE_TONAL, STATE_PULSED),
+)
 
 
 class OrganicWhaleMorphVoice(WhaleMorphVoice):
@@ -46,6 +59,9 @@ class OrganicWhaleMorphVoice(WhaleMorphVoice):
         self.organic_sub_phase = 0.173
         self.organic_bass_phase = 0.619
         self.organic_pulse_strength = 0.0
+        self.organic_state_seed = 0
+        self.organic_state_segment_seconds = 1.20
+        self.organic_state_phase_offset = 0.0
         self.organic_timbre_note = frequency_to_midi_note(self.current_frequency)
         self.organic_mode_a_1 = 0.0
         self.organic_mode_a_2 = 0.0
@@ -110,6 +126,13 @@ class OrganicWhaleMorphVoice(WhaleMorphVoice):
             self.organic_bass_phase = ((seed >> 16) & 0xFFFF) / 65536.0
             self.organic_pulse_strength = max(
                 0.06, (bounded_velocity / 127.0 - 0.58) * 0.34
+            )
+            self.organic_state_seed = seed
+            self.organic_state_segment_seconds = 0.70 + 0.26 * (
+                ((seed >> 5) & 0xFFFF) / 65535.0
+            )
+            self.organic_state_phase_offset = (
+                ((seed >> 13) & 0xFFFF) / 65536.0
             )
             self.organic_timbre_note = frequency_to_midi_note(self.current_frequency)
         elif repeated:
@@ -201,6 +224,49 @@ class OrganicWhaleMorphVoice(WhaleMorphVoice):
         ) * self.organic_chaos_alpha
 
     @staticmethod
+    def _mix32(value: int) -> int:
+        value &= 0xFFFFFFFF
+        value ^= value >> 16
+        value = (value * 0x7FEB352D) & 0xFFFFFFFF
+        value ^= value >> 15
+        value = (value * 0x846CA68B) & 0xFFFFFFFF
+        value ^= value >> 16
+        return value & 0xFFFFFFFF
+
+    def _state_code(self, segment_index: int) -> int:
+        if segment_index < 0:
+            return STATE_TONAL
+        pattern_index = self._mix32(
+            self.organic_state_seed + self.organic_phrase_serial * 0x85EBCA6B
+        ) % len(STATE_PATTERNS)
+        pattern = STATE_PATTERNS[pattern_index]
+        return pattern[segment_index % len(pattern)]
+
+    def _state_weights(self, age_frames: int) -> tuple[float, float, float, float]:
+        age_seconds = max(0, age_frames) / self.config.sample_rate
+        if age_seconds < STATE_ONSET_SECONDS:
+            return (1.0, 0.0, 0.0, 0.0)
+        relative = (age_seconds - STATE_ONSET_SECONDS) / self.organic_state_segment_seconds
+        segment_index = max(0, int(relative))
+        phase = relative - segment_index
+        previous = (
+            STATE_TONAL
+            if segment_index == 0
+            else self._state_code(segment_index - 1)
+        )
+        current = self._state_code(segment_index)
+        transition_fraction = min(
+            0.49,
+            STATE_CROSSFADE_SECONDS / self.organic_state_segment_seconds,
+        )
+        amount = clamp(phase / max(transition_fraction, 1.0e-6), 0.0, 1.0)
+        amount = amount * amount * (3.0 - 2.0 * amount)
+        weights = [0.0] * STATE_COUNT
+        weights[previous] += 1.0 - amount
+        weights[current] += amount
+        return tuple(weights)  # type: ignore[return-value]
+
+    @staticmethod
     def _resonator_sample(
         excitation: float,
         first: float,
@@ -247,6 +313,24 @@ class OrganicWhaleMorphVoice(WhaleMorphVoice):
         two_pi = 2.0 * math.pi
         activity_attack = 1.0 - math.exp(-1.0 / (sample_rate * 0.008))
         activity_release = 1.0 - math.exp(-1.0 / (sample_rate * 0.045))
+        state_weights = self._state_weights(
+            self.organic_control_age_start + len(base) // 2
+        )
+        tonal_weight, pulsed_weight, rough_weight, broken_weight = state_weights
+        state_texture = rough_weight + 0.85 * broken_weight
+        state_pulse_rate = 2.15 + 1.35 * (
+            ((self.organic_state_seed >> 19) & 0xFF) / 255.0
+        )
+        broken_rate = 3.4 + 1.8 * (
+            ((self.organic_state_seed >> 24) & 0xFF) / 255.0
+        )
+        pulse_active = pulsed_weight > 1.0e-8
+        broken_active = broken_weight > 1.0e-8
+        creak_scale = (
+            self.config.master_gain
+            * (0.040 + 0.036 * self.modulation)
+            * state_texture
+        )
         output: list[float] = []
 
         for source_sample in base:
@@ -286,12 +370,25 @@ class OrganicWhaleMorphVoice(WhaleMorphVoice):
             )
             turbulence = (
                 math.tanh(
-                    edge * 22.0
-                    + source_sample * 2.2 * self.organic_chaos_smooth
+                    edge * (22.0 + 52.0 * state_texture)
+                    + source_sample
+                    * (2.2 + 6.4 * state_texture)
+                    * self.organic_chaos_smooth
                 )
                 * irregularity
                 * (0.48 + 0.24 * abs(self.organic_chaos_smooth))
+                * (1.0 + 4.28 * state_texture)
             )
+            if creak_scale > 0.0:
+                creak = (
+                    math.tanh(
+                        edge * 64.0
+                        + source_sample * 5.0 * self.organic_chaos_smooth
+                    )
+                    - math.tanh(edge * 15.0)
+                ) * creak_scale * active_envelope
+            else:
+                creak = 0.0
 
             sub_frequency = frequency * 0.5 * (
                 1.0 + 0.0018 * self.organic_chaos_smooth
@@ -333,8 +430,41 @@ class OrganicWhaleMorphVoice(WhaleMorphVoice):
             self.organic_pulse_strength += (
                 0.0 - self.organic_pulse_strength
             ) * pulse_decay
-            pulse_gain = 1.0 + 0.18 * self.organic_pulse_strength
-            pulse_breath = turbulence * 0.30 * self.organic_pulse_strength
+            if pulse_active or broken_active:
+                state_seconds = age_frames / sample_rate
+            if pulse_active:
+                pulse_phase = (
+                    state_pulse_rate * state_seconds
+                    + self.organic_state_phase_offset
+                ) % 1.0
+                pulse_wave = 1.0 - abs(2.0 * pulse_phase - 1.0)
+                pulse_wave = pulse_wave * pulse_wave * (3.0 - 2.0 * pulse_wave)
+            else:
+                pulse_wave = 1.0
+            if broken_active:
+                broken_phase = (
+                    broken_rate * state_seconds
+                    + 1.73 * self.organic_state_phase_offset
+                ) % 1.0
+                broken_wave = 1.0 - abs(2.0 * broken_phase - 1.0)
+                broken_wave = broken_wave * broken_wave
+            else:
+                broken_wave = 1.0
+            pulse_gain = (
+                1.0
+                + 0.18 * self.organic_pulse_strength
+                - pulsed_weight * 0.30 * (1.0 - pulse_wave)
+                - broken_weight * 0.40 * (1.0 - broken_wave)
+            )
+            pulse_breath = turbulence * (
+                0.30 * self.organic_pulse_strength
+                + 0.18 * pulsed_weight * (1.0 - pulse_wave)
+            )
+            broken_sub = (
+                sub_sample
+                * broken_weight
+                * (1.10 + 1.20 * broken_wave)
+            )
 
             excitation = (
                 source_sample
@@ -367,16 +497,20 @@ class OrganicWhaleMorphVoice(WhaleMorphVoice):
             )
             modal_mix = 0.022 + 0.042 * self.distance + 0.018 * developed
             amplitude_wander = 1.0 + irregularity * 0.18 * self.organic_chaos_smooth
-            source_mix = 0.86 - 0.18 * bass_weight
+            source_mix = (0.86 - 0.18 * bass_weight) * (
+                1.0 - 0.24 * state_texture
+            )
             raw = (
                 source_mix * source_sample * amplitude_wander * pulse_gain
                 + bass_body
                 + sub_sample
                 + 0.62 * turbulence
                 + pulse_breath
+                + creak
+                + broken_sub
                 + modal_mix * (0.70 * mode_a + 0.30 * mode_b)
             )
-            sample = raw / (1.0 + 0.92 * abs(raw))
+            sample = raw / (1.0 + 1.05 * abs(raw))
             output.append(clamp(sample, -MAX_MASTER_GAIN, MAX_MASTER_GAIN))
 
         if super().silent and self._tail_energy() < TAIL_THRESHOLD:

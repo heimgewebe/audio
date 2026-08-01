@@ -46,11 +46,12 @@
         "formant-inertia",
         "register-aware-deep-bass-body",
         "deterministic-micro-instability",
-        "amplitude-and-timbre-pulsed-articulation",
+        "deterministic-temporal-articulation-states",
+        "signal-coupled-tonal-pulsed-rough-broken-crossfades",
         "short-signal-excited-damped-vocal-modes",
         "anti-theremin-bounded-pitch-drift"
       ],
-      "comparison": "dependency-free-feature-comparison-against-source-bound-real-clips",
+      "comparison": "dependency-free-global-and-temporal-feature-comparison-against-source-bound-real-clips",
       "hold": "causal-organic-development-without-sample-loop",
       "legato": "phase-continuous-short-frequency-timbre-and-formant-glide",
       "detached_retrigger": "gesture-seeded-new-call-with-damped-modal-tail",
@@ -66,7 +67,22 @@
         "second_harmonic_ratio": 0.23,
         "subharmonic_amount": 0.018
       },
-      "maximum_additional_pitch_drift_cents": 20
+      "maximum_additional_pitch_drift_cents": 20,
+      "temporal_articulation": {
+        "states": [
+          "tonal",
+          "pulsed",
+          "rough",
+          "broken"
+        ],
+        "segment_seconds_range": [
+          0.7,
+          0.96
+        ],
+        "crossfade_seconds": 0.14,
+        "sequence": "gesture-seeded-eight-segment-pattern",
+        "excitation": "source-signal-coupled-without-independent-noise"
+      }
     },
     "realistic": {
       "backend": "licensed-humpback-sample-bank",
