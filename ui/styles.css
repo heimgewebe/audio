@@ -1492,3 +1492,274 @@ body.dialog-open {
     transition-duration: 1ms !important;
   }
 }
+
+
+/* Command-center information architecture. */
+.readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.readiness-card {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  color: var(--ink);
+  background: var(--panel);
+  text-decoration: none;
+  transition:
+    border-color var(--ease),
+    background var(--ease);
+}
+
+.readiness-card:hover {
+  border-color: rgba(185, 230, 181, 0.32);
+  background: var(--panel-strong);
+}
+
+.readiness-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.readiness-heading h3,
+.readiness-heading span {
+  margin: 0;
+}
+
+.readiness-heading h3 {
+  font-size: 0.8rem;
+}
+
+.readiness-heading span {
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+
+.readiness-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.readiness-chip {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted-bright);
+  background: var(--panel-soft);
+  font-size: 0.61rem;
+}
+
+.readiness-chip.ready,
+.status-pill.ready {
+  border-color: rgba(185, 230, 181, 0.32);
+  color: var(--mint-strong);
+  background: rgba(61, 91, 61, 0.2);
+}
+
+.readiness-chip.onsite,
+.status-pill.onsite,
+.insight-dot.onsite,
+.status-dot.onsite,
+.legend-dot.onsite {
+  border-color: rgba(225, 185, 104, 0.3);
+  color: #f4d799;
+  background: rgba(96, 72, 25, 0.22);
+}
+
+.readiness-chip.laboratory,
+.status-pill.laboratory {
+  border-color: rgba(131, 184, 196, 0.3);
+  color: #bde8f1;
+  background: rgba(36, 73, 82, 0.22);
+}
+
+.readiness-chip.planned,
+.status-pill.planned {
+  color: var(--muted-bright);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.system-summary {
+  margin-bottom: 10px;
+}
+
+.system-section {
+  min-width: 0;
+  margin-top: 12px;
+}
+
+.system-section .section-heading h3 {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.system-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  gap: 12px;
+}
+
+.connection-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px 10px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.legend-dot.observed {
+  background: var(--mint);
+}
+
+.legend-dot.configured {
+  background: var(--blue);
+}
+
+.legend-dot.onsite {
+  background: var(--amber);
+}
+
+.legend-dot.unavailable {
+  background: var(--red);
+}
+
+.signal-topology {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.signal-stage {
+  position: relative;
+  min-width: 0;
+}
+
+.signal-stage + .signal-stage::before {
+  position: absolute;
+  top: 50%;
+  left: -14px;
+  width: 10px;
+  height: 1px;
+  background: var(--line-strong);
+  content: "";
+}
+
+.signal-node-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.signal-node {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+}
+
+.signal-node.observed {
+  border-left-color: var(--mint);
+}
+
+.signal-node.configured {
+  border-left-color: var(--blue);
+}
+
+.signal-node.onsite {
+  border-left-color: var(--amber);
+}
+
+.signal-node.unavailable {
+  border-left-color: var(--red);
+}
+
+.signal-node strong,
+.signal-node small {
+  display: block;
+}
+
+.signal-node strong {
+  overflow: hidden;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-node small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.61rem;
+}
+
+.fact-row > div {
+  min-width: 0;
+}
+
+.fact-row strong,
+.fact-row code {
+  display: block;
+}
+
+.fact-row strong {
+  font-size: 0.68rem;
+}
+
+.fact-row code {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.57rem;
+}
+
+@media (max-width: 1180px) {
+  .readiness-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .system-columns,
+  .signal-topology {
+    grid-template-columns: 1fr;
+  }
+
+  .signal-stage + .signal-stage::before {
+    top: -10px;
+    left: 50%;
+    width: 1px;
+    height: 8px;
+  }
+}
+
+@media (max-width: 620px) {
+  .connection-legend {
+    justify-content: flex-start;
+  }
+}

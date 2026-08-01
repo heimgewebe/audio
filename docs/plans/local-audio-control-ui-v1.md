@@ -1,11 +1,11 @@
 # Spezifikation: Lokale Audiozentrale v1
 
 - Version: 1
-- Datum: 2026-07-29
-- Status: **Stufe 1 im Repository umgesetzt; weitere Audiolaufzeiten bleiben
-  gate-gebunden**
+- Datum: 2026-08-02
+- Status: **Command-Center-Informationsarchitektur umgesetzt; weitere
+  Audiolaufzeiten bleiben gate-gebunden**
 - Integrierte Basisrevision:
-  `origin/main@0fb490acd39b4dfb50e7d33109c346536f873446`
+  `origin/main@81fab5c57a3609b8b931a2ee5251c4f576368298`
 - Der unveröffentlichte Erstentwurf entstand auf
   `9ddefba90679adaf20be2e7e152f4d4aea068e77` und wurde vor der Integration
   bytegenau extern gesichert sowie lokal als Checkpoint committed.
@@ -23,6 +23,11 @@ vorhanden erfasst und nicht verändert. Die drei vorausliegenden Änderungen aus
 #12 bis #14 sind über `origin/main` enthalten: die Doctor-Fixturekorrektur, die
 durchgehend spielbare 88-Tasten-Wal-Morph-Stimme und die immutable
 Quellsnapshot-Härtung des Builders.
+
+Die aktuelle Fassung umfasst außerdem die inzwischen integrierten
+Doctor-, Deployment-, Recorder-, Produktionsgraph- und Profiltransition-Verträge.
+Sie erweitert deren Autorität nicht, sondern projiziert ihre getrennten Zustände
+und Grenzen aufgabenorientiert.
 
 Die UI liest die Details der vier fest erlaubten Modi `morph`, `organic`,
 `realistic` und `ufo` aus dem Buckelwalprofil. Backend und Profil müssen
@@ -48,21 +53,34 @@ offene Belege. Sie bietet insbesondere nicht:
 
 ## Kernbereiche und Aufgaben
 
-| Bereich | Primäre Frage | Vertrag in Stufe 1 |
+| Bereich | Primäre Frage | Vertrag |
 |---|---|---|
-| Start | Was kann ich jetzt sicher tun? | Zusammenfassung, häufige Aufgaben, wichtigste Doctor-Hinweise |
-| Spielen | Welches Instrument soll laufen? | Buckelwal starten, Modus wechseln, stoppen; Dienstzustand zurücklesen |
+| Übersicht | Was ist jetzt möglich und was braucht Anwesenheit? | Runtime, Hardware, Route, Deployment, Arbeitsbereiche und Profilreife |
+| Hören | Welcher Wiedergabeweg passt? | Hörprofile vergleichen und Voraussetzungen read-only prüfen |
+| Spielen | Welches Instrument oder Klangsystem soll laufen? | Buckelwal steuern, Spielprofile und Walmodi gemeinsam darstellen |
 | Aufnehmen | Ist Quelle und Aufnahmevertrag bereit? | Voice-, Piano- und Produktionsplan read-only prüfen; kein Recorderstart |
-| Hören | Welcher Wiedergabeweg passt? | Hörprofile vergleichen und jeweils read-only planen |
-| Klänge | Welche Klanglaufzeit existiert? | Buckelwalmodi aus Profil; Dauersong sichtbar als nicht ausführbar |
-| Verbindungen | Was ist beobachtet, was physisch offen? | Graph, Hardware, Defaults und physische Unbekannte getrennt |
-| Diagnose | Warum ist etwas nicht bereit? | Doctor-Warnungen und Command-Health; keine automatische Reparatur |
-| Einstellungen | Wem gehört welcher Zustand? | Dienstbindung und Revision; nur nichtkritische Browserdarstellung lokal |
+| System | Was ist beobachtet, konfiguriert oder physisch offen? | Signalweg, Geräte, Vor-Ort-Belege, Deployment, Diagnose und Browserdarstellung |
 
 Die Navigation und alle Zustandsbegriffe sind auf Deutsch. Status wird nie nur
 durch Farbe vermittelt. Die Ansicht ist mit Tastatur bedienbar, besitzt
 erkennbare Fokusringe, hält Dialogfokus innerhalb des Modals, stellt den Fokus
 nach Audioaktionen wieder her und berücksichtigt `prefers-reduced-motion`.
+
+### Vier getrennte Wahrheitsebenen
+
+Die Oberfläche verdichtet keine unterschiedlichen Belegarten zu einem einzigen
+Ampelstatus:
+
+1. **beobachtet:** Doctor-, Dienst- und Graphreadback;
+2. **konfiguriert:** gewünschte Profile, Defaults und Policy;
+3. **physisch offen:** Kabel, Schalter, Pegel und externe Geräte, die Software
+   nicht autoritativ erkennen kann;
+4. **ausführbar:** tatsächlich vorhandene Backendautorität und bestandene Gates.
+
+Ein nicht beobachtetes MOTU oder Roland ist deshalb `offline` beziehungsweise
+`onsite`, solange der Backendreadback selbst gesund ist. Rohwarnungen des
+Doctors bleiben erhalten; die Zusammenfassung unterscheidet jedoch
+Runtimewarnungen von Vor-Ort-Hinweisen.
 
 ## Architektur
 
@@ -149,11 +167,16 @@ Cross-Site-Aktionen, ist aber kein Mehrbenutzer-Authentisierungssystem.
 | `POST /api/v1/actions/whale` | ausschließlich `start`, `mode` oder `stop` |
 
 Der Snapshot trägt `schema_version`, `api_version`, Erzeugungszeit,
-Runtime-HEAD und die revisionsgebundene Spezifikationsbasis. Fehler des Doctors
-oder Dienst-Readbacks werden als `unavailable` beziehungsweise `degraded`
-sichtbar; unvollständige Erfolgsschemata und systemd-Übergangszustände werden
-nicht als „inaktiv“ oder „gesund“ umgedeutet. Das gilt auch für die
-Zusammenfassung und Aufgabenkarten der Startansicht.
+Runtime-HEAD und die revisionsgebundene Spezifikationsbasis. Er projiziert
+zusätzlich Hardwarepräsenz, Vor-Ort-Bedarf, Profilreife und einen streng
+begrenzten Deploymentstatus. Der Deploymentstatus enthält nur Commitbindung,
+Quelle, Synchronität, Dienstgesundheit und Zeitpunkt; private Repository-,
+State- oder Releasepfade werden nicht an den Browser gegeben.
+
+Fehler des Doctors oder Dienst-Readbacks werden als `unavailable` sichtbar;
+unvollständige Erfolgsschemata und systemd-Übergangszustände werden nicht als
+„inaktiv“ oder „gesund“ umgedeutet. Das gilt auch für die Zusammenfassung und
+Aufgabenkarten der Übersicht.
 API-Fehler tragen ein einheitliches `audio_control_error`-Objekt mit stabilem
 Code und menschenlesbarer Nachricht.
 
@@ -216,7 +239,7 @@ Bluetooth-Codec dürfen nicht aus einem UI-Status abgeleitet werden.
 
 In dieser Änderung umgesetzt:
 
-- responsiver App-Rahmen und alle acht Kernbereiche;
+- responsiver App-Rahmen und fünf gebündelte Kernbereiche;
 - lokaler, versionierter Control-Dienst;
 - autoritativer Snapshot mit Doctor, Profilkatalog und Buckelwaldienst;
 - read-only Profilplanung;
@@ -227,12 +250,11 @@ In dieser Änderung umgesetzt:
 
 ### Stufe 2 – Hörprofil-Transitionsvertrag
 
-- `audio diff`, `apply` und `rollback` implementieren;
-- atomare Transition mit vorherigem Zustand und eindeutiger Operation-ID;
-- zunächst ausschließlich `desktop-mixed`;
-- UI-Aktion erst nach erfolgreichem Plan und expliziter Bestätigung;
-- während der Transition Zwischenzustand nur vom Backend;
-- Rollback und Recovery in der gleichen Aufgabenansicht.
+Repository- und CLI-Vertrag für `desktop-mixed` sind implementiert: exakte
+MOTU-M2-Bindung, atomare Journale, bestätigter Planhash, Postcondition-Readback,
+Rollback und Recovery. Die Dashboard-Aktion bleibt gesperrt, bis die
+hardwaregebundene Laborabnahme und der Browser-Bestätigungsdialog separat
+belegt sind. Zwischenzustände dürfen weiterhin nur vom Backend stammen.
 
 **Gate:** deterministischer Apply, idempotenter zweiter Lauf, vollständiger
 Rollback und kein zurückgelassener globaler PipeWire-Zustand.

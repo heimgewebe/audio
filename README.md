@@ -46,12 +46,19 @@ bleiben als Vergleiche erhalten.
 
 ## Audiozentrale
 
-Die lokale **Audiozentrale** ordnet den Bestand nach Aufgaben statt DAW-Spuren:
-Start, Spielen, Aufnehmen, Hören, Klänge, Verbindungen, Diagnose und
-Einstellungen. Ein loopback-gebundener Control-Dienst bleibt
-Zustandsautorität; der Browser verarbeitet kein kritisches Audio. In der ersten
-Stufe ist nur der bereits verwaltete Buckelwaldienst schaltbar. Profilplanung
-ist read-only; Dauersong und Profil-Apply bleiben sichtbar fail-closed.
+Die lokale **Audiozentrale** ordnet den Bestand nach fünf Aufgabenbereichen:
+Übersicht, Hören, Spielen, Aufnehmen und System. Klänge gehören zum Spielen;
+Signalweg, Geräte, Diagnose, Deployment und Browserkonfiguration sind unter
+System gebündelt. Ein loopback-gebundener Control-Dienst bleibt
+Zustandsautorität; der Browser verarbeitet kein kritisches Audio.
+
+Die Oberfläche trennt beobachtete Laufzeit, gewünschte Konfiguration, physisch
+ungeprüfte Fakten und tatsächliche Ausführungsautorität. Ausgeschaltete Geräte
+sind daher ein neutraler Vor-Ort-Zustand und kein pauschaler Systemfehler.
+Profilplanung ist read-only; Dauersong und Profil-Apply bleiben sichtbar
+fail-closed. Das Dashboard zeigt zusätzlich, ob die laufende, unveränderliche
+Releasefassung mit dem letzten sicheren Auto-Deploy-Beleg synchron ist, ohne
+private Deploypfade offenzulegen.
 
 Der gehärtete Aufnahme-Kern ist per CLI vorhanden, aber weiterhin an die
 physischen Mikrofonfakten, die eindeutige MOTU-Quelle und das bestandene
