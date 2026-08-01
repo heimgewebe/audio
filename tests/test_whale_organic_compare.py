@@ -51,6 +51,54 @@ class WhaleOrganicComparisonTests(unittest.TestCase):
                     source_root=comparison.REFERENCE_ROOT,
                 )
 
+
+    def test_temporal_features_measure_acoustic_state_diversity(self):
+        morph_samples = comparison.render_phrase("morph")
+        organic_samples = comparison.render_phrase("organic")
+        morph_features = comparison.temporal_state_features(morph_samples)
+        organic_features = comparison.temporal_state_features(organic_samples)
+
+        self.assertEqual(
+            organic_features,
+            comparison.temporal_state_features(organic_samples),
+        )
+        for features in (morph_features, organic_features):
+            self.assertAlmostEqual(
+                features["tonal_fraction"]
+                + features["mixed_fraction"]
+                + features["rough_fraction"],
+                1.0,
+                places=10,
+            )
+        self.assertGreater(
+            organic_features["rough_fraction"],
+            morph_features["rough_fraction"] + 0.03,
+        )
+        self.assertGreater(
+            organic_features["state_entropy"],
+            morph_features["state_entropy"] + 0.10,
+        )
+        self.assertGreater(
+            organic_features["highband_q90"],
+            morph_features["highband_q90"] * 1.25,
+        )
+        self.assertGreater(
+            organic_features["envelope_pulse_index"],
+            morph_features["envelope_pulse_index"] * 1.25,
+        )
+        self.assertLess(organic_features["rough_fraction"], 0.20)
+
+    def test_temporal_comparison_uses_declared_feature_set(self):
+        samples = comparison.render_phrase("organic", 3.0)
+        features = comparison.temporal_state_features(samples)
+        aggregate = {
+            key: {"median": features[key], "q25": features[key], "q75": features[key]}
+            for key in comparison.TEMPORAL_FEATURES
+        }
+        score, deltas = comparison.compare_temporal(features, aggregate)
+        self.assertEqual(score, 1.0)
+        self.assertEqual(set(deltas), set(comparison.TEMPORAL_FEATURES))
+
     def test_degenerate_pitch_motion_is_reported_but_not_scored(self):
         self.assertNotIn("pitch_motion_semitones_per_second", comparison.FEATURES)
         features = comparison.extract_features(comparison.render_phrase("morph", 2.0))

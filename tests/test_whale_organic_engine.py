@@ -147,6 +147,38 @@ class OrganicWhaleMorphVoiceTests(unittest.TestCase):
         voice.note_on(57, 80)
         self.assertLessEqual(voice.glide_seconds, 0.18)
 
+
+    def test_temporal_state_pattern_is_complete_bounded_and_smooth(self):
+        voice = organic.OrganicWhaleMorphVoice(self.config)
+        voice.note_on(50, 84)
+        self.assertGreaterEqual(voice.organic_state_segment_seconds, 0.70)
+        self.assertLessEqual(voice.organic_state_segment_seconds, 0.96)
+        self.assertEqual(
+            {voice._state_code(index) for index in range(8)},
+            {
+                organic.STATE_TONAL,
+                organic.STATE_PULSED,
+                organic.STATE_ROUGH,
+                organic.STATE_BROKEN,
+            },
+        )
+        for seconds in (0.0, 0.42, 0.55, 1.0, 2.5, 5.0):
+            weights = voice._state_weights(round(seconds * self.config.sample_rate))
+            self.assertAlmostEqual(sum(weights), 1.0, places=12)
+            self.assertTrue(all(0.0 <= value <= 1.0 for value in weights))
+
+    def test_temporal_states_do_not_retarget_the_played_pitch(self):
+        voice = organic.OrganicWhaleMorphVoice(self.config)
+        voice.note_on(45, 73)
+        nominal = morph.midi_note_frequency(45)
+        voice.render(self.config.sample_rate * 6)
+        self.assertAlmostEqual(
+            voice.organic_nominal_target_frequency,
+            nominal,
+            places=10,
+        )
+        self.assertLess(abs(voice._macro_contour_cents()), 20.0)
+
     def test_render_is_chunk_invariant(self):
         one_shot = organic.OrganicWhaleMorphVoice(self.config)
         chunked = organic.OrganicWhaleMorphVoice(self.config)

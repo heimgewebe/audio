@@ -52,6 +52,22 @@ FEATURE_FLOORS = {
     "high_band_ratio": 0.015,
     "unit_duration_median_seconds": 0.15,
 }
+TEMPORAL_FEATURES = (
+    "rough_fraction",
+    "state_entropy",
+    "transition_rate_hz",
+    "periodicity_spread",
+    "highband_q90",
+    "envelope_pulse_index",
+)
+TEMPORAL_FEATURE_FLOORS = {
+    "rough_fraction": 0.05,
+    "state_entropy": 0.12,
+    "transition_rate_hz": 0.25,
+    "periodicity_spread": 0.08,
+    "highband_q90": 0.20,
+    "envelope_pulse_index": 0.08,
+}
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -286,6 +302,111 @@ def extract_features(samples: list[float]) -> dict[str, float]:
     }
 
 
+def temporal_state_features(samples: list[float]) -> dict[str, float]:
+    """Measure bounded short-time articulation-state variation.
+
+    States are acoustic observations, not labels emitted by the synthesizer.
+    A frame can be tonal, mixed or rough according to periodicity and
+    high-frequency derivative energy. This prevents an implementation from
+    passing merely by declaring internal state transitions.
+    """
+
+    if not samples:
+        raise ValueError("cannot analyze an empty temporal signal")
+    peak = max(abs(value) for value in samples)
+    if peak <= 0.0:
+        raise ValueError("cannot analyze temporal silence")
+    normalized = [value / peak for value in samples]
+    reduced = downsample(normalized)
+    window = round(0.14 * ANALYSIS_RATE)
+    hop = round(0.05 * ANALYSIS_RATE)
+    minimum_lag = max(2, round(ANALYSIS_RATE / 1_200.0))
+    maximum_lag = round(ANALYSIS_RATE / 35.0)
+    frames: list[tuple[float, float, float]] = []
+    for start in range(0, max(0, len(reduced) - window + 1), hop):
+        frame = reduced[start : start + window]
+        mean = sum(frame) / len(frame)
+        centered = [
+            (value - mean)
+            * (0.5 - 0.5 * math.cos(2.0 * math.pi * index / (window - 1)))
+            for index, value in enumerate(frame)
+        ]
+        rms = math.sqrt(sum(value * value for value in centered) / len(centered))
+        derivative = sum(
+            (right - left) ** 2
+            for left, right in zip(centered, centered[1:])
+        )
+        signal = sum(value * value for value in centered) or 1.0
+        if rms < 1e-5:
+            periodicity = 0.0
+        else:
+            periodicity = max(
+                0.0,
+                min(
+                    1.0,
+                    max(
+                        normalized_autocorrelation(centered, lag)
+                        for lag in range(minimum_lag, maximum_lag + 1)
+                    ),
+                ),
+            )
+        frames.append((rms, periodicity, derivative / signal))
+    if not frames:
+        raise ValueError("temporal analysis window exceeds the signal")
+    active_threshold = max(1e-6, max(frame[0] for frame in frames) * 0.10)
+    active = [frame for frame in frames if frame[0] >= active_threshold]
+    if not active:
+        raise ValueError("temporal analysis found no active frames")
+
+    states: list[int] = []
+    for _rms, periodicity, highband in active:
+        if periodicity < 0.58 or highband >= 0.85:
+            state = 2
+        elif periodicity < 0.90 or highband >= 0.34:
+            state = 1
+        else:
+            state = 0
+        states.append(state)
+    for index in range(1, len(states) - 1):
+        if states[index - 1] == states[index + 1] != states[index]:
+            states[index] = states[index - 1]
+
+    counts = [states.count(state) for state in range(3)]
+    total = max(1, len(states))
+    fractions = [count / total for count in counts]
+    entropy = -sum(
+        fraction * math.log(fraction, 3)
+        for fraction in fractions
+        if fraction > 0.0
+    )
+    transitions = sum(left != right for left, right in zip(states, states[1:]))
+    periodicities = [frame[1] for frame in active]
+    highbands = [frame[2] for frame in active]
+    rms_values = [frame[0] for frame in active]
+    mean_rms = statistics.fmean(rms_values)
+    return {
+        "active_seconds": len(active) * 0.05,
+        "tonal_fraction": fractions[0],
+        "mixed_fraction": fractions[1],
+        "rough_fraction": fractions[2],
+        "state_entropy": entropy,
+        "transition_rate_hz": transitions / max(0.05, len(states) * 0.05),
+        "periodicity_q10": percentile(periodicities, 0.10),
+        "periodicity_q50": percentile(periodicities, 0.50),
+        "periodicity_q90": percentile(periodicities, 0.90),
+        "periodicity_spread": (
+            percentile(periodicities, 0.90) - percentile(periodicities, 0.10)
+        ),
+        "highband_q50": percentile(highbands, 0.50),
+        "highband_q90": percentile(highbands, 0.90),
+        "envelope_pulse_index": (
+            statistics.pstdev(rms_values) / mean_rms
+            if len(rms_values) > 1 and mean_rms > 1e-12
+            else 0.0
+        ),
+    }
+
+
 def reference_records(
     limit: int,
     manifest_path: pathlib.Path = REFERENCE_MANIFEST,
@@ -354,9 +475,11 @@ def reference_records(
     return manifest_sha256, selected
 
 
-def aggregate_reference(features: list[dict[str, float]]) -> dict[str, dict[str, float]]:
+def aggregate_feature_set(
+    features: list[dict[str, float]], keys: tuple[str, ...]
+) -> dict[str, dict[str, float]]:
     aggregate: dict[str, dict[str, float]] = {}
-    for key in FEATURES:
+    for key in keys:
         values = [record[key] for record in features]
         aggregate[key] = {
             "median": statistics.median(values),
@@ -366,16 +489,27 @@ def aggregate_reference(features: list[dict[str, float]]) -> dict[str, dict[str,
     return aggregate
 
 
-def compare(
-    synthetic: dict[str, float], aggregate: dict[str, dict[str, float]]
+def aggregate_reference(features: list[dict[str, float]]) -> dict[str, dict[str, float]]:
+    return aggregate_feature_set(features, FEATURES)
+
+
+def aggregate_temporal_reference(
+    features: list[dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    return aggregate_feature_set(features, TEMPORAL_FEATURES)
+
+
+def compare_feature_set(
+    synthetic: dict[str, float],
+    aggregate: dict[str, dict[str, float]],
+    keys: tuple[str, ...],
+    floors: dict[str, float],
 ) -> tuple[float, dict[str, dict[str, float]]]:
     deltas: dict[str, dict[str, float]] = {}
     distances: list[float] = []
-    for key in FEATURES:
+    for key in keys:
         target = aggregate[key]["median"]
-        scale = max(
-            aggregate[key]["q75"] - aggregate[key]["q25"], FEATURE_FLOORS[key]
-        )
+        scale = max(aggregate[key]["q75"] - aggregate[key]["q25"], floors[key])
         distance = abs(synthetic[key] - target) / scale
         distances.append(min(distance, 8.0))
         deltas[key] = {
@@ -386,6 +520,23 @@ def compare(
         }
     mean_distance = statistics.fmean(distances)
     return math.exp(-mean_distance), deltas
+
+
+def compare(
+    synthetic: dict[str, float], aggregate: dict[str, dict[str, float]]
+) -> tuple[float, dict[str, dict[str, float]]]:
+    return compare_feature_set(synthetic, aggregate, FEATURES, FEATURE_FLOORS)
+
+
+def compare_temporal(
+    synthetic: dict[str, float], aggregate: dict[str, dict[str, float]]
+) -> tuple[float, dict[str, dict[str, float]]]:
+    return compare_feature_set(
+        synthetic,
+        aggregate,
+        TEMPORAL_FEATURES,
+        TEMPORAL_FEATURE_FLOORS,
+    )
 
 
 def main() -> int:
@@ -403,9 +554,11 @@ def main() -> int:
     args.report.parent.mkdir(parents=True, exist_ok=True)
     write_stereo_wav(args.output, synthetic_samples, SAMPLE_RATE)
     synthetic_features = extract_features(synthetic_samples)
+    synthetic_temporal = temporal_state_features(synthetic_samples)
 
     references: list[dict[str, object]] = []
     reference_features: list[dict[str, float]] = []
+    reference_temporal_features: list[dict[str, float]] = []
     reference_manifest_sha256, selected_references = reference_records(
         args.reference_count
     )
@@ -416,8 +569,11 @@ def main() -> int:
         payload = record["payload"]
         if not isinstance(payload, bytes):
             raise AssertionError("validated comparison payload lost its type")
-        features = extract_features(decode_pcm16_mono(payload, str(path)))
+        samples = decode_pcm16_mono(payload, str(path))
+        features = extract_features(samples)
+        temporal_features = temporal_state_features(samples)
         reference_features.append(features)
+        reference_temporal_features.append(temporal_features)
         references.append(
             {
                 "clip_id": record["clip_id"],
@@ -425,10 +581,15 @@ def main() -> int:
                 "path": str(path.relative_to(ROOT)),
                 "sha256": record["sha256"],
                 "features": features,
+                "temporal_features": temporal_features,
             }
         )
     aggregate = aggregate_reference(reference_features)
+    temporal_aggregate = aggregate_temporal_reference(reference_temporal_features)
     similarity, deltas = compare(synthetic_features, aggregate)
+    temporal_similarity, temporal_deltas = compare_temporal(
+        synthetic_temporal, temporal_aggregate
+    )
     report = {
         "schema_version": 1,
         "kind": "humpback_whale_organic_similarity",
@@ -441,16 +602,23 @@ def main() -> int:
         "synthetic_output": str(args.output),
         "synthetic_engine": args.engine,
         "scored_features": list(FEATURES),
+        "scored_temporal_features": list(TEMPORAL_FEATURES),
         "reference_manifest": {
             "path": str(REFERENCE_MANIFEST.relative_to(ROOT)),
             "sha256": reference_manifest_sha256,
         },
         "synthetic": synthetic_features,
+        "synthetic_temporal": synthetic_temporal,
         "references": references,
         "reference_aggregate": aggregate,
+        "reference_temporal_aggregate": temporal_aggregate,
         "comparison": {
             "similarity_score_0_to_1": similarity,
             "feature_deltas": deltas,
+        },
+        "temporal_comparison": {
+            "similarity_score_0_to_1": temporal_similarity,
+            "feature_deltas": temporal_deltas,
         },
     }
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

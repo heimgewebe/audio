@@ -19,7 +19,7 @@ Er resynthetisiert periodische Klangstrukturen realer Buckelwalaufnahmen und
 | Modus | Rolle | Grenze |
 |---|---|---|
 | `morph` | Standard und kontrollierte Ausgangsstimme | quellengestützte Resynthese, keine fertige Aufnahmephrase |
-| `organic` | organischer Spielmodus | Morphbasis mit kurzem Legato, begrenzter Zusatztonhöhenbewegung, gestengebundener Artikulation und starkem Tiefbass in A0–A1 |
+| `organic` | organischer Spielmodus | Morphbasis mit kurzem Legato, begrenzter Zusatztonhöhenbewegung, zeitlich wechselnder Artikulation und starkem Tiefbass in A0–A1 |
 | `realistic` | Vergleich mit echten Aufnahmephrasen | 19 Clips und 27 Tastaturzonen, daher kein frei geformter Walgesang |
 | `ufo` | historischer Synthesevergleich | vollständig spielbar, aber nicht aus Walstimmen abgeleitet |
 
@@ -156,8 +156,11 @@ Audioformat:
 - ausreichende Offline-Echtzeitreserve im Testvertrag;
 - Organic-Modus mit exakter Leerlaufstille, chromatischer 88-Tasten-Abbildung,
   deterministischer Gestenreaktion und endlicher modaler Nachspur;
-- reproduzierbarer A/B-Merkmalsvergleich gegen sechs quellengebundene echte
-  Buckelwalclips; Details stehen in `buckelwal-organic-v3.md`.
+- gestengebundene, weich überblendete tonale, gepulste, raue und gebrochene
+  Zustände ohne unabhängigen Rauschgenerator;
+- reproduzierbarer globaler und zeitlicher A/B-Merkmalsvergleich gegen sechs
+  quellengebundene echte Buckelwalclips; Details stehen in
+  `buckelwal-organic-v4.md`.
 
 ## Physisch noch offen
 
