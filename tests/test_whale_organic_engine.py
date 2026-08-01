@@ -197,9 +197,14 @@ class OrganicWhaleMorphVoiceTests(unittest.TestCase):
             index += 1
 
         self.assertEqual(expected, actual)
+        excluded = {"bank", "source_filter_bank"}
         self.assertEqual(
-            {key: value for key, value in one_shot.__dict__.items() if key != "bank"},
-            {key: value for key, value in chunked.__dict__.items() if key != "bank"},
+            {key: value for key, value in one_shot.__dict__.items() if key not in excluded},
+            {key: value for key, value in chunked.__dict__.items() if key not in excluded},
+        )
+        self.assertEqual(
+            one_shot.source_filter_bank.status(),
+            chunked.source_filter_bank.status(),
         )
 
     def test_modal_tail_decays_to_exact_silence(self):

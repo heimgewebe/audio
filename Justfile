@@ -122,6 +122,15 @@ whale-bank-build:
 whale-morph-bank-build:
     python3 scripts/build_whale_morph_bank.py
 
+whale-voice-model-build:
+    python3 scripts/build_whale_voice_model.py
+
+whale-voice-model-check:
+    python3 scripts/build_whale_voice_model.py --check
+
+whale-voice-model-evaluate engine="organic" output="/tmp/buckelwal-voice-model-evaluation.json":
+    python3 scripts/evaluate_whale_voice_model.py --engine "{{engine}}" --output "{{output}}"
+
 whale-install-controls:
     python3 scripts/install_whale_desktop_controls.py
 

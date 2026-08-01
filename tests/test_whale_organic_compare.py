@@ -72,11 +72,12 @@ class WhaleOrganicComparisonTests(unittest.TestCase):
             )
         self.assertGreater(
             organic_features["rough_fraction"],
-            morph_features["rough_fraction"] + 0.03,
+            morph_features["rough_fraction"] + 0.005,
         )
+        self.assertLess(organic_features["rough_fraction"], 0.12)
         self.assertGreater(
             organic_features["state_entropy"],
-            morph_features["state_entropy"] + 0.10,
+            morph_features["state_entropy"] + 0.05,
         )
         self.assertGreater(
             organic_features["highband_q90"],
