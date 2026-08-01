@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan and manage one fail-closed, bounded voice recording session."""
+"""Plan and manage fail-closed, bounded audio recording sessions."""
 
 from __future__ import annotations
 
@@ -27,9 +27,11 @@ from typing import Any, Callable, Iterator
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "profiles" / "recording-sessions.v1.json"
+PROFILE_PATH = ROOT / "profiles" / "audio-profiles.v1.json"
 PHYSICAL_PATH = ROOT / "scripts" / "physical_verification.py"
 LAB_PATH = ROOT / "scripts" / "laboratory_gate.py"
 VOICE_PATH = ROOT / "scripts" / "voice_capture_observer.py"
+RATE_PATH = ROOT / "scripts" / "rate_policy_observer.py"
 WRAPPER_PATH = ROOT / "scripts" / "audio-record"
 PARECORD_PATH = pathlib.Path("/usr/bin/parecord")
 MAX_JSON_BYTES = 524_288
@@ -37,15 +39,27 @@ MAX_BINDING_BYTES = 64_000_000
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 HEX64_RE = re.compile(r"[0-9a-f]{64}")
 SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
+SOURCE_SPEC_RE = re.compile(
+    r"^(?P<format>[A-Za-z0-9_-]+) (?P<channels>[0-9]+)ch (?P<rate>[0-9]+)Hz$"
+)
+SESSION_TYPES = (
+    "voice-recording",
+    "roland-audio-recording",
+    "production-mix-recording",
+)
 ARTIFACT_DETAIL_FIELDS = frozenset(
     {"channels", "bit_depth_container", "sample_rate_hz", "frames", "duration_seconds"}
 )
 DEFAULT_OUTPUT_ROOT = pathlib.Path(
-    os.environ.get("AUDIO_RECORDING_ROOT", pathlib.Path.home() / "Music" / "Audio-Aufnahmen")
+    os.environ.get(
+        "AUDIO_RECORDING_ROOT", pathlib.Path.home() / "Music" / "Audio-Aufnahmen"
+    )
 )
-DEFAULT_STATE_ROOT = pathlib.Path(
-    os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")
-) / "audio" / "recordings-v1"
+DEFAULT_STATE_ROOT = (
+    pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state"))
+    / "audio"
+    / "recordings-v1"
+)
 
 
 class RecordingError(RuntimeError):
@@ -65,6 +79,7 @@ def load_module(name: str, path: pathlib.Path):
 PHYSICAL = load_module("physical_verification_for_recording", PHYSICAL_PATH)
 LAB = load_module("laboratory_gate_for_recording", LAB_PATH)
 VOICE = load_module("voice_capture_observer_for_recording", VOICE_PATH)
+RATE = load_module("rate_policy_observer_for_recording", RATE_PATH)
 
 
 def utc_now() -> str:
@@ -248,7 +263,9 @@ def _atomic_private_json(
             temporary.unlink()
 
 
-def _check_directory_chain(path: pathlib.Path, *, allow_missing_leaf: bool = False) -> None:
+def _check_directory_chain(
+    path: pathlib.Path, *, allow_missing_leaf: bool = False
+) -> None:
     absolute = lexical_absolute(path)
     current = pathlib.Path(absolute.anchor)
     parts = absolute.parts[1:]
@@ -261,7 +278,9 @@ def _check_directory_chain(path: pathlib.Path, *, allow_missing_leaf: bool = Fal
                 return
             raise RecordingError(f"directory path does not exist: {current}")
         if stat.S_ISLNK(metadata.st_mode):
-            raise RecordingError(f"symbolic directory component is forbidden: {current}")
+            raise RecordingError(
+                f"symbolic directory component is forbidden: {current}"
+            )
         if not stat.S_ISDIR(metadata.st_mode):
             raise RecordingError(f"path component is not a directory: {current}")
 
@@ -284,7 +303,9 @@ def ensure_private_directory(path: pathlib.Path) -> pathlib.Path:
             raise RecordingError(f"created directory has the wrong owner: {current}")
     final_metadata = absolute.lstat()
     if final_metadata.st_uid != os.getuid():
-        raise RecordingError(f"private directory is not owned by the current user: {absolute}")
+        raise RecordingError(
+            f"private directory is not owned by the current user: {absolute}"
+        )
     absolute.chmod(0o700)
     return absolute
 
@@ -301,7 +322,199 @@ def _validate_output_root(path: pathlib.Path) -> pathlib.Path:
     return root
 
 
-def load_catalog() -> dict[str, Any]:
+def _validate_session_contract(session_type: str, session: Any) -> None:
+    required = {
+        "purpose",
+        "profile",
+        "required_physical_facts",
+        "required_laboratory_gates",
+        "capture",
+        "source",
+        "monitoring",
+        "process",
+    }
+    if not isinstance(session, dict) or set(session) != required:
+        raise RecordingError(f"recording contract fields are invalid: {session_type}")
+    if (
+        not isinstance(session.get("purpose"), str)
+        or not session["purpose"]
+        or not isinstance(session.get("profile"), str)
+        or not session["profile"]
+        or not isinstance(session.get("required_physical_facts"), dict)
+        or not isinstance(session.get("required_laboratory_gates"), list)
+        or any(
+            not isinstance(gate, str) or not gate or CONTROL_RE.search(gate)
+            for gate in session["required_laboratory_gates"]
+        )
+    ):
+        raise RecordingError(f"recording contract metadata is invalid: {session_type}")
+    capture = session.get("capture")
+    capture_fields = {
+        "sample_rate_hz",
+        "sample_format",
+        "channels",
+        "channel_map",
+        "container",
+        "minimum_duration_seconds",
+        "maximum_duration_seconds",
+        "startup_timeout_seconds",
+        "stop_grace_seconds",
+        "bytes_per_sample",
+        "header_and_metadata_allowance_bytes",
+        "free_space_reserve_bytes",
+        "maximum_stderr_bytes",
+    }
+    if (
+        not isinstance(capture, dict)
+        or set(capture) != capture_fields
+        or capture.get("sample_rate_hz") != 48_000
+        or capture.get("sample_format") != "s32le"
+        or capture.get("channels") != 2
+        or capture.get("channel_map") != "front-left,front-right"
+        or capture.get("container") != "wav"
+        or capture.get("bytes_per_sample") != 4
+        or capture.get("minimum_duration_seconds") != 1
+        or capture.get("maximum_duration_seconds") != 14_400
+        or not _positive_integer(capture.get("startup_timeout_seconds"))
+        or not _positive_integer(capture.get("stop_grace_seconds"))
+        or not _positive_integer(capture.get("header_and_metadata_allowance_bytes"))
+        or not _positive_integer(capture.get("free_space_reserve_bytes"))
+        or not _positive_integer(capture.get("maximum_stderr_bytes"))
+    ):
+        raise RecordingError(f"recording capture contract is invalid: {session_type}")
+    source = session.get("source")
+    if not isinstance(source, dict):
+        raise RecordingError(f"recording source contract is invalid: {session_type}")
+    kind = source.get("kind")
+    source_fields = {
+        "motu-voice": {
+            "kind",
+            "vendor_id",
+            "product_id",
+            "serial_prefix",
+            "node_name_prefix",
+            "required_sample_formats",
+            "required_sample_rate_hz",
+            "required_channels",
+            "requires_unmuted",
+            "requires_unity_volume",
+        },
+        "usb-audio": {
+            "kind",
+            "device",
+            "vendor_id",
+            "product_id",
+            "node_name_prefix",
+            "required_sample_formats",
+            "required_sample_rate_hz",
+            "required_channels",
+            "requires_unmuted",
+            "requires_unity_volume",
+        },
+        "named-pipewire-source": {
+            "kind",
+            "node_name",
+            "upstream_roles",
+            "required_sample_formats",
+            "required_sample_rate_hz",
+            "required_channels",
+            "requires_unmuted",
+            "requires_unity_volume",
+        },
+    }
+    if kind not in source_fields or set(source) != source_fields[kind]:
+        raise RecordingError(f"recording source fields are invalid: {session_type}")
+    formats = source.get("required_sample_formats")
+    if (
+        not isinstance(formats, list)
+        or not formats
+        or any(not isinstance(item, str) or not item for item in formats)
+        or not _positive_integer(source.get("required_sample_rate_hz"))
+        or not _positive_integer(source.get("required_channels"))
+        or source.get("requires_unmuted") is not True
+        or source.get("requires_unity_volume") is not True
+    ):
+        raise RecordingError(
+            f"recording source format contract is invalid: {session_type}"
+        )
+    monitoring = session.get("monitoring")
+    if (
+        not isinstance(monitoring, dict)
+        or set(monitoring) != {"mode", "endpoint", "software_loopback", "level_claim"}
+        or monitoring.get("mode") not in {"hardware-direct", "software-monitoring"}
+        or not isinstance(monitoring.get("endpoint"), str)
+        or not monitoring["endpoint"]
+        or monitoring.get("software_loopback") is not False
+        or not isinstance(monitoring.get("level_claim"), str)
+        or not monitoring["level_claim"]
+    ):
+        raise RecordingError(
+            f"recording monitoring contract is invalid: {session_type}"
+        )
+    process = session.get("process")
+    process_fields = {
+        "stdin",
+        "stdout",
+        "stderr",
+        "new_session",
+        "core_dumps",
+        "maximum_open_files",
+        "partial_file_policy",
+        "publication_policy",
+        "client_name",
+        "stream_name_prefix",
+    }
+    if (
+        not isinstance(process, dict)
+        or set(process) != process_fields
+        or process.get("stdin") != "devnull"
+        or process.get("stdout") != "devnull"
+        or process.get("stderr") != "bounded-private-temporary-file"
+        or process.get("new_session") is not True
+        or process.get("core_dumps") is not False
+        or process.get("maximum_open_files") != 64
+        or process.get("partial_file_policy") != "preserve-on-failure"
+        or process.get("publication_policy") != "same-directory-hardlink-no-replace"
+        or not isinstance(process.get("client_name"), str)
+        or not process["client_name"]
+        or not isinstance(process.get("stream_name_prefix"), str)
+        or not process["stream_name_prefix"]
+    ):
+        raise RecordingError(f"recording process contract is invalid: {session_type}")
+    expected = {
+        "voice-recording": ("motu-voice", ["voice-level-measurement"]),
+        "roland-audio-recording": ("usb-audio", ["resampling-decision"]),
+        "production-mix-recording": ("named-pipewire-source", []),
+    }
+    if (kind, session["required_laboratory_gates"]) != expected[session_type]:
+        raise RecordingError(
+            f"recording session specialization is invalid: {session_type}"
+        )
+    if session_type == "voice-recording" and (
+        source.get("vendor_id") != "07fd"
+        or source.get("product_id") != "0008"
+        or source.get("required_sample_rate_hz") != 48_000
+        or formats != ["s32le"]
+    ):
+        raise RecordingError("voice recording source contract is inconsistent")
+    if session_type == "roland-audio-recording" and (
+        source.get("device") != "roland_fp_30x"
+        or source.get("vendor_id") != "0582"
+        or source.get("product_id") != "01b1"
+        or source.get("required_sample_rate_hz") != 44_100
+        or sorted(formats) != ["s24le", "s32le"]
+    ):
+        raise RecordingError("Roland recording source contract is inconsistent")
+    if session_type == "production-mix-recording" and (
+        source.get("node_name") != "audio-production-mix"
+        or source.get("required_sample_rate_hz") != 48_000
+        or formats != ["s32le"]
+        or source.get("upstream_roles") != ["voice", "roland", "software-instrument"]
+    ):
+        raise RecordingError("production recording source contract is inconsistent")
+
+
+def load_catalog(session_type: str = "voice-recording") -> dict[str, Any]:
     payload = _safe_json_read(CONTRACT_PATH, maximum_bytes=262_144)
     if (
         payload.get("schema_version") != 1
@@ -310,39 +523,33 @@ def load_catalog() -> dict[str, Any]:
     ):
         raise RecordingError("recording-session catalog schema is invalid")
     sessions = payload.get("sessions")
-    if not isinstance(sessions, dict) or set(sessions) != {"voice-recording"}:
+    if not isinstance(sessions, dict) or set(sessions) != set(SESSION_TYPES):
         raise RecordingError("recording-session catalog has an invalid session set")
-    session = sessions["voice-recording"]
-    if not isinstance(session, dict):
-        raise RecordingError("voice recording contract is not an object")
-    required = {
-        "purpose",
-        "required_physical_facts",
-        "required_laboratory_gates",
-        "capture",
-        "source",
-        "process",
-    }
-    if set(session) != required:
-        raise RecordingError("voice recording contract fields are invalid")
-    capture = session.get("capture")
-    source = session.get("source")
-    if not isinstance(capture, dict) or not isinstance(source, dict):
-        raise RecordingError("voice recording capture or source contract is invalid")
-    if session.get("required_laboratory_gates") != ["voice-level-measurement"]:
-        raise RecordingError("voice recording requires an unsupported laboratory gate set")
+    for name in SESSION_TYPES:
+        _validate_session_contract(name, sessions[name])
+    profile_catalog = _safe_json_read(PROFILE_PATH, maximum_bytes=262_144)
+    profiles = profile_catalog.get("profiles")
     if (
-        capture.get("sample_rate_hz") != 48_000
-        or capture.get("sample_format") != "s32le"
-        or capture.get("channels") != 2
-        or capture.get("container") != "wav"
-        or capture.get("bytes_per_sample") != 4
-        or source.get("required_sample_rate_hz") != 48_000
-        or source.get("required_sample_format") != "s32le"
-        or source.get("required_channels") != 2
+        profile_catalog.get("schema_version") != 1
+        or profile_catalog.get("kind") != "audio_profile_catalog"
+        or set(profile_catalog) != {"schema_version", "kind", "profiles"}
+        or not isinstance(profiles, dict)
+        or any(not isinstance(name, str) or not name for name in profiles)
     ):
-        raise RecordingError("voice recording format contract is inconsistent")
-    return session
+        raise RecordingError("audio profile catalog schema is invalid")
+    missing_profiles = sorted(
+        name
+        for name in {session["profile"] for session in sessions.values()}
+        if name not in profiles
+    )
+    if missing_profiles:
+        raise RecordingError(
+            "recording sessions reference unknown audio profiles: "
+            + ", ".join(missing_profiles)
+        )
+    if session_type not in sessions:
+        raise RecordingError(f"recording session type is unsupported: {session_type}")
+    return sessions[session_type]
 
 
 def contract_bindings() -> list[dict[str, Any]]:
@@ -355,10 +562,13 @@ def contract_bindings() -> list[dict[str, Any]]:
         ROOT / "inventory" / "physical-verification.v1.json",
         LAB_PATH,
         ROOT / "inventory" / "laboratory-gates.v1.json",
-        ROOT / "profiles" / "audio-profiles.v1.json",
+        PROFILE_PATH,
         VOICE_PATH,
+        RATE_PATH,
     )
-    return [_safe_regular_binding(path, maximum_bytes=MAX_BINDING_BYTES) for path in paths]
+    return [
+        _safe_regular_binding(path, maximum_bytes=MAX_BINDING_BYTES) for path in paths
+    ]
 
 
 def parecord_binding(path: pathlib.Path = PARECORD_PATH) -> dict[str, Any]:
@@ -446,8 +656,10 @@ def _laboratory_projection(
             empty_factory=LAB.empty_state,
             validator=LAB.validate_state,
         )
-        catalog = LAB.load_catalog()
-    except (OSError, RecordingError, ValueError) as exc:
+        resolved_all, invalidated_all = LAB.gate_resolution(
+            state, pathlib.Path(physical["state_path"])
+        )
+    except (KeyError, OSError, RecordingError, ValueError) as exc:
         return {
             "state_path": str(path),
             "state_sha256": None,
@@ -457,29 +669,12 @@ def _laboratory_projection(
             "error": str(exc),
         }, ["laboratory-state-invalid"]
     receipts = state.get("gates", {})
-    resolved: set[str] = set()
-    invalidated: dict[str, str] = {}
-    physical_sha = physical.get("state_sha256")
-    for gate in required:
-        receipt = receipts.get(gate) if isinstance(receipts, dict) else None
-        if not isinstance(receipt, dict):
-            invalidated[gate] = "missing"
-            continue
-        if gate != "voice-level-measurement":
-            invalidated[gate] = "unsupported-required-gate"
-            continue
-        evidence = receipt.get("evidence")
-        if not isinstance(evidence, dict) or not LAB.has_bound_voice_capture(evidence):
-            invalidated[gate] = "legacy-unbound-voice-evidence"
-            continue
-        if catalog.get(gate, {}).get("binds_physical_state") is True:
-            if physical_sha is None:
-                invalidated[gate] = "physical-state-missing"
-                continue
-            if receipt.get("physical_state_sha256") != physical_sha:
-                invalidated[gate] = "physical-state-changed"
-                continue
-        resolved.add(gate)
+    resolved = {gate for gate in required if gate in resolved_all}
+    invalidated = {
+        gate: invalidated_all.get(gate, "missing")
+        for gate in required
+        if gate not in resolved
+    }
     blockers = [f"laboratory-gate:{gate}" for gate in required if gate not in resolved]
     receipt_sha = {
         gate: canonical_sha256(receipts[gate])
@@ -495,23 +690,175 @@ def _laboratory_projection(
         "error": None,
     }, blockers
 
+
+def _normalize_usb_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().casefold().removeprefix("0x")
+    return normalized if re.fullmatch(r"[0-9a-f]{4}", normalized) else None
+
+
+def _source_label(contract: dict[str, Any]) -> str:
+    return {
+        "motu-voice": "motu",
+        "usb-audio": "roland",
+        "named-pipewire-source": "production-mix",
+    }.get(str(contract.get("kind")), "recording")
+
+
+def _pactl_source_identity(
+    item: Any, contract: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(item, dict):
+        raise ValueError("pactl source item is not an object")
+    properties = item.get("properties")
+    if not isinstance(properties, dict):
+        return None, None
+    if (
+        item.get("monitor_source") not in {None, ""}
+        or properties.get("device.class") == "monitor"
+        or properties.get("media.class") not in {None, "Audio/Source"}
+    ):
+        return None, None
+    source_name = item.get("name")
+    if (
+        not isinstance(source_name, str)
+        or not source_name
+        or CONTROL_RE.search(source_name)
+    ):
+        return None, None
+    kind = contract.get("kind")
+    vendor_id = _normalize_usb_id(properties.get("device.vendor.id"))
+    product_id = _normalize_usb_id(properties.get("device.product.id"))
+    if kind == "usb-audio":
+        if (
+            vendor_id != contract.get("vendor_id")
+            or product_id != contract.get("product_id")
+            or not source_name.startswith(str(contract.get("node_name_prefix")))
+        ):
+            return None, None
+    elif kind == "named-pipewire-source":
+        if source_name != contract.get("node_name"):
+            return None, None
+    else:
+        raise ValueError("generic source parser received an unsupported source kind")
+    match = SOURCE_SPEC_RE.fullmatch(str(item.get("sample_specification", "")))
+    if match is None:
+        raise ValueError(
+            f"{_source_label(contract)} source sample specification is invalid"
+        )
+    serial = properties.get("device.serial")
+    bus_path = properties.get("device.bus_path")
+    object_serial = properties.get("object.serial")
+    if kind == "usb-audio" and (
+        not isinstance(serial, str)
+        or not serial
+        or not isinstance(bus_path, str)
+        or not bus_path
+    ):
+        raise ValueError("Roland source lacks its serial- and bus-bound identity")
+    if kind == "named-pipewire-source" and object_serial in {None, ""}:
+        raise ValueError("production mix source lacks its PipeWire object identity")
+    volume_values = VOICE._source_volume_values(item)
+    unity_volume = bool(volume_values) and all(
+        value == 65_536 for value in volume_values
+    )
+    identity: dict[str, Any] = {
+        "source_kind": kind,
+        "node_name_sha256": hashlib.sha256(source_name.encode("utf-8")).hexdigest(),
+        "sample_format": match.group("format"),
+        "sample_rate_hz": int(match.group("rate")),
+        "channels": int(match.group("channels")),
+        "muted": item.get("mute"),
+        "unity_volume": unity_volume,
+    }
+    if kind == "usb-audio":
+        identity.update(
+            {
+                "vendor_id": vendor_id,
+                "product_id": product_id,
+                "serial_sha256": hashlib.sha256(serial.encode("utf-8")).hexdigest(),
+                "bus_path_sha256": (
+                    hashlib.sha256(bus_path.encode("utf-8")).hexdigest()
+                    if isinstance(bus_path, str) and bus_path
+                    else None
+                ),
+            }
+        )
+    else:
+        identity.update(
+            {
+                "declared_upstream_roles": list(contract["upstream_roles"]),
+                "object_serial_sha256": hashlib.sha256(
+                    str(object_serial).encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+    identity["fingerprint"] = canonical_sha256(identity)
+    return identity, source_name
+
+
+def _pactl_source_snapshot(contract: dict[str, Any]) -> dict[str, Any]:
+    payload, query = RATE._run_query(LAB.RATE_POLICY_PACTL_SOURCES_ARGV)
+    matches: list[tuple[dict[str, Any], str]] = []
+    errors: list[str] = []
+    for item in payload:
+        try:
+            identity, source_name = _pactl_source_identity(item, contract)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        if identity is not None and source_name is not None:
+            matches.append((identity, source_name))
+    complete = not errors and len(matches) == 1
+    return {
+        "schema_version": 1,
+        "kind": "audio_recording_source_snapshot",
+        "complete": complete,
+        "match_count": len(matches),
+        "ambiguous": len(matches) > 1,
+        "errors": sorted(set(errors)),
+        "identity": matches[0][0] if complete else None,
+        "source_name": matches[0][1] if complete else None,
+        "query": query,
+    }
+
+
+def _source_snapshot_for_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    if contract.get("kind") == "motu-voice":
+        return VOICE.source_snapshot()
+    return _pactl_source_snapshot(contract)
+
+
+def _source_name_for_contract(contract: dict[str, Any]) -> str:
+    if contract.get("kind") == "motu-voice":
+        return VOICE._source_name_from_live_query()
+    snapshot = _pactl_source_snapshot(contract)
+    source_name = snapshot.get("source_name")
+    if snapshot.get("complete") is not True or not isinstance(source_name, str):
+        raise RecordingError(
+            f"{_source_label(contract)} capture source is missing, invalid or ambiguous"
+        )
+    return source_name
+
+
 def _source_projection(
-    contract: dict[str, Any], snapshot_fn: Callable[[], dict[str, Any]]
+    contract: dict[str, Any],
+    snapshot_fn: Callable[[], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
+    label = _source_label(contract)
     try:
-        snapshot = snapshot_fn()
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"identity": None, "error": str(exc)}, ["motu-source-query-failed"]
+        snapshot = (snapshot_fn or (lambda: _source_snapshot_for_contract(contract)))()
+    except (OSError, ValueError, RecordingError, json.JSONDecodeError) as exc:
+        return {"identity": None, "error": str(exc)}, [f"{label}-source-query-failed"]
     identity = snapshot.get("identity")
     blockers: list[str] = []
     if snapshot.get("complete") is not True or not isinstance(identity, dict):
-        blockers.append("motu-source-not-unique")
+        blockers.append(f"{label}-source-not-unique")
         identity = None
     if identity is not None:
+        formats = contract["required_sample_formats"]
         expected = {
-            "vendor_id": contract["vendor_id"],
-            "product_id": contract["product_id"],
-            "sample_format": contract["required_sample_format"],
             "sample_rate_hz": contract["required_sample_rate_hz"],
             "channels": contract["required_channels"],
             "muted": False,
@@ -519,10 +866,22 @@ def _source_projection(
         }
         for field, value in expected.items():
             if identity.get(field) != value:
-                blockers.append(f"motu-source:{field}")
+                blockers.append(f"{label}-source:{field}")
+        if identity.get("sample_format") not in formats:
+            blockers.append(f"{label}-source:sample_format")
+        if contract.get("kind") in {"motu-voice", "usb-audio"}:
+            for field in ("vendor_id", "product_id"):
+                if identity.get(field) != contract.get(field):
+                    blockers.append(f"{label}-source:{field}")
+        if contract.get("kind") == "named-pipewire-source" and identity.get(
+            "declared_upstream_roles"
+        ) != contract.get("upstream_roles"):
+            blockers.append(f"{label}-source:upstream_roles")
     return {
         "identity": identity,
-        "identity_sha256": (canonical_sha256(identity) if identity is not None else None),
+        "identity_sha256": (
+            canonical_sha256(identity) if identity is not None else None
+        ),
         "error": None,
     }, blockers
 
@@ -541,6 +900,7 @@ def build_plan(
     name: str,
     maximum_seconds: int,
     *,
+    session_type: str = "voice-recording",
     output_root: pathlib.Path = DEFAULT_OUTPUT_ROOT,
     state_root: pathlib.Path = DEFAULT_STATE_ROOT,
     physical_state: pathlib.Path = PHYSICAL.DEFAULT_STATE,
@@ -549,7 +909,7 @@ def build_plan(
     disk_usage_fn: Callable[[pathlib.Path], Any] = shutil.disk_usage,
 ) -> dict[str, Any]:
     name = _plain_wav_name(name)
-    contract = load_catalog()
+    contract = load_catalog(session_type)
     capture = contract["capture"]
     if isinstance(maximum_seconds, bool) or not isinstance(maximum_seconds, int):
         raise RecordingError("maximum recording duration must be an integer")
@@ -581,9 +941,7 @@ def build_plan(
         physical,
         contract["required_laboratory_gates"],
     )
-    source, source_blockers = _source_projection(
-        contract["source"], source_snapshot_fn or VOICE.source_snapshot
-    )
+    source, source_blockers = _source_projection(contract["source"], source_snapshot_fn)
     blockers.extend(physical_blockers)
     blockers.extend(laboratory_blockers)
     blockers.extend(source_blockers)
@@ -608,7 +966,8 @@ def build_plan(
     identity = {
         "schema_version": 1,
         "kind": "audio_recording_plan_identity",
-        "session_type": "voice-recording",
+        "session_type": session_type,
+        "profile": contract["profile"],
         "output": {
             "root": str(root),
             "name": name,
@@ -631,6 +990,7 @@ def build_plan(
         "physical": physical,
         "laboratory": laboratory,
         "source": source,
+        "monitoring": contract["monitoring"],
         "contracts": contract_bindings(),
         "parecord": recorder,
         "process": contract["process"],
@@ -648,13 +1008,13 @@ def build_plan(
             "blockers": blockers,
             "free_bytes": free_bytes,
             "required_file_bytes": required_bytes,
-            "required_free_bytes": required_bytes
-            + capture["free_space_reserve_bytes"],
+            "required_free_bytes": required_bytes + capture["free_space_reserve_bytes"],
         },
         "does_not_establish": [
             "safe-monitoring-level",
             "subjective-recording-quality",
-            "microphone-or-phantom-power-state-beyond-bound-human-observation",
+            "physical-source-state-beyond-bound-observation",
+            "declared-production-upstream-roles-are-currently-connected",
             "successful-future-capture",
         ],
     }
@@ -667,10 +1027,7 @@ def state_lock(state_root: pathlib.Path) -> Iterator[None]:
     try:
         descriptor = os.open(
             lock_path,
-            os.O_RDWR
-            | os.O_CREAT
-            | os.O_CLOEXEC
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )
     except OSError as exc:
@@ -687,7 +1044,9 @@ def state_lock(state_root: pathlib.Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def _session_paths(state_root: pathlib.Path, session_id: str) -> dict[str, pathlib.Path]:
+def _session_paths(
+    state_root: pathlib.Path, session_id: str
+) -> dict[str, pathlib.Path]:
     if not re.fullmatch(r"[0-9a-f]{24}", session_id):
         raise RecordingError("recording session id is invalid")
     root = lexical_absolute(state_root)
@@ -704,7 +1063,10 @@ def _read_active(state_root: pathlib.Path) -> str:
     payload = _safe_json_read(active, require_private=True)
     if set(payload) != {"schema_version", "kind", "session_id", "spec_sha256"}:
         raise RecordingError("active recording pointer schema is invalid")
-    if payload.get("schema_version") != 1 or payload.get("kind") != "audio_recording_active":
+    if (
+        payload.get("schema_version") != 1
+        or payload.get("kind") != "audio_recording_active"
+    ):
         raise RecordingError("active recording pointer kind is invalid")
     session_id = payload.get("session_id")
     if not isinstance(session_id, str):
@@ -733,7 +1095,14 @@ def _proc_identity(pid: int) -> dict[str, Any] | None:
         executable = os.readlink(proc / "exe")
         command_line = (proc / "cmdline").read_bytes()
         process_group = os.getpgid(pid)
-    except (FileNotFoundError, ProcessLookupError, PermissionError, OSError, ValueError, IndexError):
+    except (
+        FileNotFoundError,
+        ProcessLookupError,
+        PermissionError,
+        OSError,
+        ValueError,
+        IndexError,
+    ):
         return None
     return {
         "pid": pid,
@@ -749,9 +1118,7 @@ def _identity_matches(expected: dict[str, Any]) -> bool:
     return observed == expected
 
 
-def _terminate_exact_process(
-    expected: dict[str, Any], *, grace_seconds: float
-) -> bool:
+def _terminate_exact_process(expected: dict[str, Any], *, grace_seconds: float) -> bool:
     if grace_seconds < 0:
         raise RecordingError("process termination grace must not be negative")
     if not _identity_matches(expected):
@@ -880,6 +1247,89 @@ def _non_negative_integer(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value >= 0
 
 
+def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -> None:
+    if not isinstance(source, dict) or set(source) != {
+        "identity",
+        "identity_sha256",
+        "error",
+    }:
+        raise RecordingError("recording source projection fields are invalid")
+    identity = source.get("identity")
+    digest = source.get("identity_sha256")
+    if (
+        source.get("error") is not None
+        or not isinstance(identity, dict)
+        or not isinstance(digest, str)
+        or not HEX64_RE.fullmatch(digest)
+        or canonical_sha256(identity) != digest
+    ):
+        raise RecordingError("recording source projection is not bound")
+    common = {
+        "node_name_sha256",
+        "sample_format",
+        "sample_rate_hz",
+        "channels",
+        "muted",
+        "unity_volume",
+        "fingerprint",
+    }
+    kind = contract["source"]["kind"] if "source" in contract else contract["kind"]
+    expected_fields = {
+        "motu-voice": common
+        | {"vendor_id", "product_id", "serial_sha256", "bus_path_sha256"},
+        "usb-audio": common
+        | {
+            "source_kind",
+            "vendor_id",
+            "product_id",
+            "serial_sha256",
+            "bus_path_sha256",
+        },
+        "named-pipewire-source": common
+        | {"source_kind", "declared_upstream_roles", "object_serial_sha256"},
+    }[kind]
+    if set(identity) != expected_fields:
+        raise RecordingError("recording source identity fields are invalid")
+    fingerprint = identity.get("fingerprint")
+    unbound = dict(identity)
+    unbound.pop("fingerprint", None)
+    if (
+        not isinstance(fingerprint, str)
+        or not HEX64_RE.fullmatch(fingerprint)
+        or canonical_sha256(unbound) != fingerprint
+        or not isinstance(identity.get("node_name_sha256"), str)
+        or not HEX64_RE.fullmatch(identity["node_name_sha256"])
+        or identity.get("sample_format")
+        not in contract["source"]["required_sample_formats"]
+        or identity.get("sample_rate_hz")
+        != contract["source"]["required_sample_rate_hz"]
+        or identity.get("channels") != contract["source"]["required_channels"]
+        or identity.get("muted") is not False
+        or identity.get("unity_volume") is not True
+    ):
+        raise RecordingError("recording source identity does not match its contract")
+    if kind in {"motu-voice", "usb-audio"}:
+        for field in ("vendor_id", "product_id"):
+            if identity.get(field) != contract["source"][field]:
+                raise RecordingError(
+                    "recording USB source identity does not match its contract"
+                )
+        for field in ("serial_sha256", "bus_path_sha256"):
+            value = identity.get(field)
+            if not isinstance(value, str) or not HEX64_RE.fullmatch(value):
+                raise RecordingError("recording USB source binding is invalid")
+    if kind == "usb-audio" and identity.get("source_kind") != kind:
+        raise RecordingError("Roland source kind is invalid")
+    if kind == "named-pipewire-source" and (
+        identity.get("source_kind") != kind
+        or identity.get("declared_upstream_roles")
+        != contract["source"]["upstream_roles"]
+        or not isinstance(identity.get("object_serial_sha256"), str)
+        or not HEX64_RE.fullmatch(identity["object_serial_sha256"])
+    ):
+        raise RecordingError("production mix source identity is invalid")
+
+
 def _validate_persisted_spec(
     spec: dict[str, Any], *, state_root: pathlib.Path | None = None
 ) -> None:
@@ -914,23 +1364,34 @@ def _validate_persisted_spec(
         "schema_version",
         "kind",
         "session_type",
+        "profile",
         "output",
         "capture",
         "physical",
         "laboratory",
         "source",
+        "monitoring",
         "contracts",
         "parecord",
         "process",
         "state_root",
     }
+    session_type = plan.get("session_type") if isinstance(plan, dict) else None
     if (
         set(plan) != expected_plan_fields
         or plan.get("schema_version") != 1
         or plan.get("kind") != "audio_recording_plan_identity"
-        or plan.get("session_type") != "voice-recording"
+        or session_type not in SESSION_TYPES
     ):
         raise RecordingError("recording plan identity fields are invalid")
+    contract = load_catalog(session_type)
+    if (
+        plan.get("profile") != contract["profile"]
+        or plan.get("monitoring") != contract["monitoring"]
+        or plan.get("process") != contract["process"]
+    ):
+        raise RecordingError("recording plan no longer matches its session contract")
+    _validate_planned_source_projection(plan.get("source"), contract)
     source_name = spec.get("source_name")
     if (
         not isinstance(source_name, str)
@@ -974,7 +1435,9 @@ def _validate_persisted_spec(
     maximum_duration = (
         capture.get("maximum_duration_seconds") if isinstance(capture, dict) else None
     )
-    maximum_bytes = capture.get("maximum_file_bytes") if isinstance(capture, dict) else None
+    maximum_bytes = (
+        capture.get("maximum_file_bytes") if isinstance(capture, dict) else None
+    )
     if (
         not isinstance(capture, dict)
         or set(capture) != expected_capture_fields
@@ -993,6 +1456,7 @@ def _validate_persisted_spec(
         or not isinstance(plan.get("physical"), dict)
         or not isinstance(plan.get("laboratory"), dict)
         or not isinstance(plan.get("source"), dict)
+        or not isinstance(plan.get("monitoring"), dict)
         or not isinstance(plan.get("contracts"), list)
         or not plan["contracts"]
         or not isinstance(plan.get("parecord"), dict)
@@ -1094,7 +1558,9 @@ def _assert_artifact_binding_current(
             include_identity=True,
         )
     except RecordingError as exc:
-        raise RecordingError("recording artifact no longer matches its receipt") from exc
+        raise RecordingError(
+            "recording artifact no longer matches its receipt"
+        ) from exc
     if observed != _artifact_binding_fields(value):
         raise RecordingError("recording artifact no longer matches its receipt")
 
@@ -1230,7 +1696,10 @@ def _read_session(
     )
     return paths, spec, state
 
-def _bounded_path_binding(path: pathlib.Path, maximum_bytes: int) -> dict[str, Any] | None:
+
+def _bounded_path_binding(
+    path: pathlib.Path, maximum_bytes: int
+) -> dict[str, Any] | None:
     if not path.exists() and not path.is_symlink():
         return None
     try:
@@ -1256,7 +1725,9 @@ def session_status(
         _validate_result(result, spec)
     process = state.get("process")
     exact_alive = isinstance(process, dict) and _identity_matches(process)
-    pid_alive = isinstance(process, dict) and _proc_identity(process.get("pid")) is not None
+    pid_alive = (
+        isinstance(process, dict) and _proc_identity(process.get("pid")) is not None
+    )
     if result is not None:
         status = result.get("status", "terminal")
         recovery_required = False
@@ -1276,6 +1747,7 @@ def session_status(
         "schema_version": 1,
         "kind": "audio_recording_status",
         "session_id": resolved_id,
+        "session_type": spec["plan_identity"]["session_type"],
         "status": status,
         "recovery_required": recovery_required,
         "process_identity_exact": exact_alive,
@@ -1301,6 +1773,7 @@ def start_session(
     maximum_seconds: int,
     expected_plan_sha256: str,
     *,
+    session_type: str = "voice-recording",
     output_root: pathlib.Path = DEFAULT_OUTPUT_ROOT,
     state_root: pathlib.Path = DEFAULT_STATE_ROOT,
     physical_state: pathlib.Path = PHYSICAL.DEFAULT_STATE,
@@ -1313,24 +1786,27 @@ def start_session(
         plan = build_plan(
             name,
             maximum_seconds,
+            session_type=session_type,
             output_root=output_root,
             state_root=state_root,
             physical_state=physical_state,
             laboratory_state=laboratory_state,
         )
         if plan["plan_sha256"] != expected_plan_sha256:
-            raise RecordingError("recording plan changed; review the new plan before start")
+            raise RecordingError(
+                "recording plan changed; review the new plan before start"
+            )
         if plan["ready"] is not True:
             raise RecordingError(
-                "recording plan is blocked: "
-                + ", ".join(plan["readiness"]["blockers"])
+                "recording plan is blocked: " + ", ".join(plan["readiness"]["blockers"])
             )
-        source_name = VOICE._source_name_from_live_query()
+        contract = load_catalog(session_type)
+        source_name = _source_name_for_contract(contract["source"])
         identity = plan["identity"]["source"]["identity"]
         if hashlib.sha256(source_name.encode("utf-8")).hexdigest() != identity.get(
             "node_name_sha256"
         ):
-            raise RecordingError("MOTU source changed between plan and start")
+            raise RecordingError("recording source changed between plan and start")
         session_id = secrets.token_hex(12)
         paths = _session_paths(state_root, session_id)
         output_path = pathlib.Path(plan["identity"]["output"]["path"])
@@ -1404,7 +1880,9 @@ def start_session(
                 if process.poll() is None:
                     process.kill()
                     process.wait(timeout=5)
-                raise RecordingError("recording worker identity could not be established")
+                raise RecordingError(
+                    "recording worker identity could not be established"
+                )
             state["phase"] = "running"
             state["process"] = process_identity
             _atomic_private_json(paths["state"], state)
@@ -1430,15 +1908,14 @@ def start_session(
             raise RecordingError(
                 f"recording bootstrap failed; recover session {session_id}: {exc}"
             ) from exc
-    deadline = time.monotonic() + plan["identity"]["capture"][
-        "startup_timeout_seconds"
-    ]
+    deadline = time.monotonic() + plan["identity"]["capture"]["startup_timeout_seconds"]
     while time.monotonic() < deadline:
         if partial_path.is_file() and partial_path.stat().st_size > 44:
             return {
                 "schema_version": 1,
                 "kind": "audio_recording_start_receipt",
                 "session_id": session_id,
+                "session_type": session_type,
                 "status": "running",
                 "plan_sha256": plan["plan_sha256"],
                 "output": str(output_path),
@@ -1449,9 +1926,7 @@ def start_session(
         time.sleep(0.05)
     if process_identity is not None and not _terminate_exact_process(
         process_identity,
-        grace_seconds=float(
-            plan["identity"]["capture"]["stop_grace_seconds"]
-        ),
+        grace_seconds=float(plan["identity"]["capture"]["stop_grace_seconds"]),
     ):
         raise RecordingError(
             f"recording worker did not become ready and could not be terminated; "
@@ -1490,16 +1965,18 @@ def stop_session(
             return result
         process = state.get("process")
         if not isinstance(process, dict) or not _identity_matches(process):
-            raise RecordingError("recording process identity is not exact; use recovery")
+            raise RecordingError(
+                "recording process identity is not exact; use recovery"
+            )
         terminated = _terminate_exact_process(
             process,
-            grace_seconds=float(
-                spec["plan_identity"]["capture"]["stop_grace_seconds"]
-            )
+            grace_seconds=float(spec["plan_identity"]["capture"]["stop_grace_seconds"])
             + 5.0,
         )
         if not terminated:
-            raise RecordingError("recording process did not terminate after bounded stop")
+            raise RecordingError(
+                "recording process did not terminate after bounded stop"
+            )
         status = session_status(state_root=root, session_id=resolved_id)
         if status["recovery_required"] is False:
             _clear_active_if_matches(root, resolved_id)
@@ -1521,7 +1998,9 @@ def recover_session(
         if isinstance(process, dict) and _identity_matches(process):
             return session_status(state_root=root, session_id=resolved_id)
         if isinstance(process, dict) and _proc_identity(process.get("pid")) is not None:
-            raise RecordingError("PID was reused or changed; recovery remains fail-closed")
+            raise RecordingError(
+                "PID was reused or changed; recovery remains fail-closed"
+            )
         maximum = int(spec["plan_identity"]["capture"]["maximum_file_bytes"])
         partial = pathlib.Path(spec["paths"]["partial"])
         final = pathlib.Path(spec["paths"]["final"])
@@ -1549,17 +2028,18 @@ def recover_session(
 def _validate_spec(spec: dict[str, Any]) -> None:
     _validate_persisted_spec(spec)
     if spec["plan_identity"].get("contracts") != contract_bindings():
-        raise RecordingError("recording implementation contracts changed after planning")
+        raise RecordingError(
+            "recording implementation contracts changed after planning"
+        )
     if spec["plan_identity"].get("parecord") != parecord_binding():
         raise RecordingError("parecord changed after planning")
     source_name = spec["source_name"]
     identity = spec["plan_identity"].get("source", {}).get("identity")
-    if (
-        not isinstance(identity, dict)
-        or hashlib.sha256(source_name.encode("utf-8")).hexdigest()
-        != identity.get("node_name_sha256")
-    ):
+    if not isinstance(identity, dict) or hashlib.sha256(
+        source_name.encode("utf-8")
+    ).hexdigest() != identity.get("node_name_sha256"):
         raise RecordingError("private recording source does not match the plan")
+
 
 def _validate_recorded_wave(
     path: pathlib.Path, capture: dict[str, Any]
@@ -1650,9 +2130,7 @@ def _publish_no_replace(
             include_identity=True,
         )
     except RecordingError as exc:
-        raise RecordingError(
-            "recording partial changed after WAV validation"
-        ) from exc
+        raise RecordingError("recording partial changed after WAV validation") from exc
     if observed_partial != binding_fields:
         raise RecordingError("recording partial changed after WAV validation")
     descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -1680,7 +2158,9 @@ def _publish_no_replace(
         os.unlink(partial.name, dir_fd=descriptor)
         os.fsync(descriptor)
     except FileExistsError as exc:
-        raise RecordingError("final recording path appeared during publication") from exc
+        raise RecordingError(
+            "final recording path appeared during publication"
+        ) from exc
     finally:
         os.close(descriptor)
 
@@ -1691,7 +2171,7 @@ def _worker_result_path(spec: dict[str, Any]) -> pathlib.Path:
 
 def _validate_live_preconditions(spec: dict[str, Any]) -> None:
     plan = spec["plan_identity"]
-    contract = load_catalog()
+    contract = load_catalog(plan["session_type"])
     physical, physical_blockers = _physical_projection(
         pathlib.Path(plan["physical"]["state_path"]),
         contract["required_physical_facts"],
@@ -1701,12 +2181,8 @@ def _validate_live_preconditions(spec: dict[str, Any]) -> None:
         physical,
         contract["required_laboratory_gates"],
     )
-    source, source_blockers = _source_projection(
-        contract["source"], VOICE.source_snapshot
-    )
-    blockers = sorted(
-        set(physical_blockers + laboratory_blockers + source_blockers)
-    )
+    source, source_blockers = _source_projection(contract["source"])
+    blockers = sorted(set(physical_blockers + laboratory_blockers + source_blockers))
     if blockers:
         raise RecordingError(
             "recording preconditions changed before capture: " + ", ".join(blockers)
@@ -1716,7 +2192,7 @@ def _validate_live_preconditions(spec: dict[str, Any]) -> None:
     if laboratory != plan.get("laboratory"):
         raise RecordingError("laboratory recording state changed before capture")
     if source != plan.get("source"):
-        raise RecordingError("MOTU source identity changed before capture")
+        raise RecordingError("recording source identity changed before capture")
     output = plan["output"]
     final = pathlib.Path(output["path"])
     root = _validate_output_root(pathlib.Path(output["root"]))
@@ -1729,6 +2205,30 @@ def _validate_live_preconditions(spec: dict[str, Any]) -> None:
     )
     if free_bytes < required:
         raise RecordingError("free space fell below the recording budget")
+
+
+def _parecord_argv(
+    spec: dict[str, Any], parecord_path: pathlib.Path, partial: pathlib.Path
+) -> list[str]:
+    plan = spec["plan_identity"]
+    capture = plan["capture"]
+    process = plan["process"]
+    session_id = spec["session_id"]
+    return [
+        str(parecord_path),
+        "--record",
+        f"--device={spec['source_name']}",
+        f"--rate={capture['sample_rate_hz']}",
+        f"--format={capture['sample_format']}",
+        f"--channels={capture['channels']}",
+        f"--channel-map={capture['channel_map']}",
+        "--no-remix",
+        "--no-remap",
+        "--file-format=wav",
+        f"--client-name={process['client_name']}",
+        f"--stream-name={process['stream_name_prefix']}-{session_id}",
+        str(partial),
+    ]
 
 
 def worker_run(
@@ -1768,24 +2268,11 @@ def worker_run(
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
     session_id = spec["session_id"]
-    argv = [
-        str(parecord_path),
-        "--record",
-        f"--device={spec['source_name']}",
-        "--rate=48000",
-        "--format=s32le",
-        "--channels=2",
-        "--channel-map=front-left,front-right",
-        "--no-remix",
-        "--no-remap",
-        "--file-format=wav",
-        "--client-name=audio-voice-recording",
-        f"--stream-name=voice-recording-{session_id}",
-        str(partial),
-    ]
+    session_type = spec["plan_identity"]["session_type"]
+    argv = _parecord_argv(spec, parecord_path, partial)
     started_at = utc_now()
     started_monotonic = time.monotonic()
-    maximum_stderr = int(load_catalog()["capture"]["maximum_stderr_bytes"])
+    maximum_stderr = int(load_catalog(session_type)["capture"]["maximum_stderr_bytes"])
     with tempfile.TemporaryFile() as stderr_file:
         process = subprocess.Popen(
             argv,
@@ -1888,7 +2375,8 @@ def worker_run(
             "subjective-recording-quality",
             "safe-monitoring-level",
             "24-effective-bits-in-the-32-bit-container",
-            "correct-microphone-placement",
+            "physical-source-placement-or-upstream-mix-correctness",
+            "absence-of-resampling-outside-the-declared-source-contract",
         ],
     }
 
@@ -1897,9 +2385,7 @@ def worker_entry(spec_path: pathlib.Path, expected_spec_sha256: str) -> int:
     result_path: pathlib.Path | None = None
     spec: dict[str, Any] | None = None
     try:
-        spec, binding = _safe_json_read_with_binding(
-            spec_path, require_private=True
-        )
+        spec, binding = _safe_json_read_with_binding(spec_path, require_private=True)
         if binding["sha256"] != expected_spec_sha256:
             raise RecordingError("recording worker spec digest changed")
         _validate_persisted_spec(spec, state_root=spec_path.parent)
@@ -1962,6 +2448,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     for command in ("plan", "start"):
         item = sub.add_parser(command)
         item.add_argument("name")
+        item.add_argument(
+            "--session-type", choices=SESSION_TYPES, default="voice-recording"
+        )
         item.add_argument("--maximum-seconds", type=int, default=3600)
         item.add_argument("--root", type=pathlib.Path, default=DEFAULT_OUTPUT_ROOT)
         item.add_argument("--state-root", type=pathlib.Path, default=DEFAULT_STATE_ROOT)
@@ -1996,6 +2485,7 @@ def main(argv: list[str] | None = None) -> int:
             result = build_plan(
                 args.name,
                 args.maximum_seconds,
+                session_type=args.session_type,
                 output_root=args.root,
                 state_root=args.state_root,
                 physical_state=args.physical_state,
@@ -2006,6 +2496,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.name,
                 args.maximum_seconds,
                 args.expected_plan_sha256,
+                session_type=args.session_type,
                 output_root=args.root,
                 state_root=args.state_root,
                 physical_state=args.physical_state,

@@ -87,9 +87,11 @@ just check
 ./scripts/audio-truth verify ~/.local/state/audio/truth/latest.v1.json
 ./scripts/audio-physical status
 ./scripts/audio-plan desktop-mixed
-./scripts/audio-record plan stimme-01.wav --maximum-seconds 1800
+./scripts/audio-record plan stimme-01.wav --session-type voice-recording --maximum-seconds 1800
+./scripts/audio-record plan roland-01.wav --session-type roland-audio-recording --maximum-seconds 1800
+./scripts/audio-record plan produktion-01.wav --session-type production-mix-recording --maximum-seconds 1800
 ./scripts/audio-record status
-# Start erst nach bestandenem Plan mit --expected-plan-sha256.
+# Start erst nach bestandenem Plan mit identischem --session-type und --expected-plan-sha256.
 python3 scripts/whale_live.py doctor
 python3 scripts/build_whale_morph_bank.py
 python3 scripts/whale_live.py start --voice-mode morph
