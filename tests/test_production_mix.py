@@ -33,6 +33,17 @@ class ProductionMixTest(unittest.TestCase):
         self.monitor_name = (
             "alsa_output.usb-MOTU_M2_M20000000000-00.Direct__hw_M2__sink"
         )
+        self.fake_loopback = self.base / "pw-loopback"
+        self.fake_loopback.write_text("#!/bin/sh\nexit 0\n")
+        self.fake_loopback.chmod(0o755)
+        self.fake_executable_binding = MODULE.executable_binding(self.fake_loopback)
+        executable_patcher = mock.patch.object(
+            MODULE,
+            "executable_binding",
+            return_value=self.fake_executable_binding,
+        )
+        executable_patcher.start()
+        self.addCleanup(executable_patcher.stop)
 
     @staticmethod
     def _fingerprinted(value: dict[str, object]) -> dict[str, object]:
@@ -180,6 +191,7 @@ class ProductionMixTest(unittest.TestCase):
                 },
                 service_fn=lambda: service or empty_service,
                 conflict_fn=lambda: conflicts or clear,
+                executable_fn=lambda: self.fake_executable_binding,
             )
 
     def persisted_spec(
@@ -454,7 +466,7 @@ class ProductionMixTest(unittest.TestCase):
         self.assertNotIn("set-default", serialized)
         self.assertNotIn("pipewire.conf.d", serialized)
         self.assertTrue(
-            all(item["argv"][0] == "/usr/bin/pw-loopback" for item in commands)
+            all(item["argv"][0] == str(self.fake_loopback) for item in commands)
         )
 
     def test_voice_channel_fact_selects_right_capture_position(self) -> None:
@@ -801,6 +813,7 @@ class ProductionMixTest(unittest.TestCase):
                     MODULE.ProductionMixError("query failed")
                 ),
                 conflict_fn=lambda: {"clear": True, "blockers": []},
+                executable_fn=lambda: self.fake_executable_binding,
             )
         self.assertFalse(plan["ready"])
         self.assertIn("service-state-unavailable", plan["readiness"]["blockers"])
