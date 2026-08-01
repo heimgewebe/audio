@@ -27,11 +27,13 @@ quellengestützte Walstimme über alle 88 chromatischen Tasten von A0 bis C8.
 Kurze periodische Stimmzyklen aus lizenzierten Buckelwalaufnahmen werden
 phasengleich gemittelt, bandbegrenzt und stufenlos gemorpht. Es gibt keine
 Samplezonen, Presets, Steuertasten oder permanente Rauschschicht. Der Modus
-`organic` ergänzt Formantträgheit, kurze statt thereminartige Übergänge,
-einen starken grundtongebundenen Tiefbass und weich wechselnde tonale,
-gepulste, raue und gebrochene Artikulationszustände. Globale und zeitliche
-Merkmale der reproduzierbaren Spielphrase werden gegen echte, quellengebundene
-Buckelwalclips vermessen. Die Modi `realistic` (Aufnahmephrasen) und `ufo`
+`organic` nutzt zusätzlich ein hashgebundenes zeitvariables Source-Filter-Modell:
+Hüllkurve, Periodizität, signalgebundene Rauigkeit, spektrale Neigung,
+Resonanzen, Pulsgruppen, Subharmonik und leise sekundäre Frequenzspuren stammen
+aus normalisierten Trajektorien der Originalaufnahmen. Ein starker
+Grundton-Tiefbass und der Anti-UFO-Vertrag bleiben erhalten. Globale,
+zeitliche und ganze Quellfamilien zurückhaltende Holdout-Vergleiche prüfen die
+reproduzierbare Spielphrase. Die Modi `realistic` (Aufnahmephrasen) und `ufo`
 bleiben als Vergleiche erhalten.
 
 ## Bereiche
@@ -78,7 +80,8 @@ bestehen. Er schaltet keine Aufnahme und keinen Produktions-Mixgraph.
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
 - [sfizz-Störfall](docs/incidents/2026-07-26-sfizz-stdin-eof-loop.md)
 - [Buckelwal Live Voice](docs/experiments/buckelwal-live-voice-v1.md)
-- [Organische Buckelwalstimme und A/B-Vergleich](docs/experiments/buckelwal-organic-v4.md)
+- [Wissen über Buckelwalstimme und Buckelwalgesang](docs/knowledge/buckelwal-stimme-und-gesang.md)
+- [Organische Buckelwalstimme und A/B-Vergleich](docs/experiments/buckelwal-organic-v5.md)
 - [Buckelwal-Samplequellen und Lizenzen](assets/whale-sources/README.md)
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)

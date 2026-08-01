@@ -764,9 +764,19 @@ def read_whale_contract() -> dict[str, Any]:
         raise ControlError("Buckelwalprofil verletzt den 88-Tasten-Morph-Vertrag.")
     organic = modes["organic"]
     organic_contract = {
-        "backend": "source-derived-organic-resynthesis",
+        "backend": "source-derived-temporal-source-filter-organic-resynthesis",
         "base_backend": morph_contract["backend"],
         "manifest": morph_contract["manifest"],
+        "voice_model_manifest": "assets/whale-sources/voice-model/manifest.json",
+        "voice_model_manifest_sha256": "c2f5a99f0d9c95f75830ba6f2122cfbdd12e847b54eca6bbee80b563d07a9541",
+        "trajectory_count": 19,
+        "train_trajectory_count": 12,
+        "holdout_trajectory_count": 7,
+        "source_family_split": {
+            "train_count": 5,
+            "holdout_count": 3,
+            "holdout_policy": "whole-source-family-never-used-by-live-selection",
+        },
         "note_range": morph_contract["note_range"],
         "tuning": morph_contract["tuning"],
         "keyboard_slot_count": 0,
@@ -776,12 +786,12 @@ def read_whale_contract() -> dict[str, Any]:
         "permanent_noise_layer": False,
         "long_phrase_playback": False,
         "organic_features": [
-            "formant-inertia",
+            "source-derived-temporal-envelope",
+            "source-derived-periodicity-and-signal-coupled-roughness",
+            "source-derived-spectral-tilt-and-formant-trajectories",
+            "source-derived-pulse-subharmonic-and-secondary-frequency-trajectories",
             "register-aware-deep-bass-body",
-            "deterministic-micro-instability",
             "deterministic-temporal-articulation-states",
-            "signal-coupled-tonal-pulsed-rough-broken-crossfades",
-            "short-signal-excited-damped-vocal-modes",
             "anti-theremin-bounded-pitch-drift",
         ],
         "temporal_articulation": {
@@ -799,10 +809,10 @@ def read_whale_contract() -> dict[str, Any]:
             "subharmonic_amount": 0.018,
         },
         "maximum_additional_pitch_drift_cents": 20,
-        "comparison": "dependency-free-global-and-temporal-feature-comparison-against-source-bound-real-clips",
-        "hold": "causal-organic-development-without-sample-loop",
+        "comparison": "global-temporal-and-source-family-holdout-comparison-against-source-bound-real-clips",
+        "hold": "successive-related-source-control-units-without-audio-loop",
         "legato": "phase-continuous-short-frequency-timbre-and-formant-glide",
-        "detached_retrigger": "gesture-seeded-new-call-with-damped-modal-tail",
+        "detached_retrigger": "gesture-seeded-source-trajectory-family-with-bounded-state-reset",
         "repeated_note": "phase-preserving-pulsed-rearticulation",
         "pitch_bend_range_semitones": 2,
     }

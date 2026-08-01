@@ -915,6 +915,29 @@ class WhaleRuntimeTests(unittest.TestCase):
         self.assertIsNone(report["pcm_pipe_capacity_bytes"])
         self.assertIn("65536 > 4096", report["pcm_pipe_error"])
 
+    def test_doctor_requires_temporal_source_filter_bank(self):
+        completed = mock.Mock(returncode=0, stdout="active\n", stderr="")
+        port = whale_live.MidiPort(
+            "24:0", "Roland Digital Piano", "Roland Digital Piano MIDI 1"
+        )
+        with (
+            mock.patch.object(whale_live.shutil, "which", return_value="/usr/bin/tool"),
+            mock.patch.object(whale_live, "list_midi_ports", return_value=[port]),
+            mock.patch.object(whale_live, "run_capture", return_value=completed),
+            mock.patch.object(
+                whale_live,
+                "source_filter_bank_status",
+                return_value={"ready": False, "blocking_reason": "hash mismatch"},
+            ),
+        ):
+            report = whale_live.runtime_doctor()
+        self.assertFalse(report["ready"])
+        self.assertIn(
+            "temporal-source-filter-bank-unavailable",
+            report["blocking_reasons"],
+        )
+        self.assertFalse(report["temporal_source_filter_bank"]["ready"])
+
     def test_profile_sink_policy_matches_runtime_default_target(self):
         profile = json.loads(
             (ROOT / "profiles/buckelwal-live-voice-v1.json").read_text()

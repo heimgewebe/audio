@@ -1001,7 +1001,7 @@ function soundModeDescription(mode) {
     return "Quellengestützte, chromatisch spielbare Morph-Stimme ohne Samplezonen.";
   }
   if (mode.id === "organic") {
-    return "Quellengestützte Walstimme mit Tiefbass und weich wechselnder tonaler, gepulster, rauer und gebrochener Artikulation.";
+    return "Quellengestützte Walstimme mit zeitvariablen Originaltrajektorien für Resonanzen, Puls, Rauigkeit und Nebenstimme sowie kräftigem Tiefbass.";
   }
   if (mode.id === "realistic") {
     return "Lizenzierte Naturaufnahmen mit begrenzter Tonhöhenverschiebung.";

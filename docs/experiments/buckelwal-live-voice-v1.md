@@ -19,7 +19,7 @@ Er resynthetisiert periodische Klangstrukturen realer Buckelwalaufnahmen und
 | Modus | Rolle | Grenze |
 |---|---|---|
 | `morph` | Standard und kontrollierte Ausgangsstimme | quellengestützte Resynthese, keine fertige Aufnahmephrase |
-| `organic` | organischer Spielmodus | Morphbasis mit kurzem Legato, begrenzter Zusatztonhöhenbewegung, zeitlich wechselnder Artikulation und starkem Tiefbass in A0–A1 |
+| `organic` | organischer Spielmodus | zeitvariables Source-Filter-Modell aus Originaltrajektorien, kurzer Anti-UFO-Pitch, wechselnde Artikulation und Tiefbass in A0–A1 |
 | `realistic` | Vergleich mit echten Aufnahmephrasen | 19 Clips und 27 Tastaturzonen, daher kein frei geformter Walgesang |
 | `ufo` | historischer Synthesevergleich | vollständig spielbar, aber nicht aus Walstimmen abgeleitet |
 
@@ -48,6 +48,15 @@ Die sieben internen Anker sind **keine Presets und keine Tastaturzonen**. Die
 Laufzeit überblendet für jeden Zwischenwert kontinuierlich zwischen zwei
 benachbarten Klangfarben. Auch die bandbegrenzten Tabellenstufen werden weich
 überblendet, um harte Register- und Aliasgrenzen zu vermeiden.
+
+Für `organic` ergänzt `scripts/build_whale_voice_model.py` ein zweites,
+zeitvariables Modell aus allen 19 verarbeiteten Clips. Jeder Clip liefert 48
+relative Kontrollpunkte für Hüllkurve, Periodizität, signalgebundene Rauigkeit,
+spektrale Neigung, Obertonverteilung, Resonanzverhältnisse, Puls, Subharmonik
+und eine leise sekundäre Frequenzspur. Ganze Quellfamilien werden als Holdout
+zurückgehalten und sind von der Live-Auswahl ausgeschlossen. Details und
+Messwerte stehen in `buckelwal-organic-v5.md`; die fachliche Grundlage steht in
+`../knowledge/buckelwal-stimme-und-gesang.md`.
 
 ## Spielmodell
 
@@ -101,6 +110,8 @@ biologisch erzeugt.
 
 ```bash
 python3 scripts/build_whale_morph_bank.py
+python3 scripts/build_whale_voice_model.py --check
+python3 scripts/evaluate_whale_voice_model.py --engine organic --output /tmp/buckelwal-v5-holdout.json
 python3 scripts/whale_live.py doctor
 python3 scripts/whale_live.py start --voice-mode morph
 python3 scripts/whale_live.py mode organic
@@ -111,15 +122,16 @@ python3 scripts/whale_live.py status
 ```
 
 Die entsprechenden `just`-Ziele heißen unter anderem `whale-morph`,
-`whale-organic`, `whale-realistic`, `whale-ufo`, `whale-morph-bank-build`, `whale-toggle` und
-`whale-status`.
+`whale-organic`, `whale-realistic`, `whale-ufo`, `whale-morph-bank-build`,
+`whale-voice-model-build`, `whale-voice-model-check`,
+`whale-voice-model-evaluate`, `whale-toggle` und `whale-status`.
 
 ## Betriebs- und Sicherheitsvertrag
 
 Der Doctor verlangt PipeWire, `aseqdump`, `pw-cat`, `systemctl`, `systemd-run`,
-einen eindeutig erkannten Roland-Port sowie gültige Morph- und Samplebanken.
-Fehlende oder veränderte Quell- beziehungsweise Tabellenhashes blockieren den
-Start.
+einen eindeutig erkannten Roland-Port sowie gültige Morph-, Zeitmodell- und
+Samplebanken. Fehlende oder veränderte Quell-, Modell- beziehungsweise
+Tabellenhashes blockieren den Start.
 
 Der verwaltete Dienst behält die bisherigen Grenzen:
 
@@ -154,13 +166,16 @@ Audioformat:
 - bitidentische Ausgabe und gleicher Zustand unabhängig von Render-Chunkgrößen;
 - frequenzabhängige harmonische Bandbegrenzung;
 - ausreichende Offline-Echtzeitreserve im Testvertrag;
-- Organic-Modus mit exakter Leerlaufstille, chromatischer 88-Tasten-Abbildung,
-  deterministischer Gestenreaktion und endlicher modaler Nachspur;
+- Organic-Modus mit exakter Leerlaufstille, chromatischer 88-Tasten-Abbildung
+  und deterministischer Gestenreaktion;
+- 19 hashgebundene Zeittrajektorien mit Hüllkurve, Periodizität, Rauigkeit,
+  Spektralverlauf, Resonanzen, Puls, Subharmonik und sekundärer Frequenzspur;
+- fünf Trainings- und drei vollständig ausgeschlossene Holdout-Quellfamilien;
+- Live-Auswahl ausschließlich aus den zwölf Trainingstrajektorien;
 - gestengebundene, weich überblendete tonale, gepulste, raue und gebrochene
-  Zustände ohne unabhängigen Rauschgenerator;
-- reproduzierbarer globaler und zeitlicher A/B-Merkmalsvergleich gegen sechs
-  quellengebundene echte Buckelwalclips; Details stehen in
-  `buckelwal-organic-v4.md`.
+  Zustände ohne unabhängigen Rauschgenerator oder Aufnahmephrase;
+- reproduzierbare globale, zeitliche und ganze Quellfamilien zurückhaltende
+  Holdout-Vergleiche; Details stehen in `buckelwal-organic-v5.md`.
 
 ## Physisch noch offen
 

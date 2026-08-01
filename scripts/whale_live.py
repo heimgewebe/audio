@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass
 from whale_morph_engine import WhaleMorphVoice, morph_bank_status
 from whale_organic_engine import OrganicWhaleMorphVoice
 from whale_sample_engine import WhaleSampleVoice, sample_bank_status
+from whale_source_filter_engine import source_filter_bank_status
 from whale_live_engine import (
     DEFAULT_BLOCK_FRAMES,
     MAX_MASTER_GAIN,
@@ -188,6 +189,9 @@ def runtime_doctor() -> dict[str, object]:
     morph_bank = morph_bank_status()
     if not morph_bank.get("ready"):
         blocking_reasons.append("continuous-morph-bank-unavailable")
+    source_filter_bank = source_filter_bank_status()
+    if not source_filter_bank.get("ready"):
+        blocking_reasons.append("temporal-source-filter-bank-unavailable")
     bank = sample_bank_status()
     if not bank.get("ready"):
         blocking_reasons.append("realistic-sample-bank-unavailable")
@@ -205,6 +209,7 @@ def runtime_doctor() -> dict[str, object]:
         "default_voice_mode": DEFAULT_VOICE_MODE,
         "voice_modes": list(VOICE_MODES),
         "continuous_morph_bank": morph_bank,
+        "temporal_source_filter_bank": source_filter_bank,
         "realistic_sample_bank": bank,
         "ready": not blocking_reasons,
         "blocking_reason": blocking_reasons[0] if blocking_reasons else None,
