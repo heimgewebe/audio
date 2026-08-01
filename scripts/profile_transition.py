@@ -43,6 +43,10 @@ LOCK_TIMEOUT_SECONDS = 2.0
 POST_KILL_WAIT_SECONDS = 1.0
 MAX_SINK_NAME_BYTES = 1_024
 MAX_METADATA_DIGITS = 12
+MOTU_M2_VENDOR_ID = "07fd"
+MOTU_M2_PRODUCT_ID = "0008"
+MOTU_M2_SERIAL_PREFIX = "MOTU_M2_"
+MOTU_M2_NODE_PREFIX = "alsa_output.usb-MOTU_M2_"
 COMMAND_PATHS = {
     "pactl": pathlib.Path("/usr/bin/pactl"),
     "pw-metadata": pathlib.Path("/usr/bin/pw-metadata"),
@@ -125,7 +129,7 @@ def new_operation_id() -> str:
 def command_label(argv: tuple[str, ...]) -> str:
     if argv[:2] == ("pactl", "info"):
         return "read-default-sink"
-    if argv[:4] == ("pactl", "list", "short", "sinks"):
+    if argv[:4] == ("pactl", "--format=json", "list", "sinks"):
         return "read-sink-inventory"
     if argv[:2] == ("pactl", "set-default-sink"):
         return "set-default-sink"
@@ -161,7 +165,7 @@ def valid_positive_decimal(value: str) -> bool:
 def validate_command_argv(argv: tuple[str, ...]) -> None:
     if argv in {
         ("pactl", "info"),
-        ("pactl", "list", "short", "sinks"),
+        ("pactl", "--format=json", "list", "sinks"),
         ("pw-metadata", "-n", "settings", "0"),
     }:
         return
@@ -375,29 +379,85 @@ def parse_default_sink(text: str) -> str:
     )
 
 
-def parse_sink_inventory(text: str) -> list[str]:
-    names: list[str] = []
-    for line in text.splitlines():
-        fields = line.split("\t")
-        if len(fields) >= 2 and fields[1].strip():
-            name = fields[1].strip()
-            if not valid_sink_argument(name):
-                raise TransitionError(
-                    "sink-inventory-invalid",
-                    "PipeWire/PulseAudio reported an invalid sink identity.",
-                )
-            names.append(name)
-    if not names:
+def normalize_usb_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().casefold().removeprefix("0x")
+    return normalized if re.fullmatch(r"[0-9a-f]{4}", normalized) else None
+
+
+def parse_sink_inventory(text: str) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise TransitionError(
+            "sink-inventory-invalid",
+            "PipeWire/PulseAudio reported an invalid JSON sink inventory.",
+        ) from exc
+    if not isinstance(payload, list):
+        raise TransitionError(
+            "sink-inventory-invalid",
+            "PipeWire/PulseAudio reported a non-array sink inventory.",
+        )
+    sinks: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            raise TransitionError(
+                "sink-inventory-invalid",
+                "PipeWire/PulseAudio reported a non-object sink entry.",
+            )
+        name = item.get("name")
+        properties = item.get("properties")
+        if (
+            not isinstance(name, str)
+            or not valid_sink_argument(name)
+            or not isinstance(properties, dict)
+            or name in names
+        ):
+            raise TransitionError(
+                "sink-inventory-invalid",
+                "PipeWire/PulseAudio reported an invalid or duplicate sink identity.",
+            )
+        names.add(name)
+        sinks.append({"name": name, "properties": properties})
+    if not sinks:
         raise TransitionError(
             "sink-inventory-empty",
             "PipeWire/PulseAudio did not report any sinks.",
         )
-    if len(names) != len(set(names)):
+    return sinks
+
+
+def motu_m2_sink_projection(item: dict[str, Any]) -> dict[str, str] | None:
+    properties = item["properties"]
+    vendor_id = normalize_usb_id(properties.get("device.vendor.id"))
+    product_id = normalize_usb_id(properties.get("device.product.id"))
+    if vendor_id != MOTU_M2_VENDOR_ID or product_id != MOTU_M2_PRODUCT_ID:
+        return None
+    name = item["name"]
+    serial = properties.get("device.serial")
+    bus_path = properties.get("device.bus_path")
+    if (
+        not name.startswith(MOTU_M2_NODE_PREFIX)
+        or not isinstance(serial, str)
+        or not serial.startswith(MOTU_M2_SERIAL_PREFIX)
+        or f"usb-{serial}-00" not in name
+        or not isinstance(bus_path, str)
+        or not bus_path
+    ):
         raise TransitionError(
-            "sink-inventory-invalid",
-            "PipeWire/PulseAudio reported duplicate sink identities.",
+            "motu-sink-invalid",
+            "A USB device with the MOTU M2 IDs has an invalid bound sink identity.",
         )
-    return names
+    identity = {
+        "vendor_id": vendor_id,
+        "product_id": product_id,
+        "serial_sha256": hashlib.sha256(serial.encode("utf-8")).hexdigest(),
+        "node_name_sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+        "bus_path_sha256": hashlib.sha256(bus_path.encode("utf-8")).hexdigest(),
+    }
+    return {"node_name": name, "identity_sha256": sha256_payload(identity)}
 
 
 def parse_metadata_value(text: str, key: str) -> int | None:
@@ -422,8 +482,11 @@ def read_live_state(runner: Runner = run_command) -> dict[str, Any]:
             "default-sink-unreadable",
             "PipeWire/PulseAudio reported an invalid default sink identity.",
         )
-    sinks = parse_sink_inventory(runner(("pactl", "list", "short", "sinks")))
-    if default_sink not in sinks:
+    inventory = parse_sink_inventory(
+        runner(("pactl", "--format=json", "list", "sinks"))
+    )
+    sink_names = [item["name"] for item in inventory]
+    if default_sink not in sink_names:
         raise TransitionError(
             "default-sink-not-in-inventory",
             "The exact default sink is absent from the current sink inventory.",
@@ -431,7 +494,8 @@ def read_live_state(runner: Runner = run_command) -> dict[str, Any]:
     metadata = runner(("pw-metadata", "-n", "settings", "0"))
     return {
         "default_sink": default_sink,
-        "sinks": sinks,
+        "sinks": sink_names,
+        "sink_inventory": inventory,
         "force_rate_hz": parse_metadata_value(metadata, "clock.force-rate"),
         "force_quantum_frames": parse_metadata_value(metadata, "clock.force-quantum"),
     }
@@ -441,14 +505,31 @@ def normalize_sink(name: str | None) -> str | None:
     return DOCTOR.normalize_endpoint(name)
 
 
-def resolve_motu_sink(live: dict[str, Any]) -> str:
-    candidates = [name for name in live["sinks"] if normalize_sink(name) == "motu-m2"]
+def resolve_motu_sink(live: dict[str, Any]) -> dict[str, str]:
+    candidates: list[dict[str, str]] = []
+    for item in live["sink_inventory"]:
+        candidate = motu_m2_sink_projection(item)
+        if candidate is not None:
+            candidates.append(candidate)
     if len(candidates) != 1:
         raise TransitionError(
             "motu-sink-ambiguous",
-            "Exactly one live MOTU M2 sink is required for desktop-mixed.",
+            "Exactly one USB-ID-, serial- and bus-bound MOTU M2 sink is required for desktop-mixed.",
         )
     return candidates[0]
+
+
+def validate_target_sink_identity(plan: dict[str, Any], live: dict[str, Any]) -> None:
+    candidate = resolve_motu_sink(live)
+    if (
+        candidate["node_name"] != plan["target"]["default_sink"]
+        or candidate["identity_sha256"] != plan["target_sink_identity_sha256"]
+    ):
+        raise TransitionError(
+            "motu-sink-changed",
+            "The exact MOTU M2 sink identity changed after the transition plan was approved.",
+            3,
+        )
 
 
 def readiness_projection(plan: dict[str, Any]) -> dict[str, Any]:
@@ -601,7 +682,7 @@ def build_plan(
     target_sink = resolve_motu_sink(live)
     before = private_state_projection(live)
     target = {
-        "default_sink": target_sink,
+        "default_sink": target_sink["node_name"],
         "force_rate_hz": spec["desired"]["rate_hz"],
         "force_quantum_frames": spec["desired"]["quantum_frames"],
     }
@@ -612,6 +693,7 @@ def build_plan(
         "profile": profile,
         "catalog_sha256": sha256_file(PROFILE_PATH),
         "readiness_sha256": sha256_payload(readiness_value),
+        "target_sink_identity_sha256": target_sink["identity_sha256"],
         "before": before,
         "target": target,
         "operations": operations,
@@ -850,6 +932,22 @@ def validate_journal_header(
 
 
 def validate_plan_header(payload: dict[str, Any], plan: dict[str, Any]) -> None:
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "profile",
+        "catalog_sha256",
+        "readiness_sha256",
+        "target_sink_identity_sha256",
+        "before",
+        "target",
+        "operations",
+        "plan_sha256",
+    }
+    if set(plan) != expected_fields:
+        raise TransitionError(
+            "journal-invalid", "The private transition plan fields are invalid."
+        )
     if plan.get("schema_version") != 1:
         raise TransitionError(
             "journal-invalid", "The private transition plan schema is invalid."
@@ -869,7 +967,11 @@ def validate_plan_header(payload: dict[str, Any], plan: dict[str, Any]) -> None:
 
 
 def validate_plan_bindings(plan: dict[str, Any]) -> None:
-    for field in ("catalog_sha256", "readiness_sha256"):
+    for field in (
+        "catalog_sha256",
+        "readiness_sha256",
+        "target_sink_identity_sha256",
+    ):
         value = plan.get(field)
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise TransitionError(
@@ -1164,6 +1266,15 @@ def rollback_indices(journal: dict[str, Any]) -> list[int]:
     return sorted(values, reverse=True)
 
 
+def mark_rollback_blocked(
+    root: pathlib.Path, journal: dict[str, Any], error: TransitionError
+) -> None:
+    journal["status"] = "rollback-blocked"
+    journal["active_index"] = None
+    journal["error"] = {"code": error.code, "detail": error.detail}
+    write_journal(root, journal)
+
+
 def rollback_journal(
     root: pathlib.Path,
     journal: dict[str, Any],
@@ -1177,10 +1288,7 @@ def rollback_journal(
     try:
         safe_rollback_preflight(current, plan["before"], plan["target"], fields)
     except TransitionError as exc:
-        journal["status"] = "rollback-blocked"
-        journal["active_index"] = None
-        journal["error"] = {"code": exc.code, "detail": exc.detail}
-        write_journal(root, journal)
+        mark_rollback_blocked(root, journal, exc)
         raise
     journal["status"] = "rolling-back"
     journal["active_index"] = None
@@ -1188,6 +1296,16 @@ def rollback_journal(
     for index in indices:
         operation = plan["operations"][index]
         current = private_state_projection(read_live_state(runner))
+        try:
+            safe_rollback_preflight(
+                current,
+                plan["before"],
+                plan["target"],
+                [operation["field"]],
+            )
+        except TransitionError as exc:
+            mark_rollback_blocked(root, journal, exc)
+            raise
         if field_value(current, operation["field"]) == operation["before"]:
             continue
         journal["active_index"] = index
@@ -1261,7 +1379,9 @@ def validate_fresh_plan(
             "The live transition plan changed; inspect a fresh diff before applying.",
             3,
         )
-    current = private_state_projection(read_live_state(runner))
+    live = read_live_state(runner)
+    validate_target_sink_identity(plan, live)
+    current = private_state_projection(live)
     if not state_matches(current, plan["before"]):
         raise TransitionError(
             "plan-changed",
@@ -1318,7 +1438,9 @@ def apply_operation(
     plan = journal["plan"]
     operation = plan["operations"][index]
     expected = expected_apply_state(journal)
-    current = private_state_projection(read_live_state(runner))
+    live = read_live_state(runner)
+    validate_target_sink_identity(plan, live)
+    current = private_state_projection(live)
     if not state_matches(current, expected):
         raise TransitionError(
             "concurrent-audio-drift",
@@ -1330,6 +1452,7 @@ def apply_operation(
     runner(tuple(operation["apply_argv"]))
     expected[operation["field"]] = operation["target"]
     wait_for_state(expected, runner)
+    validate_target_sink_identity(plan, read_live_state(runner))
     journal["completed_indices"].append(index)
     journal["active_index"] = None
     write_journal(root, journal)
@@ -1426,10 +1549,9 @@ def rollback_operation(
     runner: Runner = run_command,
 ) -> dict[str, Any]:
     with transition_lock(state_root):
+        latest_applied = latest_journal(state_root, {"applied"})
         journal = (
-            read_journal(state_root, operation_id)
-            if operation_id
-            else latest_journal(state_root, {"applied"})
+            read_journal(state_root, operation_id) if operation_id else latest_applied
         )
         if journal is None:
             raise TransitionError(
@@ -1440,6 +1562,15 @@ def rollback_operation(
             raise TransitionError(
                 "rollback-unavailable",
                 "Only an applied transition can be explicitly rolled back.",
+            )
+        if (
+            latest_applied is None
+            or latest_applied["operation_id"] != journal["operation_id"]
+        ):
+            raise TransitionError(
+                "rollback-superseded",
+                "The requested transition was superseded; roll back the latest applied operation first.",
+                3,
             )
         starting = private_state_projection(read_live_state(runner))
         rollback_journal(state_root, journal, runner, final_status="rolled-back")

@@ -6,7 +6,7 @@
 absichtlich auf `desktop-mixed` begrenzt und darf nur drei Zustandsfelder
 verändern:
 
-- exakte PipeWire/PulseAudio-Standardsenke auf den eindeutig erkannten MOTU-M2-Pfad;
+- exakte PipeWire/PulseAudio-Standardsenke auf den eindeutig erkannten MOTU-M2-Pfad; Hersteller-/Produkt-ID, Serienbindung, Knotenname und USB-Buspfad müssen gemeinsam passen;
 - `clock.force-rate` auf 48.000 Hz;
 - `clock.force-quantum` auf 1.024 Frames.
 
@@ -43,14 +43,14 @@ dürfen die drei gebundenen Felder verändern.
 
 - `profile-readiness-blocked`: Hardware, physische Fakten oder erforderliche
   Gates reichen nicht aus;
-- `plan-changed`: Profilvertrag oder Livezustand weicht vom bestätigten Hash ab;
+- `plan-changed`: Profilvertrag, M2-Geräteidentität oder Livezustand weicht vom bestätigten Hash ab;
 - `transition-busy`: das exklusive Lock blieb länger als zwei Sekunden belegt;
 - `metadata-invalid` beziehungsweise `sink-inventory-invalid`: der Live-Readback
   ist mehrdeutig oder unzulässig;
 - `apply-failed-rolled-back`: Apply scheiterte und die gebundenen Felder wurden
   wiederhergestellt;
-- `rollback-drift-conflict`: fremder Drift wurde erkannt und bewusst nicht
-  überschrieben; `status` verlangt Aufmerksamkeit und Recovery.
+- `rollback-superseded`: ein älterer angewendeter Lauf besitzt nicht mehr die aktive Rollback-Linie; zuerst muss der neueste angewendete Lauf zurückgenommen werden;
+- `rollback-drift-conflict`: fremder Drift wurde erkannt und bewusst nicht überschrieben; jedes betroffene Feld wird unmittelbar vor seinem Rücksetzkommando erneut gelesen, `status` verlangt Aufmerksamkeit und Recovery.
 
 ## Recovery
 
@@ -63,8 +63,7 @@ dürfen die drei gebundenen Felder verändern.
 - Ist der vollständig gebundene Zielzustand bereits erreicht, wird der Lauf als
   angewendet abgeschlossen und jeder geplante Schritt für ein späteres
   vollständiges Rollback gebunden.
-- Bei einem Teilzustand werden nur die betroffenen, nachweislich noch zum
-  Vorgang gehörenden Felder zurückgesetzt.
+- Bei einem Teilzustand werden nur die betroffenen, nachweislich noch zum Vorgang gehörenden Felder zurückgesetzt. Vor jedem einzelnen Rücksetzkommando erfolgt ein neuer Drift-Readback.
 - Hat ein anderer Prozess eines dieser Felder auf einen dritten Wert geändert,
   bleibt die Rücksetzung fail-closed blockiert. Dieser Drift wird nicht
   überschrieben.
@@ -73,9 +72,7 @@ dürfen die drei gebundenen Felder verändern.
 
 Die Journale liegen standardmäßig unter
 `~/.local/state/audio/profile-transitions-v1/` mit Verzeichnisrechten `0700` und
-Dateirechten `0600`. Sie enthalten die exakten lokalen PipeWire-Namen, weil nur
-so ein belastbares Rollback möglich ist. Öffentliche JSON-Ausgaben projizieren
-Geräte dagegen auf stabile Namen wie `motu-m2` und geben keine USB-Identität aus.
+Dateirechten `0600`. Sie enthalten die exakten lokalen PipeWire-Namen und den privaten Digest der USB-ID-, Serien-, Knoten- und Busbindung, weil nur so ein belastbares Apply und Rollback möglich ist. Persistierte Pläne akzeptieren ausschließlich den exakt definierten Feldsatz. Öffentliche JSON-Ausgaben projizieren Geräte dagegen auf stabile Namen wie `motu-m2` und geben keine USB-Identität aus.
 
 ## Sicherheitsgrenzen
 
@@ -86,7 +83,7 @@ Geräte dagegen auf stabile Namen wie `motu-m2` und geben keine USB-Identität a
 - feste Kommando-, bereits beim Einlesen durchgesetzte Ausgabe- und
   Readback-Zeitgrenzen;
 - keine Mutation ohne exakten, frisch neu berechneten Planhash;
-- kein Überschreiben fremden Drifts beim Rollback;
+- kein Überschreiben fremden Drifts beim Rollback und keine Rücksetzung einer durch einen neueren Lauf abgelösten Operation;
 - keine Freigabe weiterer Profile durch diesen Vertrag.
 
 Der Vertrag belegt weder subjektive Klangqualität noch Bitgenauigkeit,

@@ -11,7 +11,7 @@ nur profilgebunden über `plan`, `diff`, `apply`, `rollback` und Recovery
 verändert werden.
 
 Der erste wirkende Profilvertrag ist auf `desktop-mixed` begrenzt. Er bindet die
-MOTU-M2-Standardsenke, 48 kHz und Quantum 1.024 an einen exakten Planhash, ein
+MOTU-M2-Standardsenke mit USB-ID-, Serien-, Knoten- und Busbindung, 48 kHz und Quantum 1.024 an einen exakten Planhash, ein
 privates atomares Journal und anschließenden Live-Readback. Ohne eine eindeutig
 beobachtete MOTU M2 bleibt bereits der Dry-Run fail-closed; so ist es im
 aktuellen Readback vom 1. August 2026. Weitere Profile bleiben gesperrt.

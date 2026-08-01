@@ -15,6 +15,7 @@ assert SPEC and SPEC.loader
 SPEC.loader.exec_module(MODULE)
 
 MOTU = "alsa_output.usb-MOTU_M2_PRIVATE_SERIAL-00.Direct__hw_M2__sink"
+MOTU_M4 = "alsa_output.usb-MOTU_M4_PRIVATE_SERIAL-00.analog-stereo"
 HDMI = "alsa_output.pci-0000_07_00.1.hdmi-stereo-extra1"
 SPDIF = "alsa_output.pci-0000_09_00.4.iec958-stereo"
 
@@ -45,27 +46,65 @@ class FakeRunner:
         force_quantum=256,
         fail_on=None,
         drift_after_rate_readback=False,
+        drift_before_info_read=None,
     ):
         self.default_sink = default_sink
         self.sinks = list(sinks or [HDMI, MOTU, SPDIF])
+        self.sink_properties = {
+            name: self.properties_for_sink(name) for name in self.sinks
+        }
         self.force_rate = force_rate
         self.force_quantum = force_quantum
         self.fail_on = fail_on
         self.failed = False
         self.drift_after_rate_readback = drift_after_rate_readback
         self.drifted = False
+        self.drift_before_info_read = drift_before_info_read
+        self.info_reads = 0
         self.calls = []
         self.mutations = []
+
+    @staticmethod
+    def properties_for_sink(name):
+        if name.startswith("alsa_output.usb-MOTU_M2_"):
+            serial = name.split("usb-", 1)[1].split("-00", 1)[0]
+            return {
+                "device.vendor.id": "07fd",
+                "device.product.id": "0008",
+                "device.serial": serial,
+                "device.bus_path": "pci-0000:00:14.0-usb-0:1:1.0",
+            }
+        if name.startswith("alsa_output.usb-MOTU_M4_"):
+            serial = name.split("usb-", 1)[1].split("-00", 1)[0]
+            return {
+                "device.vendor.id": "07fd",
+                "device.product.id": "0014",
+                "device.serial": serial,
+                "device.bus_path": "pci-0000:00:14.0-usb-0:2:1.0",
+            }
+        return {}
 
     def __call__(self, argv):
         argv = tuple(argv)
         self.calls.append(argv)
         if argv == ("pactl", "info"):
+            self.info_reads += 1
+            if (
+                self.drift_before_info_read is not None
+                and self.info_reads == self.drift_before_info_read[0]
+            ):
+                self.default_sink = self.drift_before_info_read[1]
             return f"Default Sink: {self.default_sink}\n"
-        if argv == ("pactl", "list", "short", "sinks"):
-            return "".join(
-                f"{index}\t{name}\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n"
-                for index, name in enumerate(self.sinks, 1)
+        if argv == ("pactl", "--format=json", "list", "sinks"):
+            return json.dumps(
+                [
+                    {
+                        "index": index,
+                        "name": name,
+                        "properties": self.sink_properties[name],
+                    }
+                    for index, name in enumerate(self.sinks, 1)
+                ]
             )
         if argv == ("pw-metadata", "-n", "settings", "0"):
             lines = ['Found "settings" metadata 31\n']
@@ -294,6 +333,82 @@ class ProfileTransitionTests(unittest.TestCase):
             self.assertEqual(runner.force_rate, 44_100)
             self.assertEqual(runner.force_quantum, 256)
 
+    def test_superseded_applied_operation_cannot_be_rolled_back(self):
+        runner = FakeRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            physical, gates, state = self.paths(directory)
+            first_plan = MODULE.build_plan(
+                "desktop-mixed", physical, gates, runner, readiness=ready()
+            )
+            first = MODULE.apply_plan(
+                "desktop-mixed",
+                first_plan["plan_sha256"],
+                physical,
+                gates,
+                state,
+                runner,
+                readiness=ready(),
+            )
+
+            runner.default_sink = SPDIF
+            runner.force_rate = 96_000
+            runner.force_quantum = 512
+            second_plan = MODULE.build_plan(
+                "desktop-mixed", physical, gates, runner, readiness=ready()
+            )
+            second = MODULE.apply_plan(
+                "desktop-mixed",
+                second_plan["plan_sha256"],
+                physical,
+                gates,
+                state,
+                runner,
+                readiness=ready(),
+            )
+            mutations = list(runner.mutations)
+
+            with self.assertRaises(MODULE.TransitionError) as context:
+                MODULE.rollback_operation(state, first["operation_id"], runner)
+            self.assertEqual(context.exception.code, "rollback-superseded")
+            self.assertEqual(runner.mutations, mutations)
+            self.assertEqual(
+                MODULE.read_journal(state, first["operation_id"])["status"],
+                "applied",
+            )
+            self.assertEqual(
+                MODULE.read_journal(state, second["operation_id"])["status"],
+                "applied",
+            )
+
+    def test_rollback_revalidates_each_field_immediately_before_mutation(self):
+        runner = FakeRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            physical, gates, state = self.paths(directory)
+            plan = MODULE.build_plan(
+                "desktop-mixed", physical, gates, runner, readiness=ready()
+            )
+            applied = MODULE.apply_plan(
+                "desktop-mixed",
+                plan["plan_sha256"],
+                physical,
+                gates,
+                state,
+                runner,
+                readiness=ready(),
+            )
+            runner.info_reads = 0
+            runner.drift_before_info_read = (3, SPDIF)
+            mutations = list(runner.mutations)
+
+            with self.assertRaises(MODULE.TransitionError) as context:
+                MODULE.rollback_operation(state, applied["operation_id"], runner)
+            self.assertEqual(context.exception.code, "rollback-drift-conflict")
+            self.assertEqual(runner.default_sink, SPDIF)
+            self.assertEqual(runner.mutations, mutations)
+            journal = MODULE.read_journal(state, applied["operation_id"])
+            self.assertEqual(journal["status"], "rollback-blocked")
+            self.assertEqual(journal["error"]["code"], "rollback-drift-conflict")
+
     def test_recording_like_quantum_transition_and_rollback_are_narrow(self):
         runner = FakeRunner(
             default_sink=MOTU,
@@ -498,6 +613,85 @@ class ProfileTransitionTests(unittest.TestCase):
             with self.assertRaises(MODULE.TransitionError) as context:
                 MODULE.read_journal(state, applied["operation_id"])
             self.assertEqual(context.exception.code, "journal-invalid")
+
+    def test_rehashed_plan_with_unknown_field_is_rejected(self):
+        runner = FakeRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            physical, gates, state = self.paths(directory)
+            plan = MODULE.build_plan(
+                "desktop-mixed", physical, gates, runner, readiness=ready()
+            )
+            applied = MODULE.apply_plan(
+                "desktop-mixed",
+                plan["plan_sha256"],
+                physical,
+                gates,
+                state,
+                runner,
+                readiness=ready(),
+            )
+            journal = MODULE.read_journal(state, applied["operation_id"])
+            journal["plan"]["unreviewed_extension"] = True
+            unsigned = dict(journal["plan"])
+            unsigned.pop("plan_sha256")
+            journal["plan"]["plan_sha256"] = MODULE.sha256_payload(unsigned)
+            journal["plan_sha256"] = journal["plan"]["plan_sha256"]
+            MODULE.atomic_write_private(
+                MODULE.journal_path(state, applied["operation_id"]), journal
+            )
+            with self.assertRaises(MODULE.TransitionError) as context:
+                MODULE.read_journal(state, applied["operation_id"])
+            self.assertEqual(context.exception.code, "journal-invalid")
+
+    def test_motu_identity_change_invalidates_approved_plan_without_mutation(self):
+        runner = FakeRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            physical, gates, state = self.paths(directory)
+            plan = MODULE.build_plan(
+                "desktop-mixed", physical, gates, runner, readiness=ready()
+            )
+            runner.sink_properties[MOTU]["device.bus_path"] = (
+                "pci-0000:00:14.0-usb-0:9:1.0"
+            )
+            with self.assertRaises(MODULE.TransitionError) as context:
+                MODULE.apply_plan(
+                    "desktop-mixed",
+                    plan["plan_sha256"],
+                    physical,
+                    gates,
+                    state,
+                    runner,
+                    readiness=ready(),
+                )
+            self.assertEqual(context.exception.code, "plan-changed")
+            self.assertEqual(runner.mutations, [])
+
+    def test_non_m2_motu_sink_is_not_accepted_as_m2(self):
+        runner = FakeRunner(sinks=[HDMI, MOTU_M4, SPDIF])
+        with tempfile.TemporaryDirectory() as directory:
+            physical, gates, _state = self.paths(directory)
+            with self.assertRaises(MODULE.TransitionError) as context:
+                MODULE.build_plan(
+                    "desktop-mixed",
+                    physical,
+                    gates,
+                    runner,
+                    readiness=ready(),
+                )
+            self.assertEqual(context.exception.code, "motu-sink-ambiguous")
+            self.assertEqual(runner.mutations, [])
+
+    def test_motu_identity_is_private_and_bound_into_plan(self):
+        runner = FakeRunner()
+        with tempfile.TemporaryDirectory() as directory:
+            physical, gates, _state = self.paths(directory)
+            plan = MODULE.build_plan(
+                "desktop-mixed", physical, gates, runner, readiness=ready()
+            )
+            public = MODULE.public_plan(plan)
+        self.assertRegex(plan["target_sink_identity_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("target_sink_identity_sha256", public)
+        self.assertNotIn("PRIVATE_SERIAL", json.dumps(public))
 
     def test_duplicate_motu_sinks_fail_closed(self):
         runner = FakeRunner(sinks=[HDMI, MOTU, MOTU + "-duplicate"])
