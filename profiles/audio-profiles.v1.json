@@ -14,7 +14,7 @@
         "quantum_frames": 1024,
         "resampling": "allowed"
       },
-      "apply_authority": "future-profile-engine",
+      "apply_authority": "desktop-mixed-transition-v1",
       "required_laboratory_gates": []
     },
     "reference-listening": {

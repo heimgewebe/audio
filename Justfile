@@ -26,6 +26,24 @@ physical-status:
 plan profile="desktop-mixed":
     ./scripts/audio-plan "{{profile}}"
 
+transition-diff profile="desktop-mixed":
+    ./scripts/audio-transition diff "{{profile}}"
+
+transition-apply plan_sha256 profile="desktop-mixed":
+    ./scripts/audio-transition apply "{{profile}}" --plan-sha256 "{{plan_sha256}}"
+
+transition-status:
+    ./scripts/audio-transition status
+
+transition-recover:
+    ./scripts/audio-transition recover
+
+transition-rollback operation_id:
+    ./scripts/audio-transition rollback --operation-id "{{operation_id}}"
+
+transition-rollback-latest:
+    ./scripts/audio-transition rollback
+
 calibration-pack pack output:
     ./scripts/create-calibration-pack "{{pack}}" "{{output}}"
 

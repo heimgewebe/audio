@@ -75,11 +75,21 @@ def parse_setting(text: str, key: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def is_motu_m2_endpoint(name: str | None) -> bool:
+    if not name:
+        return False
+    lowered = name.casefold()
+    return bool(
+        re.search(r"(?:^|[._\s-])motu[._\s-]+m2(?:[._\s-]|$)", lowered)
+        or re.search(r"(?:^|[._\s-])m2[._\s-]+motu(?:[._\s-]|$)", lowered)
+    )
+
+
 def normalize_endpoint(name: str | None) -> str | None:
     if not name:
         return None
     lowered = name.lower()
-    if "motu" in lowered or re.search(r"(?:^|[._-])m2(?:[._-]|$)", lowered):
+    if is_motu_m2_endpoint(name):
         return "motu-m2"
     if "roland" in lowered or "digital_piano" in lowered:
         return "roland-fp-30x"
@@ -103,7 +113,11 @@ def parse_pactl_default(text: str, kind: str) -> str | None:
 
 def contains_device(text: str, device: str) -> bool:
     if device == "motu-m2":
-        return bool(re.search(r"\bMOTU\b|\bM Series\b|\bM2\b", text, re.IGNORECASE))
+        return any(
+            is_motu_m2_endpoint(line)
+            or re.search(r"\bM2\s*\[M2\]", line, re.IGNORECASE) is not None
+            for line in text.splitlines()
+        )
     if device == "roland-fp-30x":
         return bool(
             re.search(
@@ -134,7 +148,9 @@ def physical_unknowns(contract_path: pathlib.Path | None = None) -> list[str]:
     try:
         payload = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"physical verification contract unavailable: {path}") from exc
+        raise RuntimeError(
+            f"physical verification contract unavailable: {path}"
+        ) from exc
     facts = payload.get("facts")
     if not isinstance(facts, dict):
         raise RuntimeError("physical verification contract has no facts object")
@@ -156,7 +172,9 @@ def desired_hardware() -> list[str]:
     try:
         payload = json.loads(profile_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"audio profile catalog unavailable: {profile_path}") from exc
+        raise RuntimeError(
+            f"audio profile catalog unavailable: {profile_path}"
+        ) from exc
     profiles = payload.get("profiles")
     if not isinstance(profiles, dict):
         raise RuntimeError("audio profile catalog has no profiles object")
@@ -165,13 +183,17 @@ def desired_hardware() -> list[str]:
         if not isinstance(profile, dict):
             raise RuntimeError("audio profile catalog contains a non-object profile")
         required = profile.get("required_hardware", [])
-        if not isinstance(required, list) or any(not isinstance(item, str) for item in required):
+        if not isinstance(required, list) or any(
+            not isinstance(item, str) for item in required
+        ):
             raise RuntimeError("audio profile required_hardware must be a string array")
         devices.update(required)
     return sorted(devices)
 
 
-def build_report(results: Iterable[CommandResult], eld_text: str = "") -> dict[str, object]:
+def build_report(
+    results: Iterable[CommandResult], eld_text: str = ""
+) -> dict[str, object]:
     result_list = list(results)
     by_command = {result.argv: result for result in result_list}
     aplay = by_command.get(("aplay", "-l"), CommandResult((), 127, "", ""))
@@ -343,7 +365,9 @@ def main(argv: list[str] | None = None) -> int:
 
     results = [run_read_only(command) for command in READ_ONLY_COMMANDS]
     report = build_report(results, read_eld_text())
-    encoded = json.dumps(report, ensure_ascii=False, indent=2 if args.pretty else None) + "\n"
+    encoded = (
+        json.dumps(report, ensure_ascii=False, indent=2 if args.pretty else None) + "\n"
+    )
     encoded = redact(encoded)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

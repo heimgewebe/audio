@@ -4,7 +4,9 @@ import sys
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("audio_doctor", ROOT / "scripts/audio_doctor.py")
+SPEC = importlib.util.spec_from_file_location(
+    "audio_doctor", ROOT / "scripts/audio_doctor.py"
+)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = MODULE
@@ -17,26 +19,64 @@ class AudioDoctorTests(unittest.TestCase):
 
     def test_german_pactl_defaults(self):
         text = "Standard-Ziel: alsa_output.usb-MOTU_M2-00\nStandard-Quelle: alsa_input.usb-Roland_Digital_Piano-00\n"
-        self.assertEqual(MODULE.normalize_endpoint(MODULE.parse_pactl_default(text, "sink")), "motu-m2")
-        self.assertEqual(MODULE.normalize_endpoint(MODULE.parse_pactl_default(text, "source")), "roland-fp-30x")
+        self.assertEqual(
+            MODULE.normalize_endpoint(MODULE.parse_pactl_default(text, "sink")),
+            "motu-m2",
+        )
+        self.assertEqual(
+            MODULE.normalize_endpoint(MODULE.parse_pactl_default(text, "source")),
+            "roland-fp-30x",
+        )
+
+    def test_other_motu_models_do_not_satisfy_m2_identity(self):
+        self.assertEqual(
+            MODULE.normalize_endpoint("alsa_output.usb-MOTU_M4_SERIAL-00"),
+            "other",
+        )
+        self.assertFalse(MODULE.contains_device("MOTU M4 USB Audio", "motu-m2"))
+        self.assertFalse(MODULE.contains_device("MOTU M6 USB Audio", "motu-m2"))
+        self.assertTrue(MODULE.contains_device("MOTU M2 USB Audio", "motu-m2"))
+        self.assertTrue(MODULE.contains_device("Karte 2: M2 [M2]", "motu-m2"))
 
     def test_report_keeps_physical_state_unknown(self):
         results = [
-            self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\nKarte 3: Piano [Roland Digital Piano]\n"),
-            self.result(("arecord", "-l"), "Karte 2: M2 [M2]\nKarte 3: Piano [Roland Digital Piano]\n"),
+            self.result(
+                ("aplay", "-l"),
+                "Karte 2: M2 [M2], Gerät 0: USB Audio\nKarte 3: Piano [Roland Digital Piano]\n",
+            ),
+            self.result(
+                ("arecord", "-l"),
+                "Karte 2: M2 [M2]\nKarte 3: Piano [Roland Digital Piano]\n",
+            ),
             self.result(("wpctl", "status"), "M Series\nRoland Digital Piano\n"),
-            self.result(("pw-metadata", "-n", "settings", "0"), "key:'clock.force-rate' value:'48000'\nkey:'clock.force-quantum' value:'1024'\n"),
-            self.result(("pactl", "info"), "Default Sink: alsa_output.usb-MOTU_M2-00\nDefault Source: alsa_input.usb-Roland_Digital_Piano-00\n"),
-            self.result(("pactl", "list", "short", "sinks"), "1\tmotu\tPipeWire\ts32le 2ch 48000Hz\n"),
-            self.result(("pactl", "list", "short", "sources"), "2\troland\tPipeWire\ts24le 2ch 44100Hz\n"),
-            self.result(("aconnect", "-l"), "client 24: 'Roland FP-30X' [type=kernel]\n"),
+            self.result(
+                ("pw-metadata", "-n", "settings", "0"),
+                "key:'clock.force-rate' value:'48000'\nkey:'clock.force-quantum' value:'1024'\n",
+            ),
+            self.result(
+                ("pactl", "info"),
+                "Default Sink: alsa_output.usb-MOTU_M2-00\nDefault Source: alsa_input.usb-Roland_Digital_Piano-00\n",
+            ),
+            self.result(
+                ("pactl", "list", "short", "sinks"),
+                "1\tmotu\tPipeWire\ts32le 2ch 48000Hz\n",
+            ),
+            self.result(
+                ("pactl", "list", "short", "sources"),
+                "2\troland\tPipeWire\ts24le 2ch 44100Hz\n",
+            ),
+            self.result(
+                ("aconnect", "-l"), "client 24: 'Roland FP-30X' [type=kernel]\n"
+            ),
             self.result(("amidi", "-l"), ""),
             self.result(("systemctl", "is-active", "bluetooth"), "inactive\n", 3),
         ]
         report = MODULE.build_report(results)
         self.assertTrue(report["hardware"]["motu_m2"])
         self.assertTrue(report["hardware"]["roland_fp_30x"])
-        self.assertTrue(report["device_truth"]["observed"]["roland_fp_30x"]["alsa_midi"])
+        self.assertTrue(
+            report["device_truth"]["observed"]["roland_fp_30x"]["alsa_midi"]
+        )
         self.assertEqual(
             report["device_truth"]["configured_defaults"]["default_source"],
             "roland-fp-30x",
@@ -49,7 +89,6 @@ class AudioDoctorTests(unittest.TestCase):
         self.assertIsNone(report["graph"]["round_trip_latency_ms"])
         self.assertIn("motu_phantom_48v", report["physical_unknowns"])
         self.assertFalse(report["profiles"]["voice_recording"]["software_ready"])
-
 
     def test_configured_roland_default_does_not_prove_physical_presence(self):
         results = [
