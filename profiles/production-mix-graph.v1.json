@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "kind": "audio_production_mix_graph_contract",
+  "profile": "production",
+  "unit": "audio-production-mix.service",
+  "graph": {
+    "rate_hz": 48000,
+    "sample_format": "s32le",
+    "channels": 2,
+    "channel_map": "front-left,front-right",
+    "channel_positions": [
+      "FL",
+      "FR"
+    ],
+    "group": "audio-production-mix-v1",
+    "virtual_sink": {
+      "node_name": "audio-production-bus",
+      "description": "Audio Production Bus"
+    },
+    "virtual_source": {
+      "node_name": "audio-production-mix",
+      "description": "Audio Production Mix"
+    },
+    "monitor_stream": "audio-production-monitor",
+    "routes": {
+      "voice": {
+        "capture_node": "audio-production-route-voice-capture",
+        "playback_node": "audio-production-route-voice-playback",
+        "source_session": "voice-recording",
+        "selected_channel_fact": "rode_nt1a_motu_input",
+        "selected_channel_map": {
+          "input-1": "FL",
+          "input-2": "FR"
+        },
+        "capture_channels": 1,
+        "capture_position": "MONO",
+        "playback_channels": 1,
+        "playback_position": "MONO",
+        "target": "audio-production-bus"
+      },
+      "roland": {
+        "capture_node": "audio-production-route-roland-capture",
+        "playback_node": "audio-production-route-roland-playback",
+        "source_session": "roland-audio-recording",
+        "source_rate_hz": 44100,
+        "capture_channels": 2,
+        "capture_positions": [
+          "FL",
+          "FR"
+        ],
+        "playback_channels": 2,
+        "playback_positions": [
+          "FL",
+          "FR"
+        ],
+        "target": "audio-production-bus"
+      },
+      "software-instrument": {
+        "mode": "direct-target",
+        "target": "audio-production-bus",
+        "required_when_active": true,
+        "accepted_media_classes": [
+          "Stream/Output/Audio"
+        ]
+      }
+    }
+  },
+  "required_physical_facts": {
+    "rode_nt1a_connected": true,
+    "rode_nt1a_motu_input": [
+      "input-1",
+      "input-2"
+    ],
+    "motu_phantom_48v": "on",
+    "motu_input_gain_reference": "non-empty-string",
+    "motu_output_to_lake_people": "non-empty-string",
+    "lake_people_gain_setting": "non-empty-string",
+    "lake_people_volume_reference": "non-empty-string",
+    "focal_connected_output": "non-empty-string"
+  },
+  "required_laboratory_gates": [
+    "voice-level-measurement",
+    "resampling-decision"
+  ],
+  "monitor_target": {
+    "device": "motu_m2",
+    "vendor_id": "07fd",
+    "product_id": "0008",
+    "serial_prefix": "MOTU_M2_",
+    "node_name_prefix": "alsa_output.usb-MOTU_M2_",
+    "required_sample_formats": [
+      "s32le"
+    ],
+    "required_sample_rate_hz": 48000,
+    "required_channels": 2,
+    "requires_unmuted": true
+  },
+  "process": {
+    "executable": "/usr/bin/pw-loopback",
+    "child_count": 4,
+    "startup_timeout_seconds": 10,
+    "stop_grace_seconds": 8,
+    "topology_poll_seconds": 1,
+    "topology_failure_limit": 3,
+    "maximum_stderr_bytes_per_child": 65536,
+    "maximum_open_files": 128,
+    "memory_max_bytes": 268435456,
+    "tasks_max": 64,
+    "cpu_quota_percent": 80,
+    "runtime_max_seconds": 43200,
+    "log_rate_limit_interval_seconds": 30,
+    "log_rate_limit_burst": 100
+  },
+  "rules": [
+    "planning is read-only",
+    "start requires the exact current plan digest",
+    "only the exact managed systemd service identity may be stopped",
+    "all loopback children are process-identity-bound and fail as one graph",
+    "graph creation never changes PipeWire defaults or persistent global configuration",
+    "software instruments target the virtual sink explicitly",
+    "physical and listening validation remain outside this repository-only task"
+  ]
+}

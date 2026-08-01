@@ -181,24 +181,43 @@
     "production": {
       "purpose": "Geplante reproduzierbare Musikproduktion mit Ardour, Plugins, Aufnahme, Speichern und Wiederöffnen",
       "operational_status": "planned",
-      "planned_blocker": "Ardour-Installationsform, Session-Template, Plugininventar und Wiederöffnungsbeleg sind noch nicht kanonisch festgelegt.",
+      "planned_blocker": "Ardour-Installationsform, Session-Template, Plugininventar, Wiederöffnungsbeleg und physische Liveabnahme des nun repositoryseitig definierten Produktionsgraphen stehen noch aus.",
       "required_hardware": [
-        "motu_m2"
+        "motu_m2",
+        "roland_fp_30x"
       ],
       "required_physical_facts": [
+        "rode_nt1a_connected",
+        "rode_nt1a_motu_input",
+        "motu_phantom_48v",
+        "motu_input_gain_reference",
         "motu_output_to_lake_people",
+        "lake_people_gain_setting",
+        "lake_people_volume_reference",
         "focal_connected_output"
       ],
       "desired": {
         "session_engine": "ardour",
+        "graph_manager": "audio-production-mix-v1",
+        "production_bus_sink": "audio-production-bus",
+        "recording_mix_source": "audio-production-mix",
         "default_sink": "motu-m2",
         "default_source": "motu-m2",
+        "monitor_sink": "motu-m2",
+        "voice_route": "selected-motu-input-to-mono-production-bus",
+        "roland_route": "single-stage-44k1-to-48k-production-bus",
+        "software_instrument_route": "direct-target-audio-production-bus",
         "rate_hz": 48000,
+        "sample_format": "s32le",
+        "channels": 2,
         "quantum_candidate_frames": 512,
         "reopen_proof_required": true
       },
       "apply_authority": "planned-not-executable",
-      "required_laboratory_gates": []
+      "required_laboratory_gates": [
+        "voice-level-measurement",
+        "resampling-decision"
+      ]
     }
   }
 }

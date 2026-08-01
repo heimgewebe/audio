@@ -32,6 +32,9 @@ PHYSICAL_PATH = ROOT / "scripts" / "physical_verification.py"
 LAB_PATH = ROOT / "scripts" / "laboratory_gate.py"
 VOICE_PATH = ROOT / "scripts" / "voice_capture_observer.py"
 RATE_PATH = ROOT / "scripts" / "rate_policy_observer.py"
+PRODUCTION_MIX_PATH = ROOT / "scripts" / "production_mix.py"
+PRODUCTION_MIX_WRAPPER_PATH = ROOT / "scripts" / "audio-production-mix"
+PRODUCTION_MIX_CONTRACT_PATH = ROOT / "profiles" / "production-mix-graph.v1.json"
 WRAPPER_PATH = ROOT / "scripts" / "audio-record"
 PARECORD_PATH = pathlib.Path("/usr/bin/parecord")
 MAX_JSON_BYTES = 524_288
@@ -80,6 +83,16 @@ PHYSICAL = load_module("physical_verification_for_recording", PHYSICAL_PATH)
 LAB = load_module("laboratory_gate_for_recording", LAB_PATH)
 VOICE = load_module("voice_capture_observer_for_recording", VOICE_PATH)
 RATE = load_module("rate_policy_observer_for_recording", RATE_PATH)
+_PRODUCTION_MIX_MODULE: Any | None = None
+
+
+def _production_mix_module():
+    global _PRODUCTION_MIX_MODULE
+    if _PRODUCTION_MIX_MODULE is None:
+        _PRODUCTION_MIX_MODULE = load_module(
+            "production_mix_for_recording", PRODUCTION_MIX_PATH
+        )
+    return _PRODUCTION_MIX_MODULE
 
 
 def utc_now() -> str:
@@ -565,6 +578,9 @@ def contract_bindings() -> list[dict[str, Any]]:
         PROFILE_PATH,
         VOICE_PATH,
         RATE_PATH,
+        PRODUCTION_MIX_PATH,
+        PRODUCTION_MIX_WRAPPER_PATH,
+        PRODUCTION_MIX_CONTRACT_PATH,
     )
     return [
         _safe_regular_binding(path, maximum_bytes=MAX_BINDING_BYTES) for path in paths
@@ -798,7 +814,75 @@ def _pactl_source_identity(
     return identity, source_name
 
 
-def _pactl_source_snapshot(contract: dict[str, Any]) -> dict[str, Any]:
+def _managed_production_mix_snapshot() -> dict[str, Any]:
+    try:
+        module = _production_mix_module()
+        status = module.graph_status()
+    except (OSError, RecordingError, RuntimeError, ValueError) as exc:
+        return {
+            "complete": False,
+            "binding": None,
+            "binding_sha256": None,
+            "error": str(exc),
+        }
+    service = status.get("service")
+    topology = status.get("topology")
+    mix = (
+        topology.get("endpoints", {}).get("mix") if isinstance(topology, dict) else None
+    )
+    binding = {
+        "schema_version": 1,
+        "kind": "audio_production_mix_runtime_binding",
+        "session_id": status.get("session_id"),
+        "plan_sha256": status.get("plan_sha256"),
+        "service_identity_sha256": (
+            canonical_sha256(service.get("identity"))
+            if isinstance(service, dict) and isinstance(service.get("identity"), dict)
+            else None
+        ),
+        "topology_sha256": (
+            topology.get("topology_sha256") if isinstance(topology, dict) else None
+        ),
+        "virtual_sink": "audio-production-bus",
+        "virtual_source": "audio-production-mix",
+        "sample_format": mix.get("sample_format") if isinstance(mix, dict) else None,
+        "sample_rate_hz": mix.get("sample_rate_hz") if isinstance(mix, dict) else None,
+        "channels": mix.get("channels") if isinstance(mix, dict) else None,
+        "channel_map": mix.get("channel_map") if isinstance(mix, dict) else None,
+    }
+    complete = (
+        status.get("status") == "ready"
+        and status.get("service_identity_exact") is True
+        and status.get("child_identities_exact") is True
+        and isinstance(topology, dict)
+        and topology.get("complete") is True
+        and isinstance(binding["session_id"], str)
+        and SESSION_ID_RE.fullmatch(binding["session_id"]) is not None
+        and isinstance(binding["plan_sha256"], str)
+        and HEX64_RE.fullmatch(binding["plan_sha256"]) is not None
+        and isinstance(binding["service_identity_sha256"], str)
+        and HEX64_RE.fullmatch(binding["service_identity_sha256"]) is not None
+        and isinstance(binding["topology_sha256"], str)
+        and HEX64_RE.fullmatch(binding["topology_sha256"]) is not None
+        and binding["sample_format"] == "s32le"
+        and binding["sample_rate_hz"] == 48_000
+        and binding["channels"] == 2
+        and binding["channel_map"] == "front-left,front-right"
+    )
+    return {
+        "complete": complete,
+        "binding": binding if complete else None,
+        "binding_sha256": canonical_sha256(binding) if complete else None,
+        "error": None
+        if complete
+        else "managed production-mix graph is not exactly ready",
+    }
+
+
+def _pactl_source_snapshot(
+    contract: dict[str, Any],
+    managed_graph_snapshot_fn: Callable[[], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     payload, query = RATE._run_query(LAB.RATE_POLICY_PACTL_SOURCES_ARGV)
     matches: list[tuple[dict[str, Any], str]] = []
     errors: list[str] = []
@@ -810,16 +894,34 @@ def _pactl_source_snapshot(contract: dict[str, Any]) -> dict[str, Any]:
             continue
         if identity is not None and source_name is not None:
             matches.append((identity, source_name))
-    complete = not errors and len(matches) == 1
+    source_complete = not errors and len(matches) == 1
+    managed_graph: dict[str, Any] | None = None
+    if contract.get("kind") == "named-pipewire-source":
+        try:
+            managed_graph = (
+                managed_graph_snapshot_fn or _managed_production_mix_snapshot
+            )()
+        except (OSError, RecordingError, RuntimeError, ValueError) as exc:
+            managed_graph = {
+                "complete": False,
+                "binding": None,
+                "binding_sha256": None,
+                "error": str(exc),
+            }
+    complete = source_complete and (
+        managed_graph is None or managed_graph.get("complete") is True
+    )
     return {
         "schema_version": 1,
         "kind": "audio_recording_source_snapshot",
         "complete": complete,
+        "source_complete": source_complete,
         "match_count": len(matches),
         "ambiguous": len(matches) > 1,
         "errors": sorted(set(errors)),
-        "identity": matches[0][0] if complete else None,
-        "source_name": matches[0][1] if complete else None,
+        "identity": matches[0][0] if source_complete else None,
+        "source_name": matches[0][1] if source_complete else None,
+        "managed_graph": managed_graph,
         "query": query,
     }
 
@@ -850,10 +952,14 @@ def _source_projection(
     try:
         snapshot = (snapshot_fn or (lambda: _source_snapshot_for_contract(contract)))()
     except (OSError, ValueError, RecordingError, json.JSONDecodeError) as exc:
-        return {"identity": None, "error": str(exc)}, [f"{label}-source-query-failed"]
+        fields = {"identity": None, "error": str(exc)}
+        if contract.get("kind") == "named-pipewire-source":
+            fields["managed_graph"] = None
+        return fields, [f"{label}-source-query-failed"]
     identity = snapshot.get("identity")
     blockers: list[str] = []
-    if snapshot.get("complete") is not True or not isinstance(identity, dict):
+    source_complete = snapshot.get("source_complete", snapshot.get("complete"))
+    if source_complete is not True or not isinstance(identity, dict):
         blockers.append(f"{label}-source-not-unique")
         identity = None
     if identity is not None:
@@ -877,13 +983,32 @@ def _source_projection(
             "declared_upstream_roles"
         ) != contract.get("upstream_roles"):
             blockers.append(f"{label}-source:upstream_roles")
-    return {
+    result = {
         "identity": identity,
         "identity_sha256": (
             canonical_sha256(identity) if identity is not None else None
         ),
         "error": None,
-    }, blockers
+    }
+    if contract.get("kind") == "named-pipewire-source":
+        managed_graph = snapshot.get("managed_graph")
+        if (
+            not isinstance(managed_graph, dict)
+            or managed_graph.get("complete") is not True
+            or not isinstance(managed_graph.get("binding"), dict)
+            or not isinstance(managed_graph.get("binding_sha256"), str)
+            or HEX64_RE.fullmatch(managed_graph["binding_sha256"]) is None
+            or canonical_sha256(managed_graph["binding"])
+            != managed_graph["binding_sha256"]
+        ):
+            blockers.append("production-mix-graph-not-ready")
+            result["managed_graph"] = None
+        else:
+            result["managed_graph"] = {
+                "binding": managed_graph["binding"],
+                "binding_sha256": managed_graph["binding_sha256"],
+            }
+    return result, blockers
 
 
 def maximum_file_bytes(capture: dict[str, Any], maximum_seconds: int) -> int:
@@ -1248,11 +1373,12 @@ def _non_negative_integer(value: Any) -> bool:
 
 
 def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -> None:
-    if not isinstance(source, dict) or set(source) != {
-        "identity",
-        "identity_sha256",
-        "error",
-    }:
+    source_contract = contract["source"] if "source" in contract else contract
+    kind = source_contract["kind"]
+    projection_fields = {"identity", "identity_sha256", "error"}
+    if kind == "named-pipewire-source":
+        projection_fields.add("managed_graph")
+    if not isinstance(source, dict) or set(source) != projection_fields:
         raise RecordingError("recording source projection fields are invalid")
     identity = source.get("identity")
     digest = source.get("identity_sha256")
@@ -1273,7 +1399,6 @@ def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -
         "unity_volume",
         "fingerprint",
     }
-    kind = contract["source"]["kind"] if "source" in contract else contract["kind"]
     expected_fields = {
         "motu-voice": common
         | {"vendor_id", "product_id", "serial_sha256", "bus_path_sha256"},
@@ -1300,17 +1425,16 @@ def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -
         or not isinstance(identity.get("node_name_sha256"), str)
         or not HEX64_RE.fullmatch(identity["node_name_sha256"])
         or identity.get("sample_format")
-        not in contract["source"]["required_sample_formats"]
-        or identity.get("sample_rate_hz")
-        != contract["source"]["required_sample_rate_hz"]
-        or identity.get("channels") != contract["source"]["required_channels"]
+        not in source_contract["required_sample_formats"]
+        or identity.get("sample_rate_hz") != source_contract["required_sample_rate_hz"]
+        or identity.get("channels") != source_contract["required_channels"]
         or identity.get("muted") is not False
         or identity.get("unity_volume") is not True
     ):
         raise RecordingError("recording source identity does not match its contract")
     if kind in {"motu-voice", "usb-audio"}:
         for field in ("vendor_id", "product_id"):
-            if identity.get(field) != contract["source"][field]:
+            if identity.get(field) != source_contract[field]:
                 raise RecordingError(
                     "recording USB source identity does not match its contract"
                 )
@@ -1322,12 +1446,61 @@ def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -
         raise RecordingError("Roland source kind is invalid")
     if kind == "named-pipewire-source" and (
         identity.get("source_kind") != kind
-        or identity.get("declared_upstream_roles")
-        != contract["source"]["upstream_roles"]
+        or identity.get("declared_upstream_roles") != source_contract["upstream_roles"]
         or not isinstance(identity.get("object_serial_sha256"), str)
         or not HEX64_RE.fullmatch(identity["object_serial_sha256"])
     ):
         raise RecordingError("production mix source identity is invalid")
+    if kind == "named-pipewire-source":
+        managed = source.get("managed_graph")
+        if not isinstance(managed, dict) or set(managed) != {
+            "binding",
+            "binding_sha256",
+        }:
+            raise RecordingError("managed production-mix binding fields are invalid")
+        binding = managed.get("binding")
+        binding_sha = managed.get("binding_sha256")
+        expected_binding_fields = {
+            "schema_version",
+            "kind",
+            "session_id",
+            "plan_sha256",
+            "service_identity_sha256",
+            "topology_sha256",
+            "virtual_sink",
+            "virtual_source",
+            "sample_format",
+            "sample_rate_hz",
+            "channels",
+            "channel_map",
+        }
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != expected_binding_fields
+            or not isinstance(binding_sha, str)
+            or HEX64_RE.fullmatch(binding_sha) is None
+            or canonical_sha256(binding) != binding_sha
+            or binding.get("schema_version") != 1
+            or binding.get("kind") != "audio_production_mix_runtime_binding"
+            or not isinstance(binding.get("session_id"), str)
+            or SESSION_ID_RE.fullmatch(binding["session_id"]) is None
+            or any(
+                not isinstance(binding.get(field), str)
+                or HEX64_RE.fullmatch(binding[field]) is None
+                for field in (
+                    "plan_sha256",
+                    "service_identity_sha256",
+                    "topology_sha256",
+                )
+            )
+            or binding.get("virtual_sink") != "audio-production-bus"
+            or binding.get("virtual_source") != source_contract["node_name"]
+            or binding.get("sample_format") != "s32le"
+            or binding.get("sample_rate_hz") != 48_000
+            or binding.get("channels") != 2
+            or binding.get("channel_map") != "front-left,front-right"
+        ):
+            raise RecordingError("managed production-mix binding is invalid")
 
 
 def _validate_persisted_spec(

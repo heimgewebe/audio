@@ -10,6 +10,9 @@
 | `roland-audio-recording` | eindeutige USB-Audioquelle des Roland FP-30X | gebundene Entscheidung `resampling-decision` | einmalige Umsetzung von 44,1 kHz auf 48 kHz, Stereo, `s32le`, WAV |
 | `production-mix-recording` | exakt ein PipeWire-Quellknoten namens `audio-production-mix` | der Knoten muss bereits eindeutig und vertragskonform vorhanden sein | 48 kHz, Stereo, `s32le`, WAV |
 
+Der zugehörige Quellknoten wird durch den getrennten, hashfreigegebenen Ablauf in [Verwalteter Produktions-Mixgraph](production-mix-graph.md) definiert. Recorder und Graph besitzen bewusst getrennte Plan-Hashes und Lebenszyklen.
+Der Produktionsrecorder akzeptiert die Quelle nur, wenn der verwaltete Dienst, alle vier Kindprozesse und die aktuelle 48-kHz-Stereotopologie exakt bestätigt sind. Ein fremder oder lediglich namensgleicher Knoten bleibt blockiert.
+
 Der Ablauf trennt **prüfen**, **freigeben**, **aufnehmen**, **stoppen** und **wiederherstellen**. Ein Plan ist read-only. Erst ein ausdrücklich bestätigter Plan-Hash darf eine Aufnahme starten.
 
 ## Gemeinsame Garantien

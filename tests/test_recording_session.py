@@ -84,6 +84,29 @@ class RecordingSessionTest(unittest.TestCase):
         return common
 
     @staticmethod
+    def managed_graph_snapshot(*, complete: bool = True) -> dict[str, object]:
+        binding = {
+            "schema_version": 1,
+            "kind": "audio_production_mix_runtime_binding",
+            "session_id": "f" * 24,
+            "plan_sha256": "a" * 64,
+            "service_identity_sha256": "b" * 64,
+            "topology_sha256": "c" * 64,
+            "virtual_sink": "audio-production-bus",
+            "virtual_source": "audio-production-mix",
+            "sample_format": "s32le",
+            "sample_rate_hz": 48_000,
+            "channels": 2,
+            "channel_map": "front-left,front-right",
+        }
+        return {
+            "complete": complete,
+            "binding": binding if complete else None,
+            "binding_sha256": MODULE.canonical_sha256(binding) if complete else None,
+            "error": None if complete else "not ready",
+        }
+
+    @staticmethod
     def refresh_source_binding(plan: dict[str, object], source_name: str) -> None:
         identity = plan["identity"]["source"]["identity"]
         identity["node_name_sha256"] = hashlib.sha256(source_name.encode()).hexdigest()
@@ -132,6 +155,12 @@ class RecordingSessionTest(unittest.TestCase):
             "identity_sha256": MODULE.canonical_sha256(identity),
             "error": None,
         }
+        if session_type == "production-mix-recording":
+            managed = self.managed_graph_snapshot()
+            source["managed_graph"] = {
+                "binding": managed["binding"],
+                "binding_sha256": managed["binding_sha256"],
+            }
         with (
             mock.patch.object(
                 MODULE, "_physical_projection", return_value=(physical, [])
@@ -164,6 +193,10 @@ class RecordingSessionTest(unittest.TestCase):
         self, session_type: str, snapshot: dict[str, object]
     ) -> dict[str, object]:
         contract = MODULE.load_catalog(session_type)
+        snapshot = dict(snapshot)
+        if session_type == "production-mix-recording":
+            snapshot.setdefault("source_complete", snapshot.get("complete"))
+            snapshot.setdefault("managed_graph", self.managed_graph_snapshot())
         physical = {
             "state_path": str(self.base / "physical.json"),
             "state_sha256": None,
@@ -358,6 +391,78 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertIn(
             "production-mix-source-not-unique", missing["readiness"]["blockers"]
         )
+
+    def test_production_mix_plan_requires_exact_managed_graph(self) -> None:
+        identity = self.source_identity("production-mix-recording")
+        blocked = self.plan_with_snapshot(
+            "production-mix-recording",
+            {
+                "complete": True,
+                "source_complete": True,
+                "identity": identity,
+                "managed_graph": self.managed_graph_snapshot(complete=False),
+            },
+        )
+        self.assertFalse(blocked["ready"])
+        self.assertIn(
+            "production-mix-graph-not-ready", blocked["readiness"]["blockers"]
+        )
+        self.assertNotIn(
+            "production-mix-source-not-unique", blocked["readiness"]["blockers"]
+        )
+
+    def test_managed_graph_snapshot_binds_exact_status_and_format(self) -> None:
+        service_identity = {
+            "main_pid": 1234,
+            "invocation_id": "a" * 32,
+            "control_group_sha256": "b" * 64,
+            "exec_start_sha256": "c" * 64,
+        }
+        status = {
+            "session_id": "d" * 24,
+            "status": "ready",
+            "service_identity_exact": True,
+            "child_identities_exact": True,
+            "plan_sha256": "e" * 64,
+            "service": {"identity": service_identity},
+            "topology": {
+                "complete": True,
+                "topology_sha256": "f" * 64,
+                "endpoints": {
+                    "mix": {
+                        "sample_format": "s32le",
+                        "sample_rate_hz": 48_000,
+                        "channels": 2,
+                        "channel_map": "front-left,front-right",
+                    }
+                },
+            },
+        }
+        module = types.SimpleNamespace(graph_status=lambda: status)
+        with mock.patch.object(MODULE, "_production_mix_module", return_value=module):
+            snapshot = MODULE._managed_production_mix_snapshot()
+        self.assertTrue(snapshot["complete"])
+        self.assertEqual(snapshot["binding"]["virtual_source"], "audio-production-mix")
+        self.assertEqual(
+            snapshot["binding_sha256"], MODULE.canonical_sha256(snapshot["binding"])
+        )
+        status["child_identities_exact"] = False
+        with mock.patch.object(MODULE, "_production_mix_module", return_value=module):
+            changed = MODULE._managed_production_mix_snapshot()
+        self.assertFalse(changed["complete"])
+
+    def test_persisted_production_spec_rejects_graph_format_forgery(self) -> None:
+        spec = self.persisted_spec(session_type="production-mix-recording")
+        MODULE._validate_persisted_spec(spec, state_root=self.state)
+        changed = json.loads(json.dumps(spec))
+        managed = changed["plan_identity"]["source"]["managed_graph"]
+        managed["binding"]["sample_rate_hz"] = 44_100
+        managed["binding_sha256"] = MODULE.canonical_sha256(managed["binding"])
+        changed["plan_sha256"] = MODULE.canonical_sha256(changed["plan_identity"])
+        with self.assertRaisesRegex(
+            MODULE.RecordingError, "managed production-mix binding"
+        ):
+            MODULE._validate_persisted_spec(changed, state_root=self.state)
 
     def test_persisted_specs_and_commands_remain_session_typed(self) -> None:
         for session_type in MODULE.SESSION_TYPES:
