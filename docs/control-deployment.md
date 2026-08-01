@@ -82,3 +82,13 @@ Belege liegen unter `~/.local/state/audio-control-deploy/receipts`. Der jüngste
 Beleg ist zusätzlich als `latest.json` verfügbar. Änderungen am Deployskript und
 an den systemd-Units werden nach ihrem Merge ebenfalls aus dem geprüften Release
 übernommen.
+
+## Dashboard-Projektion
+
+Die Audiozentrale liest `latest.json` über einen symlinkfreien,
+größenbegrenzten Dateideskriptor. An den Browser gelangen ausschließlich
+Deploymodus, Quelle, Runtime- und Belegcommit, Synchronität, letzter
+Abgleichzeitpunkt und Dienstgesundheit. Interne Quell-, State- und Releasepfade
+sowie übrige Receipt-Daten bleiben privat. Ein fehlender, fremder oder
+widersprüchlicher Beleg wird als `nicht lesbar` beziehungsweise `Abweichung`
+dargestellt; die UI erfindet keinen erfolgreichen Deployzustand.

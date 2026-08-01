@@ -34,7 +34,7 @@ WHALE_SCRIPT = ROOT / "scripts" / "whale_live.py"
 DOCTOR_SCRIPT = ROOT / "scripts" / "audio_doctor.py"
 PLANNER_SCRIPT = ROOT / "scripts" / "profile_planner.py"
 
-SPEC_BASE_REVISION = "0fb490acd39b4dfb50e7d33109c346536f873446"
+SPEC_BASE_REVISION = "81fab5c57a3609b8b931a2ee5251c4f576368298"
 API_VERSION = "v1"
 UNIT_NAME = "audio-control-ui-v1.service"
 UNIT_MANAGED_BY = "audio-control-ui-v1"
@@ -42,6 +42,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_CACHE_SECONDS = 4.0
 RELEASE_MARKER = ROOT / ".audio-control-release.json"
+DEPLOY_STATE_ROOT = pathlib.Path.home() / ".local" / "state" / "audio-control-deploy"
+DEPLOY_LATEST = DEPLOY_STATE_ROOT / "latest.json"
+MAX_DEPLOY_RECEIPT_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 4096
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
@@ -57,6 +60,7 @@ STATIC_FILES = {
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
 ALLOWED_WHALE_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
+ONSITE_WARNING_CODES = frozenset({"voice-source-not-motu"})
 PROFILE_AREAS = {
     "desktop-mixed": "listening",
     "reference-listening": "listening",
@@ -236,8 +240,20 @@ def validate_doctor_report(report: dict[str, Any]) -> None:
         or report.get("read_only_contract") is not True
     ):
         raise ControlError("Audio-Doctor lieferte einen fremden Zustandsvertrag.")
-    for key in ("graph", "hardware", "device_truth", "external_endpoints"):
-        require_mapping(report.get(key), label=f"Audio-Doctor-Feld {key}")
+    mappings = {
+        key: require_mapping(report.get(key), label=f"Audio-Doctor-Feld {key}")
+        for key in ("graph", "hardware", "device_truth", "external_endpoints")
+    }
+    hardware = mappings["hardware"]
+    desired = require_mapping(
+        mappings["device_truth"].get("desired"),
+        label="Audio-Doctor-Feld device_truth.desired",
+    )
+    for device_id in ("motu_m2", "roland_fp_30x"):
+        if not isinstance(hardware.get(device_id), bool) or not isinstance(
+            desired.get(device_id), bool
+        ):
+            raise ControlError("Audio-Doctor enthält unvollständige Gerätewahrheit.")
     for key in ("warnings", "physical_unknowns", "command_health"):
         require_list(report.get(key), label=f"Audio-Doctor-Feld {key}")
     for warning in report["warnings"]:
@@ -465,6 +481,189 @@ def current_revision(runner: CommandRunner) -> str:
     return "unavailable"
 
 
+def read_bounded_json_object(
+    path: pathlib.Path, *, label: str, maximum_bytes: int
+) -> dict[str, Any]:
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError as error:
+        raise ControlError(f"{label} fehlt.") from error
+    except OSError as error:
+        raise ControlError(f"{label} ist nicht lesbar.") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum_bytes:
+            raise ControlError(f"{label} hat eine unzulässige Form oder Größe.")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            payload = handle.read(maximum_bytes + 1)
+        if len(payload) > maximum_bytes:
+            raise ControlError(f"{label} überschreitet die Größenbegrenzung.")
+        try:
+            value = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ControlError(f"{label} enthält kein gültiges JSON.") from error
+        if not isinstance(value, dict):
+            raise ControlError(f"{label} ist kein JSON-Objekt.")
+        return value
+    finally:
+        os.close(descriptor)
+
+
+def unix_timestamp_iso(value: Any) -> str | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return None
+    try:
+        return dt.datetime.fromtimestamp(value, tz=dt.timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def deployment_projection(runtime_head: str) -> dict[str, Any]:
+    base = {
+        "mode": "automatic",
+        "status": "unavailable",
+        "source_ref": "origin/main",
+        "runtime_unit": UNIT_NAME,
+        "timer_unit": "audio-control-deploy.timer",
+        "automatic": True,
+        "in_sync": False,
+        "runtime_commit": runtime_head if valid_commit_revision(runtime_head) else None,
+        "receipt_commit": None,
+        "last_sync_at": None,
+        "release_changed": None,
+        "service_health": None,
+    }
+    bound_revision = release_marker_revision()
+    if bound_revision is None:
+        return {
+            **base,
+            "mode": "source-checkout",
+            "status": "source-checkout",
+            "source_ref": "working-tree",
+            "automatic": False,
+        }
+    if not valid_commit_revision(bound_revision):
+        return base
+    try:
+        receipt = read_bounded_json_object(
+            DEPLOY_LATEST,
+            label="Deploy-Beleg",
+            maximum_bytes=MAX_DEPLOY_RECEIPT_BYTES,
+        )
+    except ControlError:
+        return base
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("kind") != "audio_control_deploy_receipt"
+    ):
+        return base
+    receipt_commit = receipt.get("commit")
+    if not valid_commit_revision(receipt_commit):
+        return base
+    changed = receipt.get("changed")
+    if not isinstance(changed, bool):
+        changed = None
+    service = receipt.get("service")
+    health = service.get("health") if isinstance(service, dict) else None
+    service_health = health.get("status") if isinstance(health, dict) else None
+    if not isinstance(service_health, str) or len(service_health) > 40:
+        service_health = None
+    last_sync_at = unix_timestamp_iso(receipt.get("deployed_at_unix"))
+    in_sync = (
+        valid_commit_revision(runtime_head)
+        and runtime_head == bound_revision
+        and receipt_commit == runtime_head
+        and service_health == "serving"
+    )
+    return {
+        **base,
+        "status": "current" if in_sync else "drift",
+        "in_sync": in_sync,
+        "receipt_commit": receipt_commit,
+        "last_sync_at": last_sync_at,
+        "release_changed": changed,
+        "service_health": service_health,
+    }
+
+
+def hardware_projection(doctor_status: str, doctor: dict[str, Any]) -> dict[str, Any]:
+    hardware = doctor.get("hardware") if isinstance(doctor, dict) else None
+    hardware = hardware if isinstance(hardware, dict) else {}
+    device_truth = doctor.get("device_truth") if isinstance(doctor, dict) else None
+    desired = device_truth.get("desired") if isinstance(device_truth, dict) else None
+    desired = desired if isinstance(desired, dict) else {}
+    device_ids = ("motu_m2", "roland_fp_30x")
+    observed = {device_id: hardware.get(device_id) is True for device_id in device_ids}
+    expected = {device_id: desired.get(device_id) is True for device_id in device_ids}
+    observed_count = sum(observed.values())
+    desired_count = sum(expected.values())
+    if doctor_status != "ok":
+        state = "unavailable"
+    elif desired_count == 0:
+        state = "not-configured"
+    elif observed_count == 0:
+        state = "offline"
+    elif observed_count < desired_count:
+        state = "partial"
+    else:
+        state = "online"
+    return {
+        "state": state,
+        "observed_count": observed_count,
+        "desired_count": desired_count,
+        "onsite_required": state in {"offline", "partial"},
+        "observed": observed,
+        "desired": expected,
+    }
+
+
+def project_profile_readiness(
+    profiles: list[dict[str, Any]],
+    *,
+    hardware: dict[str, Any],
+    physical_unknowns: list[str],
+) -> list[dict[str, Any]]:
+    observed = hardware.get("observed", {})
+    unknown_facts = set(physical_unknowns)
+    projected: list[dict[str, Any]] = []
+    for profile in profiles:
+        missing_hardware = [
+            item
+            for item in profile.get("required_hardware", [])
+            if observed.get(item) is not True
+        ]
+        unresolved_physical = [
+            item
+            for item in profile.get("required_physical_facts", [])
+            if item in unknown_facts
+        ]
+        laboratory_gates = list(profile.get("required_laboratory_gates", []))
+        if profile.get("operational_status") == "planned":
+            dashboard_state = "planned"
+        elif missing_hardware or unresolved_physical:
+            dashboard_state = "onsite"
+        elif laboratory_gates:
+            dashboard_state = "laboratory"
+        elif profile.get("actionable") is True:
+            dashboard_state = "executable"
+        else:
+            dashboard_state = "plan-ready"
+        projected.append(
+            {
+                **profile,
+                "dashboard_state": dashboard_state,
+                "onsite_required": bool(missing_hardware or unresolved_physical),
+                "missing_hardware_count": len(missing_hardware),
+                "unresolved_physical_fact_count": len(unresolved_physical),
+                "laboratory_gate_count": len(laboratory_gates),
+            }
+        )
+    return projected
+
+
 def read_profiles() -> list[dict[str, Any]]:
     catalog = load_json_object(PROFILE_CATALOG)
     profiles = catalog.get("profiles")
@@ -608,7 +807,9 @@ def read_whale_contract() -> dict[str, Any]:
         "pitch_bend_range_semitones": 2,
     }
     if any(organic.get(key) != value for key, value in organic_contract.items()):
-        raise ControlError("Buckelwalprofil verletzt den organischen 88-Tasten-Vertrag.")
+        raise ControlError(
+            "Buckelwalprofil verletzt den organischen 88-Tasten-Vertrag."
+        )
     runtime = require_mapping(
         profile.get("runtime", {}),
         label="Buckelwal-Laufzeitvertrag",
@@ -732,24 +933,53 @@ class AudioControl:
         warnings = doctor.get("warnings", [])
         if not isinstance(warnings, list):
             warnings = []
-        high_warnings = sum(
-            1
+        high_warnings = [
+            warning
             for warning in warnings
             if isinstance(warning, dict) and warning.get("severity") == "high"
-        )
+        ]
         physical_unknowns = doctor.get("physical_unknowns", [])
         if not isinstance(physical_unknowns, list):
             physical_unknowns = []
-        attention = doctor_status != "ok" or whale_status != "ok" or bool(high_warnings)
+        hardware = hardware_projection(doctor_status, doctor)
+        onsite_high_warnings = [
+            warning
+            for warning in high_warnings
+            if warning.get("code") in ONSITE_WARNING_CODES
+            and hardware["observed"].get("motu_m2") is not True
+        ]
+        runtime_high_warnings = [
+            warning for warning in high_warnings if warning not in onsite_high_warnings
+        ]
+        runtime_unavailable = doctor_status != "ok" or whale_status != "ok"
+        runtime_attention = runtime_unavailable or bool(runtime_high_warnings)
+        runtime_state = (
+            "unavailable"
+            if runtime_unavailable
+            else "attention"
+            if runtime_high_warnings
+            else "healthy"
+        )
+        projected_profiles = project_profile_readiness(
+            profiles, hardware=hardware, physical_unknowns=physical_unknowns
+        )
+        profile_state_counts: dict[str, int] = {}
+        for profile in projected_profiles:
+            state = profile["dashboard_state"]
+            profile_state_counts[state] = profile_state_counts.get(state, 0) + 1
+        runtime_head = current_revision(self.runner)
+        deployment = deployment_projection(runtime_head)
+        onsite_required = hardware["onsite_required"] or bool(physical_unknowns)
         return {
             "schema_version": 1,
             "kind": "audio_control_snapshot",
             "api_version": API_VERSION,
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "repository": {
-                "runtime_head": current_revision(self.runner),
+                "runtime_head": runtime_head,
                 "spec_base_revision": SPEC_BASE_REVISION,
             },
+            "deployment": deployment,
             "service": {
                 "authority": "local-backend",
                 "browser_audio_authority": False,
@@ -760,12 +990,26 @@ class AudioControl:
                 "state_cache_seconds": self.cache_seconds,
             },
             "summary": {
-                "state": "attention" if attention else "stable",
+                "state": "attention" if runtime_attention else "stable",
+                "runtime_state": runtime_state,
+                "hardware_state": hardware["state"],
+                "operational_state": (
+                    "attention"
+                    if runtime_attention
+                    else "ready-onsite-required"
+                    if onsite_required
+                    else "ready"
+                ),
                 "warning_count": len(warnings),
-                "high_warning_count": high_warnings,
+                "high_warning_count": len(high_warnings),
+                "runtime_high_warning_count": len(runtime_high_warnings),
+                "onsite_warning_count": len(onsite_high_warnings),
                 "physical_unknown_count": len(physical_unknowns),
                 "active_whale": bool(whale.get("active")),
+                "onsite_required": onsite_required,
+                "profile_state_counts": profile_state_counts,
             },
+            "presence": hardware,
             "doctor": {
                 "status": doctor_status,
                 "error": doctor_error,
@@ -785,7 +1029,7 @@ class AudioControl:
                 "contract": whale_contract,
                 "actions": ["start", "mode", "stop"],
             },
-            "profiles": profiles,
+            "profiles": projected_profiles,
             "dauersong": {
                 "status": "planned-not-executable",
                 "actionable": False,
@@ -1740,13 +1984,10 @@ def validate_repository_contract() -> dict[str, Any]:
         raise ControlError("Statische UI-Dateien verletzen den Vertrag.") from error
     required_areas = (
         "start",
+        "hoeren",
         "spielen",
         "aufnehmen",
-        "hoeren",
-        "klaenge",
-        "verbindungen",
-        "diagnose",
-        "einstellungen",
+        "system",
     )
     absent = [
         area

@@ -98,7 +98,9 @@ class FakeRunner:
                     "kind": "audio_doctor_report",
                     "read_only_contract": True,
                     "hardware": {"motu_m2": True, "roland_fp_30x": True},
-                    "device_truth": {},
+                    "device_truth": {
+                        "desired": {"motu_m2": True, "roland_fp_30x": True}
+                    },
                     "external_endpoints": {},
                     "graph": {
                         "default_sink": "motu-m2",
@@ -422,6 +424,159 @@ class AudioControlTests(unittest.TestCase):
             {"morph", "organic", "realistic", "ufo"},
         )
 
+        self.assertEqual(snapshot["deployment"]["status"], "source-checkout")
+        self.assertFalse(snapshot["deployment"]["automatic"])
+        self.assertEqual(snapshot["summary"]["runtime_state"], "healthy")
+        self.assertEqual(snapshot["summary"]["profile_state_counts"]["planned"], 1)
+        profiles = {profile["id"]: profile for profile in snapshot["profiles"]}
+        self.assertEqual(profiles["desktop-mixed"]["dashboard_state"], "plan-ready")
+        self.assertEqual(profiles["voice-recording"]["dashboard_state"], "onsite")
+        self.assertEqual(profiles["production"]["dashboard_state"], "planned")
+
+    def test_absent_desired_hardware_is_onsite_truth_not_runtime_failure(self):
+        controller = self.controller()
+        doctor = {
+            "warnings": [
+                {
+                    "code": "voice-source-not-motu",
+                    "severity": "high",
+                    "detail": "MOTU is not selected.",
+                }
+            ],
+            "physical_unknowns": [],
+            "hardware": {"motu_m2": False, "roland_fp_30x": False},
+            "device_truth": {"desired": {"motu_m2": True, "roland_fp_30x": True}},
+            "graph": {},
+            "external_endpoints": {},
+            "command_health": [],
+            "read_only_contract": True,
+        }
+        with (
+            mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+            mock.patch.object(
+                controller,
+                "_whale_status",
+                return_value=("ok", {"active": False}, None),
+            ),
+        ):
+            snapshot = controller.snapshot(refresh=True)
+        self.assertEqual(snapshot["presence"]["state"], "offline")
+        self.assertTrue(snapshot["presence"]["onsite_required"])
+        self.assertEqual(snapshot["summary"]["state"], "stable")
+        self.assertEqual(snapshot["summary"]["runtime_state"], "healthy")
+        self.assertEqual(snapshot["summary"]["onsite_warning_count"], 1)
+        self.assertEqual(snapshot["summary"]["runtime_high_warning_count"], 0)
+        self.assertEqual(
+            snapshot["summary"]["operational_state"], "ready-onsite-required"
+        )
+
+    def test_voice_source_warning_remains_runtime_attention_when_motu_is_present(self):
+        controller = self.controller()
+        doctor = {
+            "warnings": [
+                {
+                    "code": "voice-source-not-motu",
+                    "severity": "high",
+                    "detail": "MOTU is present but not selected.",
+                }
+            ],
+            "physical_unknowns": [],
+            "hardware": {"motu_m2": True, "roland_fp_30x": False},
+            "device_truth": {"desired": {"motu_m2": True, "roland_fp_30x": True}},
+            "graph": {},
+            "external_endpoints": {},
+            "command_health": [],
+            "read_only_contract": True,
+        }
+        with (
+            mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+            mock.patch.object(
+                controller,
+                "_whale_status",
+                return_value=("ok", {"active": False}, None),
+            ),
+        ):
+            snapshot = controller.snapshot(refresh=True)
+        self.assertEqual(snapshot["presence"]["state"], "partial")
+        self.assertEqual(snapshot["summary"]["state"], "attention")
+        self.assertEqual(snapshot["summary"]["runtime_high_warning_count"], 1)
+        self.assertEqual(snapshot["summary"]["onsite_warning_count"], 0)
+
+    def test_deployment_projection_is_bounded_current_and_path_free(self):
+        commit = "c" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            marker = root / ".audio-control-release.json"
+            latest = root / "latest.json"
+            marker.write_text(json.dumps({"commit": commit}), encoding="utf-8")
+            latest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_control_deploy_receipt",
+                        "commit": commit,
+                        "changed": False,
+                        "deployed_at_unix": 1_700_000_000,
+                        "source_repo": "/private/source",
+                        "deployment_repository": "/private/deploy",
+                        "service": {"health": {"status": "serving"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(MODULE, "RELEASE_MARKER", marker),
+                mock.patch.object(MODULE, "DEPLOY_LATEST", latest),
+            ):
+                projection = MODULE.deployment_projection(commit)
+        self.assertEqual(projection["status"], "current")
+        self.assertTrue(projection["in_sync"])
+        self.assertEqual(projection["receipt_commit"], commit)
+        self.assertEqual(projection["source_ref"], "origin/main")
+        serialized = json.dumps(projection)
+        self.assertNotIn("/private", serialized)
+        self.assertNotIn("source_repo", serialized)
+        self.assertNotIn("deployment_repository", serialized)
+
+    def test_deployment_projection_rejects_foreign_receipt_schema(self):
+        commit = "d" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            marker = root / ".audio-control-release.json"
+            latest = root / "latest.json"
+            marker.write_text(json.dumps({"commit": commit}), encoding="utf-8")
+            latest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "kind": "audio_control_deploy_receipt",
+                        "commit": commit,
+                        "service": {"health": {"status": "serving"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(MODULE, "RELEASE_MARKER", marker),
+                mock.patch.object(MODULE, "DEPLOY_LATEST", latest),
+            ):
+                projection = MODULE.deployment_projection(commit)
+        self.assertEqual(projection["status"], "unavailable")
+        self.assertFalse(projection["in_sync"])
+        self.assertIsNone(projection["receipt_commit"])
+
+    def test_bounded_deploy_reader_rejects_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            target = root / "target.json"
+            link = root / "latest.json"
+            target.write_text("{}", encoding="utf-8")
+            os.symlink(target, link)
+            with self.assertRaisesRegex(MODULE.ControlError, "nicht lesbar"):
+                MODULE.read_bounded_json_object(
+                    link, label="Deploy-Beleg", maximum_bytes=128
+                )
+
     def test_snapshot_cache_and_explicit_refresh(self):
         runner = FakeRunner()
         controller = self.controller(runner)
@@ -475,6 +630,10 @@ class AudioControlTests(unittest.TestCase):
                 lambda value: value["command_health"].append(
                     {"command": "anything", "available": "yes", "returncode": 0}
                 ),
+            ),
+            (
+                "desired hardware",
+                lambda value: value["device_truth"]["desired"].pop("motu_m2"),
             ),
         )
         for label, mutate in mutations:
@@ -750,13 +909,10 @@ class AudioControlTests(unittest.TestCase):
             set(report["areas"]),
             {
                 "start",
+                "hoeren",
                 "spielen",
                 "aufnehmen",
-                "hoeren",
-                "klaenge",
-                "verbindungen",
-                "diagnose",
-                "einstellungen",
+                "system",
             },
         )
 
@@ -872,7 +1028,9 @@ class AudioControlTests(unittest.TestCase):
                     path.write_text(json.dumps(drifted), encoding="utf-8")
                     with (
                         mock.patch.object(MODULE, "WHALE_PROFILE", path),
-                        self.assertRaisesRegex(MODULE.ControlError, "organischen 88-Tasten"),
+                        self.assertRaisesRegex(
+                            MODULE.ControlError, "organischen 88-Tasten"
+                        ),
                     ):
                         MODULE.read_whale_contract()
 
@@ -912,13 +1070,10 @@ class AudioControlTests(unittest.TestCase):
             set(parser.routes),
             {
                 "start",
+                "hoeren",
                 "spielen",
                 "aufnehmen",
-                "hoeren",
-                "klaenge",
-                "verbindungen",
-                "diagnose",
-                "einstellungen",
+                "system",
             },
         )
         self.assertEqual(parser.inline_handlers, [])
@@ -951,17 +1106,28 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn("boundary-card", html)
         self.assertNotIn("Was möchtest du hören oder machen?", html)
         self.assertIn('id="home-metrics"', html)
+        self.assertIn('id="home-readiness"', html)
+        self.assertIn('id="deployment-status"', html)
+        self.assertIn('id="system-summary"', html)
         self.assertIn('class="view-toolbar"', html)
+        self.assertNotIn('data-route="diagnose"', html)
+        self.assertNotIn('data-route="einstellungen"', html)
 
         styles = (ROOT / "ui" / "styles.css").read_text()
         self.assertNotIn(".hero-card", styles)
         self.assertNotIn(".page-intro", styles)
         self.assertIn(".overview-grid", styles)
+        self.assertIn(".readiness-grid", styles)
+        self.assertIn(".signal-topology", styles)
         self.assertIn(".mode-choice:has(input:focus-visible)", styles)
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", styles)
 
         javascript = (ROOT / "ui" / "app.js").read_text()
         self.assertIn('byId("home-metrics")', javascript)
+        self.assertIn('byId("home-readiness")', javascript)
+        self.assertIn('byId("deployment-status")', javascript)
+        self.assertIn('klaenge: "spielen"', javascript)
+        self.assertIn('diagnose: "system"', javascript)
         self.assertIn('["Rate", graph.force_rate_hz', javascript)
         self.assertIn('["Quantum",', javascript)
 

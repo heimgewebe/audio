@@ -1,14 +1,18 @@
 "use strict";
 
 const ROUTES = {
-  start: { title: "Start", eyebrow: "Übersicht" },
+  start: { title: "Übersicht", eyebrow: "Betriebsbild" },
+  hoeren: { title: "Hören", eyebrow: "Wiedergabe" },
   spielen: { title: "Spielen", eyebrow: "Live-Instrument" },
   aufnehmen: { title: "Aufnehmen", eyebrow: "Quellen" },
-  hoeren: { title: "Hören", eyebrow: "Wiedergabe" },
-  klaenge: { title: "Klänge", eyebrow: "Systeme" },
-  verbindungen: { title: "Verbindungen", eyebrow: "Signalweg" },
-  diagnose: { title: "Diagnose", eyebrow: "Doctor" },
-  einstellungen: { title: "Einstellungen", eyebrow: "Konfiguration" },
+  system: { title: "System", eyebrow: "Betrieb und Integration" },
+};
+
+const ROUTE_ALIASES = {
+  klaenge: "spielen",
+  verbindungen: "system",
+  diagnose: "system",
+  einstellungen: "system",
 };
 
 const MODE_LABELS = {
@@ -42,6 +46,39 @@ const PROFILE_GLYPHS = {
   production: "◇",
   "piano-software-live": "♬",
   experimental: "≋",
+};
+
+const PROFILE_STATE_LABELS = {
+  executable: "anwendbar",
+  "plan-ready": "Plan bereit",
+  onsite: "vor Ort",
+  laboratory: "Labor-Gate",
+  planned: "geplant",
+};
+
+const PHYSICAL_FACT_LABELS = {
+  focal_connected_output: "Focal Clear MG am vorgesehenen Ausgang",
+  lake_people_gain_setting: "Lake People Gain-Schalter",
+  lake_people_volume_reference: "Lake People Referenzlautstärke",
+  motu_input_gain_reference: "MOTU Eingangsverstärkung",
+  motu_output_to_lake_people: "MOTU-Ausgang zum Lake People",
+  motu_phantom_48v: "MOTU 48-V-Phantomspeisung",
+  pioneer_listening_mode: "Pioneer Hörmodus",
+  pioneer_pc_connection: "Pioneer Verbindung zum PC",
+  pioneer_reference_volume: "Pioneer Referenzlautstärke",
+  pioneer_selected_input: "Pioneer ausgewählter Eingang",
+  rode_nt1a_connected: "RØDE NT1-A angeschlossen",
+  rode_nt1a_motu_input: "RØDE am vorgesehenen MOTU-Eingang",
+  transmitter_codec: "1MII Bluetooth-Codec",
+  transmitter_input: "1MII Eingang",
+  transmitter_paired_target: "1MII gekoppeltes Ziel",
+  transmitter_tx_mode: "1MII Sendemodus",
+};
+
+const WARNING_LABELS = {
+  "voice-source-not-motu": "Mikrofonquelle ist nicht das MOTU M2",
+  "high-live-quantum": "Großer Live-Puffer",
+  "bluetooth-service-inactive": "System-Bluetooth ist inaktiv",
 };
 
 const INTERACTION_GRACE_MS = 1200;
@@ -97,6 +134,64 @@ function formatTimestamp(value) {
     minute: "2-digit",
     second: "2-digit",
   }).format(date)}`;
+}
+
+function formatDateTime(value) {
+  if (!value) return "nicht verfügbar";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "nicht verfügbar";
+  return new Intl.DateTimeFormat("de-DE", {
+    dateStyle: "short",
+    timeStyle: "medium",
+  }).format(date);
+}
+
+function shortRevision(value) {
+  return typeof value === "string" && value.length >= 10
+    ? value.slice(0, 10)
+    : "nicht lesbar";
+}
+
+function hardwareStateLabel(stateName) {
+  return (
+    {
+      online: "online",
+      partial: "teilweise online",
+      offline: "nicht beobachtet",
+      "not-configured": "nicht konfiguriert",
+      unavailable: "nicht lesbar",
+    }[stateName] || "unbekannt"
+  );
+}
+
+function deploymentStateLabel(status) {
+  return (
+    {
+      current: "aktuell",
+      drift: "Abweichung",
+      unavailable: "nicht lesbar",
+      "source-checkout": "Quellcheckout",
+    }[status] || "unbekannt"
+  );
+}
+
+function profileState(profile) {
+  if (profile.dashboard_state) return profile.dashboard_state;
+  if (profile.operational_status === "planned") return "planned";
+  if ((profile.required_hardware || []).length) return "onsite";
+  if ((profile.required_laboratory_gates || []).length) return "laboratory";
+  return profile.actionable ? "executable" : "plan-ready";
+}
+
+function profileStateTone(stateName) {
+  if (stateName === "executable" || stateName === "plan-ready") return "ready";
+  if (stateName === "onsite") return "onsite";
+  if (stateName === "planned") return "planned";
+  return "laboratory";
+}
+
+function profilesByArea(area) {
+  return profilesFor(area);
 }
 
 async function fetchJson(url, options = {}) {
@@ -230,44 +325,54 @@ function renderAll() {
   renderProfiles();
   renderSounds();
   renderConnections();
+  renderDeployment();
   renderDiagnostics();
   renderSettings();
 }
 
 function renderHome() {
   const snapshot = state.snapshot;
-  const summary = snapshot.summary;
+  const summary = snapshot.summary || {};
   const doctor = snapshot.doctor || {};
   const graph = doctor.graph || {};
-  const commands = Array.isArray(doctor.command_health)
-    ? doctor.command_health
-    : [];
-  const availableCommands = commands.filter((item) => item.available).length;
+  const presence = snapshot.presence || {};
+  const deployment = snapshot.deployment || {};
   const whaleStatusReadable = snapshot.whale.status === "ok";
   const activeWhale = whaleStatusReadable && summary.active_whale;
+  const runtimeHealthy = summary.runtime_state === "healthy";
+  const hardwareOffline = presence.state === "offline";
   const card = byId("home-state-card");
   card.replaceChildren();
 
-  const stable = summary.state === "stable";
   const statusSymbol = element(
     "span",
-    `state-symbol${stable ? "" : " attention"}`,
-    stable ? "✓" : "!",
+    `state-symbol${runtimeHealthy ? "" : " attention"}`,
+    runtimeHealthy ? "✓" : "!",
   );
   statusSymbol.setAttribute("aria-hidden", "true");
   card.append(statusSymbol);
 
   const copy = element("div");
-  appendText(copy, "h2", "", stable ? "Stabil" : "Aufmerksamkeit");
-  let detail;
-  if (doctor.status !== "ok") {
-    detail = "Doctor nicht vollständig lesbar";
-  } else if (summary.high_warning_count > 0) {
-    detail = `${summary.high_warning_count} wichtiger Befund`;
-  } else {
-    detail = `${summary.warning_count} Hinweise · ${summary.physical_unknown_count} physische Fakten offen`;
-  }
-  appendText(copy, "p", "", detail);
+  appendText(
+    copy,
+    "h2",
+    "",
+    runtimeHealthy
+      ? hardwareOffline
+        ? "System bereit · Geräte nicht beobachtet"
+        : "Betriebsbereit"
+      : "Laufzeit prüfen",
+  );
+  appendText(
+    copy,
+    "p",
+    "",
+    runtimeHealthy
+      ? hardwareOffline
+        ? "Status, Pläne und Deployment sind aus der Ferne prüfbar. Audioaktionen warten auf die Geräte."
+        : "Backend, Geräte und Zustandsreadback sind verfügbar."
+      : "Mindestens eine Laufzeitwahrheit ist nicht verlässlich lesbar.",
+  );
   card.append(copy);
 
   const foot = element("div", "state-foot");
@@ -281,22 +386,30 @@ function renderHome() {
         : "Wal: inaktiv"
       : "Walstatus nicht lesbar",
   );
-  const diagnosis = element("a", "text-link", "Details →");
-  diagnosis.href = "#diagnose";
-  foot.append(diagnosis);
+  appendText(
+    foot,
+    "span",
+    deployment.in_sync ? "Deployment synchron" : deploymentStateLabel(deployment.status),
+  );
   card.append(foot);
 
   const metrics = [
-    ["Rate", graph.force_rate_hz ? `${graph.force_rate_hz} Hz` : "—", "PipeWire"],
     [
-      "Quantum",
-      graph.force_quantum_frames ? String(graph.force_quantum_frames) : "—",
-      "Frames",
+      "Laufzeit",
+      runtimeHealthy ? "bereit" : summary.runtime_state || "offen",
+      "Backend-Readback",
     ],
-    ["Senke", formatEndpoint(graph.default_sink), "Standardziel"],
-    ["Quelle", formatEndpoint(graph.default_source), "Standardquelle"],
-    ["Werkzeuge", `${availableCommands}/${commands.length}`, "Doctor"],
-    ["Offene Fakten", String(summary.physical_unknown_count), "physisch"],
+    [
+      "Hardware",
+      `${presence.observed_count ?? 0}/${presence.desired_count ?? 0}`,
+      hardwareStateLabel(presence.state),
+    ],
+    ["Signalweg", formatEndpoint(graph.default_sink), "aktuelle Standardsenke"],
+    [
+      "Deployment",
+      deploymentStateLabel(deployment.status),
+      deployment.source_ref || "Quelle unbekannt",
+    ],
   ];
   byId("home-metrics").replaceChildren(
     ...metrics.map(([label, value, description]) => {
@@ -310,36 +423,35 @@ function renderHome() {
 
   const tasks = [
     {
-      route: "spielen",
-      glyph: "♬",
-      title: "Walstimme",
-      detail: whaleStatusReadable
-        ? activeWhale
-          ? `${displayMode(snapshot.whale.service.voice_mode)} · aktiv`
-          : `${displayMode(snapshot.whale.contract.default_mode)} · inaktiv`
-        : "Zustand nicht lesbar · keine Inaktivitätsannahme",
-    },
-    {
       route: "hoeren",
       glyph: "◖",
-      title: "Hörwege",
-      detail: `${profilesFor("listening").length} Profile`,
+      title: "Hören",
+      detail: `${profilesFor("listening").length} definierte Hörwege`,
+    },
+    {
+      route: "spielen",
+      glyph: "♬",
+      title: "Spielen",
+      detail: whaleStatusReadable
+        ? activeWhale
+          ? `${displayMode(snapshot.whale.service.voice_mode)} aktiv`
+          : "Walstimme und Softwareinstrumente"
+        : "Zustand nicht lesbar · keine Inaktivitätsannahme",
     },
     {
       route: "aufnehmen",
       glyph: "●",
-      title: "Aufnahme",
-      detail: `${profilesFor("recording").length} Profile · Planprüfung`,
+      title: "Aufnehmen",
+      detail: `${profilesFor("recording").length} Profile · Voraussetzungen`,
     },
     {
-      route: "verbindungen",
-      glyph: "⌁",
-      title: "Signalweg",
-      detail: `${summary.physical_unknown_count} physische Fakten offen`,
+      route: "system",
+      glyph: "⊙",
+      title: "System",
+      detail: `${summary.physical_unknown_count || 0} Vor-Ort-Belege offen`,
     },
   ];
-  const taskGrid = byId("home-tasks");
-  taskGrid.replaceChildren(
+  byId("home-tasks").replaceChildren(
     ...tasks.map((task) => {
       const cardLink = element("a", "task-card");
       cardLink.href = `#${task.route}`;
@@ -357,30 +469,59 @@ function renderHome() {
     }),
   );
 
-  const insightGrid = byId("home-insights");
-  const warnings = Array.isArray(doctor.warnings)
-    ? doctor.warnings.slice(0, 3)
-    : [];
+  const readinessAreas = [
+    ["Hören", "listening", "hoeren"],
+    ["Spielen", "playing", "spielen"],
+    ["Aufnehmen", "recording", "aufnehmen"],
+  ];
+  byId("home-readiness").replaceChildren(
+    ...readinessAreas.map(([label, area, route]) => {
+      const profiles = profilesByArea(area);
+      const card = element("a", "readiness-card");
+      card.href = `#${route}`;
+      const heading = element("div", "readiness-heading");
+      appendText(heading, "h3", "", label);
+      appendText(heading, "span", "", `${profiles.length} Profile`);
+      card.append(heading);
+      const states = element("div", "readiness-states");
+      for (const profile of profiles) {
+        const stateName = profileState(profile);
+        appendText(
+          states,
+          "span",
+          `readiness-chip ${profileStateTone(stateName)}`,
+          `${displayProfile(profile.id)} · ${PROFILE_STATE_LABELS[stateName] || stateName}`,
+        );
+      }
+      card.append(states);
+      return card;
+    }),
+  );
+
+  const warnings = Array.isArray(doctor.warnings) ? doctor.warnings.slice(0, 3) : [];
   if (warnings.length === 0) {
-    insightGrid.replaceChildren(
-      insightCard("doctor", doctor.status === "ok" ? "Keine Warnungen" : "Nicht lesbar", doctor.status === "ok" ? "ok" : "high"),
+    byId("home-insights").replaceChildren(
+      insightCard("Laufzeit", doctor.status === "ok" ? "Keine Warnungen" : "Nicht lesbar", doctor.status === "ok" ? "ok" : "high"),
       insightCard(
-        "physical",
-        `${summary.physical_unknown_count} Fakten offen`,
-        summary.physical_unknown_count ? "medium" : "ok",
+        "Vor Ort",
+        `${summary.physical_unknown_count || 0} Belege offen`,
+        summary.physical_unknown_count ? "onsite" : "ok",
       ),
-      insightCard("authority", "Browser verarbeitet kein Audio", "ok"),
+      insightCard("Autorität", "Browser verarbeitet kein Audio", "ok"),
     );
     return;
   }
-  insightGrid.replaceChildren(
-    ...warnings.map((warning) =>
-      insightCard(
-        warning.code || "Hinweis",
+  byId("home-insights").replaceChildren(
+    ...warnings.map((warning) => {
+      const onsite =
+        warning.code === "voice-source-not-motu" &&
+        presence.observed?.motu_m2 !== true;
+      return insightCard(
+        WARNING_LABELS[warning.code] || warning.code || "Hinweis",
         warning.detail || "Doctor-Hinweis ohne Detail",
-        warning.severity || "medium",
-      ),
-    ),
+        onsite ? "onsite" : warning.severity || "medium",
+      );
+    }),
   );
 }
 
@@ -655,35 +796,47 @@ function renderProfileGrid(targetId, profiles) {
 
 function profileCard(profile) {
   const card = element("article", "profile-card");
+  const stateName = profileState(profile);
   const top = element("div", "card-topline");
   appendText(top, "span", "card-glyph", PROFILE_GLYPHS[profile.id] || "◇").setAttribute(
     "aria-hidden",
     "true",
   );
-  const status = profile.operational_status === "planned" ? "geplant" : "read-only";
   appendText(
     top,
     "span",
-    `status-pill ${profile.operational_status === "planned" ? "" : "ready"}`,
-    status,
+    `status-pill ${profileStateTone(stateName)}`,
+    PROFILE_STATE_LABELS[stateName] || stateName,
   );
   card.append(top);
   appendText(card, "h3", "", displayProfile(profile.id));
   appendText(card, "p", "", profile.purpose);
+
   const meta = element("div", "card-meta");
-  const hardwareCount = Array.isArray(profile.required_hardware)
-    ? profile.required_hardware.length
-    : 0;
-  const gateCount = Array.isArray(profile.required_laboratory_gates)
-    ? profile.required_laboratory_gates.length
-    : 0;
-  appendText(meta, "span", "", `${hardwareCount} Geräte`);
-  appendText(meta, "span", "", `${gateCount} Labor-Gates`);
+  const missingHardware = profile.missing_hardware_count ?? 0;
+  const physicalFacts = profile.unresolved_physical_fact_count ?? 0;
+  const laboratoryGates = profile.laboratory_gate_count ?? 0;
+  if (missingHardware) appendText(meta, "span", "", `${missingHardware} Gerät fehlt`);
+  if (physicalFacts) appendText(meta, "span", "", `${physicalFacts} Vor-Ort-Belege`);
+  if (laboratoryGates) appendText(meta, "span", "", `${laboratoryGates} Labor-Gates`);
+  if (!missingHardware && !physicalFacts && !laboratoryGates) {
+    appendText(meta, "span", "", "Repositoryseitig vollständig");
+  }
   card.append(meta);
+
   const actions = element("div", "card-actions");
-  const button = element("button", "secondary-button", "Plan prüfen");
+  const button = element(
+    "button",
+    "secondary-button",
+    profile.plan_available ? "Voraussetzungen" : "Details nicht verfügbar",
+  );
   button.type = "button";
-  button.addEventListener("click", (event) => openProfilePlan(profile, event.currentTarget));
+  button.disabled = !profile.plan_available;
+  if (profile.plan_available) {
+    button.addEventListener("click", (event) =>
+      openProfilePlan(profile, event.currentTarget),
+    );
+  }
   actions.append(button);
   card.append(actions);
   return card;
@@ -859,74 +1012,170 @@ function soundModeDescription(mode) {
   return `Backend: ${formatEndpoint(mode.backend)}.`;
 }
 
+function signalNode(title, detail, stateName) {
+  const node = element("article", `signal-node ${stateName}`);
+  appendText(node, "strong", "", title);
+  appendText(node, "small", "", detail);
+  return node;
+}
+
+function signalStage(label, nodes) {
+  const stage = element("section", "signal-stage");
+  appendText(stage, "p", "eyebrow", label);
+  const list = element("div", "signal-node-list");
+  list.append(...nodes);
+  stage.append(list);
+  return stage;
+}
+
 function renderConnections() {
-  const doctor = state.snapshot.doctor;
+  const doctor = state.snapshot.doctor || {};
   const graph = doctor.graph || {};
   const hardware = doctor.hardware || {};
   const external = doctor.external_endpoints || {};
-  const observedInputs = [
-    hardware.motu_m2 ? "MOTU M2" : null,
-    hardware.roland_fp_30x ? "Roland FP-30X" : null,
-  ].filter(Boolean);
-  const nodes = [
-    {
-      eyebrow: "Eingaben",
-      title: observedInputs.length ? observedInputs.join(" · ") : "keine belegt",
-      detail: observedInputs.length
-        ? `${observedInputs.length} Geräte beobachtet`
-        : "physisch nicht bestätigt",
-    },
-    {
-      eyebrow: "Control",
-      title: "PipeWire",
-      detail: `${graph.force_rate_hz || "—"} Hz · ${graph.force_quantum_frames || "—"} Frames`,
-    },
-    {
-      eyebrow: "Standardziel",
-      title: formatEndpoint(graph.default_sink),
-      detail: `Quelle: ${formatEndpoint(graph.default_source)}`,
-    },
-    {
-      eyebrow: "Außenwelt",
-      title: external.pioneer_vsx_830_k?.software_observed
-        ? "Pioneer beobachtet"
-        : "physisch offen",
-      detail: "Focal · Pioneer · 1MII",
-    },
+  const unknownFacts = new Set(doctor.physical_unknowns || []);
+
+  const inputs = [
+    signalNode(
+      "MOTU M2",
+      hardware.motu_m2 ? "Audiointerface beobachtet" : "aus oder nicht verbunden",
+      hardware.motu_m2 ? "observed" : "onsite",
+    ),
+    signalNode(
+      "Roland FP-30X",
+      hardware.roland_fp_30x ? "Piano beobachtet" : "aus oder nicht verbunden",
+      hardware.roland_fp_30x ? "observed" : "onsite",
+    ),
   ];
-  const flow = element("div", "connection-flow");
-  for (const node of nodes) {
-    const card = element("article", "connection-node");
-    appendText(card, "p", "eyebrow", node.eyebrow);
-    appendText(card, "strong", "", node.title);
-    appendText(card, "small", "", node.detail);
-    flow.append(card);
-  }
-  byId("connection-map").replaceChildren(flow);
+  const control = [
+    signalNode(
+      "PipeWire",
+      `${graph.force_rate_hz || "—"} Hz · ${graph.force_quantum_frames || "—"} Frames`,
+      doctor.status === "ok" ? "configured" : "unavailable",
+    ),
+    signalNode(
+      "Aktuelle Route",
+      `${formatEndpoint(graph.default_source)} → ${formatEndpoint(graph.default_sink)}`,
+      doctor.status === "ok" ? "configured" : "unavailable",
+    ),
+  ];
+  const focalUnknown =
+    unknownFacts.has("motu_output_to_lake_people") ||
+    unknownFacts.has("focal_connected_output");
+  const outputs = [
+    signalNode(
+      "Lake People · Focal",
+      focalUnknown ? "physischer Weg nicht belegt" : "physischer Weg belegt",
+      focalUnknown ? "onsite" : "observed",
+    ),
+    signalNode(
+      "Pioneer VSX-830-K",
+      external.pioneer_vsx_830_k?.software_observed
+        ? "softwareseitig beobachtet"
+        : "physischer Weg offen",
+      external.pioneer_vsx_830_k?.software_observed ? "observed" : "onsite",
+    ),
+    signalNode(
+      "1MII B03 Pro",
+      external.transmitter_1mii_b03_pro?.software_observed
+        ? "softwareseitig beobachtet"
+        : "externer Sender nicht beobachtbar",
+      external.transmitter_1mii_b03_pro?.software_observed ? "observed" : "onsite",
+    ),
+  ];
+
+  const topology = element("div", "signal-topology");
+  topology.append(
+    signalStage("Quellen", inputs),
+    signalStage("Routing", control),
+    signalStage("Ausgaben", outputs),
+  );
+  byId("connection-map").replaceChildren(topology);
+
+  const legend = [
+    ["observed", "beobachtet"],
+    ["configured", "konfiguriert"],
+    ["onsite", "vor Ort"],
+    ["unavailable", "nicht lesbar"],
+  ];
+  byId("connection-legend").replaceChildren(
+    ...legend.map(([tone, label]) => {
+      const item = element("span", "legend-item");
+      appendText(item, "i", `legend-dot ${tone}`, "").setAttribute("aria-hidden", "true");
+      appendText(item, "span", "", label);
+      return item;
+    }),
+  );
 
   const facts = Array.isArray(doctor.physical_unknowns)
     ? doctor.physical_unknowns
     : [];
-  const factList = byId("physical-facts");
   if (!facts.length) {
-    factList.replaceChildren(
-      element("div", "empty-state", "Keine offenen physischen Fakten gemeldet."),
+    byId("physical-facts").replaceChildren(
+      element("div", "empty-state", "Keine offenen physischen Belege gemeldet."),
     );
     return;
   }
-  factList.replaceChildren(
+  byId("physical-facts").replaceChildren(
     ...facts.map((fact) => {
       const row = element("div", "fact-row");
-      appendText(row, "code", "", fact);
-      appendText(row, "span", "", "nicht verifiziert");
+      const copy = element("div");
+      appendText(copy, "strong", "", PHYSICAL_FACT_LABELS[fact] || fact);
+      appendText(copy, "code", "", fact);
+      row.append(copy);
+      appendText(row, "span", "", "vor Ort");
       return row;
     }),
   );
 }
 
+function renderDeployment() {
+  const deployment = state.snapshot.deployment || {};
+  const panel = byId("deployment-status");
+  panel.replaceChildren();
+  const heading = element("div", "panel-heading");
+  const copy = element("div");
+  appendText(copy, "p", "eyebrow", "Automatische Auslieferung");
+  appendText(copy, "h2", "", deploymentStateLabel(deployment.status));
+  heading.append(copy);
+  appendText(
+    heading,
+    "span",
+    `status-pill ${deployment.in_sync ? "ready" : deployment.status === "drift" ? "unavailable" : ""}`,
+    deployment.in_sync ? "synchron" : deploymentStateLabel(deployment.status),
+  );
+  panel.append(heading);
+  const list = element("dl", "service-list");
+  detailRow(list, "Modus", deployment.automatic ? "automatisch" : "Quellcheckout");
+  detailRow(list, "Quelle", deployment.source_ref || "unbekannt");
+  detailRow(list, "Runtime", shortRevision(deployment.runtime_commit));
+  detailRow(list, "Beleg", shortRevision(deployment.receipt_commit));
+  detailRow(list, "Letzter Sync", formatDateTime(deployment.last_sync_at));
+  detailRow(list, "Dienst", deployment.service_health || "nicht lesbar");
+  panel.append(list);
+}
+
 function renderDiagnostics() {
   const doctor = state.snapshot.doctor;
   const graph = doctor.graph || {};
+  const summary = state.snapshot.summary || {};
+  const presence = state.snapshot.presence || {};
+  const deployment = state.snapshot.deployment || {};
+  const systemMetrics = [
+    ["Runtime", summary.runtime_state === "healthy" ? "bereit" : summary.runtime_state || "offen"],
+    ["Hardware", hardwareStateLabel(presence.state)],
+    ["Route", formatEndpoint(graph.default_sink)],
+    ["Deployment", deploymentStateLabel(deployment.status)],
+  ];
+  byId("system-summary").replaceChildren(
+    ...systemMetrics.map(([label, value]) => {
+      const card = element("article", "metric-card");
+      appendText(card, "p", "eyebrow", label);
+      appendText(card, "strong", "", value);
+      appendText(card, "span", "", "autoritativ beobachtet");
+      return card;
+    }),
+  );
   const commands = Array.isArray(doctor.command_health) ? doctor.command_health : [];
   const available = commands.filter((item) => item.available).length;
   const metrics = [
@@ -966,13 +1215,21 @@ function renderDiagnostics() {
     warningList.replaceChildren(
       ...warnings.map((warning) => {
         const row = element("article", "warning-row");
+        const onsite =
+          warning.code === "voice-source-not-motu" &&
+          state.snapshot.presence?.observed?.motu_m2 !== true;
         appendText(
           row,
           "span",
-          `status-dot ${warning.severity || "medium"}`,
+          `status-dot ${onsite ? "onsite" : warning.severity || "medium"}`,
         ).setAttribute("aria-hidden", "true");
         const copy = element("div");
-        appendText(copy, "strong", "", warning.code || "Doctor-Hinweis");
+        appendText(
+          copy,
+          "strong",
+          "",
+          WARNING_LABELS[warning.code] || warning.code || "Doctor-Hinweis",
+        );
         appendText(copy, "p", "", warning.detail || "Kein Detail vorhanden.");
         row.append(copy);
         return row;
@@ -1002,7 +1259,9 @@ function renderDiagnostics() {
   }
 
   const badge = byId("diagnostic-badge");
-  const count = warnings.length + (doctor.status === "ok" ? 0 : 1);
+  const count =
+    (state.snapshot.summary?.runtime_high_warning_count || 0) +
+    (doctor.status === "ok" ? 0 : 1);
   badge.textContent = String(count);
   badge.hidden = count === 0;
 }
@@ -1036,7 +1295,8 @@ function renderSettings() {
 
 function routeFromHash() {
   const candidate = window.location.hash.slice(1);
-  return ROUTES[candidate] ? candidate : "start";
+  const resolved = ROUTE_ALIASES[candidate] || candidate;
+  return ROUTES[resolved] ? resolved : "start";
 }
 
 function prefersReducedMotion() {
