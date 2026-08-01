@@ -1,41 +1,38 @@
-# Gehärtete Sprachaufnahme
+# Gehärtete Aufnahmesitzungen
 
 ## Zweck
 
-`scripts/audio-record` verwaltet eine Sprachaufnahme vom RØDE NT1-A über die seriell gebundene MOTU-M2-Quelle. Der Ablauf trennt **prüfen**, **freigeben**, **aufnehmen**, **stoppen** und **wiederherstellen**.
+`scripts/audio-record` verwaltet drei explizite Aufnahmetypen mit demselben fail-closed Sitzungsprotokoll:
 
-Für Dummies: Das Programm drückt nicht sofort auf Aufnahme. Es prüft zuerst, ob Mikrofonzustand, Pegelnachweis, MOTU-Quelle, Speicherplatz, Zieldatei und Programmversion noch genau dem zuvor geprüften Plan entsprechen. Erst ein ausdrücklich bestätigter Plan-Hash darf die Aufnahme starten.
+| Sitzungstyp | Quelle | Voraussetzung | Zielformat |
+| --- | --- | --- | --- |
+| `voice-recording` | RØDE NT1-A über die seriell und busgebundene MOTU-M2-Quelle | physische RØDE-/MOTU-Fakten und `voice-level-measurement` | 48 kHz, Stereo, `s32le`, WAV |
+| `roland-audio-recording` | eindeutige USB-Audioquelle des Roland FP-30X | gebundene Entscheidung `resampling-decision` | einmalige Umsetzung von 44,1 kHz auf 48 kHz, Stereo, `s32le`, WAV |
+| `production-mix-recording` | exakt ein PipeWire-Quellknoten namens `audio-production-mix` | der Knoten muss bereits eindeutig und vertragskonform vorhanden sein | 48 kHz, Stereo, `s32le`, WAV |
 
-## Was der Vertrag garantiert
+Der Ablauf trennt **prüfen**, **freigeben**, **aufnehmen**, **stoppen** und **wiederherstellen**. Ein Plan ist read-only. Erst ein ausdrücklich bestätigter Plan-Hash darf eine Aufnahme starten.
 
-- 48 kHz, zwei Kanäle, 32-Bit-PCM-Container (`s32le`) und WAV.
-- Die MOTU-M2-Quelle muss über Vendor-, Product-, Serien-, Bus-, Format-, Rate-, Kanal-, Mute- und Lautstärkebindung eindeutig sein.
-- Die dokumentierten RØDE-/MOTU-Fakten und das Labor-Gate `voice-level-measurement` müssen aktuell aufgelöst sein.
+## Gemeinsame Garantien
+
+- Sitzungstyp, Profil, Quelle, Monitoringvertrag, Recorderprogramm und Prozessargumente sind im Plan gebunden.
 - Nur eine verwaltete Aufnahme darf aktiv sein.
+- Die Quellidentität muss beim Planen, Starten und unmittelbar vor dem Capture übereinstimmen.
+- Roland wird über USB-Vendor/Product, Serienkennung, Buspfad, PipeWire-Knoten, Format, Rate, Kanalzahl, Mute und Lautstärke gebunden.
+- Der Produktionspfad akzeptiert ausschließlich den eindeutigen Knoten `audio-production-mix`; er errät keine Monitorquelle und keinen wechselnden Upstream.
+- Recorderprozesse verwenden typspezifische Client- und Streamnamen.
 - Zieldateien werden niemals überschrieben.
-- Eine unvollständige Datei bleibt bei Fehlern als private `.partial.wav` erhalten und wird nicht stillschweigend als fertige Aufnahme ausgegeben.
-- Stop und Recovery vertrauen nicht nur einer PID, sondern prüfen zusätzlich Prozessstartzeit, ausführbare Datei, Kommandozeile und Prozessgruppe.
+- Eine unvollständige Datei bleibt bei Fehlern als private `.partial.wav` erhalten und wird nicht stillschweigend als fertig veröffentlicht.
+- Stop und Recovery prüfen PID, Prozessstartzeit, ausführbare Datei, Kommandozeile und Prozessgruppe.
 - Zustandsdateien sind privat (`0600`), Zustands- und Aufnahmeverzeichnisse privat (`0700`).
 
-## Was der Vertrag nicht garantiert
+## Bewusste Grenzen
 
-- Die Stellung des analogen Gain-Reglers, Phantomspeisung und Verkabelung können softwareseitig nicht gemessen werden; sie werden über gebundene physische Beobachtungen abgesichert.
-- Ein 32-Bit-Container beweist keine 32 oder 24 wirksamen Audiobits. Er erhält das vom MOTU/PipeWire-Pfad gelieferte Format ohne zusätzliche absichtliche Reduktion.
-- Mikrofonposition, Raumakustik, Pop-Laute, Monitoring-Lautstärke und subjektive Klangqualität benötigen einen Hör- und Hardwaretest.
-- Die Stereoaufnahme beweist noch nicht, welcher physische MOTU-Eingang später als gewünschter Monokanal extrahiert werden soll.
-
-## Vorbereitung
-
-Der Produktionsrecorder verlangt einen bestandenen Pegelnachweis. Dieser wird mit dem bereits vorhandenen, auf 8 bis 20 Sekunden begrenzten Kalibrierpfad erstellt:
-
-```bash
-scripts/create-audio-evidence voice-capture \
-  --duration-seconds 15 \
-  --wav-output "$HOME/Music/voice-level-reference.wav" \
-  --output "$HOME/.local/state/audio/laboratory/voice-level-evidence.json"
-```
-
-Danach wird die Evidenz über den vorhandenen Labor-Gate-Ablauf geprüft und gespeichert. Der kurze Kalibrierpfad darf vor dem Gate aufnehmen; die normale Sitzung darf es nicht umgehen.
+- Der Produktionsrecorder **erzeugt und verbindet den Mixbus nicht**. Fehlt `audio-production-mix` oder existiert er mehrfach, bleibt der Plan blockiert.
+- Die im Produktionsvertrag genannten Upstream-Rollen `voice`, `roland` und `software-instrument` beschreiben den vorgesehenen Bus. Die Aufnahmesitzung beweist nicht, dass diese Rollen aktuell angeschlossen oder korrekt gepegelt sind.
+- Der Roland-Vertrag belegt die freigegebene einstufige 44,1→48-kHz-Umsetzung. Er beweist nicht, dass außerhalb dieses Pfads keinerlei weitere Resamplingstufe existiert.
+- Ein 32-Bit-Container beweist keine 32 oder 24 wirksamen Audiobits.
+- Mikrofonposition, Raumakustik, Monitoring-Lautstärke, subjektive Klangqualität und physische Verkabelung benötigen eine reale Abnahme.
+- Die Stereo-Sprachaufnahme beweist noch nicht, welcher physische MOTU-Eingang später als gewünschter Monokanal extrahiert werden soll.
 
 ## Verzeichnisse anlegen
 
@@ -48,32 +45,53 @@ Standardpfade:
 - Aufnahmen: `~/Music/Audio-Aufnahmen`
 - Sitzungszustand: `~/.local/state/audio/recordings-v1`
 
-Alternative Wurzeln können mit `--root` und `--state-root` angegeben werden. Symbolische Pfadkomponenten und fremde oder schreiboffene Zielverzeichnisse werden abgelehnt.
+Alternative Wurzeln können mit `--root` und `--state-root` angegeben werden. Symbolische Pfadkomponenten sowie fremde oder schreiboffene Zielverzeichnisse werden abgelehnt.
 
-## Plan prüfen
+## Pläne prüfen
+
+Stimme:
 
 ```bash
-scripts/audio-record plan "Stimme 01.wav" --maximum-seconds 3600
+scripts/audio-record plan "Stimme 01.wav" \
+  --session-type voice-recording \
+  --maximum-seconds 3600
+```
+
+Roland-Audio:
+
+```bash
+scripts/audio-record plan "Roland 01.wav" \
+  --session-type roland-audio-recording \
+  --maximum-seconds 3600
+```
+
+Produktions-Mixbus:
+
+```bash
+scripts/audio-record plan "Produktion 01.wav" \
+  --session-type production-mix-recording \
+  --maximum-seconds 3600
 ```
 
 Wichtig sind:
 
 - `ready: true`: alle maschinell prüfbaren Voraussetzungen gelten.
 - `readiness.blockers`: konkrete Gründe, weshalb nicht gestartet wird.
-- `plan_sha256`: die Freigabe für exakt diesen Zustand.
+- `plan_sha256`: die Freigabe für exakt diesen Zustand und Sitzungstyp.
 - `required_file_bytes` und `required_free_bytes`: Dateibudget plus Reserve.
-
-Der Plan ist read-only. Er startet keinen Audioprozess und legt keinen Sitzungszustand an.
 
 ## Aufnahme starten
 
+Der Sitzungstyp muss beim Start identisch angegeben werden:
+
 ```bash
-scripts/audio-record start "Stimme 01.wav" \
+scripts/audio-record start "Roland 01.wav" \
+  --session-type roland-audio-recording \
   --maximum-seconds 3600 \
   --expected-plan-sha256 '<HASH-AUS-PLAN>'
 ```
 
-Vor dem Start wird derselbe Plan erneut vollständig berechnet. Ändert sich eine gebundene Voraussetzung, wird der Start verweigert und ein neuer Plan muss geprüft werden.
+Vor dem Start wird derselbe Plan vollständig neu berechnet. Ändert sich Quelle, Gate, physische Evidenz, Zielpfad, freier Speicher oder Programmvertrag, wird der Start verweigert.
 
 ## Status, Stop und Recovery
 
@@ -83,26 +101,26 @@ scripts/audio-record stop
 scripts/audio-record recover
 ```
 
-- `status` beobachtet nur.
-- `stop` sendet ein Signal ausschließlich an den exakt gebundenen Prozess.
+- `status` beobachtet nur und liest den Sitzungstyp aus dem privaten Spec.
+- `stop` signalisiert ausschließlich den exakt gebundenen Prozess.
 - `recover` räumt einen terminalen Sitzungszeiger auf oder markiert eine verwaiste Teilaufnahme als `failed-preserved`.
-- Bei PID-Wiederverwendung oder Identitätsabweichung bleibt Recovery absichtlich geschlossen.
+- Bei PID-Wiederverwendung oder Identitätsabweichung bleibt Recovery geschlossen.
 
 Mit `--session-id <ID>` kann eine bestimmte Sitzung angesprochen werden.
 
 ## Speicherbedarf
 
-Der rohe Datenstrom benötigt bei 48 kHz, zwei Kanälen und vier Byte je Sample:
+Der gemeinsame Zieldatenstrom benötigt bei 48 kHz, zwei Kanälen und vier Byte je Sample:
 
 - 384.000 Byte pro Sekunde
 - etwa 23,0 MB pro Minute
 - etwa 1,382 GB pro Stunde
 
-Zusätzlich rechnet der Vertrag mit 1 MiB Header-/Metadatenreserve pro Datei und hält standardmäßig 1 GiB freien Speicher außerhalb des Aufnahmebudgets zurück. Die maximale Sitzungsdauer beträgt vier Stunden.
+Zusätzlich reserviert der Vertrag 1 MiB für Header und Metadaten sowie standardmäßig 1 GiB freien Speicher außerhalb des Aufnahmebudgets. Die maximale Sitzungsdauer beträgt vier Stunden.
 
 ## Fehler- und Dateisemantik
 
-Die Aufnahme entsteht zunächst als versteckte Teil-Datei im endgültigen Zielverzeichnis. Nur nach sauberem Prozessende und bestandener WAV-Prüfung wird sie per nicht überschreibendem Hardlink veröffentlicht. Dadurch gibt es keinen kopierenden Cross-Filesystem-Schritt und keinen stillen Austausch einer bereits vorhandenen Zieldatei.
+Die Aufnahme entsteht zunächst als versteckte Teil-Datei im endgültigen Zielverzeichnis. Nur nach sauberem Prozessende und bestandener WAV-Prüfung wird sie per nicht überschreibendem Hardlink veröffentlicht.
 
 Bei einem Fehler gilt:
 
@@ -111,13 +129,12 @@ Bei einem Fehler gilt:
 3. Der Ergebnisbeleg nennt ausdrücklich, was nicht bewiesen ist.
 4. Ein neuer Start bleibt blockiert, bis der aktive Zeiger geprüft oder recovered wurde.
 
-## Noch notwendige Hardware-Abnahme
+## Noch notwendige reale Abnahme
 
-Am PC müssen später einmal real geprüft werden:
+T007 muss später am Heim-PC belegen:
 
-- RØDE am dokumentierten MOTU-Eingang und 48 V aktiv.
-- Pegelziel zwischen −12 und −6 dBFS ohne Clipping.
-- Start, Stop, Maximaldauer und Recovery mit echter MOTU-Aufnahme.
-- Welcher der zwei aufgezeichneten Kanäle den gewählten Mikrofoneingang führt.
-- Dateigröße, WAV-Header und tatsächliche Abspielbarkeit.
-- Störfreiheit, Latenz, Raumklang und Monitoring-Pegel.
+- RØDE am dokumentierten MOTU-Eingang, 48 V aktiv und Pegelziel zwischen −12 und −6 dBFS ohne Clipping.
+- Roland-Verlust und Wiederkehr während realer Sitzungen sowie hörbarer und messbarer 44,1→48-kHz-Pfad.
+- Erzeugung, Routing, Pegel und Upstream-Inhalt des Produktionsknotens `audio-production-mix`.
+- Start, Stop, Maximaldauer, Dateigröße, WAV-Header, Abspielbarkeit und Recovery für alle drei Sitzungstypen.
+- Störfreiheit, Latenz, Raumklang und sichere Monitoring-Lautstärke.

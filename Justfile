@@ -35,11 +35,11 @@ level wav:
 record-init:
     ./scripts/audio-record init
 
-record-plan name maximum_seconds="1800":
-    ./scripts/audio-record plan "{{name}}" --maximum-seconds "{{maximum_seconds}}"
+record-plan name session_type="voice-recording" maximum_seconds="1800":
+    ./scripts/audio-record plan "{{name}}" --session-type "{{session_type}}" --maximum-seconds "{{maximum_seconds}}"
 
-record-start name plan_sha256 maximum_seconds="1800":
-    ./scripts/audio-record start "{{name}}" --maximum-seconds "{{maximum_seconds}}" --expected-plan-sha256 "{{plan_sha256}}"
+record-start name plan_sha256 session_type="voice-recording" maximum_seconds="1800":
+    ./scripts/audio-record start "{{name}}" --session-type "{{session_type}}" --maximum-seconds "{{maximum_seconds}}" --expected-plan-sha256 "{{plan_sha256}}"
 
 record-status:
     ./scripts/audio-record status

@@ -4,6 +4,7 @@
   "sessions": {
     "voice-recording": {
       "purpose": "Record the Rode NT1-A through the serial-bound MOTU M2 source after physical and level gates pass.",
+      "profile": "voice-recording",
       "required_physical_facts": {
         "rode_nt1a_connected": true,
         "rode_nt1a_motu_input": [
@@ -32,15 +33,24 @@
         "maximum_stderr_bytes": 65536
       },
       "source": {
+        "kind": "motu-voice",
         "vendor_id": "07fd",
         "product_id": "0008",
         "serial_prefix": "MOTU_M2_",
         "node_name_prefix": "alsa_input.usb-MOTU_M2_",
-        "required_sample_format": "s32le",
+        "required_sample_formats": [
+          "s32le"
+        ],
         "required_sample_rate_hz": 48000,
         "required_channels": 2,
         "requires_unmuted": true,
         "requires_unity_volume": true
+      },
+      "monitoring": {
+        "mode": "hardware-direct",
+        "endpoint": "motu-m2",
+        "software_loopback": false,
+        "level_claim": "physical-reference-required"
       },
       "process": {
         "stdin": "devnull",
@@ -50,17 +60,131 @@
         "core_dumps": false,
         "maximum_open_files": 64,
         "partial_file_policy": "preserve-on-failure",
-        "publication_policy": "same-directory-hardlink-no-replace"
+        "publication_policy": "same-directory-hardlink-no-replace",
+        "client_name": "audio-voice-recording",
+        "stream_name_prefix": "voice-recording"
+      }
+    },
+    "roland-audio-recording": {
+      "purpose": "Record the unique Roland FP-30X USB audio source into the 48 kHz production format after the explicit single-stage resampling decision passes.",
+      "profile": "piano-digital-recording",
+      "required_physical_facts": {},
+      "required_laboratory_gates": [
+        "resampling-decision"
+      ],
+      "capture": {
+        "sample_rate_hz": 48000,
+        "sample_format": "s32le",
+        "channels": 2,
+        "channel_map": "front-left,front-right",
+        "container": "wav",
+        "minimum_duration_seconds": 1,
+        "maximum_duration_seconds": 14400,
+        "startup_timeout_seconds": 5,
+        "stop_grace_seconds": 8,
+        "bytes_per_sample": 4,
+        "header_and_metadata_allowance_bytes": 1048576,
+        "free_space_reserve_bytes": 1073741824,
+        "maximum_stderr_bytes": 65536
+      },
+      "source": {
+        "kind": "usb-audio",
+        "device": "roland_fp_30x",
+        "vendor_id": "0582",
+        "product_id": "01b1",
+        "node_name_prefix": "alsa_input.usb-Roland_",
+        "required_sample_formats": [
+          "s24le",
+          "s32le"
+        ],
+        "required_sample_rate_hz": 44100,
+        "required_channels": 2,
+        "requires_unmuted": true,
+        "requires_unity_volume": true
+      },
+      "monitoring": {
+        "mode": "software-monitoring",
+        "endpoint": "motu-m2",
+        "software_loopback": false,
+        "level_claim": "no-safe-level-claim"
+      },
+      "process": {
+        "stdin": "devnull",
+        "stdout": "devnull",
+        "stderr": "bounded-private-temporary-file",
+        "new_session": true,
+        "core_dumps": false,
+        "maximum_open_files": 64,
+        "partial_file_policy": "preserve-on-failure",
+        "publication_policy": "same-directory-hardlink-no-replace",
+        "client_name": "audio-roland-recording",
+        "stream_name_prefix": "roland-audio-recording"
+      }
+    },
+    "production-mix-recording": {
+      "purpose": "Record one unique stereo PipeWire production mix source whose upstream graph may combine voice, Roland and software instruments without hiding its node identity.",
+      "profile": "production",
+      "required_physical_facts": {},
+      "required_laboratory_gates": [],
+      "capture": {
+        "sample_rate_hz": 48000,
+        "sample_format": "s32le",
+        "channels": 2,
+        "channel_map": "front-left,front-right",
+        "container": "wav",
+        "minimum_duration_seconds": 1,
+        "maximum_duration_seconds": 14400,
+        "startup_timeout_seconds": 5,
+        "stop_grace_seconds": 8,
+        "bytes_per_sample": 4,
+        "header_and_metadata_allowance_bytes": 1048576,
+        "free_space_reserve_bytes": 1073741824,
+        "maximum_stderr_bytes": 65536
+      },
+      "source": {
+        "kind": "named-pipewire-source",
+        "node_name": "audio-production-mix",
+        "upstream_roles": [
+          "voice",
+          "roland",
+          "software-instrument"
+        ],
+        "required_sample_formats": [
+          "s32le"
+        ],
+        "required_sample_rate_hz": 48000,
+        "required_channels": 2,
+        "requires_unmuted": true,
+        "requires_unity_volume": true
+      },
+      "monitoring": {
+        "mode": "software-monitoring",
+        "endpoint": "motu-m2",
+        "software_loopback": false,
+        "level_claim": "no-safe-level-claim"
+      },
+      "process": {
+        "stdin": "devnull",
+        "stdout": "devnull",
+        "stderr": "bounded-private-temporary-file",
+        "new_session": true,
+        "core_dumps": false,
+        "maximum_open_files": 64,
+        "partial_file_policy": "preserve-on-failure",
+        "publication_policy": "same-directory-hardlink-no-replace",
+        "client_name": "audio-production-recording",
+        "stream_name_prefix": "production-mix-recording"
       }
     }
   },
   "rules": [
     "planning is read-only",
     "only one managed recording session may be active",
-    "start requires the exact current plan digest",
+    "start requires the exact current plan digest and session type",
     "stop and recovery require exact PID, start-time, executable and command-line identity",
     "a partial file is never silently promoted after an unclean worker exit",
     "the final WAV path is never overwritten",
+    "production recording consumes one explicitly named mix source rather than guessing upstream nodes",
     "recordings and private receipts remain outside Git"
   ]
 }

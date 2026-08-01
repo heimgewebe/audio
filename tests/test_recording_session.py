@@ -32,22 +32,77 @@ class RecordingSessionTest(unittest.TestCase):
         self.state = self.base / "state"
 
     @staticmethod
-    def source_identity() -> dict[str, object]:
-        return {
-            "vendor_id": "07fd",
-            "product_id": "0008",
-            "serial_sha256": "1" * 64,
+    def source_identity(
+        session_type: str = "voice-recording", *, channels: int = 2
+    ) -> dict[str, object]:
+        common: dict[str, object] = {
             "node_name_sha256": "2" * 64,
-            "bus_path_sha256": "3" * 64,
-            "sample_format": "s32le",
-            "sample_rate_hz": 48000,
-            "channels": 2,
+            "sample_format": "s24le"
+            if session_type == "roland-audio-recording"
+            else "s32le",
+            "sample_rate_hz": 44_100
+            if session_type == "roland-audio-recording"
+            else 48_000,
+            "channels": channels,
             "muted": False,
             "unity_volume": True,
-            "fingerprint": "4" * 64,
         }
+        if session_type == "voice-recording":
+            common.update(
+                {
+                    "vendor_id": "07fd",
+                    "product_id": "0008",
+                    "serial_sha256": "1" * 64,
+                    "bus_path_sha256": "3" * 64,
+                }
+            )
+        elif session_type == "roland-audio-recording":
+            common.update(
+                {
+                    "source_kind": "usb-audio",
+                    "vendor_id": "0582",
+                    "product_id": "01b1",
+                    "serial_sha256": "1" * 64,
+                    "bus_path_sha256": "3" * 64,
+                }
+            )
+        elif session_type == "production-mix-recording":
+            common.update(
+                {
+                    "source_kind": "named-pipewire-source",
+                    "declared_upstream_roles": [
+                        "voice",
+                        "roland",
+                        "software-instrument",
+                    ],
+                    "object_serial_sha256": "8" * 64,
+                }
+            )
+        else:
+            raise AssertionError(session_type)
+        common["fingerprint"] = MODULE.canonical_sha256(common)
+        return common
 
-    def ready_plan(self, *, free: int = 20_000_000_000) -> dict[str, object]:
+    @staticmethod
+    def refresh_source_binding(plan: dict[str, object], source_name: str) -> None:
+        identity = plan["identity"]["source"]["identity"]
+        identity["node_name_sha256"] = hashlib.sha256(source_name.encode()).hexdigest()
+        unbound = dict(identity)
+        unbound.pop("fingerprint", None)
+        identity["fingerprint"] = MODULE.canonical_sha256(unbound)
+        plan["identity"]["source"]["identity_sha256"] = MODULE.canonical_sha256(
+            identity
+        )
+        plan["plan_sha256"] = MODULE.canonical_sha256(plan["identity"])
+
+    def ready_plan(
+        self,
+        *,
+        session_type: str = "voice-recording",
+        free: int = 20_000_000_000,
+        source_identity: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        contract = MODULE.load_catalog(session_type)
         physical = {
             "state_path": str(self.base / "physical.json"),
             "state_sha256": "5" * 64,
@@ -56,35 +111,101 @@ class RecordingSessionTest(unittest.TestCase):
                 "rode_nt1a_motu_input": "input-1",
                 "motu_phantom_48v": "on",
                 "motu_input_gain_reference": "mark 10",
-            },
+            }
+            if session_type == "voice-recording"
+            else {},
             "error": None,
         }
         laboratory = {
             "state_path": str(self.base / "lab.json"),
             "state_sha256": "6" * 64,
-            "resolved": ["voice-level-measurement"],
+            "resolved": list(contract["required_laboratory_gates"]),
             "invalidated": {},
-            "receipt_sha256": {"voice-level-measurement": "7" * 64},
+            "receipt_sha256": {
+                gate: "7" * 64 for gate in contract["required_laboratory_gates"]
+            },
             "error": None,
         }
+        identity = source_identity or self.source_identity(session_type)
         source = {
-            "identity": self.source_identity(),
-            "identity_sha256": MODULE.canonical_sha256(self.source_identity()),
+            "identity": identity,
+            "identity_sha256": MODULE.canonical_sha256(identity),
             "error": None,
         }
         with (
-            mock.patch.object(MODULE, "_physical_projection", return_value=(physical, [])),
-            mock.patch.object(MODULE, "_laboratory_projection", return_value=(laboratory, [])),
+            mock.patch.object(
+                MODULE, "_physical_projection", return_value=(physical, [])
+            ),
+            mock.patch.object(
+                MODULE, "_laboratory_projection", return_value=(laboratory, [])
+            ),
             mock.patch.object(MODULE, "_source_projection", return_value=(source, [])),
-            mock.patch.object(MODULE, "contract_bindings", return_value=[{"path": "x", "sha256": "9" * 64}]),
-            mock.patch.object(MODULE, "parecord_binding", return_value={"launcher": "/usr/bin/parecord"}),
+            mock.patch.object(
+                MODULE,
+                "contract_bindings",
+                return_value=[{"path": "x", "sha256": "9" * 64}],
+            ),
+            mock.patch.object(
+                MODULE,
+                "parecord_binding",
+                return_value={"launcher": "/usr/bin/parecord"},
+            ),
         ):
             return MODULE.build_plan(
                 "take-01.wav",
                 60,
+                session_type=session_type,
                 output_root=self.output,
                 state_root=self.state,
                 disk_usage_fn=lambda _path: types.SimpleNamespace(free=free),
+            )
+
+    def plan_with_snapshot(
+        self, session_type: str, snapshot: dict[str, object]
+    ) -> dict[str, object]:
+        contract = MODULE.load_catalog(session_type)
+        physical = {
+            "state_path": str(self.base / "physical.json"),
+            "state_sha256": None,
+            "facts": {},
+            "error": None,
+        }
+        laboratory = {
+            "state_path": str(self.base / "lab.json"),
+            "state_sha256": "6" * 64,
+            "resolved": list(contract["required_laboratory_gates"]),
+            "invalidated": {},
+            "receipt_sha256": {
+                gate: "7" * 64 for gate in contract["required_laboratory_gates"]
+            },
+            "error": None,
+        }
+        with (
+            mock.patch.object(
+                MODULE, "_physical_projection", return_value=(physical, [])
+            ),
+            mock.patch.object(
+                MODULE, "_laboratory_projection", return_value=(laboratory, [])
+            ),
+            mock.patch.object(
+                MODULE,
+                "contract_bindings",
+                return_value=[{"path": "x", "sha256": "9" * 64}],
+            ),
+            mock.patch.object(
+                MODULE,
+                "parecord_binding",
+                return_value={"launcher": "/usr/bin/parecord"},
+            ),
+        ):
+            return MODULE.build_plan(
+                "take-01.wav",
+                60,
+                session_type=session_type,
+                output_root=self.output,
+                state_root=self.state,
+                source_snapshot_fn=lambda: snapshot,
+                disk_usage_fn=lambda _path: types.SimpleNamespace(free=20_000_000_000),
             )
 
     def test_catalog_and_byte_budget_are_consistent(self) -> None:
@@ -95,6 +216,169 @@ class RecordingSessionTest(unittest.TestCase):
             MODULE.maximum_file_bytes(capture, 10),
             48_000 * 2 * 4 * 10 + 1_048_576,
         )
+
+    def test_catalog_exposes_three_explicit_session_contracts(self) -> None:
+        contracts = {name: MODULE.load_catalog(name) for name in MODULE.SESSION_TYPES}
+        self.assertEqual(
+            set(contracts),
+            {
+                "voice-recording",
+                "roland-audio-recording",
+                "production-mix-recording",
+            },
+        )
+        self.assertEqual(
+            contracts["roland-audio-recording"]["required_laboratory_gates"],
+            ["resampling-decision"],
+        )
+        self.assertEqual(
+            contracts["roland-audio-recording"]["source"]["required_sample_rate_hz"],
+            44_100,
+        )
+        self.assertEqual(
+            contracts["production-mix-recording"]["source"]["node_name"],
+            "audio-production-mix",
+        )
+        self.assertEqual(
+            {contract["process"]["client_name"] for contract in contracts.values()},
+            {
+                "audio-voice-recording",
+                "audio-roland-recording",
+                "audio-production-recording",
+            },
+        )
+        self.assertTrue(
+            all(
+                contract["monitoring"]["software_loopback"] is False
+                for contract in contracts.values()
+            )
+        )
+
+    def test_catalog_rejects_unknown_profile_reference(self) -> None:
+        payload = json.loads(MODULE.PROFILE_PATH.read_text())
+        del payload["profiles"]["production"]
+        profile_path = self.base / "audio-profiles.v1.json"
+        profile_path.write_text(json.dumps(payload))
+        with mock.patch.object(MODULE, "PROFILE_PATH", profile_path):
+            with self.assertRaisesRegex(
+                MODULE.RecordingError, "unknown audio profiles: production"
+            ):
+                MODULE.load_catalog("production-mix-recording")
+
+    def test_roland_plan_binds_44k1_source_to_48k_output(self) -> None:
+        identity = self.source_identity("roland-audio-recording")
+        plan = self.plan_with_snapshot(
+            "roland-audio-recording",
+            {"complete": True, "identity": identity},
+        )
+        self.assertTrue(plan["ready"])
+        self.assertEqual(plan["identity"]["session_type"], "roland-audio-recording")
+        self.assertEqual(
+            plan["identity"]["source"]["identity"]["sample_rate_hz"], 44_100
+        )
+        self.assertEqual(plan["identity"]["capture"]["sample_rate_hz"], 48_000)
+        self.assertEqual(
+            plan["identity"]["laboratory"]["resolved"], ["resampling-decision"]
+        )
+
+    def test_roland_device_loss_and_channel_drift_fail_closed(self) -> None:
+        missing = self.plan_with_snapshot(
+            "roland-audio-recording",
+            {"complete": False, "identity": None},
+        )
+        self.assertFalse(missing["ready"])
+        self.assertIn("roland-source-not-unique", missing["readiness"]["blockers"])
+        drifted_identity = self.source_identity("roland-audio-recording", channels=1)
+        drifted = self.plan_with_snapshot(
+            "roland-audio-recording",
+            {"complete": True, "identity": drifted_identity},
+        )
+        self.assertFalse(drifted["ready"])
+        self.assertIn("roland-source:channels", drifted["readiness"]["blockers"])
+
+    def test_roland_pactl_identity_is_serial_and_bus_bound(self) -> None:
+        contract = MODULE.load_catalog("roland-audio-recording")["source"]
+        item = {
+            "name": "alsa_input.usb-Roland_Roland_Digital_Piano_SERIAL-00.analog-stereo",
+            "monitor_source": None,
+            "sample_specification": "s24le 2ch 44100Hz",
+            "mute": False,
+            "volume": {
+                "front-left": {"value": 65_536},
+                "front-right": {"value": 65_536},
+            },
+            "properties": {
+                "device.class": "sound",
+                "media.class": "Audio/Source",
+                "device.vendor.id": "0x0582",
+                "device.product.id": "0x01b1",
+                "device.serial": "Roland_Roland_Digital_Piano_SERIAL",
+                "device.bus_path": "pci-0000:00:14.0-usb-0:2:1.0",
+            },
+        }
+        identity, source_name = MODULE._pactl_source_identity(item, contract)
+        self.assertEqual(source_name, item["name"])
+        self.assertEqual(identity["source_kind"], "usb-audio")
+        self.assertEqual(identity["sample_rate_hz"], 44_100)
+        self.assertRegex(identity["serial_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(identity["bus_path_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_production_mix_requires_pipewire_object_identity(self) -> None:
+        contract = MODULE.load_catalog("production-mix-recording")["source"]
+        item = {
+            "name": "audio-production-mix",
+            "monitor_source": None,
+            "sample_specification": "s32le 2ch 48000Hz",
+            "mute": False,
+            "volume": {
+                "front-left": {"value": 65_536},
+                "front-right": {"value": 65_536},
+            },
+            "properties": {"media.class": "Audio/Source"},
+        }
+        with self.assertRaisesRegex(ValueError, "PipeWire object identity"):
+            MODULE._pactl_source_identity(item, contract)
+
+    def test_production_mix_plan_requires_one_exact_named_source(self) -> None:
+        identity = self.source_identity("production-mix-recording")
+        ready = self.plan_with_snapshot(
+            "production-mix-recording",
+            {"complete": True, "identity": identity},
+        )
+        self.assertTrue(ready["ready"])
+        self.assertEqual(ready["identity"]["profile"], "production")
+        self.assertEqual(
+            ready["identity"]["source"]["identity"]["declared_upstream_roles"],
+            ["voice", "roland", "software-instrument"],
+        )
+        missing = self.plan_with_snapshot(
+            "production-mix-recording",
+            {"complete": False, "identity": None, "match_count": 0},
+        )
+        self.assertIn(
+            "production-mix-source-not-unique", missing["readiness"]["blockers"]
+        )
+
+    def test_persisted_specs_and_commands_remain_session_typed(self) -> None:
+        for session_type in MODULE.SESSION_TYPES:
+            with self.subTest(session_type=session_type):
+                spec = self.persisted_spec(session_type=session_type)
+                MODULE._validate_persisted_spec(spec, state_root=self.state)
+                argv = MODULE._parecord_argv(
+                    spec,
+                    pathlib.Path("/usr/bin/parecord"),
+                    pathlib.Path(spec["paths"]["partial"]),
+                )
+                contract = MODULE.load_catalog(session_type)
+                self.assertIn(
+                    f"--client-name={contract['process']['client_name']}", argv
+                )
+                self.assertIn(
+                    f"--stream-name={contract['process']['stream_name_prefix']}-{spec['session_id']}",
+                    argv,
+                )
+                self.assertIn("--rate=48000", argv)
+                self.assertIn("--channels=2", argv)
 
     def test_plain_filename_rejects_paths_hidden_files_and_controls(self) -> None:
         for invalid in ("../take.wav", ".take.wav", "take", "take\n.wav", " /tmp.wav"):
@@ -172,12 +456,18 @@ class RecordingSessionTest(unittest.TestCase):
             mock.patch.object(
                 MODULE,
                 "_physical_projection",
-                return_value=({"state_sha256": None}, ["physical-fact:rode_nt1a_connected"]),
+                return_value=(
+                    {"state_sha256": None},
+                    ["physical-fact:rode_nt1a_connected"],
+                ),
             ),
             mock.patch.object(
                 MODULE,
                 "_laboratory_projection",
-                return_value=({"state_sha256": None}, ["laboratory-gate:voice-level-measurement"]),
+                return_value=(
+                    {"state_sha256": None},
+                    ["laboratory-gate:voice-level-measurement"],
+                ),
             ),
             mock.patch.object(
                 MODULE,
@@ -208,7 +498,9 @@ class RecordingSessionTest(unittest.TestCase):
         path = self.state / "receipt.json"
         MODULE._atomic_private_json(path, {"value": 1}, create_only=True)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(MODULE._safe_json_read(path, require_private=True), {"value": 1})
+        self.assertEqual(
+            MODULE._safe_json_read(path, require_private=True), {"value": 1}
+        )
         with self.assertRaises(MODULE.RecordingError):
             MODULE._atomic_private_json(path, {"value": 2}, create_only=True)
 
@@ -253,16 +545,16 @@ class RecordingSessionTest(unittest.TestCase):
             ),
             mock.patch.object(
                 MODULE.LAB,
-                "load_catalog",
-                return_value={gate: {"binds_physical_state": True}},
-            ),
-            mock.patch.object(
-                MODULE.LAB, "has_bound_voice_capture", return_value=True
+                "gate_resolution",
+                return_value=(set(), {gate: "physical-state-changed"}),
             ),
         ):
             projection, blockers = MODULE._laboratory_projection(
                 self.base / "laboratory.json",
-                {"state_sha256": "a" * 64},
+                {
+                    "state_path": str(self.base / "physical.json"),
+                    "state_sha256": "a" * 64,
+                },
                 [gate],
             )
         self.assertEqual(blockers, [f"laboratory-gate:{gate}"])
@@ -276,6 +568,7 @@ class RecordingSessionTest(unittest.TestCase):
         changed_source = {"identity": {"fingerprint": "changed"}}
         spec = {
             "plan_identity": {
+                "session_type": "voice-recording",
                 "physical": physical,
                 "laboratory": laboratory,
                 "source": planned_source,
@@ -307,7 +600,7 @@ class RecordingSessionTest(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(
-                MODULE.RecordingError, "MOTU source identity changed"
+                MODULE.RecordingError, "recording source identity changed"
             ):
                 MODULE._validate_live_preconditions(spec)
 
@@ -333,8 +626,9 @@ class RecordingSessionTest(unittest.TestCase):
         session_id: str = "a" * 24,
         name: str = "take.wav",
         maximum_seconds: int = 60,
+        session_type: str = "voice-recording",
     ) -> dict[str, object]:
-        plan_identity = self.ready_plan()["identity"]
+        plan_identity = self.ready_plan(session_type=session_type)["identity"]
         final = self.output / name
         plan_identity["output"] = {
             "root": str(self.output),
@@ -345,9 +639,7 @@ class RecordingSessionTest(unittest.TestCase):
         }
         capture = plan_identity["capture"]
         capture["maximum_duration_seconds"] = maximum_seconds
-        capture["maximum_file_bytes"] = (
-            48_000 * 2 * 4 * maximum_seconds + 1_048_576
-        )
+        capture["maximum_file_bytes"] = 48_000 * 2 * 4 * maximum_seconds + 1_048_576
         plan_identity["state_root"] = str(self.state)
         paths = MODULE._session_paths(self.state, session_id)
         return {
@@ -359,9 +651,7 @@ class RecordingSessionTest(unittest.TestCase):
             "plan_identity": plan_identity,
             "source_name": "redacted",
             "paths": {
-                "partial": str(
-                    self.output / f".{final.stem}.{session_id}.partial.wav"
-                ),
+                "partial": str(self.output / f".{final.stem}.{session_id}.partial.wav"),
                 "final": str(final),
                 "result": str(paths["result"]),
             },
@@ -449,9 +739,7 @@ class RecordingSessionTest(unittest.TestCase):
             self.assertIsNotNone(identity)
             changed = dict(identity)
             changed["start_ticks"] += 1
-            self.assertTrue(
-                MODULE._terminate_exact_process(changed, grace_seconds=0.1)
-            )
+            self.assertTrue(MODULE._terminate_exact_process(changed, grace_seconds=0.1))
             self.assertIsNone(process.poll())
             self.assertTrue(
                 MODULE._terminate_exact_process(identity, grace_seconds=1.0)
@@ -472,7 +760,9 @@ class RecordingSessionTest(unittest.TestCase):
         partial.write_bytes(b"partial bytes")
         partial.chmod(0o600)
         MODULE._atomic_private_json(paths["spec"], spec, create_only=True)
-        spec_sha = MODULE._safe_regular_binding(paths["spec"], require_private=True)["sha256"]
+        spec_sha = MODULE._safe_regular_binding(paths["spec"], require_private=True)[
+            "sha256"
+        ]
         state = {
             "schema_version": 1,
             "kind": "audio_recording_session_state",
@@ -512,17 +802,13 @@ class RecordingSessionTest(unittest.TestCase):
 
         bad_mode = json.loads(json.dumps(spec))
         bad_mode["plan_identity"]["output"]["mode"] = "0644"
-        bad_mode["plan_sha256"] = MODULE.canonical_sha256(
-            bad_mode["plan_identity"]
-        )
+        bad_mode["plan_sha256"] = MODULE.canonical_sha256(bad_mode["plan_identity"])
         with self.assertRaisesRegex(MODULE.RecordingError, "output plan"):
             MODULE._validate_persisted_spec(bad_mode, state_root=self.state)
 
         bad_root = json.loads(json.dumps(spec))
         bad_root["plan_identity"]["state_root"] = str(self.base / "other-state")
-        bad_root["plan_sha256"] = MODULE.canonical_sha256(
-            bad_root["plan_identity"]
-        )
+        bad_root["plan_sha256"] = MODULE.canonical_sha256(bad_root["plan_identity"])
         with self.assertRaisesRegex(MODULE.RecordingError, "state root"):
             MODULE._validate_persisted_spec(bad_root, state_root=self.state)
 
@@ -605,7 +891,8 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertEqual(binding["launcher_symlink_target"], resolved.name)
         self.assertEqual(binding["resolved"]["path"], str(resolved))
         self.assertEqual(
-            binding["resolved"]["sha256"], hashlib.sha256(resolved.read_bytes()).hexdigest()
+            binding["resolved"]["sha256"],
+            hashlib.sha256(resolved.read_bytes()).hexdigest(),
         )
 
     def test_parecord_binding_rejects_missing_test_executable(self) -> None:
@@ -636,14 +923,18 @@ class RecordingSessionTest(unittest.TestCase):
         final = self.output / "worker.wav"
         capture = {
             "sample_rate_hz": 48_000,
+            "sample_format": "s32le",
             "channels": 2,
+            "channel_map": "front-left,front-right",
             "maximum_duration_seconds": 1,
             "maximum_file_bytes": 2_000_000,
             "startup_timeout_seconds": 2,
             "stop_grace_seconds": 2,
         }
         plan_identity = {
+            "session_type": "voice-recording",
             "capture": capture,
+            "process": MODULE.load_catalog("voice-recording")["process"],
             "parecord": {"resolved": {"path": str(fake)}},
         }
         spec = {
@@ -693,14 +984,10 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertFalse(partial.exists())
         self.assertEqual(stat.S_IMODE(final.stat().st_mode), 0o600)
 
-
     def test_start_persists_recoverable_state_before_spawn_failure(self) -> None:
         plan = self.ready_plan()
         source_name = "fake-source"
-        plan["identity"]["source"]["identity"]["node_name_sha256"] = (
-            hashlib.sha256(source_name.encode()).hexdigest()
-        )
-        plan["plan_sha256"] = MODULE.canonical_sha256(plan["identity"])
+        self.refresh_source_binding(plan, source_name)
         with (
             mock.patch.object(MODULE, "build_plan", return_value=plan),
             mock.patch.object(
@@ -725,18 +1012,14 @@ class RecordingSessionTest(unittest.TestCase):
         stored = json.loads(state_path.read_text())
         self.assertEqual(stored["phase"], "starting")
         self.assertIsNone(stored["process"])
-        recovered = MODULE.recover_session(
-            state_root=self.state, session_id=session_id
-        )
+        recovered = MODULE.recover_session(state_root=self.state, session_id=session_id)
         self.assertEqual(recovered["status"], "failed-preserved")
         self.assertFalse((self.state / "active.json").exists())
 
     def test_start_timeout_uses_exact_termination_and_remains_recoverable(self) -> None:
         plan = self.ready_plan()
         source_name = "fake-source"
-        plan["identity"]["source"]["identity"]["node_name_sha256"] = (
-            hashlib.sha256(source_name.encode()).hexdigest()
-        )
+        self.refresh_source_binding(plan, source_name)
         plan["identity"]["capture"]["startup_timeout_seconds"] = 1
         plan["plan_sha256"] = MODULE.canonical_sha256(plan["identity"])
         identity = {
@@ -776,9 +1059,7 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertIn("recover session", str(context.exception))
         terminate.assert_called_once_with(
             identity,
-            grace_seconds=float(
-                plan["identity"]["capture"]["stop_grace_seconds"]
-            ),
+            grace_seconds=float(plan["identity"]["capture"]["stop_grace_seconds"]),
         )
         active = json.loads((self.state / "active.json").read_text())
         session_id = active["session_id"]
@@ -786,9 +1067,7 @@ class RecordingSessionTest(unittest.TestCase):
         stored = json.loads(state_path.read_text())
         self.assertEqual(stored["phase"], "running")
         self.assertEqual(stored["process"], identity)
-        recovered = MODULE.recover_session(
-            state_root=self.state, session_id=session_id
-        )
+        recovered = MODULE.recover_session(state_root=self.state, session_id=session_id)
         self.assertEqual(recovered["status"], "failed-preserved")
         self.assertFalse((self.state / "active.json").exists())
 
