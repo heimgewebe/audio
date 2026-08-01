@@ -50,6 +50,24 @@ record-stop:
 record-recover:
     ./scripts/audio-record recover
 
+production-mix-init:
+    ./scripts/audio-production-mix init
+
+production-mix-plan:
+    ./scripts/audio-production-mix plan
+
+production-mix-start plan_sha256:
+    ./scripts/audio-production-mix start --expected-plan-sha256 "{{plan_sha256}}"
+
+production-mix-status:
+    ./scripts/audio-production-mix status
+
+production-mix-stop:
+    ./scripts/audio-production-mix stop
+
+production-mix-recover:
+    ./scripts/audio-production-mix recover
+
 whale-doctor:
     python3 scripts/whale_live.py doctor
 

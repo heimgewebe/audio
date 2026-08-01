@@ -75,6 +75,7 @@ Abnahme Aufnahme-Schaltflächen.
 - [Physische Verifikation](docs/physical-verification-workflow.md)
 - [Kalibrier- und Messworkflow](docs/calibration-workflow.md)
 - [Gehärtete Aufnahmesitzungen](docs/recording-session-workflow.md)
+- [Verwalteter Produktions-Mixgraph](docs/production-mix-graph.md)
 - [Read-only Profilplanung](docs/profile-planning.md)
 - [Aktuelle Heim-PC-Baseline](baselines/heim-pc/2026-07-27/README.md)
 
@@ -87,9 +88,11 @@ just check
 ./scripts/audio-truth verify ~/.local/state/audio/truth/latest.v1.json
 ./scripts/audio-physical status
 ./scripts/audio-plan desktop-mixed
+./scripts/audio-production-mix plan
 ./scripts/audio-record plan stimme-01.wav --session-type voice-recording --maximum-seconds 1800
 ./scripts/audio-record plan roland-01.wav --session-type roland-audio-recording --maximum-seconds 1800
 ./scripts/audio-record plan produktion-01.wav --session-type production-mix-recording --maximum-seconds 1800
+# Mixgraph und Aufnahme starten jeweils erst nach Prüfung ihres eigenen Plan-Hashes.
 ./scripts/audio-record status
 # Start erst nach bestandenem Plan mit identischem --session-type und --expected-plan-sha256.
 python3 scripts/whale_live.py doctor
