@@ -155,3 +155,38 @@ folgenden Punkte bleiben blockiert, bis reale Evidenz vorliegt:
 
 Diese Grenze verhindert, dass technische Bereitschaft mit gemessener
 Audioqualität verwechselt wird.
+
+## Ungültiger oder unlesbarer Labor-, Physik- oder Geräteübungszustand
+
+Gespeicherte Labor-, Physik- und Geräteübungsbelege werden an den
+Gate-Katalog, den Profilkatalog, die Beobachterimplementierung und die physische
+Wahrheit gebunden. Ändert sich eine dieser Bindungen, ist die gespeicherte
+Evidenz nicht mehr gültig — das ist gewollt und
+erzwingt eine Nachmessung.
+
+Der Bericht bricht in diesem Fall nicht ab. Ungültige Zustände, beispielsweise
+Katalogdrift, und technisch unlesbare Zustände erhalten verschiedene stabile
+Status- und Fehlercodes. Das gilt auch für Geräteverlust-Receipts. Die
+betroffene Projektion wird mit `state_readable: false`,
+`state_status: invalid|unreadable`, einem pfadfreien `state_issue_code` und ohne
+`state_sha256` ausgewiesen. Abhängige Gates bleiben unaufgelöst oder werden bei
+belegter Vertragsinvalidität invalidiert; `single-truth-model` meldet `unknown`
+statt `pass`. `audio-truth verify` akzeptiert den fehlenden Digest ausschließlich
+mit diesen expliziten Feldern und erzwingt eine leere Projektion. Unbekanntes
+bleibt so ausdrücklich unbekannt, statt den gesamten Bericht unverfügbar zu
+machen.
+
+
+### Report-Schema und Verifikationsgrenze
+
+Neue Truth-Reports verwenden `schema_version: 2`, weil `state_sha256` bei einem
+nicht auswertbaren privaten Zustand ausdrücklich `null` sein kann. Der aktuelle
+Verifier akzeptiert weiterhin unveränderte Schema-v1-Reports, verlangt dort aber
+für jede Legacy-Projektion einen gültigen Zustandsdigest. Schema-v2-Projektionen
+müssen die Lesbarkeit explizit ausweisen.
+
+`verify` bestätigt strukturelle Integrität, Bindungen und die neu berechnete
+Gate-Projektion. Das Verifikationsreceipt weist zusätzlich
+`operationally_ready` und alle `nonpassing_gates` aus; ein strukturell gültiger
+Report ist damit nicht automatisch eine Freigabe für Messung, Profilanwendung
+oder Betrieb.

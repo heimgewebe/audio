@@ -27,7 +27,9 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
+SUPPORTED_REPORT_SCHEMA_VERSIONS = frozenset({1, REPORT_SCHEMA_VERSION})
+STATE_ISSUE_CODE_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,127}\Z")
 MAX_COMMAND_BYTES = 262_144
 MAX_REPORT_BYTES = 4_194_304
 COMMAND_TIMEOUT_SECONDS = 12.0
@@ -734,9 +736,55 @@ def graph_fingerprint(report: dict[str, Any]) -> str:
     return LABORATORY.graph_fingerprint(graph)
 
 
+def classify_state_issue(error: ValueError | OSError, component: str) -> dict[str, str]:
+    if isinstance(error, OSError):
+        if isinstance(error, PermissionError):
+            suffix = "permission-denied"
+        elif isinstance(error, FileNotFoundError):
+            suffix = "missing"
+        else:
+            suffix = "io-error"
+        return {
+            "state_status": "unreadable",
+            "state_issue_code": f"{component}-state-{suffix}",
+        }
+    message = str(error).lower()
+    if "catalog changed" in message:
+        suffix = "catalog-changed"
+    elif "schema" in message or "kind" in message or "root" in message:
+        suffix = "contract-invalid"
+    else:
+        suffix = "invalid"
+    return {
+        "state_status": "invalid",
+        "state_issue_code": f"{component}-state-{suffix}",
+    }
+
+
+def failed_physical_projection(
+    issue: dict[str, str], catalog: list[str]
+) -> dict[str, Any]:
+    return {
+        "state_sha256": None,
+        "catalog_sha256": None,
+        "template_sha256": None,
+        "resolved_count": 0,
+        "total_count": len(catalog),
+        "complete": False,
+        "unresolved": catalog,
+        "authority": "explicit-human-observation-only",
+        "state_readable": False,
+        **issue,
+    }
+
+
 def physical_projection(state_path: pathlib.Path) -> dict[str, Any]:
-    state = PHYSICAL.read_state(state_path)
-    status = PHYSICAL.status_payload(state, state_path)
+    catalog = sorted(PHYSICAL.load_json(PHYSICAL.CATALOG_PATH).get("facts", {}))
+    try:
+        state = PHYSICAL.read_state(state_path)
+        status = PHYSICAL.status_payload(state, state_path)
+    except (ValueError, OSError) as error:
+        return failed_physical_projection(classify_state_issue(error, "physical"), catalog)
     return {
         "state_sha256": sha256_json(state),
         "catalog_sha256": state.get("catalog_sha256"),
@@ -746,6 +794,9 @@ def physical_projection(state_path: pathlib.Path) -> dict[str, Any]:
         "complete": status["complete"],
         "unresolved": status["unresolved"],
         "authority": "explicit-human-observation-only",
+        "state_readable": True,
+        "state_status": "readable",
+        "state_issue_code": None,
     }
 
 
@@ -788,6 +839,9 @@ def empty_device_exercise_projection() -> dict[str, Any]:
         "complete": False,
         "receipts": {},
         "authority": "validated-private-device-exercise-state",
+        "state_readable": True,
+        "state_status": "readable",
+        "state_issue_code": None,
     }
 
 
@@ -834,15 +888,53 @@ def laboratory_receipt_binding(gate: str, evidence: dict[str, Any]) -> dict[str,
     }
 
 
+def failed_laboratory_projection(
+    issue: dict[str, str],
+    current_graph_fingerprint: str,
+    catalog: list[str],
+) -> dict[str, Any]:
+    invalidated = (
+        {gate: issue["state_issue_code"] for gate in catalog}
+        if issue["state_status"] == "invalid"
+        else {}
+    )
+    return {
+        "state_sha256": None,
+        "catalog_sha256": None,
+        "profile_catalog_sha256": None,
+        "resolved": [],
+        "invalidated": invalidated,
+        "unresolved": catalog,
+        "recorded_count": 0,
+        "resolved_count": 0,
+        "total_count": len(catalog),
+        "complete": False,
+        "current_graph_fingerprint": current_graph_fingerprint,
+        "receipts": {},
+        "authority": "validated-private-laboratory-state",
+        "state_readable": False,
+        **issue,
+    }
+
+
 def laboratory_projection(
     state_path: pathlib.Path,
     physical_state_path: pathlib.Path,
     graph: dict[str, Any],
     qobuz_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    state = LABORATORY.read_state(state_path)
-    status = LABORATORY.status_payload(state, state_path, physical_state_path)
     current_graph_fingerprint = LABORATORY.graph_fingerprint(graph)
+    catalog_mapping = LABORATORY.load_catalog()
+    catalog = sorted(catalog_mapping)
+    try:
+        state = LABORATORY.read_state(state_path)
+        status = LABORATORY.status_payload(state, state_path, physical_state_path)
+    except (ValueError, OSError) as error:
+        return failed_laboratory_projection(
+            classify_state_issue(error, "laboratory"),
+            current_graph_fingerprint,
+            catalog,
+        )
     resolved = set(status["resolved"])
     incompatible: dict[str, str] = {}
     for gate in sorted(resolved):
@@ -880,7 +972,7 @@ def laboratory_projection(
     resolved -= set(incompatible)
     invalidated = dict(status["invalidated"])
     invalidated.update(incompatible)
-    catalog = set(LABORATORY.load_catalog())
+    catalog = set(catalog_mapping)
     receipts = {
         gate: {
             "status": receipt.get("status"),
@@ -911,6 +1003,68 @@ def laboratory_projection(
         "current_graph_fingerprint": current_graph_fingerprint,
         "receipts": receipts,
         "authority": "validated-private-laboratory-state",
+        "state_readable": True,
+        "state_status": "readable",
+        "state_issue_code": None,
+    }
+
+
+def failed_device_exercise_projection(issue: dict[str, str]) -> dict[str, Any]:
+    current_snapshots = {
+        device: DEVICE_LOSS.scan_device(device)
+        for device in sorted(DEVICE_LOSS.DEVICE_SPECS)
+    }
+    current = {
+        device: DEVICE_LOSS.current_summary(snapshot)
+        for device, snapshot in sorted(current_snapshots.items())
+    }
+    current_identity_sha256 = sha256_json(
+        DEVICE_LOSS.current_identity_binding(current)
+    )
+    truth_binding_sha256 = sha256_json(
+        {
+            "state_sha256": None,
+            "current_identity_sha256": current_identity_sha256,
+        }
+    )
+    return {
+        "state_sha256": None,
+        "current": current,
+        "current_identity_sha256": current_identity_sha256,
+        "truth_binding_sha256": truth_binding_sha256,
+        "resolved": [],
+        "invalidated": (
+            {
+                device: issue["state_issue_code"]
+                for device in sorted(DEVICE_LOSS.DEVICE_SPECS)
+            }
+            if issue["state_status"] == "invalid"
+            else {}
+        ),
+        "unresolved": sorted(DEVICE_LOSS.DEVICE_SPECS),
+        "recorded_count": 0,
+        "resolved_count": 0,
+        "total_count": len(DEVICE_LOSS.DEVICE_SPECS),
+        "complete": False,
+        "receipts": {},
+        "authority": "validated-private-device-exercise-state",
+        "state_readable": False,
+        **issue,
+    }
+
+
+def device_exercise_projection(state_path: pathlib.Path) -> dict[str, Any]:
+    try:
+        projection = DEVICE_LOSS.truth_projection(state_path)
+    except (ValueError, OSError) as error:
+        return failed_device_exercise_projection(
+            classify_state_issue(error, "device-exercise")
+        )
+    return {
+        **projection,
+        "state_readable": True,
+        "state_status": "readable",
+        "state_issue_code": None,
     }
 
 
@@ -948,7 +1102,7 @@ def laboratory_gate_status(
     if gate in invalidated:
         return _gate(
             "invalidated",
-            f"Stored evidence for {gate} is invalid under current physical truth.",
+            f"Stored evidence for {gate} is invalid under current truth bindings.",
             blockers=[f"{gate}: {invalidated[gate]}"],
         )
     return _gate(
@@ -1055,8 +1209,19 @@ def build_gate_status(
         device_detail = (
             "MOTU and Roland require explicit physical loss/recovery exercises."
         )
-    return {
-        "single-truth-model": _gate(
+    unreadable_states = [
+        projection["state_issue_code"]
+        for projection in (physical, laboratory, device_exercises)
+        if projection.get("state_readable") is False
+    ]
+    if unreadable_states:
+        truth_model = _gate(
+            "unknown",
+            "A bound truth component is unreadable; its state stays explicitly unknown.",
+            blockers=unreadable_states,
+        )
+    else:
+        truth_model = _gate(
             "pass",
             "Contracts, Doctor, physical state, laboratory state and runtime observation are bound in one report.",
             evidence=[
@@ -1066,7 +1231,9 @@ def build_gate_status(
                 laboratory["state_sha256"],
                 device_exercises["truth_binding_sha256"],
             ],
-        ),
+        )
+    return {
+        "single-truth-model": truth_model,
         "host-read-boundary": _gate(
             "pass",
             "Every command is argv-only, mutation-denylist checked and memory bounded.",
@@ -1242,13 +1409,13 @@ def build_report(
         doctor_report.get("graph", {}),
         playback["qobuz_current_track"],
     )
-    device_exercises = DEVICE_LOSS.truth_projection(device_exercise_state)
+    device_exercises = device_exercise_projection(device_exercise_state)
     contracts = contract_projection()
     runtime = build_runtime_projection(runtime_results, doctor_report)
     generated = generated_at or dt.datetime.now(dt.timezone.utc).isoformat()
     LABORATORY.parse_timestamp(generated, "generated_at")
     report: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": REPORT_SCHEMA_VERSION,
         "kind": "audio_system_truth_report",
         "generated_at": generated,
         "read_only_contract": True,
@@ -1300,11 +1467,115 @@ def validate_sha(value: Any, label: str) -> None:
         raise ValueError(f"{label} is missing or invalid")
 
 
-def validate_device_exercise_projection(projection: Any) -> None:
+def validate_state_readability(
+    projection: dict[str, Any], label: str, *, allow_legacy: bool
+) -> str:
+    readable = projection.get("state_readable")
+    status = projection.get("state_status")
+    issue_code = projection.get("state_issue_code")
+    if readable is None:
+        if not allow_legacy:
+            raise ValueError(f"{label} state readability is missing")
+        if status is not None or issue_code is not None:
+            raise ValueError(f"legacy-readable {label} state metadata is inconsistent")
+        validate_sha(projection.get("state_sha256"), f"{label} state digest")
+        return "readable"
+    if readable is True:
+        if status != "readable" or issue_code is not None:
+            raise ValueError(f"readable {label} state metadata is inconsistent")
+        validate_sha(projection.get("state_sha256"), f"{label} state digest")
+        return "readable"
+    if readable is not False or status not in {"invalid", "unreadable"}:
+        raise ValueError(f"{label} state readability is invalid")
+    if projection.get("state_sha256") is not None:
+        raise ValueError(f"failed {label} state must not carry a digest")
+    if not isinstance(issue_code, str) or STATE_ISSUE_CODE_PATTERN.fullmatch(issue_code) is None:
+        raise ValueError(f"failed {label} state must carry a stable issue code")
+    expected_prefix = f"{label.replace(' ', '-')}-state-"
+    if not issue_code.startswith(expected_prefix):
+        raise ValueError(f"failed {label} state issue code has the wrong component")
+    return status
+
+
+def validate_failed_physical_projection(projection: dict[str, Any], status: str) -> None:
+    catalog = set(PHYSICAL.load_json(PHYSICAL.CATALOG_PATH).get("facts", {}))
+    unresolved = projection.get("unresolved")
+    if not isinstance(unresolved, list) or set(unresolved) != catalog:
+        raise ValueError("failed physical state must leave the complete catalog unresolved")
+    if (
+        projection.get("resolved_count") != 0
+        or projection.get("total_count") != len(catalog)
+        or projection.get("complete") is not False
+        or projection.get("catalog_sha256") is not None
+        or projection.get("template_sha256") is not None
+    ):
+        raise ValueError("failed physical state must be an empty projection")
+    if status not in {"invalid", "unreadable"}:
+        raise ValueError("failed physical state status is invalid")
+
+
+def validate_laboratory_projection(
+    projection: dict[str, Any], status: str
+) -> None:
+    catalog = set(LABORATORY.load_catalog())
+    resolved_raw = projection.get("resolved")
+    unresolved_raw = projection.get("unresolved")
+    invalidated_raw = projection.get("invalidated")
+    receipts = projection.get("receipts")
+    if (
+        not isinstance(resolved_raw, list)
+        or not isinstance(unresolved_raw, list)
+        or not isinstance(invalidated_raw, dict)
+        or not isinstance(receipts, dict)
+    ):
+        raise ValueError("laboratory gate sets are invalid")
+    resolved = set(resolved_raw)
+    unresolved = set(unresolved_raw)
+    invalidated = set(invalidated_raw)
+    if resolved | unresolved != catalog or resolved & unresolved or resolved & invalidated:
+        raise ValueError("laboratory gate sets do not match the catalog")
+    if not invalidated <= unresolved or set(receipts) - catalog:
+        raise ValueError("laboratory invalidation or receipt set is invalid")
+    if projection.get("resolved_count") != len(resolved):
+        raise ValueError("laboratory resolved count mismatch")
+    if projection.get("recorded_count") != len(receipts):
+        raise ValueError("laboratory recorded count mismatch")
+    if projection.get("total_count") != len(catalog):
+        raise ValueError("laboratory total count mismatch")
+    if projection.get("complete") is not (resolved == catalog):
+        raise ValueError("laboratory completeness mismatch")
+    if status == "readable":
+        if not resolved <= set(receipts) or not invalidated <= set(receipts):
+            raise ValueError("laboratory receipt set is incomplete")
+        return
+    expected_invalidated = catalog if status == "invalid" else set()
+    expected_issue_code = projection.get("state_issue_code")
+    if status == "invalid" and set(invalidated_raw.values()) != {expected_issue_code}:
+        raise ValueError("failed laboratory invalidations must use the state issue code")
+    if (
+        resolved
+        or unresolved != catalog
+        or invalidated != expected_invalidated
+        or receipts
+        or projection.get("resolved_count") != 0
+        or projection.get("recorded_count") != 0
+        or projection.get("complete") is not False
+        or projection.get("catalog_sha256") is not None
+        or projection.get("profile_catalog_sha256") is not None
+    ):
+        raise ValueError("failed laboratory state must be an empty projection")
+
+
+def validate_device_exercise_projection(
+    projection: Any, *, allow_legacy: bool
+) -> None:
     if not isinstance(projection, dict):
         raise ValueError("device exercise projection is missing")
     state_sha256 = projection.get("state_sha256")
-    validate_sha(state_sha256, "device exercise state digest")
+    state_status = validate_state_readability(
+        projection, "device exercise", allow_legacy=allow_legacy
+    )
+    state_readable = state_status == "readable"
     current = projection.get("current")
     if not isinstance(current, dict):
         raise ValueError("current device identity projection is missing")
@@ -1389,8 +1660,22 @@ def validate_device_exercise_projection(projection: Any) -> None:
         raise ValueError("invalidated device exercise is not unresolved")
     if set(receipts) - catalog:
         raise ValueError("device exercise receipts contain an unknown device")
-    if not resolved <= set(receipts) or not invalidated <= set(receipts):
+    if not resolved <= set(receipts):
         raise ValueError("device exercise receipt set is incomplete")
+    if state_readable and not invalidated <= set(receipts):
+        raise ValueError("device exercise receipt set is incomplete")
+    if not state_readable:
+        expected_invalidated = catalog if state_status == "invalid" else set()
+        expected_issue_code = projection.get("state_issue_code")
+        if state_status == "invalid" and set(invalidated_raw.values()) != {expected_issue_code}:
+            raise ValueError("failed device invalidations must use the state issue code")
+        if (
+            resolved
+            or unresolved != catalog
+            or invalidated != expected_invalidated
+            or receipts
+        ):
+            raise ValueError("failed device exercise state must be an empty projection")
     if projection.get("resolved_count") != len(resolved):
         raise ValueError("device exercise resolved count mismatch")
     if projection.get("recorded_count") != len(receipts):
@@ -1433,11 +1718,13 @@ def validate_device_exercise_projection(projection: Any) -> None:
 
 
 def verify_report(report: dict[str, Any]) -> None:
+    schema_version = report.get("schema_version")
     if (
-        report.get("schema_version") != SCHEMA_VERSION
+        schema_version not in SUPPORTED_REPORT_SCHEMA_VERSIONS
         or report.get("kind") != "audio_system_truth_report"
     ):
         raise ValueError("truth report schema or kind is unsupported")
+    allow_legacy = schema_version == 1
     LABORATORY.parse_timestamp(report.get("generated_at"), "generated_at")
     contracts = report.get("contracts")
     if not isinstance(contracts, dict) or not isinstance(contracts.get("bindings"), dict):
@@ -1462,7 +1749,9 @@ def verify_report(report: dict[str, Any]) -> None:
         )
     ):
         raise ValueError("truth report projections are incomplete")
-    validate_device_exercise_projection(device_exercises)
+    validate_device_exercise_projection(
+        device_exercises, allow_legacy=allow_legacy
+    )
     if runtime.get("graph_fingerprint") != graph_fingerprint(doctor):
         raise ValueError("doctor graph fingerprint mismatch")
     if runtime.get("process_fingerprint") != process_fingerprint(runtime.get("processes", [])):
@@ -1498,15 +1787,16 @@ def verify_report(report: dict[str, Any]) -> None:
         raise ValueError("runtime journal projection is invalid")
     for key in ("audio_output_sha256", "xrun_like_lines_sha256", "disk_usage_output_sha256"):
         validate_sha(journal.get(key), f"journal {key}")
-    for label, projection in (("physical", physical), ("laboratory", laboratory)):
-        validate_sha(projection.get("state_sha256"), f"{label} state digest")
+    physical_status = validate_state_readability(
+        physical, "physical", allow_legacy=allow_legacy
+    )
+    laboratory_status = validate_state_readability(
+        laboratory, "laboratory", allow_legacy=allow_legacy
+    )
+    if physical_status != "readable":
+        validate_failed_physical_projection(physical, physical_status)
+    validate_laboratory_projection(laboratory, laboratory_status)
     resolved = set(laboratory.get("resolved", []))
-    unresolved = set(laboratory.get("unresolved", []))
-    invalidated = set((laboratory.get("invalidated") or {}).keys())
-    if resolved & unresolved or resolved & invalidated:
-        raise ValueError("laboratory gate sets overlap")
-    if laboratory.get("resolved_count") != len(resolved):
-        raise ValueError("laboratory resolved count mismatch")
     current_qobuz = playback.get("qobuz_current_track")
     if current_qobuz is not None:
         current_qobuz = normalize_qobuz_context(
@@ -1627,6 +1917,22 @@ def verify_report(report: dict[str, Any]) -> None:
     validate_sha(report.get("report_sha256"), "truth report digest")
     if sha256_json(report_digest_core(report)) != report["report_sha256"]:
         raise ValueError("truth report digest mismatch")
+
+
+def readiness_projection(report: dict[str, Any]) -> dict[str, Any]:
+    gates = report.get("gates")
+    if not isinstance(gates, dict):
+        raise ValueError("gate projection is missing")
+    nonpassing = sorted(
+        name
+        for name, gate in gates.items()
+        if not isinstance(gate, dict) or gate.get("status") != "pass"
+    )
+    return {
+        "operationally_ready": not nonpassing,
+        "nonpassing_gates": nonpassing,
+        "verification_scope": "structural-integrity-not-operational-readiness",
+    }
 
 
 def _value(report: dict[str, Any], *path: str) -> Any:
@@ -1904,6 +2210,7 @@ def main(argv: list[str] | None = None) -> int:
                     "report_sha256": report["report_sha256"],
                     "truth_chain_sha256": report["truth_chain_sha256"],
                     "authenticity_requires_external_digest_pin": True,
+                    **readiness_projection(report),
                     "gates": {
                         name: gate["status"] for name, gate in report["gates"].items()
                     },
@@ -1925,6 +2232,7 @@ def main(argv: list[str] | None = None) -> int:
                     "report_sha256": report["report_sha256"],
                     "truth_chain_sha256": report["truth_chain_sha256"],
                     "authenticity_requires_external_digest_pin": True,
+                    **readiness_projection(report),
                 },
                 indent=2,
             )
