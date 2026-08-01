@@ -5,9 +5,16 @@ Wiedergabe, Instrumente und experimentelle Musiksysteme.
 
 ## Aktueller Zustand
 
-Dieses Repository beginnt bewusst mit **Planung, Sicherheitsregeln und
-Betriebsverträgen**. Produktive Audiokonfiguration wird ausschließlich über
-spätere profilgebundene Apply- und Rollback-Verträge verändert.
+Dieses Repository entwickelt die Audiokonfiguration über **Planung,
+Sicherheitsregeln und überprüfbare Betriebsverträge**. Produktiver Zustand darf
+nur profilgebunden über `plan`, `diff`, `apply`, `rollback` und Recovery
+verändert werden.
+
+Der erste wirkende Profilvertrag ist auf `desktop-mixed` begrenzt. Er bindet die
+MOTU-M2-Standardsenke, 48 kHz und Quantum 1.024 an einen exakten Planhash, ein
+privates atomares Journal und anschließenden Live-Readback. Ohne eine eindeutig
+beobachtete MOTU M2 bleibt bereits der Dry-Run fail-closed; so ist es im
+aktuellen Readback vom 1. August 2026. Weitere Profile bleiben gesperrt.
 
 Der Altbestand `heimgewebe/hausKI-audio` bleibt zunächst unverändert und dient
 nur als geprüfte Ideen- und Verhaltensquelle. Seine Implementierung und Historie
@@ -54,6 +61,10 @@ begrenzt Laufzeit und Dateigröße und veröffentlicht die WAV-Datei ohne
 `recover` nachvollziehbar; die Audiozentrale erhält erst nach physischer
 Abnahme Aufnahme-Schaltflächen.
 
+Der neue `desktop-mixed`-Transitionsvertrag ist zunächst nur per CLI
+freigegeben, bis Browserbestätigung, Recoveryanzeige und Laborabnahme separat
+bestehen. Er schaltet keine Aufnahme und keinen Produktions-Mixgraph.
+
 ## Dokumente
 
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
@@ -66,6 +77,7 @@ Abnahme Aufnahme-Schaltflächen.
 - [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)
 - [Spezifikation der lokalen Audiozentrale](docs/plans/local-audio-control-ui-v1.md)
 - [Deployment der Audiozentrale](docs/control-deployment.md)
+- [Profiltransition und Recovery](docs/profile-transition-workflow.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)
 - [Read-only Baselines](docs/baselines/README.md)
 - [Systemwahrheit und Drift](docs/system-truth-workflow.md)
@@ -88,6 +100,8 @@ just check
 ./scripts/audio-truth verify ~/.local/state/audio/truth/latest.v1.json
 ./scripts/audio-physical status
 ./scripts/audio-plan desktop-mixed
+./scripts/audio-transition diff desktop-mixed
+./scripts/audio-transition status
 ./scripts/audio-production-mix plan
 ./scripts/audio-record plan stimme-01.wav --session-type voice-recording --maximum-seconds 1800
 ./scripts/audio-record plan roland-01.wav --session-type roland-audio-recording --maximum-seconds 1800

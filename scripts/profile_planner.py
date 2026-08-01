@@ -208,11 +208,16 @@ def plan(
             mismatched_facts.append(
                 {"fact": key, "expected": expected, "observed": facts[key]}
             )
-    laboratory_state = LABORATORY.read_state(gate_state_path)
-    resolved_gate_names, invalidated_laboratory_gates = (
-        LABORATORY.gate_resolution(laboratory_state, state_path)
-    )
     required_laboratory_gates = list(spec.get("required_laboratory_gates", []))
+    if required_laboratory_gates:
+        laboratory_state = LABORATORY.read_state(gate_state_path)
+        resolved_gate_names, invalidated_laboratory_gates = LABORATORY.gate_resolution(
+            laboratory_state, state_path
+        )
+    else:
+        laboratory_state = {"gates": {}}
+        resolved_gate_names = set()
+        invalidated_laboratory_gates = {}
     desired = spec.get("desired", {})
     observed = doctor.get("graph", {})
     planned_graph = planned_graph_context(
@@ -312,9 +317,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("profile")
     parser.add_argument("--state", type=pathlib.Path, default=PHYSICAL.DEFAULT_STATE)
-    parser.add_argument(
-        "--gates", type=pathlib.Path, default=LABORATORY.DEFAULT_STATE
-    )
+    parser.add_argument("--gates", type=pathlib.Path, default=LABORATORY.DEFAULT_STATE)
     parser.add_argument("--qobuz-track-fingerprint")
     parser.add_argument("--qobuz-track-rate-hz", type=int)
     args = parser.parse_args()

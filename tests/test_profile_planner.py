@@ -26,8 +26,9 @@ class ProfilePlannerTests(unittest.TestCase):
         }
 
     def test_voice_is_blocked_without_physical_facts(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            MODULE, "doctor_report", self.doctor
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(MODULE, "doctor_report", self.doctor),
         ):
             state = pathlib.Path(directory) / "state.json"
             result = MODULE.plan(
@@ -48,8 +49,9 @@ class ProfilePlannerTests(unittest.TestCase):
             )
 
     def test_desktop_mixed_is_ready(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            MODULE, "doctor_report", self.doctor
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(MODULE, "doctor_report", self.doctor),
         ):
             result = MODULE.plan(
                 "desktop-mixed",
@@ -59,10 +61,47 @@ class ProfilePlannerTests(unittest.TestCase):
             self.assertTrue(result["ready_for_laboratory_apply"])
             self.assertEqual(result["proposed_changes"], [])
 
+    def test_gate_free_profile_does_not_read_unrelated_laboratory_state(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(MODULE, "doctor_report", self.doctor),
+            mock.patch.object(
+                MODULE.LABORATORY,
+                "read_state",
+                side_effect=AssertionError(
+                    "gate-free profile must not read laboratory state"
+                ),
+            ),
+        ):
+            result = MODULE.plan(
+                "desktop-mixed",
+                pathlib.Path(directory) / "state.json",
+                pathlib.Path(directory) / "stale-gates.json",
+            )
+            self.assertTrue(result["ready_for_laboratory_apply"])
+            self.assertEqual(result["resolved_laboratory_gates"], [])
+
+    def test_gated_profile_still_requires_valid_laboratory_state(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(MODULE, "doctor_report", self.doctor),
+            mock.patch.object(
+                MODULE.LABORATORY,
+                "read_state",
+                side_effect=ValueError("stale laboratory state"),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "stale laboratory state"):
+                MODULE.plan(
+                    "voice-recording",
+                    pathlib.Path(directory) / "state.json",
+                    pathlib.Path(directory) / "stale-gates.json",
+                )
 
     def test_production_is_known_but_explicitly_not_executable(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            MODULE, "doctor_report", self.doctor
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(MODULE, "doctor_report", self.doctor),
         ):
             result = MODULE.plan(
                 "production",
@@ -78,8 +117,9 @@ class ProfilePlannerTests(unittest.TestCase):
             self.assertTrue(result["planned_blocker"])
 
     def test_mismatched_required_fact_blocks(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            MODULE, "doctor_report", self.doctor
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(MODULE, "doctor_report", self.doctor),
         ):
             state_path = pathlib.Path(directory) / "state.json"
             state = MODULE.PHYSICAL.empty_state()
@@ -96,13 +136,12 @@ class ProfilePlannerTests(unittest.TestCase):
                 pathlib.Path(directory) / "gates.json",
             )
             self.assertFalse(result["ready_for_laboratory_apply"])
-            self.assertEqual(
-                result["mismatched_physical_facts"][0]["expected"], "tx"
-            )
+            self.assertEqual(result["mismatched_physical_facts"][0]["expected"], "tx")
 
     def test_piano_recording_is_blocked_by_resampling_gate(self):
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
-            MODULE, "doctor_report", self.doctor
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(MODULE, "doctor_report", self.doctor),
         ):
             result = MODULE.plan(
                 "piano-digital-recording",
