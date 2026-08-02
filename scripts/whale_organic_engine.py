@@ -11,10 +11,16 @@ state emphasis, deterministic gestures, and exact silence when inactive.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 
 from whale_live_engine import WhaleVoiceConfig, clamp
 from whale_morph_engine import MAX_MASTER_GAIN, WhaleMorphBank, frequency_to_midi_note
-from whale_source_filter_engine import WhaleSourceFilterBank, WhaleSourceFilterVoice
+from whale_source_filter_engine import (
+    SOURCE_FILTER_COMPONENT_NAMES,
+    SourceFilterComponentConfig,
+    WhaleSourceFilterBank,
+    WhaleSourceFilterVoice,
+)
 
 STATE_TONAL = 0
 STATE_PULSED = 1
@@ -23,6 +29,55 @@ STATE_BROKEN = 3
 STATE_COUNT = 4
 STATE_ONSET_SECONDS = 0.42
 STATE_CROSSFADE_SECONDS = 0.14
+ORGANIC_COMPONENT_NAMES = (
+    *SOURCE_FILTER_COMPONENT_NAMES,
+    "register_bass",
+    "articulation_states",
+    "pitch_contour",
+)
+
+
+@dataclass(frozen=True)
+class OrganicComponentConfig:
+    """Complete immutable ten-component Organic study configuration."""
+
+    source_filter: SourceFilterComponentConfig = field(
+        default_factory=SourceFilterComponentConfig
+    )
+    register_bass: bool = True
+    articulation_states: bool = True
+    pitch_contour: bool = True
+
+    @classmethod
+    def morph_neutral(cls) -> "OrganicComponentConfig":
+        return cls(
+            source_filter=SourceFilterComponentConfig.morph_neutral(),
+            register_bass=False,
+            articulation_states=False,
+            pitch_contour=False,
+        )
+
+    @classmethod
+    def from_enabled(cls, enabled: frozenset[str]) -> "OrganicComponentConfig":
+        unknown = enabled - set(ORGANIC_COMPONENT_NAMES)
+        if unknown:
+            raise ValueError(f"unknown Organic components: {sorted(unknown)}")
+        source_enabled = frozenset(enabled & set(SOURCE_FILTER_COMPONENT_NAMES))
+        return cls(
+            source_filter=SourceFilterComponentConfig.from_enabled(source_enabled),
+            register_bass="register_bass" in enabled,
+            articulation_states="articulation_states" in enabled,
+            pitch_contour="pitch_contour" in enabled,
+        )
+
+    def enabled_names(self) -> tuple[str, ...]:
+        enabled = list(self.source_filter.enabled_names())
+        for name in ("register_bass", "articulation_states", "pitch_contour"):
+            if getattr(self, name):
+                enabled.append(name)
+        return tuple(enabled)
+
+
 STATE_PATTERNS = (
     (
         STATE_TONAL,
@@ -76,11 +131,14 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
         *,
         bank: WhaleMorphBank | None = None,
         source_filter_bank: WhaleSourceFilterBank | None = None,
+        component_config: OrganicComponentConfig | None = None,
     ) -> None:
+        self.organic_components = component_config or OrganicComponentConfig()
         super().__init__(
             config,
             source_filter_bank=source_filter_bank,
             morph_bank=bank,
+            component_config=self.organic_components.source_filter,
         )
         self.organic_phrase_serial = 0
         self.organic_state_seed = 0
@@ -130,18 +188,22 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
                 ((seed >> 13) & 0xFFFF) / 65536.0
             )
             self.organic_bass_phase = ((seed >> 16) & 0xFFFF) / 65536.0
-            self.organic_pulse_strength = max(
-                0.06, (bounded_velocity / 127.0 - 0.58) * 0.34
+            self.organic_pulse_strength = (
+                max(0.06, (bounded_velocity / 127.0 - 0.58) * 0.34)
+                if self.organic_components.articulation_states
+                else 0.0
             )
-        elif repeated:
+        elif repeated and self.organic_components.articulation_states:
             self.organic_pulse_strength = 0.72
         elif previous_note is not None:
             interval = abs(note - previous_note)
-            self.organic_pulse_strength = max(
-                self.organic_pulse_strength,
-                clamp(interval / 36.0, 0.04, 0.24),
-            )
-            self.glide_seconds = clamp(self.glide_seconds * 0.72, 0.035, 0.18)
+            if self.organic_components.articulation_states:
+                self.organic_pulse_strength = max(
+                    self.organic_pulse_strength,
+                    clamp(interval / 36.0, 0.04, 0.24),
+                )
+            if self.organic_components.pitch_contour:
+                self.glide_seconds = clamp(self.glide_seconds * 0.72, 0.035, 0.18)
 
     def note_off(self, note: int) -> None:
         if 21 <= note <= 108:
@@ -184,6 +246,8 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
         self.organic_control_velocity = clamp(self.velocity, 0.0, 1.0)
 
     def _macro_contour_cents(self) -> float:
+        if not self.organic_components.pitch_contour:
+            return 0.0
         age_seconds = self.note_age_frames / self.config.sample_rate
         velocity = clamp(self.velocity, 0.0, 1.0)
         onset = -(16.0 - 7.0 * velocity) * math.exp(-age_seconds / 0.16)
@@ -220,6 +284,8 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
         return pattern[segment_index % len(pattern)]
 
     def _state_weights(self, age_frames: int) -> tuple[float, float, float, float]:
+        if not self.organic_components.articulation_states:
+            return (1.0, 0.0, 0.0, 0.0)
         age_seconds = max(0, age_frames) / self.config.sample_rate
         if age_seconds < STATE_ONSET_SECONDS:
             return (1.0, 0.0, 0.0, 0.0)
@@ -244,12 +310,19 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
         return tuple(weights)  # type: ignore[return-value]
 
     def _process_block(self, base: list[float]) -> list[float]:
+        if not (
+            self.organic_components.register_bass
+            or self.organic_components.articulation_states
+        ):
+            return list(base)
         sample_rate = self.config.sample_rate
         frequency = max(self.organic_control_frequency, 1.0)
         velocity = self.organic_control_velocity
         note = frequency_to_midi_note(frequency)
         bass_weight = clamp((55.0 - note) / 24.0, 0.0, 1.0)
         bass_weight = bass_weight * bass_weight * (3.0 - 2.0 * bass_weight)
+        if not self.organic_components.register_bass:
+            bass_weight = 0.0
         bass_cutoff = clamp(frequency * 3.2, 75.0, 560.0)
         bass_alpha = 1.0 - math.exp(-2.0 * math.pi * bass_cutoff / sample_rate)
         activity_attack = 1.0 - math.exp(-1.0 / (sample_rate * 0.008))
@@ -314,6 +387,8 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
                 + 0.10 * self.organic_pulse_strength
                 - pulsed * 0.055 * (1.0 - pulse_wave)
                 - broken * 0.035 * (1.0 - pulse_wave)
+                if self.organic_components.articulation_states
+                else 1.0
             )
             edge = source_sample - self.organic_bass_lowpass
             source_roughness = clamp(
@@ -327,6 +402,8 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
                 * state_texture
                 * source_roughness
                 * (0.041 + 0.072 * source_high_band)
+                if self.organic_components.articulation_states
+                else 0.0
             )
             raw = source_sample * pulse_gain + bass_body + state_edge
             sample = raw / (1.0 + 1.20 * abs(raw))

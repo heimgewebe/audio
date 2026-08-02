@@ -47,7 +47,7 @@ EXTERNAL_EVALUATION_MANIFEST = (
     ROOT / "assets" / "whale-sources" / "evaluation" / "manifest.json"
 )
 EXPECTED_EXTERNAL_EVALUATION_MANIFEST_SHA256 = (
-    "a7409a5b27ca03bf04a4f10d558208b985b184933bc0b1b4b9d45d43bec8a0ff"
+    "9bdcf78fdc4d0f1fce77d4e2defa877910ea5102e66e515704fceaee123dd39d"
 )
 SCALAR_FEATURES = (
     "envelope",

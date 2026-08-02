@@ -1,0 +1,176 @@
+{
+  "candidate": {
+    "candidate_id": "morph",
+    "enabled_components": [],
+    "evaluation_alias": {
+      "alias": "frozen-candidate",
+      "target": "morph"
+    },
+    "evaluation_variant_id": "morph",
+    "internal_report_sha256": "5b4af52b2ae861bfd88b76bf62bcf6432780915e9c8a1d84a88f4797592c5d32",
+    "path": "assets/whale-sources/studies/organic-ablation-v51/frozen-candidate.json",
+    "sha256": "5255f89c15c8f2ffb2e4c18634a67b1a82bd67bbe16715c6828fc017dd89485d",
+    "source_revision": "e1dfac1c1414c58a4f349c8ae2ae6bedeb58ad95"
+  },
+  "clips": [
+    {
+      "analysis_lowpass_hz": null,
+      "call_type": "unclassified humpback whale call",
+      "license": "Public-Domain-US-NOAA",
+      "population": "North Pacific / Alaska",
+      "processed_sha256": "1a38ba45c88e3cabbf72ffc50026bdfb4fe9882018cebd5e7f3a658497484822",
+      "raw_sha256": "54a91b3c3e488941697acdf01face985ad149ca91e5d85af0f3ec8b1ad00ab42",
+      "recording_conditions": "winter 1999 field recording; published source accelerated 10x; derivative restores nominal speed",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 1.5557881614583335,
+          "harmonic_profile_distance": 2.9931484529761914,
+          "high_band_distance": 1.3142733312500001,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 0.24953864236111112,
+          "pulse_rate_distance": 2.2792105125,
+          "pulse_strength_distance": 1.8970898217592593,
+          "resonance_focus_distance": 0.45014880952380953,
+          "secondary_ratio_distance": 1.4757416416666673,
+          "secondary_strength_distance": 4.308034879166667,
+          "similarity_score_0_to_1": 0.17073804499890638,
+          "spectral_tilt_distance": 1.6874496614583336,
+          "subharmonic_distance": 2.5509248479166655,
+          "temporal_total_distance": 1.7676247976300707,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.292517423177083,
+          "harmonic_profile_distance": 3.199529904761906,
+          "high_band_distance": 1.5134470916666671,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 0.2992150474537037,
+          "pulse_rate_distance": 1.9947493376388896,
+          "pulse_strength_distance": 1.8124879479166667,
+          "resonance_focus_distance": 0.43452380952380953,
+          "secondary_ratio_distance": 1.5585475750000002,
+          "secondary_strength_distance": 4.523742022916665,
+          "similarity_score_0_to_1": 0.15379037024906628,
+          "spectral_tilt_distance": 1.907445446180556,
+          "subharmonic_distance": 2.4952486166666668,
+          "temporal_total_distance": 1.8721648360355354,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-alaska-winter-1999-independent",
+      "source_nyquist_hz": null,
+      "source_recording_id": "alaska-winter-1999",
+      "source_sample_rate_hz": null,
+      "source_url": null,
+      "target_summary": {
+        "duration_seconds": 20.0,
+        "envelope_q10": 0.18376968,
+        "envelope_q90": 0.82257094,
+        "median_f0_hz": 666.66666667,
+        "median_periodicity": 0.98812073,
+        "voiced_fraction": 1.0
+      }
+    }
+  ],
+  "distance_model": {
+    "aggregation": "mean-of-normalized-capped-feature-distances",
+    "control_points": 48,
+    "feature_scales": {
+      "envelope": 0.16,
+      "harmonic_profile_l1": 0.35,
+      "high_band_ratio": 0.1,
+      "periodicity": 0.18,
+      "pulse_rate_hz": 1.5,
+      "pulse_strength": 0.18,
+      "resonance_ratio_1": 1.4,
+      "resonance_ratio_2": 2.0,
+      "secondary_ratio": 0.45,
+      "secondary_strength": 0.1,
+      "spectral_tilt": 0.12,
+      "subharmonic_strength": 0.1
+    },
+    "per_control_point_cap": 8.0,
+    "periodicity_complement_double_weighted": false
+  },
+  "does_not_establish": [
+    "biological_identity",
+    "perceptual_equivalence",
+    "complete_population_generalization",
+    "independence_of_segments_from_the_same_recording"
+  ],
+  "evaluation_manifests": [
+    {
+      "path": "assets/whale-sources/evaluation/manifest.json",
+      "sha256": "9bdcf78fdc4d0f1fce77d4e2defa877910ea5102e66e515704fceaee123dd39d"
+    }
+  ],
+  "independent_field_recording_count": 1,
+  "kind": "humpback_whale_organic_external_generalization_study",
+  "model_or_parameter_tuning_forbidden": true,
+  "parameters_changed_after_external_results": false,
+  "recording_summaries": [
+    {
+      "population": "North Pacific / Alaska",
+      "recording_conditions": "winter 1999 field recording; published source accelerated 10x; derivative restores nominal speed",
+      "segment_count": 1,
+      "source_recording_id": "alaska-winter-1999",
+      "variant_summaries": [
+        {
+          "best_clip_similarity": 0.17073804499890638,
+          "clip_count": 1,
+          "mean_similarity": 0.17073804499890638,
+          "median_similarity": 0.17073804499890638,
+          "similarity_variance": 0.0,
+          "variant_id": "morph",
+          "worst_clip_similarity": 0.17073804499890638
+        },
+        {
+          "best_clip_similarity": 0.15379037024906628,
+          "clip_count": 1,
+          "mean_similarity": 0.15379037024906628,
+          "median_similarity": 0.15379037024906628,
+          "similarity_variance": 0.0,
+          "variant_id": "organic-full",
+          "worst_clip_similarity": 0.15379037024906628
+        }
+      ]
+    }
+  ],
+  "schema_version": 2,
+  "segment_count": 1,
+  "summaries": [
+    {
+      "best_clip_similarity": 0.17073804499890638,
+      "clip_count": 1,
+      "mean_similarity": 0.17073804499890638,
+      "median_similarity": 0.17073804499890638,
+      "similarity_variance": 0.0,
+      "variant_id": "morph",
+      "worst_clip_similarity": 0.17073804499890638
+    },
+    {
+      "best_clip_similarity": 0.15379037024906628,
+      "clip_count": 1,
+      "mean_similarity": 0.15379037024906628,
+      "median_similarity": 0.15379037024906628,
+      "similarity_variance": 0.0,
+      "variant_id": "organic-full",
+      "worst_clip_similarity": 0.15379037024906628
+    }
+  ],
+  "voice_model_manifest_sha256": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a",
+  "wall_clock_timings_included": false
+}

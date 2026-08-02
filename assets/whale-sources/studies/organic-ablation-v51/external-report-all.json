@@ -1,0 +1,800 @@
+{
+  "candidate": {
+    "candidate_id": "morph",
+    "enabled_components": [],
+    "evaluation_alias": {
+      "alias": "frozen-candidate",
+      "target": "morph"
+    },
+    "evaluation_variant_id": "morph",
+    "internal_report_sha256": "5b4af52b2ae861bfd88b76bf62bcf6432780915e9c8a1d84a88f4797592c5d32",
+    "path": "assets/whale-sources/studies/organic-ablation-v51/frozen-candidate.json",
+    "sha256": "5255f89c15c8f2ffb2e4c18634a67b1a82bd67bbe16715c6828fc017dd89485d",
+    "source_revision": "e1dfac1c1414c58a4f349c8ae2ae6bedeb58ad95"
+  },
+  "clips": [
+    {
+      "analysis_lowpass_hz": null,
+      "call_type": "unclassified humpback whale call",
+      "license": "Public-Domain-US-NOAA",
+      "population": "North Pacific / Alaska",
+      "processed_sha256": "1a38ba45c88e3cabbf72ffc50026bdfb4fe9882018cebd5e7f3a658497484822",
+      "raw_sha256": "54a91b3c3e488941697acdf01face985ad149ca91e5d85af0f3ec8b1ad00ab42",
+      "recording_conditions": "winter 1999 field recording; published source accelerated 10x; derivative restores nominal speed",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 1.5557881614583335,
+          "harmonic_profile_distance": 2.9931484529761914,
+          "high_band_distance": 1.3142733312500001,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 0.24953864236111112,
+          "pulse_rate_distance": 2.2792105125,
+          "pulse_strength_distance": 1.8970898217592593,
+          "resonance_focus_distance": 0.45014880952380953,
+          "secondary_ratio_distance": 1.4757416416666673,
+          "secondary_strength_distance": 4.308034879166667,
+          "similarity_score_0_to_1": 0.17073804499890638,
+          "spectral_tilt_distance": 1.6874496614583336,
+          "subharmonic_distance": 2.5509248479166655,
+          "temporal_total_distance": 1.7676247976300707,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.292517423177083,
+          "harmonic_profile_distance": 3.199529904761906,
+          "high_band_distance": 1.5134470916666671,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 0.2992150474537037,
+          "pulse_rate_distance": 1.9947493376388896,
+          "pulse_strength_distance": 1.8124879479166667,
+          "resonance_focus_distance": 0.43452380952380953,
+          "secondary_ratio_distance": 1.5585475750000002,
+          "secondary_strength_distance": 4.523742022916665,
+          "similarity_score_0_to_1": 0.15379037024906628,
+          "spectral_tilt_distance": 1.907445446180556,
+          "subharmonic_distance": 2.4952486166666668,
+          "temporal_total_distance": 1.8721648360355354,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-alaska-winter-1999-independent",
+      "source_nyquist_hz": null,
+      "source_recording_id": "alaska-winter-1999",
+      "source_sample_rate_hz": null,
+      "source_url": null,
+      "target_summary": {
+        "duration_seconds": 20.0,
+        "envelope_q10": 0.18376968,
+        "envelope_q90": 0.82257094,
+        "median_f0_hz": 666.66666667,
+        "median_periodicity": 0.98812073,
+        "voiced_fraction": 1.0
+      }
+    },
+    {
+      "analysis_lowpass_hz": 1650,
+      "call_type": "unclassified fixed-interval field segment",
+      "license": "NOAA-PMEL-public-information-free-distribution",
+      "population": "North Atlantic / Stellwagen Bank",
+      "processed_sha256": "9a3d3662c1b01761cb0bffc6de7997d54f1419719ea063f803fd91eb230032e8",
+      "raw_sha256": "24bf234e0d302ca91fd3e31f3b964185244403f74666569b753ca12080b59750",
+      "recording_conditions": "humpback vocalizations with ship noise",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 2.263911440104167,
+          "harmonic_profile_distance": 4.839676857142859,
+          "high_band_distance": 3.947603297916667,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 3.063716658564814,
+          "pulse_rate_distance": 2.5270235630555553,
+          "pulse_strength_distance": 3.8935238067129627,
+          "resonance_focus_distance": 0.4962797619047619,
+          "secondary_ratio_distance": 0.6083282567739451,
+          "secondary_strength_distance": 5.283164441666666,
+          "similarity_score_0_to_1": 0.06311007334655028,
+          "spectral_tilt_distance": 2.2099498159722226,
+          "subharmonic_distance": 3.5250409125,
+          "temporal_total_distance": 2.7628748811849486,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.0527686236979164,
+          "harmonic_profile_distance": 4.707370810119048,
+          "high_band_distance": 3.7600507937500005,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 3.0136728692129626,
+          "pulse_rate_distance": 2.3153122623611107,
+          "pulse_strength_distance": 3.616757833333333,
+          "resonance_focus_distance": 0.4806547619047619,
+          "secondary_ratio_distance": 0.4956446450869247,
+          "secondary_strength_distance": 5.060084947916667,
+          "similarity_score_0_to_1": 0.07442723908126564,
+          "spectral_tilt_distance": 2.415661100694445,
+          "subharmonic_distance": 2.7765660395833334,
+          "temporal_total_distance": 2.597933287463772,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-stellwagen-ship-independent-01",
+      "source_nyquist_hz": 22050.0,
+      "source_recording_id": "stellwagen",
+      "source_sample_rate_hz": 44100,
+      "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-SBNMS.wav",
+      "target_summary": {
+        "duration_seconds": 2.0,
+        "envelope_q10": 0.79850645,
+        "envelope_q90": 0.90525961,
+        "median_f0_hz": 1333.33333333,
+        "median_periodicity": 0.3669483,
+        "voiced_fraction": 0.95833333
+      }
+    },
+    {
+      "analysis_lowpass_hz": 1650,
+      "call_type": "unclassified fixed-interval field segment",
+      "license": "NOAA-PMEL-public-information-free-distribution",
+      "population": "North Atlantic / Stellwagen Bank",
+      "processed_sha256": "79400963a41471f5b1d9561aa4aa6dc5f230d9d6f2b6e1f249384cee2636f153",
+      "raw_sha256": "24bf234e0d302ca91fd3e31f3b964185244403f74666569b753ca12080b59750",
+      "recording_conditions": "humpback vocalizations with ship noise",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 2.0760455013020835,
+          "harmonic_profile_distance": 4.981869426785716,
+          "high_band_distance": 3.8649994312500002,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 3.400234096064816,
+          "pulse_rate_distance": 1.4574819322222223,
+          "pulse_strength_distance": 3.5734221782407403,
+          "resonance_focus_distance": 0.4620535714285714,
+          "secondary_ratio_distance": 0.6126671353329729,
+          "secondary_strength_distance": 5.365220406249999,
+          "similarity_score_0_to_1": 0.06931799940195216,
+          "spectral_tilt_distance": 2.2453695607638893,
+          "subharmonic_distance": 3.5271912875000013,
+          "temporal_total_distance": 2.6690506748807987,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.0245621744791666,
+          "harmonic_profile_distance": 4.8391915047619065,
+          "high_band_distance": 3.665825670833333,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 3.3501903067129635,
+          "pulse_rate_distance": 1.370786919583333,
+          "pulse_strength_distance": 3.31017903125,
+          "resonance_focus_distance": 0.4776785714285714,
+          "secondary_ratio_distance": 0.5020144667188691,
+          "secondary_strength_distance": 5.1421409124999995,
+          "similarity_score_0_to_1": 0.0795603376734028,
+          "spectral_tilt_distance": 2.450819907986111,
+          "subharmonic_distance": 2.76380693125,
+          "temporal_total_distance": 2.531239580744402,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-stellwagen-ship-independent-02",
+      "source_nyquist_hz": 22050.0,
+      "source_recording_id": "stellwagen",
+      "source_sample_rate_hz": 44100,
+      "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-SBNMS.wav",
+      "target_summary": {
+        "duration_seconds": 2.0,
+        "envelope_q10": 0.76294024,
+        "envelope_q90": 0.87195988,
+        "median_f0_hz": 1333.33333333,
+        "median_periodicity": 0.34807618,
+        "voiced_fraction": 0.95833333
+      }
+    },
+    {
+      "analysis_lowpass_hz": 1650,
+      "call_type": "unclassified fixed-interval field segment",
+      "license": "NOAA-PMEL-public-information-free-distribution",
+      "population": "North Atlantic / Stellwagen Bank",
+      "processed_sha256": "14f8301aa781113d31b4cbb844acee34af12bee31a7431100eb285cd721e0dce",
+      "raw_sha256": "24bf234e0d302ca91fd3e31f3b964185244403f74666569b753ca12080b59750",
+      "recording_conditions": "humpback vocalizations with ship noise",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 2.278779528645833,
+          "harmonic_profile_distance": 4.93410738809524,
+          "high_band_distance": 4.618673872916665,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 3.1186410775462963,
+          "pulse_rate_distance": 1.1429293329166668,
+          "pulse_strength_distance": 3.532202436342592,
+          "resonance_focus_distance": 0.5491071428571429,
+          "secondary_ratio_distance": 0.6097568075225194,
+          "secondary_strength_distance": 5.270101222916666,
+          "similarity_score_0_to_1": 0.06802476378461136,
+          "spectral_tilt_distance": 2.047562557291667,
+          "subharmonic_distance": 3.6036330916666675,
+          "temporal_total_distance": 2.6878834667979246,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.1359924804687496,
+          "harmonic_profile_distance": 4.776106389880954,
+          "high_band_distance": 4.419500112500001,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 3.0685972881944448,
+          "pulse_rate_distance": 1.6031250111111115,
+          "pulse_strength_distance": 3.2133119953703706,
+          "resonance_focus_distance": 0.6108630952380952,
+          "secondary_ratio_distance": 0.49807955011224364,
+          "secondary_strength_distance": 5.047021729166667,
+          "similarity_score_0_to_1": 0.07505372446870172,
+          "spectral_tilt_distance": 2.250903664930555,
+          "subharmonic_distance": 2.840248735416667,
+          "temporal_total_distance": 2.5895510956356627,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-stellwagen-ship-independent-03",
+      "source_nyquist_hz": 22050.0,
+      "source_recording_id": "stellwagen",
+      "source_sample_rate_hz": 44100,
+      "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-SBNMS.wav",
+      "target_summary": {
+        "duration_seconds": 2.0,
+        "envelope_q10": 0.80082869,
+        "envelope_q90": 0.90135704,
+        "median_f0_hz": 1333.33333333,
+        "median_periodicity": 0.38212658,
+        "voiced_fraction": 1.0
+      }
+    },
+    {
+      "analysis_lowpass_hz": 1650,
+      "call_type": "unclassified fixed-interval field segment",
+      "license": "NOAA-PMEL-public-information-free-distribution",
+      "population": "North Atlantic / Stellwagen Bank",
+      "processed_sha256": "6754c80d5dd736cf4d27947cb0d38cfda9fb4d1449f99f47af3e869a085a18db",
+      "raw_sha256": "24bf234e0d302ca91fd3e31f3b964185244403f74666569b753ca12080b59750",
+      "recording_conditions": "humpback vocalizations with ship noise",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 2.3033976210937497,
+          "harmonic_profile_distance": 4.165842089880954,
+          "high_band_distance": 3.9810519437499994,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 3.293693521990741,
+          "pulse_rate_distance": 3.0073350004166666,
+          "pulse_strength_distance": 3.7202027175925934,
+          "resonance_focus_distance": 0.5796130952380952,
+          "secondary_ratio_distance": 0.6371949050289479,
+          "secondary_strength_distance": 5.175707427083333,
+          "similarity_score_0_to_1": 0.06405866043685635,
+          "spectral_tilt_distance": 2.016270592013889,
+          "subharmonic_distance": 3.5155505437500008,
+          "temporal_total_distance": 2.747956046089756,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.1618559479166666,
+          "harmonic_profile_distance": 4.05592344047619,
+          "high_band_distance": 3.7818781833333333,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 3.2580189571759255,
+          "pulse_rate_distance": 2.7610719480555557,
+          "pulse_strength_distance": 3.6090560358796306,
+          "resonance_focus_distance": 0.6309523809523809,
+          "secondary_ratio_distance": 0.5247716898720319,
+          "secondary_strength_distance": 4.737582295833334,
+          "similarity_score_0_to_1": 0.075234340826662,
+          "spectral_tilt_distance": 2.1415404600694448,
+          "subharmonic_distance": 2.7521661875000003,
+          "temporal_total_distance": 2.5871474923347395,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-stellwagen-ship-independent-04",
+      "source_nyquist_hz": 22050.0,
+      "source_recording_id": "stellwagen",
+      "source_sample_rate_hz": 44100,
+      "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-SBNMS.wav",
+      "target_summary": {
+        "duration_seconds": 2.0,
+        "envelope_q10": 0.80952288,
+        "envelope_q90": 0.88656597,
+        "median_f0_hz": 571.42857143,
+        "median_periodicity": 0.39762417,
+        "voiced_fraction": 0.83333333
+      }
+    },
+    {
+      "analysis_lowpass_hz": 1650,
+      "call_type": "unclassified fixed-interval field segment",
+      "license": "NOAA-PMEL-public-information-free-distribution",
+      "population": "South Pacific / American Samoa",
+      "processed_sha256": "7dee15ac65730cff5e50ae670b154f832094f6967a501f6aa6e8db1114d444b2",
+      "raw_sha256": "2a6c7035808ae31576146d561e4ca08aea77f0851e4212530974cd6abd0bd0a1",
+      "recording_conditions": "humpback vocalizations with snapping shrimp",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 1.7053817825520834,
+          "harmonic_profile_distance": 3.5460539672619045,
+          "high_band_distance": 2.2985369125,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 1.0397275173611111,
+          "pulse_rate_distance": 0.6982180779166668,
+          "pulse_strength_distance": 1.7473924247685193,
+          "resonance_focus_distance": 0.6294642857142857,
+          "secondary_ratio_distance": 0.8951749438996718,
+          "secondary_strength_distance": 4.029359774999999,
+          "similarity_score_0_to_1": 0.1643375214366034,
+          "spectral_tilt_distance": 1.5201710399305561,
+          "subharmonic_distance": 2.931049889583333,
+          "temporal_total_distance": 1.8058329085168678,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.190725018229167,
+          "harmonic_profile_distance": 3.4849391357142863,
+          "high_band_distance": 2.1058632187499993,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 1.0759321747685187,
+          "pulse_rate_distance": 0.5301599958333333,
+          "pulse_strength_distance": 1.4397770972222224,
+          "resonance_focus_distance": 0.6867559523809523,
+          "secondary_ratio_distance": 0.8150318705136509,
+          "secondary_strength_distance": 4.421624610416665,
+          "similarity_score_0_to_1": 0.1619643641708732,
+          "spectral_tilt_distance": 1.5115783593749998,
+          "subharmonic_distance": 2.895403920833333,
+          "temporal_total_distance": 1.8203789422015069,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-american-samoa-shrimp-independent-01",
+      "source_nyquist_hz": 2500.0,
+      "source_recording_id": "american-samoa",
+      "source_sample_rate_hz": 5000,
+      "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-AMSNP.wav",
+      "target_summary": {
+        "duration_seconds": 2.0,
+        "envelope_q10": 0.09845949,
+        "envelope_q90": 0.65992616,
+        "median_f0_hz": 222.22222222,
+        "median_periodicity": 0.90529891,
+        "voiced_fraction": 1.0
+      }
+    },
+    {
+      "analysis_lowpass_hz": 1650,
+      "call_type": "unclassified fixed-interval field segment",
+      "license": "NOAA-PMEL-public-information-free-distribution",
+      "population": "South Pacific / American Samoa",
+      "processed_sha256": "f594e5b26163318f7811f7377b21829b8e93c91f1fa0bd062563504ae0805319",
+      "raw_sha256": "2a6c7035808ae31576146d561e4ca08aea77f0851e4212530974cd6abd0bd0a1",
+      "recording_conditions": "humpback vocalizations with snapping shrimp",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 2.2559531679687503,
+          "harmonic_profile_distance": 3.3512486624999993,
+          "high_band_distance": 2.7165334604166667,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 1.9509555254629631,
+          "pulse_rate_distance": 0.27656276180555556,
+          "pulse_strength_distance": 2.575259585648148,
+          "resonance_focus_distance": 0.6763392857142857,
+          "secondary_ratio_distance": 0.5894329750605111,
+          "secondary_strength_distance": 3.690082091666666,
+          "similarity_score_0_to_1": 0.14057594731266712,
+          "spectral_tilt_distance": 1.0572298402777778,
+          "subharmonic_distance": 3.728151989583333,
+          "temporal_total_distance": 1.962007385984912,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.700209869791667,
+          "harmonic_profile_distance": 3.422071789285715,
+          "high_band_distance": 2.7084026125,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 1.9387609953703706,
+          "pulse_rate_distance": 0.843596046111111,
+          "pulse_strength_distance": 2.2926822696759257,
+          "resonance_focus_distance": 0.7633928571428572,
+          "secondary_ratio_distance": 0.5915579224691551,
+          "secondary_strength_distance": 3.7164576229166673,
+          "similarity_score_0_to_1": 0.13515545338985652,
+          "spectral_tilt_distance": 1.2441908472222225,
+          "subharmonic_distance": 3.0312401874999995,
+          "temporal_total_distance": 2.001329656427379,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-american-samoa-shrimp-independent-02",
+      "source_nyquist_hz": 2500.0,
+      "source_recording_id": "american-samoa",
+      "source_sample_rate_hz": 5000,
+      "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-AMSNP.wav",
+      "target_summary": {
+        "duration_seconds": 2.0,
+        "envelope_q10": 0.08109606,
+        "envelope_q90": 0.31162245,
+        "median_f0_hz": 215.90909091,
+        "median_periodicity": 0.58407482,
+        "voiced_fraction": 1.0
+      }
+    },
+    {
+      "analysis_lowpass_hz": 1650,
+      "call_type": "unclassified fixed-interval field segment",
+      "license": "NOAA-PMEL-public-information-free-distribution",
+      "population": "South Pacific / American Samoa",
+      "processed_sha256": "ebfa42c4617e5e2bdf7fb40b46b1c799f7511895f43806094bbbf1d3cbe99121",
+      "raw_sha256": "2a6c7035808ae31576146d561e4ca08aea77f0851e4212530974cd6abd0bd0a1",
+      "recording_conditions": "humpback vocalizations with snapping shrimp",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 2.425306109375,
+          "harmonic_profile_distance": 3.718645616071429,
+          "high_band_distance": 4.502525395833333,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 3.341434042824074,
+          "pulse_rate_distance": 2.153149433472222,
+          "pulse_strength_distance": 3.336533243055556,
+          "resonance_focus_distance": 0.6049107142857143,
+          "secondary_ratio_distance": 0.634594088354444,
+          "secondary_strength_distance": 5.245458543749999,
+          "similarity_score_0_to_1": 0.07406319310290113,
+          "spectral_tilt_distance": 1.5995315625000002,
+          "subharmonic_distance": 3.0670396083333333,
+          "temporal_total_distance": 2.6028365893450682,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.8954746263020836,
+          "harmonic_profile_distance": 3.5292902202380954,
+          "high_band_distance": 4.303351635416668,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 3.2913902534722213,
+          "pulse_rate_distance": 1.9563505072222223,
+          "pulse_strength_distance": 3.1604453391203706,
+          "resonance_focus_distance": 0.5372023809523809,
+          "secondary_ratio_distance": 0.5181107801381527,
+          "secondary_strength_distance": 5.012995012499999,
+          "similarity_score_0_to_1": 0.08311868490563129,
+          "spectral_tilt_distance": 1.6215550173611109,
+          "subharmonic_distance": 2.48646089375,
+          "temporal_total_distance": 2.4874857539521407,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-american-samoa-shrimp-independent-03",
+      "source_nyquist_hz": 2500.0,
+      "source_recording_id": "american-samoa",
+      "source_sample_rate_hz": 5000,
+      "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-AMSNP.wav",
+      "target_summary": {
+        "duration_seconds": 2.0,
+        "envelope_q10": 0.07609763,
+        "envelope_q90": 0.18028809,
+        "median_f0_hz": 250.0,
+        "median_periodicity": 0.34104358,
+        "voiced_fraction": 0.79166667
+      }
+    },
+    {
+      "analysis_lowpass_hz": 1650,
+      "call_type": "unclassified fixed-interval field segment",
+      "license": "NOAA-PMEL-public-information-free-distribution",
+      "population": "South Pacific / American Samoa",
+      "processed_sha256": "50dccf40c1e73421dfff498e60ee338dda9fe90f3e2d340851c6577a2477ec28",
+      "raw_sha256": "2a6c7035808ae31576146d561e4ca08aea77f0851e4212530974cd6abd0bd0a1",
+      "recording_conditions": "humpback vocalizations with snapping shrimp",
+      "results": [
+        {
+          "enabled_components": [],
+          "envelope_distance": 1.8349192018229166,
+          "harmonic_profile_distance": 2.9418823672619046,
+          "high_band_distance": 2.1177662062500002,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 1.6571220254629628,
+          "pulse_rate_distance": 0.9971812251388884,
+          "pulse_strength_distance": 1.2325643784722224,
+          "resonance_focus_distance": 0.6540178571428572,
+          "secondary_ratio_distance": 0.9629859974308633,
+          "secondary_strength_distance": 5.140639091666666,
+          "similarity_score_0_to_1": 0.1566671290270262,
+          "spectral_tilt_distance": 1.2823287569444441,
+          "subharmonic_distance": 2.7681580958333334,
+          "temporal_total_distance": 1.85363192171416,
+          "variant_id": "morph"
+        },
+        {
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.4668953854166666,
+          "harmonic_profile_distance": 3.229291635714286,
+          "high_band_distance": 2.0339388250000003,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 1.668341712962963,
+          "pulse_rate_distance": 1.0639724672222222,
+          "pulse_strength_distance": 1.329749543981482,
+          "resonance_focus_distance": 0.5848214285714286,
+          "secondary_ratio_distance": 0.7535379185491299,
+          "secondary_strength_distance": 4.411949360416666,
+          "similarity_score_0_to_1": 0.15413603152715302,
+          "spectral_tilt_distance": 1.467738579861111,
+          "subharmonic_distance": 2.8439786520833343,
+          "temporal_total_distance": 1.8699197448625597,
+          "variant_id": "organic-full"
+        }
+      ],
+      "source_id": "noaa-pmel-american-samoa-shrimp-independent-04",
+      "source_nyquist_hz": 2500.0,
+      "source_recording_id": "american-samoa",
+      "source_sample_rate_hz": 5000,
+      "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-AMSNP.wav",
+      "target_summary": {
+        "duration_seconds": 2.0,
+        "envelope_q10": 0.05368352,
+        "envelope_q90": 0.51571279,
+        "median_f0_hz": 181.81818182,
+        "median_periodicity": 0.93883406,
+        "voiced_fraction": 0.89583333
+      }
+    }
+  ],
+  "distance_model": {
+    "aggregation": "mean-of-normalized-capped-feature-distances",
+    "control_points": 48,
+    "feature_scales": {
+      "envelope": 0.16,
+      "harmonic_profile_l1": 0.35,
+      "high_band_ratio": 0.1,
+      "periodicity": 0.18,
+      "pulse_rate_hz": 1.5,
+      "pulse_strength": 0.18,
+      "resonance_ratio_1": 1.4,
+      "resonance_ratio_2": 2.0,
+      "secondary_ratio": 0.45,
+      "secondary_strength": 0.1,
+      "spectral_tilt": 0.12,
+      "subharmonic_strength": 0.1
+    },
+    "per_control_point_cap": 8.0,
+    "periodicity_complement_double_weighted": false
+  },
+  "does_not_establish": [
+    "biological_identity",
+    "perceptual_equivalence",
+    "complete_population_generalization",
+    "independence_of_segments_from_the_same_recording"
+  ],
+  "evaluation_manifests": [
+    {
+      "path": "assets/whale-sources/evaluation/manifest.json",
+      "sha256": "9bdcf78fdc4d0f1fce77d4e2defa877910ea5102e66e515704fceaee123dd39d"
+    },
+    {
+      "path": "assets/whale-sources/evaluation-v2/manifest.json",
+      "sha256": "e42272161dd3864950b7b17f1cecce810b20ab83fec1a71ab763b10c9c07166f"
+    }
+  ],
+  "independent_field_recording_count": 3,
+  "kind": "humpback_whale_organic_external_generalization_study",
+  "model_or_parameter_tuning_forbidden": true,
+  "parameters_changed_after_external_results": false,
+  "recording_summaries": [
+    {
+      "population": "North Pacific / Alaska",
+      "recording_conditions": "winter 1999 field recording; published source accelerated 10x; derivative restores nominal speed",
+      "segment_count": 1,
+      "source_recording_id": "alaska-winter-1999",
+      "variant_summaries": [
+        {
+          "best_clip_similarity": 0.17073804499890638,
+          "clip_count": 1,
+          "mean_similarity": 0.17073804499890638,
+          "median_similarity": 0.17073804499890638,
+          "similarity_variance": 0.0,
+          "variant_id": "morph",
+          "worst_clip_similarity": 0.17073804499890638
+        },
+        {
+          "best_clip_similarity": 0.15379037024906628,
+          "clip_count": 1,
+          "mean_similarity": 0.15379037024906628,
+          "median_similarity": 0.15379037024906628,
+          "similarity_variance": 0.0,
+          "variant_id": "organic-full",
+          "worst_clip_similarity": 0.15379037024906628
+        }
+      ]
+    },
+    {
+      "population": "South Pacific / American Samoa",
+      "recording_conditions": "humpback vocalizations with snapping shrimp",
+      "segment_count": 4,
+      "source_recording_id": "american-samoa",
+      "variant_summaries": [
+        {
+          "best_clip_similarity": 0.1643375214366034,
+          "clip_count": 4,
+          "mean_similarity": 0.13391094771979947,
+          "median_similarity": 0.14862153816984666,
+          "similarity_variance": 0.0012674490320222205,
+          "variant_id": "morph",
+          "worst_clip_similarity": 0.07406319310290113
+        },
+        {
+          "best_clip_similarity": 0.1619643641708732,
+          "clip_count": 4,
+          "mean_similarity": 0.1335936334983785,
+          "median_similarity": 0.14464574245850476,
+          "similarity_variance": 0.0009442620481194303,
+          "variant_id": "organic-full",
+          "worst_clip_similarity": 0.08311868490563129
+        }
+      ]
+    },
+    {
+      "population": "North Atlantic / Stellwagen Bank",
+      "recording_conditions": "humpback vocalizations with ship noise",
+      "segment_count": 4,
+      "source_recording_id": "stellwagen",
+      "variant_summaries": [
+        {
+          "best_clip_similarity": 0.06931799940195216,
+          "clip_count": 4,
+          "mean_similarity": 0.06612787424249253,
+          "median_similarity": 0.06604171211073386,
+          "similarity_variance": 6.790964122250589e-06,
+          "variant_id": "morph",
+          "worst_clip_similarity": 0.06311007334655028
+        },
+        {
+          "best_clip_similarity": 0.0795603376734028,
+          "clip_count": 4,
+          "mean_similarity": 0.07606891051250804,
+          "median_similarity": 0.07514403264768185,
+          "similarity_variance": 4.153064493015852e-06,
+          "variant_id": "organic-full",
+          "worst_clip_similarity": 0.07442723908126564
+        }
+      ]
+    }
+  ],
+  "schema_version": 2,
+  "segment_count": 9,
+  "summaries": [
+    {
+      "best_clip_similarity": 0.17073804499890638,
+      "clip_count": 9,
+      "mean_similarity": 0.10787703698311939,
+      "median_similarity": 0.07406319310290113,
+      "similarity_variance": 0.0020812771893882007,
+      "variant_id": "morph",
+      "worst_clip_similarity": 0.06311007334655028
+    },
+    {
+      "best_clip_similarity": 0.1619643641708732,
+      "clip_count": 9,
+      "mean_similarity": 0.11027117181029028,
+      "median_similarity": 0.08311868490563129,
+      "similarity_variance": 0.0013936120746110903,
+      "variant_id": "organic-full",
+      "worst_clip_similarity": 0.07442723908126564
+    }
+  ],
+  "voice_model_manifest_sha256": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a",
+  "wall_clock_timings_included": false
+}
