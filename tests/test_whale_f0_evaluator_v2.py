@@ -50,6 +50,11 @@ class WhaleF0EvaluatorV2Tests(unittest.TestCase):
             amendment["previous_definition_sha256"],
             "5d5d265cf11b18db708252767c60be927f7cf34d9fb42283355d106c72c26670",
         )
+        self.assertEqual(
+            study.FROZEN_DEFINITION_COMMIT,
+            "bfe237b4fa21a89a712ad49b4bde709ab46d6106",
+        )
+        self.assertEqual(study.definition_commit(), study.FROZEN_DEFINITION_COMMIT)
 
     def test_numeric_contract_remains_locked(self) -> None:
         analysis = self.definition["analysis"]

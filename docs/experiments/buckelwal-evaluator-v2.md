@@ -141,10 +141,11 @@ Kanonische Implementierungsartefakte:
 | Artefakt | SHA-256 |
 |---|---|
 | `scripts/evaluate_whale_f0_v2.py` | `a2270945d5d4a84d614111cd14d67571844e5a14fb0167ae01e93af7578c3025` |
-| `scripts/study_whale_evaluator_v2.py` | `17df1b93928eb907b3044421b97c30d23fa071ee865bb654379cb1a4fcc142b1` |
-| `tests/test_whale_f0_evaluator_v2.py` | `4fd674378f07fe7162c04e1fcd4aca22f5313e99897d41069c770e76d086822d` |
+| `scripts/study_whale_evaluator_v2.py` | `2c9eed166dcc826bd83cd7cc8ea2174fa7dcb0b2d8275238d98fd567ec1b5066` |
+| `tests/test_whale_f0_evaluator_v2.py` | `fc59f75b33677fecbaacd35bc7c9aa9b6420bc9cd785c441cbc0003279b9f796` |
 
 Die fokussierte Testmatrix erzeugt Kontroll- und Sensitivitätsbericht neu und verlangt Bytegleichheit mit den eingecheckten Dateien. Sie prüft zusätzlich Suchrand-Unvoicing, Oktavdiagnostik, Legacy-Reproduktion, Aufnahmeaggregation und Samoa-Bandbreitenverfügbarkeit.
+Der finale Präregistrierungscommit `bfe237b4fa21a89a712ad49b4bde709ab46d6106` ist als wissenschaftliche Konstante gebunden. Die Reproduktion benötigt deshalb weder vollständige Git-Historie noch `git log` und funktioniert auch in flachen CI-Checkouts und Quellarchiven.
 
 ## Nicht belegt
 

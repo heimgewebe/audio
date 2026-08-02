@@ -10,7 +10,6 @@ import math
 import pathlib
 import random
 import statistics
-import subprocess
 import sys
 from typing import Any
 
@@ -37,6 +36,7 @@ from build_whale_voice_model import (  # noqa: E402
 STUDY_ROOT = ROOT / "assets" / "whale-sources" / "studies" / "evaluator-v2"
 REFERENCE_REPORT = STUDY_ROOT / "reference-corpus.json"
 SENSITIVITY_REPORT = STUDY_ROOT / "sensitivity-report.json"
+FROZEN_DEFINITION_COMMIT = "bfe237b4fa21a89a712ad49b4bde709ab46d6106"
 
 
 def canonical_json(value: object) -> bytes:
@@ -51,18 +51,9 @@ def write_report(path: pathlib.Path, value: object) -> str:
 
 
 def definition_commit() -> str:
-    return subprocess.check_output(
-        [
-            "git",
-            "log",
-            "-1",
-            "--format=%H",
-            "--",
-            str(evaluator.DEFINITION_PATH.relative_to(ROOT)),
-        ],
-        cwd=ROOT,
-        text=True,
-    ).strip()
+    # The final preregistration commit is part of the scientific contract.
+    # Do not derive it from local Git history: CI and source archives may be shallow.
+    return FROZEN_DEFINITION_COMMIT
 
 
 def sine_wave(frequency: float, seconds: float, amplitude: float = 0.75) -> list[float]:
