@@ -67,6 +67,8 @@ STATIC_ENDPOINTS = (
 )
 DEFAULT_RELEASE_RETENTION = 3
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+OBJECT_ID_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_OUTPUT_BYTES = 1_048_576
 MAX_STATIC_BYTES = 1_048_576
 
@@ -589,11 +591,15 @@ def release_marker(release: pathlib.Path) -> dict[str, Any]:
     return payload
 
 
-def release_hashes(release: pathlib.Path) -> dict[str, str]:
+def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
     paths = list(BASE_CRITICAL_RELEASE_FILES)
     paths.extend(relative for relative in RUNTIME_FILES if (release / relative).exists())
+    return tuple(dict.fromkeys(paths))
+
+
+def release_hashes(release: pathlib.Path) -> dict[str, str]:
     hashes: dict[str, str] = {}
-    for relative in paths:
+    for relative in critical_release_paths(release):
         target = release.joinpath(*validate_member_name(relative))
         if target.is_symlink() or not target.is_file():
             raise DeployError(f"Kritische Releasedatei fehlt oder ist unsicher: {relative}")
@@ -601,12 +607,37 @@ def release_hashes(release: pathlib.Path) -> dict[str, str]:
     return dict(sorted(hashes.items()))
 
 
-def verify_release_marker(
+def release_marker_payload(
+    *,
+    commit: str,
+    created_at_unix: int,
+    critical_sha256: dict[str, str],
+    upgraded_from_marker_sha256: str | None = None,
+) -> dict[str, Any]:
+    marker: dict[str, Any] = {
+        "schema_version": 2,
+        "kind": "audio_control_release",
+        "commit": commit,
+        "created_at_unix": created_at_unix,
+        "critical_sha256": dict(sorted(critical_sha256.items())),
+        "index_sha256": critical_sha256["ui/index.html"],
+        "app_sha256": critical_sha256["ui/app.js"],
+        "styles_sha256": critical_sha256["ui/styles.css"],
+    }
+    if upgraded_from_marker_sha256 is not None:
+        marker["upgraded_at_unix"] = int(time.time())
+        marker["upgraded_from_marker_sha256"] = upgraded_from_marker_sha256
+    return marker
+
+
+def verify_recorded_release_marker(
     release: pathlib.Path,
     *,
     expected_commit: str | None = None,
 ) -> dict[str, Any]:
     marker = release_marker(release)
+    if marker.get("kind") != "audio_control_release":
+        raise DeployError(f"Releasebeleg hat einen unbekannten Typ: {release}")
     commit = marker.get("commit")
     if not isinstance(commit, str) or not COMMIT_RE.fullmatch(commit):
         raise DeployError(f"Releasebeleg enthält keinen vollständigen Commit: {release}")
@@ -615,11 +646,12 @@ def verify_release_marker(
 
     critical = marker.get("critical_sha256")
     if isinstance(critical, dict):
-        missing = sorted(set(BASE_CRITICAL_RELEASE_FILES) - set(critical))
-        if missing:
-            raise DeployError("Releasebeleg ist unvollständig: " + ", ".join(missing))
         for relative, expected_hash in critical.items():
-            if not isinstance(relative, str) or not isinstance(expected_hash, str):
+            if (
+                not isinstance(relative, str)
+                or not isinstance(expected_hash, str)
+                or not SHA256_RE.fullmatch(expected_hash)
+            ):
                 raise DeployError(f"Releasebeleg hat ungültige Hashwerte: {release}")
             target = release.joinpath(*validate_member_name(relative))
             if target.is_symlink() or not target.is_file():
@@ -634,13 +666,164 @@ def verify_release_marker(
         "ui/styles.css": marker.get("styles_sha256"),
     }
     for relative, expected_hash in legacy.items():
-        if not isinstance(expected_hash, str):
+        if not isinstance(expected_hash, str) or not SHA256_RE.fullmatch(expected_hash):
             raise DeployError(f"Legacy-Releasebeleg ist unvollständig: {release}")
         target = release / relative
         if target.is_symlink() or not target.is_file() or sha256_path(target) != expected_hash:
             raise DeployError(f"Legacy-Releasedatei weicht vom Beleg ab: {relative}")
     return marker
 
+
+def verify_release_marker(
+    release: pathlib.Path,
+    *,
+    expected_commit: str | None = None,
+) -> dict[str, Any]:
+    marker = verify_recorded_release_marker(release, expected_commit=expected_commit)
+    critical = marker.get("critical_sha256")
+    if isinstance(critical, dict):
+        required = set(critical_release_paths(release))
+        missing = sorted(required - set(critical))
+        unexpected = sorted(set(critical) - required)
+        if missing:
+            raise DeployError("Releasebeleg ist unvollständig: " + ", ".join(missing))
+        if unexpected:
+            raise DeployError(
+                "Releasebeleg enthält unerwartete kritische Pfade: "
+                + ", ".join(unexpected)
+            )
+    return marker
+
+
+def current_release_target(
+    deploy_root: pathlib.Path,
+) -> tuple[str, pathlib.Path] | None:
+    current = deploy_root / "current"
+    if not current.exists() and not current.is_symlink():
+        return None
+    if not current.is_symlink():
+        raise DeployError("Deploymentzeiger ist kein symbolischer Link.")
+    target = pathlib.PurePosixPath(os.readlink(current))
+    if target.is_absolute() or len(target.parts) != 2 or target.parts[0] != "releases":
+        raise DeployError("Deploymentzeiger verweist nicht auf einen gebundenen Release.")
+    commit = target.parts[1]
+    if not COMMIT_RE.fullmatch(commit):
+        raise DeployError("Deploymentzeiger enthält keinen vollständigen Commit.")
+    release = deploy_root / "releases" / commit
+    if release.is_symlink() or not release.is_dir():
+        raise DeployError("Deploymentzeiger verweist nicht auf ein vertrauenswürdiges Release.")
+    return commit, release
+
+
+def read_regular_file_snapshot(path: pathlib.Path) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise DeployError(f"Kritische Releasedatei ist nicht sicher lesbar: {path}") from error
+    with os.fdopen(descriptor, "rb") as handle:
+        metadata = os.fstat(handle.fileno())
+        if not stat.S_ISREG(metadata.st_mode):
+            raise DeployError(f"Kritische Releasedatei ist nicht regulär: {path}")
+        return handle.read()
+
+
+def git_blob_oid(payload: bytes, object_format: str) -> str:
+    if object_format != "sha1":
+        raise DeployError(f"Nicht unterstütztes Git-Objektformat: {object_format}")
+    framed = f"blob {len(payload)}\0".encode("ascii") + payload
+    return hashlib.sha1(framed, usedforsecurity=False).hexdigest()
+
+
+def upgrade_current_release_marker(
+    repository: pathlib.Path,
+    deploy_root: pathlib.Path,
+) -> dict[str, Any]:
+    current = current_release_target(deploy_root)
+    if current is None:
+        return {"changed": False, "reason": "no-current-release"}
+    commit, release = current
+    marker = verify_recorded_release_marker(release, expected_commit=commit)
+    required_paths = critical_release_paths(release)
+    critical = marker.get("critical_sha256")
+    if isinstance(critical, dict) and set(required_paths) == set(critical):
+        verify_release_marker(release, expected_commit=commit)
+        return {"changed": False, "commit": commit, "reason": "marker-current"}
+
+    created_at = marker.get("created_at_unix")
+    if not isinstance(created_at, int) or created_at < 0:
+        raise DeployError("Releasebeleg enthält keinen gültigen Erzeugungszeitpunkt.")
+    marker_path = release / ".audio-control-release.json"
+    previous_payload = read_regular_file_snapshot(marker_path)
+    previous_sha256 = hashlib.sha256(previous_payload).hexdigest()
+    previous_mode = stat.S_IMODE(marker_path.stat().st_mode)
+
+    format_result = run_command(
+        ["git", "--git-dir", str(repository), "rev-parse", "--show-object-format"],
+        timeout=15,
+    )
+    object_format = format_result.stdout.strip()
+    if object_format != "sha1":
+        raise DeployError("Deployment-Repository verwendet nicht das erwartete SHA-1-Format.")
+
+    bound_hashes: dict[str, str] = {}
+    bindings: list[dict[str, Any]] = []
+    git_receipts = [format_result.receipt()]
+    for relative in required_paths:
+        target = release.joinpath(*validate_member_name(relative))
+        payload = read_regular_file_snapshot(target)
+        expected_result = run_command(
+            [
+                "git",
+                "--git-dir",
+                str(repository),
+                "rev-parse",
+                "--verify",
+                f"{commit}:{relative}",
+            ],
+            timeout=15,
+        )
+        git_receipts.append(expected_result.receipt())
+        expected_oid = expected_result.stdout.strip()
+        observed_oid = git_blob_oid(payload, object_format)
+        if not OBJECT_ID_RE.fullmatch(expected_oid) or expected_oid != observed_oid:
+            raise DeployError(
+                f"Releasedatei ist nicht an den erwarteten Git-Blob gebunden: {relative}"
+            )
+        payload_sha256 = hashlib.sha256(payload).hexdigest()
+        bound_hashes[relative] = payload_sha256
+        bindings.append(
+            {
+                "path": relative,
+                "git_blob_oid": observed_oid,
+                "sha256": payload_sha256,
+            }
+        )
+
+    upgraded = release_marker_payload(
+        commit=commit,
+        created_at_unix=created_at,
+        critical_sha256=bound_hashes,
+        upgraded_from_marker_sha256=previous_sha256,
+    )
+    try:
+        atomic_write_json(marker_path, upgraded)
+        verified = verify_release_marker(release, expected_commit=commit)
+    except Exception:
+        atomic_replace_bytes(marker_path, previous_payload, previous_mode)
+        raise
+    return {
+        "changed": True,
+        "commit": commit,
+        "previous_marker_sha256": previous_sha256,
+        "marker_sha256": sha256_path(marker_path),
+        "critical_file_count": len(bindings),
+        "bindings": bindings,
+        "git": git_receipts,
+        "schema_version": verified.get("schema_version"),
+    }
 
 def prune_releases(
     deploy_root: pathlib.Path,
@@ -684,18 +867,11 @@ def prune_releases(
 
 
 def read_current_commit(deploy_root: pathlib.Path) -> str | None:
-    current = deploy_root / "current"
-    if not current.exists() and not current.is_symlink():
+    current = current_release_target(deploy_root)
+    if current is None:
         return None
-    if not current.is_symlink():
-        raise DeployError("Deploymentzeiger ist kein symbolischer Link.")
-    target = pathlib.PurePosixPath(os.readlink(current))
-    if target.is_absolute() or len(target.parts) != 2 or target.parts[0] != "releases":
-        raise DeployError("Deploymentzeiger verweist nicht auf einen gebundenen Release.")
-    commit = target.parts[1]
-    if not COMMIT_RE.fullmatch(commit):
-        raise DeployError("Deploymentzeiger enthält keinen vollständigen Commit.")
-    verify_release_marker(deploy_root / "releases" / commit, expected_commit=commit)
+    commit, release = current
+    verify_release_marker(release, expected_commit=commit)
     return commit
 
 
@@ -839,16 +1015,11 @@ def prepare_release(
         extract_commit(repository, commit, temporary)
         checks = validate_release(temporary)
         critical_sha256 = release_hashes(temporary)
-        marker = {
-            "schema_version": 2,
-            "kind": "audio_control_release",
-            "commit": commit,
-            "created_at_unix": int(time.time()),
-            "critical_sha256": critical_sha256,
-            "index_sha256": critical_sha256["ui/index.html"],
-            "app_sha256": critical_sha256["ui/app.js"],
-            "styles_sha256": critical_sha256["ui/styles.css"],
-        }
+        marker = release_marker_payload(
+            commit=commit,
+            created_at_unix=int(time.time()),
+            critical_sha256=critical_sha256,
+        )
         atomic_write_json(temporary / ".audio-control-release.json", marker)
         os.replace(temporary, release)
     except Exception:
@@ -934,6 +1105,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 f"Remoteziel {commit} entspricht nicht dem erwarteten Commit "
                 f"{args.expected_commit}."
             )
+        marker_upgrade = upgrade_current_release_marker(repository, deploy_root)
         previous = read_current_commit(deploy_root)
         release, validation_receipts, created = prepare_release(
             repository, deploy_root, commit
@@ -1059,6 +1231,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "unit": args.unit,
             "git": git_receipts,
             "validation": validation_receipts,
+            "release_marker_upgrade": marker_upgrade,
             "runtime_updates": runtime_updates,
             "runtime_environment": runtime_environment,
             "runtime_activation": runtime_activation,
