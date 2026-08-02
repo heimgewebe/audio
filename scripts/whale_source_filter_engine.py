@@ -735,6 +735,8 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
             self.source_filter_control_position += len(base)
             return list(base)
         sample_rate = self.config.sample_rate
+        master_gain = self.config.master_gain
+        expression = self.expression
         control = self.source_filter_control
         frequency = max(self.source_filter_control_frequency, 1.0)
         velocity = self.source_filter_control_velocity
@@ -745,10 +747,13 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
             * register_bass_weight
             * (3.0 - 2.0 * register_bass_weight)
         )
+        resonance_focus = components.resonance_focus
+        periodicity_roughness = components.periodicity_roughness
+        harmonic_profile = components.harmonic_profile
+        subharmonic_enabled = components.subharmonic
+        secondary_frequency = components.secondary_frequency
         register_gain = (
-            1.0 - 0.74 * register_bass_weight
-            if components.resonance_focus
-            else 1.0
+            1.0 - 0.74 * register_bass_weight if resonance_focus else 1.0
         )
         first_resonance = clamp(
             frequency * control.resonance_ratio_1, 92.0, 1_650.0
@@ -757,9 +762,7 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
             frequency * control.resonance_ratio_2, 180.0, 3_300.0
         )
         low_cutoff = clamp(
-            first_resonance * 0.72
-            if components.resonance_focus
-            else frequency * 3.0,
+            first_resonance * 0.72 if resonance_focus else frequency * 3.0,
             110.0,
             3_400.0,
         )
@@ -773,14 +776,10 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
             2.0 * math.pi * second_resonance / sample_rate
         )
         roughness = (
-            clamp(control.roughness, 0.0, 1.0)
-            if components.periodicity_roughness
-            else 0.0
+            clamp(control.roughness, 0.0, 1.0) if periodicity_roughness else 0.0
         )
         periodicity = (
-            clamp(control.periodicity, 0.0, 1.0)
-            if components.periodicity_roughness
-            else 0.0
+            clamp(control.periodicity, 0.0, 1.0) if periodicity_roughness else 0.0
         )
         spectral_tilt = clamp(control.spectral_tilt, 0.0, 1.0)
         high_band = clamp(control.high_band_ratio, 0.0, 1.0)
@@ -798,10 +797,10 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
         )
         low_gain = 1.0
         high_gain = 1.0
-        if components.periodicity_roughness:
+        if periodicity_roughness:
             low_gain += -0.14 + 0.26 * (1.0 - spectral_tilt)
             high_gain += 0.30 + 0.34 * spectral_tilt + 0.20 * high_band
-        if components.harmonic_profile:
+        if harmonic_profile:
             low_gain += 0.16 * low_harmonics
             high_gain += 0.22 * upper_harmonics
         envelope_gain = (
@@ -811,9 +810,9 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
         )
         resonance_mix = (
             0.014
-            + (0.046 * periodicity if components.periodicity_roughness else 0.0)
-            + (0.018 * middle_harmonics if components.harmonic_profile else 0.0)
-            if components.resonance_focus
+            + (0.046 * periodicity if periodicity_roughness else 0.0)
+            + (0.018 * middle_harmonics if harmonic_profile else 0.0)
+            if resonance_focus
             else 0.0
         )
         pulse_depth = (
@@ -821,39 +820,61 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
         )
         activity_attack = 1.0 - math.exp(-1.0 / (sample_rate * 0.006))
         activity_release = 1.0 - math.exp(-1.0 / (sample_rate * 0.055))
+        # Bind invariant lookups and mutable state locally without regrouping
+        # the per-sample arithmetic; the rendered doubles remain bit-identical.
+        activity_denominator = max(master_gain * 0.08, 1.0e-6)
+        pulse_offset = ((self.source_filter_seed >> 9) & 0xFFFF) / 65536.0
+        subharmonic_strength = clamp(control.subharmonic_strength, 0.0, 0.55)
+        secondary_ratio = clamp(control.secondary_ratio, 0.62, 2.20)
+        secondary_strength = clamp(control.secondary_strength, 0.0, 0.45)
+        source_filter_lowpass = self.source_filter_lowpass
+        source_filter_activity = self.source_filter_activity
+        mode_a_1 = self.source_filter_mode_a_1
+        mode_a_2 = self.source_filter_mode_a_2
+        mode_b_1 = self.source_filter_mode_b_1
+        mode_b_2 = self.source_filter_mode_b_2
+        control_age_start = self.source_filter_control_age_start
+        control_position = self.source_filter_control_position
+        sub_phase = self.source_filter_sub_phase
+        secondary_phase = self.source_filter_secondary_phase
+        resonator = self._resonator
+        clamp_value = clamp
+        tanh = math.tanh
+        sin = math.sin
         output: list[float] = []
-        for index, source_sample in enumerate(base):
-            self.source_filter_lowpass += (
-                source_sample - self.source_filter_lowpass
+        append = output.append
+        for source_sample in base:
+            source_filter_lowpass += (
+                source_sample - source_filter_lowpass
             ) * low_alpha
-            low = self.source_filter_lowpass
+            low = source_filter_lowpass
             high = source_sample - low
-            activity_target = clamp(
-                abs(source_sample) / max(self.config.master_gain * 0.08, 1.0e-6),
+            activity_target = clamp_value(
+                abs(source_sample) / activity_denominator,
                 0.0,
                 1.0,
             )
             activity_alpha = (
                 activity_attack
-                if activity_target > self.source_filter_activity
+                if activity_target > source_filter_activity
                 else activity_release
             )
-            self.source_filter_activity += (
-                activity_target - self.source_filter_activity
+            source_filter_activity += (
+                activity_target - source_filter_activity
             ) * activity_alpha
             residual = (
-                math.tanh(
+                tanh(
                     high * (9.0 + 17.0 * roughness)
                     + source_sample * (1.2 + 2.8 * roughness)
                 )
                 * roughness
                 * (0.220 + 0.320 * high_band)
-                if components.periodicity_roughness
+                if periodicity_roughness
                 else 0.0
             )
             harmonic_edge = 0.0
-            if components.harmonic_profile:
-                harmonic_edge = math.tanh(
+            if harmonic_profile:
+                harmonic_edge = tanh(
                     source_sample
                     * (2.8 + 4.0 * harmonic_second + 0.7 * harmonic_centroid)
                 )
@@ -866,70 +887,54 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
                     + 0.018 * upper_harmonics
                 )
             excitation = source_sample + 0.24 * residual + 0.18 * harmonic_edge
-            (
-                mode_a,
-                self.source_filter_mode_a_1,
-                self.source_filter_mode_a_2,
-            ) = self._resonator(
+            mode_a, mode_a_1, mode_a_2 = resonator(
                 excitation,
-                self.source_filter_mode_a_1,
-                self.source_filter_mode_a_2,
+                mode_a_1,
+                mode_a_2,
                 coefficient_a,
                 radius_a * radius_a,
                 1.0 - radius_a,
             )
-            (
-                mode_b,
-                self.source_filter_mode_b_1,
-                self.source_filter_mode_b_2,
-            ) = self._resonator(
+            mode_b, mode_b_1, mode_b_2 = resonator(
                 excitation,
-                self.source_filter_mode_b_1,
-                self.source_filter_mode_b_2,
+                mode_b_1,
+                mode_b_2,
                 coefficient_b,
                 radius_b * radius_b,
                 1.0 - radius_b,
             )
-            age_frames = (
-                self.source_filter_control_age_start
-                + self.source_filter_control_position
-            )
-            self.source_filter_control_position += 1
+            age_frames = control_age_start + control_position
+            control_position += 1
             age_seconds = age_frames / sample_rate
             pulse_phase = (
-                age_seconds * control.pulse_rate_hz
-                + ((self.source_filter_seed >> 9) & 0xFFFF) / 65536.0
+                age_seconds * control.pulse_rate_hz + pulse_offset
             ) % 1.0
             pulse_wave = 1.0 - abs(2.0 * pulse_phase - 1.0)
             pulse_wave = pulse_wave * pulse_wave * (3.0 - 2.0 * pulse_wave)
             pulse_gain = 1.0 - pulse_depth * (1.0 - pulse_wave)
 
-            self.source_filter_sub_phase = (
-                self.source_filter_sub_phase + frequency * 0.5 / sample_rate
-            ) % 1.0
+            sub_phase = (sub_phase + frequency * 0.5 / sample_rate) % 1.0
             subharmonic = (
-                math.sin(2.0 * math.pi * self.source_filter_sub_phase)
-                * self.source_filter_activity
-                * self.expression
-                * self.config.master_gain
-                * clamp(control.subharmonic_strength, 0.0, 0.55)
+                sin(2.0 * math.pi * sub_phase)
+                * source_filter_activity
+                * expression
+                * master_gain
+                * subharmonic_strength
                 * 0.010
-                if components.subharmonic
+                if subharmonic_enabled
                 else 0.0
             )
-            secondary_ratio = clamp(control.secondary_ratio, 0.62, 2.20)
-            self.source_filter_secondary_phase = (
-                self.source_filter_secondary_phase
-                + frequency * secondary_ratio / sample_rate
+            secondary_phase = (
+                secondary_phase + frequency * secondary_ratio / sample_rate
             ) % 1.0
             secondary = (
-                math.sin(2.0 * math.pi * self.source_filter_secondary_phase)
-                * self.source_filter_activity
-                * self.expression
-                * self.config.master_gain
-                * clamp(control.secondary_strength, 0.0, 0.45)
+                sin(2.0 * math.pi * secondary_phase)
+                * source_filter_activity
+                * expression
+                * master_gain
+                * secondary_strength
                 * (0.006 + 0.008 * velocity)
-                if components.secondary_frequency
+                if secondary_frequency
                 else 0.0
             )
             shaped_source = low_gain * low + high_gain * high
@@ -942,7 +947,16 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
                 + secondary
             ) * envelope_gain * pulse_gain
             sample = raw / (1.0 + 1.12 * abs(raw))
-            output.append(clamp(sample, -MAX_MASTER_GAIN, MAX_MASTER_GAIN))
+            append(clamp_value(sample, -MAX_MASTER_GAIN, MAX_MASTER_GAIN))
+        self.source_filter_lowpass = source_filter_lowpass
+        self.source_filter_activity = source_filter_activity
+        self.source_filter_mode_a_1 = mode_a_1
+        self.source_filter_mode_a_2 = mode_a_2
+        self.source_filter_mode_b_1 = mode_b_1
+        self.source_filter_mode_b_2 = mode_b_2
+        self.source_filter_control_position = control_position
+        self.source_filter_sub_phase = sub_phase
+        self.source_filter_secondary_phase = secondary_phase
         if super().silent:
             self.source_filter_lowpass = 0.0
             self.source_filter_activity = 0.0
