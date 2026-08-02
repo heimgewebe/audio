@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "kind": "audiozentrale_workspace_state",
+  "product_model_sha256": "87a36ce5cae399069adae5ad7b7b4fd015e2df5f71ed117dd950286d284e6d6f",
+  "workspace_id": "home-studio-demo",
+  "active_setup_id": "reference-focal",
+  "setups": [
+    {
+      "id": "reference-focal",
+      "name": "Referenzhören · Focal",
+      "status": "active",
+      "template_ref": "reference-focal",
+      "profile_refs": [
+        "reference-listening"
+      ],
+      "truth": {
+        "observed": {
+          "status": "observed",
+          "detail": "Der Laufzeitpfad ist durch einen aktuellen Readback beobachtet.",
+          "evidence_refs": [
+            "snapshot:example"
+          ]
+        },
+        "configured": {
+          "status": "configured",
+          "detail": "Das Setup verweist ausschließlich auf versionierte Profile.",
+          "evidence_refs": [
+            "profile:reference-listening"
+          ]
+        },
+        "physical-open": {
+          "status": "open",
+          "detail": "Analoge Lautstärke und Verkabelung benötigen weiterhin menschliche Bestätigung.",
+          "evidence_refs": []
+        },
+        "executable": {
+          "status": "blocked",
+          "detail": "Das Beispiel ist read-only und begründet keine Apply-Autorität.",
+          "evidence_refs": []
+        }
+      },
+      "lanes": [
+        {
+          "id": "playback",
+          "name": "Wiedergabe",
+          "source": {
+            "kind": "system-playback",
+            "ref": "pipewire-default-playback",
+            "label": "System und Qobuz",
+            "signal_type": "audio-stereo"
+          },
+          "target": {
+            "kind": "hardware-output",
+            "ref": "profile:reference-listening",
+            "label": "MOTU → Lake People → Focal",
+            "signal_type": "audio-stereo"
+          },
+          "modules": [
+            {
+              "id": "gain-main",
+              "module_id": "gain",
+              "bypassed": false,
+              "parameters": {
+                "level-db": 0.0
+              }
+            },
+            {
+              "id": "filter-main",
+              "module_id": "filter",
+              "bypassed": false,
+              "parameters": {
+                "cutoff-hz": 20000.0,
+                "resonance": 0.0
+              }
+            },
+            {
+              "id": "reverb-main",
+              "module_id": "reverb",
+              "bypassed": true,
+              "parameters": {
+                "size": 0.35,
+                "mix": 0.0
+              }
+            },
+            {
+              "id": "meter-main",
+              "module_id": "meter-stereo",
+              "bypassed": false,
+              "parameters": {}
+            }
+          ],
+          "macros": [
+            {
+              "id": "warmth",
+              "label": "Wärme",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "value": 0.0,
+              "modulatable": true
+            }
+          ]
+        }
+      ],
+      "modulation_links": [
+        {
+          "id": "slow-warmth",
+          "source": {
+            "kind": "lfo",
+            "ref": "lfo:slow"
+          },
+          "target": {
+            "kind": "module-parameter",
+            "lane_id": "playback",
+            "module_instance_id": "filter-main",
+            "parameter_id": "cutoff-hz",
+            "macro_id": null
+          },
+          "depth": -0.1,
+          "smoothing_ms": 250,
+          "enabled": false
+        }
+      ],
+      "scenes": [
+        {
+          "id": "neutral",
+          "name": "Neutral",
+          "parameter_overrides": [
+            {
+              "lane_id": "playback",
+              "module_instance_id": "filter-main",
+              "parameter_id": "cutoff-hz",
+              "value": 20000.0
+            }
+          ],
+          "macro_overrides": [
+            {
+              "lane_id": "playback",
+              "macro_id": "warmth",
+              "value": 0.0
+            }
+          ]
+        },
+        {
+          "id": "warm",
+          "name": "Warm",
+          "parameter_overrides": [
+            {
+              "lane_id": "playback",
+              "module_instance_id": "filter-main",
+              "parameter_id": "cutoff-hz",
+              "value": 12000.0
+            }
+          ],
+          "macro_overrides": [
+            {
+              "lane_id": "playback",
+              "macro_id": "warmth",
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "active_scene_id": "neutral"
+    },
+    {
+      "id": "voice-dry",
+      "name": "Stimme · trocken",
+      "status": "draft",
+      "template_ref": "voice-dry",
+      "profile_refs": [
+        "voice-recording"
+      ],
+      "truth": {
+        "observed": {
+          "status": "absent",
+          "detail": "MOTU und Mikrofon sind im Beispiel nicht beobachtet.",
+          "evidence_refs": []
+        },
+        "configured": {
+          "status": "configured",
+          "detail": "Das Voice-Profil ist versioniert.",
+          "evidence_refs": [
+            "profile:voice-recording"
+          ]
+        },
+        "physical-open": {
+          "status": "open",
+          "detail": "48 V, Kabel, Eingang und Gain sind offen.",
+          "evidence_refs": []
+        },
+        "executable": {
+          "status": "blocked",
+          "detail": "Physische Fakten und Pegelmessung fehlen.",
+          "evidence_refs": []
+        }
+      },
+      "lanes": [
+        {
+          "id": "voice",
+          "name": "Stimme",
+          "source": {
+            "kind": "hardware-input",
+            "ref": "motu-m2:input-1",
+            "label": "RØDE NT1-A über MOTU",
+            "signal_type": "audio-mono"
+          },
+          "target": {
+            "kind": "recorder",
+            "ref": "session:voice-recording",
+            "label": "Voice-Take",
+            "signal_type": "audio-mono"
+          },
+          "modules": [
+            {
+              "id": "gate-voice",
+              "module_id": "gate",
+              "bypassed": false,
+              "parameters": {
+                "threshold-db": -50.0
+              }
+            },
+            {
+              "id": "gain-voice",
+              "module_id": "gain",
+              "bypassed": false,
+              "parameters": {
+                "level-db": 0.0
+              }
+            },
+            {
+              "id": "meter-voice",
+              "module_id": "meter-stereo",
+              "bypassed": false,
+              "parameters": {}
+            }
+          ],
+          "macros": [
+            {
+              "id": "presence",
+              "label": "Präsenz",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "value": 0.5,
+              "modulatable": true
+            }
+          ]
+        }
+      ],
+      "modulation_links": [],
+      "scenes": [
+        {
+          "id": "dry",
+          "name": "Trocken",
+          "parameter_overrides": [],
+          "macro_overrides": [
+            {
+              "lane_id": "voice",
+              "macro_id": "presence",
+              "value": 0.5
+            }
+          ]
+        }
+      ],
+      "active_scene_id": "dry"
+    }
+  ],
+  "takes": [
+    {
+      "id": "voice-take-example",
+      "immutable": true,
+      "setup_id": "voice-dry",
+      "scene_id": "dry",
+      "source_binding": {
+        "lane_id": "voice",
+        "source_ref": "motu-m2:input-1"
+      },
+      "format": {
+        "rate_hz": 48000,
+        "channels": 1,
+        "sample_format": "s24le"
+      },
+      "started_at": "2026-08-02T00:00:00+00:00",
+      "ended_at": "2026-08-02T00:00:05+00:00",
+      "file_status": "finalized",
+      "artifact_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "monitoring": {
+        "mode": "unknown",
+        "target_ref": null,
+        "evidence_refs": []
+      }
+    }
+  ],
+  "ui_state": {
+    "place": "now",
+    "depth": "expanded",
+    "focus_id": null
+  }
+}

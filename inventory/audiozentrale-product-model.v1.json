@@ -1,0 +1,588 @@
+{
+  "schema_version": 1,
+  "kind": "audiozentrale_product_model",
+  "model_id": "audiozentrale-v2",
+  "plan_binding": {
+    "repository": "heimgewebe/audio",
+    "path": "docs/plans/audiozentrale-product-v2.md",
+    "commit": "25d790ff2fee589f725b8f96a3fd1e9d8ec34dfc",
+    "document_sha256": "61979e0e4182291b460274153bee4ce2c770225a5d6c7940ee52bdc4785e47ae"
+  },
+  "schema_bindings": {
+    "product_model": {
+      "path": "schemas/audiozentrale-product-model.v1.schema.json",
+      "sha256": "80c4a9389aa6490996723354b493ba2db3cfd7080cb2152dc3e48fc7c42c5a21"
+    },
+    "workspace_state": {
+      "path": "schemas/audiozentrale-workspace-state.v1.schema.json",
+      "sha256": "7754b11ec3ac8147180cf121c0d8848af0619229fba8591302cfb8d1395a1e0e"
+    }
+  },
+  "profile_catalog_binding": {
+    "path": "profiles/audio-profiles.v1.json",
+    "sha256": "7282efd05b92e6eb326d27befcf00692e77d3bb589e6d828c4557567d12a5ea9"
+  },
+  "navigation": {
+    "places": [
+      {
+        "id": "now",
+        "label": "Jetzt",
+        "purpose": "Aktives Setup, Livezustand, Transport, Aufnahme und Szenen"
+      },
+      {
+        "id": "setups",
+        "label": "Setups",
+        "purpose": "Vorlagen, gespeicherte Setups und sichere Vorschau"
+      },
+      {
+        "id": "library",
+        "label": "Bibliothek",
+        "purpose": "Unveränderliche Takes und später abgeleitete Objekte"
+      },
+      {
+        "id": "system",
+        "label": "System",
+        "purpose": "Geräte, Wahrheit, Latenz, XRuns, Diagnose und Deployment"
+      }
+    ],
+    "truth_layers": [
+      {
+        "id": "observed",
+        "label": "Beobachtet",
+        "authority": "runtime-readback"
+      },
+      {
+        "id": "configured",
+        "label": "Konfiguriert",
+        "authority": "versioned-contract"
+      },
+      {
+        "id": "physical-open",
+        "label": "Physisch offen",
+        "authority": "explicit-human-observation"
+      },
+      {
+        "id": "executable",
+        "label": "Ausführbar",
+        "authority": "backend-capability-and-gates"
+      }
+    ],
+    "display_depths": [
+      {
+        "id": "compact",
+        "label": "Kompakt",
+        "maximum_primary_controls": 2
+      },
+      {
+        "id": "expanded",
+        "label": "Inline erweitert",
+        "maximum_primary_controls": 8
+      },
+      {
+        "id": "focus",
+        "label": "Fokus",
+        "maximum_simultaneous_focus": 1
+      }
+    ],
+    "legacy_area_migration": [
+      {
+        "source": "start",
+        "destinations": [
+          "now"
+        ],
+        "primary": "now"
+      },
+      {
+        "source": "hoeren",
+        "destinations": [
+          "now",
+          "setups"
+        ],
+        "primary": "now"
+      },
+      {
+        "source": "spielen",
+        "destinations": [
+          "now",
+          "setups"
+        ],
+        "primary": "now"
+      },
+      {
+        "source": "aufnehmen",
+        "destinations": [
+          "now",
+          "library"
+        ],
+        "primary": "now"
+      },
+      {
+        "source": "system",
+        "destinations": [
+          "system"
+        ],
+        "primary": "system"
+      }
+    ]
+  },
+  "contracts": {
+    "maximum_active_setups": 1,
+    "module_topology": "linear-typed-chain",
+    "internal_modules_only_through_commercial_v1": true,
+    "free_audio_or_midi_ports": false,
+    "arbitrary_sidechains": false,
+    "user_scripts": false,
+    "routing_cycles": false,
+    "takes_immutable": true,
+    "timeline": false,
+    "comping": false,
+    "clip_editing": false,
+    "cloud_required": false,
+    "account_required": false,
+    "ai_or_ml_required": false
+  },
+  "signal_types": [
+    "audio-mono",
+    "audio-stereo",
+    "midi"
+  ],
+  "insertion_slots": [
+    "source",
+    "utility",
+    "dynamics",
+    "tone",
+    "drive",
+    "instrument",
+    "time",
+    "space",
+    "meter"
+  ],
+  "module_catalog": [
+    {
+      "id": "meter-stereo",
+      "label": "Stereo-Meter",
+      "slot": "meter",
+      "parameters": [],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "zero",
+      "cpu_class": "low",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": [
+        "envelope-follower",
+        "transient"
+      ]
+    },
+    {
+      "id": "gain",
+      "label": "Gain",
+      "slot": "utility",
+      "parameters": [
+        {
+          "id": "level-db",
+          "type": "number",
+          "unit": "dB",
+          "minimum": -60.0,
+          "maximum": 12.0,
+          "default": 0.0,
+          "modulatable": false
+        }
+      ],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "zero",
+      "cpu_class": "low",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": []
+    },
+    {
+      "id": "filter",
+      "label": "Filter",
+      "slot": "tone",
+      "parameters": [
+        {
+          "id": "cutoff-hz",
+          "type": "number",
+          "unit": "Hz",
+          "minimum": 20.0,
+          "maximum": 20000.0,
+          "default": 20000.0,
+          "modulatable": true
+        },
+        {
+          "id": "resonance",
+          "type": "number",
+          "unit": "ratio",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "modulatable": true
+        }
+      ],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "low",
+      "cpu_class": "low",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": []
+    },
+    {
+      "id": "compressor",
+      "label": "Kompressor",
+      "slot": "dynamics",
+      "parameters": [
+        {
+          "id": "threshold-db",
+          "type": "number",
+          "unit": "dBFS",
+          "minimum": -60.0,
+          "maximum": 0.0,
+          "default": -18.0,
+          "modulatable": false
+        },
+        {
+          "id": "ratio",
+          "type": "number",
+          "unit": "ratio",
+          "minimum": 1.0,
+          "maximum": 20.0,
+          "default": 2.0,
+          "modulatable": true
+        }
+      ],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "low",
+      "cpu_class": "low",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": [
+        "envelope"
+      ]
+    },
+    {
+      "id": "gate",
+      "label": "Gate",
+      "slot": "dynamics",
+      "parameters": [
+        {
+          "id": "threshold-db",
+          "type": "number",
+          "unit": "dBFS",
+          "minimum": -80.0,
+          "maximum": 0.0,
+          "default": -50.0,
+          "modulatable": false
+        }
+      ],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "low",
+      "cpu_class": "low",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": [
+        "envelope"
+      ]
+    },
+    {
+      "id": "drive",
+      "label": "Verzerrung",
+      "slot": "drive",
+      "parameters": [
+        {
+          "id": "amount",
+          "type": "number",
+          "unit": "ratio",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "modulatable": true
+        }
+      ],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "zero",
+      "cpu_class": "low",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": []
+    },
+    {
+      "id": "delay",
+      "label": "Delay",
+      "slot": "time",
+      "parameters": [
+        {
+          "id": "time-ms",
+          "type": "number",
+          "unit": "ms",
+          "minimum": 1.0,
+          "maximum": 2000.0,
+          "default": 250.0,
+          "modulatable": true
+        },
+        {
+          "id": "feedback",
+          "type": "number",
+          "unit": "ratio",
+          "minimum": 0.0,
+          "maximum": 0.95,
+          "default": 0.25,
+          "modulatable": true
+        },
+        {
+          "id": "mix",
+          "type": "number",
+          "unit": "ratio",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.2,
+          "modulatable": true
+        }
+      ],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "buffered",
+      "cpu_class": "medium",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": []
+    },
+    {
+      "id": "reverb",
+      "label": "Hall",
+      "slot": "space",
+      "parameters": [
+        {
+          "id": "size",
+          "type": "number",
+          "unit": "ratio",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.35,
+          "modulatable": true
+        },
+        {
+          "id": "mix",
+          "type": "number",
+          "unit": "ratio",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.15,
+          "modulatable": true
+        }
+      ],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "buffered",
+      "cpu_class": "medium",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": []
+    },
+    {
+      "id": "looper",
+      "label": "Looper",
+      "slot": "instrument",
+      "parameters": [
+        {
+          "id": "maximum-seconds",
+          "type": "number",
+          "unit": "s",
+          "minimum": 1.0,
+          "maximum": 600.0,
+          "default": 60.0,
+          "modulatable": false
+        }
+      ],
+      "input_signal_types": [
+        "audio-mono",
+        "audio-stereo"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "buffered",
+      "cpu_class": "medium",
+      "failure_mode": "preserve-and-bypass",
+      "device_loss_mode": "stop-and-report",
+      "modulation_source_kinds": [
+        "envelope"
+      ]
+    },
+    {
+      "id": "tuner",
+      "label": "Tuner",
+      "slot": "utility",
+      "parameters": [],
+      "input_signal_types": [
+        "audio-mono"
+      ],
+      "output_signal_type": "same-as-input",
+      "latency_class": "buffered",
+      "cpu_class": "low",
+      "failure_mode": "bypass-and-report",
+      "device_loss_mode": "silence-and-report",
+      "modulation_source_kinds": []
+    },
+    {
+      "id": "whale-voice",
+      "label": "Buckelwalstimme",
+      "slot": "instrument",
+      "parameters": [
+        {
+          "id": "mode",
+          "type": "enum",
+          "values": [
+            "morph",
+            "organic",
+            "realistic",
+            "ufo"
+          ],
+          "default": "morph",
+          "modulatable": false
+        },
+        {
+          "id": "motion",
+          "type": "number",
+          "unit": "ratio",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.5,
+          "modulatable": true
+        }
+      ],
+      "input_signal_types": [
+        "midi"
+      ],
+      "output_signal_type": "audio-stereo",
+      "latency_class": "low",
+      "cpu_class": "medium",
+      "failure_mode": "silence-and-report",
+      "device_loss_mode": "stop-and-report",
+      "modulation_source_kinds": [
+        "envelope"
+      ]
+    }
+  ],
+  "modulation_contract": {
+    "source_kinds": [
+      "lfo",
+      "envelope",
+      "envelope-follower",
+      "transient",
+      "midi-cc",
+      "midi-velocity",
+      "midi-sustain",
+      "midi-pitch-bend",
+      "step-sequence",
+      "bounded-random"
+    ],
+    "target_kinds": [
+      "module-parameter",
+      "lane-macro"
+    ],
+    "forbidden_target_kinds": [
+      "recording",
+      "transport",
+      "output-selection",
+      "master-gain",
+      "panic-mute",
+      "safety-action"
+    ],
+    "maximum_links_per_setup": 64,
+    "maximum_absolute_depth": 1.0,
+    "maximum_smoothing_ms": 10000
+  },
+  "setup_templates": [
+    {
+      "id": "desktop-mixed",
+      "label": "Desktop gemischt",
+      "profile_refs": [
+        "desktop-mixed"
+      ],
+      "feature_refs": []
+    },
+    {
+      "id": "reference-focal",
+      "label": "Referenzhören · Focal",
+      "profile_refs": [
+        "reference-listening"
+      ],
+      "feature_refs": []
+    },
+    {
+      "id": "voice-dry",
+      "label": "Stimme · trocken aufnehmen",
+      "profile_refs": [
+        "voice-recording"
+      ],
+      "feature_refs": [
+        "recording-session"
+      ]
+    },
+    {
+      "id": "roland-piano",
+      "label": "Roland · Piano und MIDI",
+      "profile_refs": [
+        "piano-digital-recording",
+        "piano-software-live"
+      ],
+      "feature_refs": [
+        "roland-midi"
+      ]
+    },
+    {
+      "id": "roland-whale",
+      "label": "Roland · Buckelwal",
+      "profile_refs": [
+        "piano-software-live"
+      ],
+      "feature_refs": [
+        "whale-live-voice"
+      ]
+    },
+    {
+      "id": "pioneer-room",
+      "label": "Pioneer · Wohnzimmer",
+      "profile_refs": [
+        "receiver"
+      ],
+      "feature_refs": []
+    },
+    {
+      "id": "bluetooth-convenience",
+      "label": "Bluetooth · Komfort",
+      "profile_refs": [
+        "bluetooth-convenience"
+      ],
+      "feature_refs": []
+    }
+  ]
+}
