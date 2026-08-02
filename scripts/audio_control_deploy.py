@@ -53,6 +53,9 @@ RUNTIME_FILES = {
 }
 BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
+    "scripts/audio_telemetry_replay.py",
+    "inventory/audiozentrale-telemetry-replay.v1.json",
+    "schemas/audiozentrale-telemetry-replay.v1.schema.json",
     "ui/index.html",
     "ui/app.js",
     "ui/styles.css",

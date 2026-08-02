@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import hashlib
 import http.client
+import importlib.util
 import ipaddress
 import json
 import os
@@ -33,6 +34,15 @@ WHALE_PROFILE = ROOT / "profiles" / "buckelwal-live-voice-v1.json"
 WHALE_SCRIPT = ROOT / "scripts" / "whale_live.py"
 DOCTOR_SCRIPT = ROOT / "scripts" / "audio_doctor.py"
 PLANNER_SCRIPT = ROOT / "scripts" / "profile_planner.py"
+REPLAY_SCRIPT = ROOT / "scripts" / "audio_telemetry_replay.py"
+_REPLAY_SPEC = importlib.util.spec_from_file_location(
+    "audio_control_telemetry_replay", REPLAY_SCRIPT
+)
+if _REPLAY_SPEC is None or _REPLAY_SPEC.loader is None:
+    raise RuntimeError("Telemetry-Replay-Modul kann nicht geladen werden.")
+TELEMETRY_REPLAY = importlib.util.module_from_spec(_REPLAY_SPEC)
+sys.modules[_REPLAY_SPEC.name] = TELEMETRY_REPLAY
+_REPLAY_SPEC.loader.exec_module(TELEMETRY_REPLAY)
 
 SPEC_BASE_REVISION = "81fab5c57a3609b8b931a2ee5251c4f576368298"
 API_VERSION = "v1"
@@ -1065,6 +1075,7 @@ class AudioControl:
             "capabilities": {
                 "refresh_state": True,
                 "profile_plan": True,
+                "telemetry_replay": True,
                 "whale_control": True,
                 "profile_apply": False,
                 "recording_control": False,
@@ -1575,6 +1586,27 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 head_only=head_only,
             )
             return
+        if parsed.path == f"/api/{API_VERSION}/replay":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Der Replay-Endpunkt akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                replay = TELEMETRY_REPLAY.load_replay_contract()
+            except TELEMETRY_REPLAY.ReplayError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "replay_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, replay, head_only=head_only)
+            return
         if parsed.path == f"/api/{API_VERSION}/snapshot":
             if parsed.query not in {"", "refresh=1"}:
                 self._send_error_json(
@@ -1995,13 +2027,7 @@ def validate_repository_contract() -> dict[str, Any]:
         read_static_file("styles.css").decode("utf-8")
     except (ControlError, UnicodeDecodeError) as error:
         raise ControlError("Statische UI-Dateien verletzen den Vertrag.") from error
-    required_areas = (
-        "start",
-        "hoeren",
-        "spielen",
-        "aufnehmen",
-        "system",
-    )
+    required_areas = ("now", "setups", "library", "system")
     absent = [
         area
         for area in required_areas
@@ -2011,6 +2037,16 @@ def validate_repository_contract() -> dict[str, Any]:
         raise ControlError("UI-Bereiche fehlen: " + ", ".join(absent))
     if "/api/v1/snapshot" not in javascript:
         raise ControlError("UI ist nicht an die versionierte Zustands-API gebunden.")
+    if "/api/v1/replay" not in javascript:
+        raise ControlError("UI ist nicht an den versionierten Replay-Vertrag gebunden.")
+    if "/api/v1/actions/" in javascript:
+        raise ControlError(
+            "Read-only Produktoberfläche enthält eine wirkende Audioaktion."
+        )
+    try:
+        replay = TELEMETRY_REPLAY.load_replay_contract()
+    except TELEMETRY_REPLAY.ReplayError as error:
+        raise ControlError("Telemetry-Replay verletzt den Vertrag.") from error
     profiles = read_profiles()
     whale = read_whale_contract()
     return {
@@ -2021,6 +2057,9 @@ def validate_repository_contract() -> dict[str, Any]:
         "profile_count": len(profiles),
         "whale_modes": [mode["id"] for mode in whale["modes"]],
         "whale_keyboard_keys": whale["keyboard"]["key_count"],
+        "replay_scenarios": [
+            scenario["id"] for scenario in replay["catalog"]["scenarios"]
+        ],
         "static_files": sorted({entry[0] for entry in STATIC_FILES.values()}),
     }
 
