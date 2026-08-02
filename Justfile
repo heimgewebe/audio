@@ -2,8 +2,15 @@ check:
     bash tests/test-audio-safety.sh
     bash scripts/check-audio-safety .
     python3 scripts/audio_control.py check
+    ./scripts/audio-product-model check
     python3 -m unittest discover -s tests -v
     python3 -m compileall -q scripts tests
+
+product-model-check:
+    ./scripts/audio-product-model check
+
+product-workspace-validate workspace="profiles/audiozentrale-workspace.example.v1.json":
+    ./scripts/audio-product-model validate "{{workspace}}"
 
 doctor:
     ./scripts/audio-doctor --pretty
