@@ -93,6 +93,51 @@ class SourceFilterControl:
     secondary_strength: float
 
 
+SOURCE_FILTER_COMPONENT_NAMES = (
+    "source_envelope",
+    "periodicity_roughness",
+    "pulse",
+    "subharmonic",
+    "secondary_frequency",
+    "resonance_focus",
+    "harmonic_profile",
+)
+
+
+@dataclass(frozen=True)
+class SourceFilterComponentConfig:
+    """Immutable switches for source-derived Organic components.
+
+    Every disabled component is returned to a Morph-neutral contribution.
+    The all-enabled configuration preserves the pre-study Organic signal path.
+    """
+
+    source_envelope: bool = True
+    periodicity_roughness: bool = True
+    pulse: bool = True
+    subharmonic: bool = True
+    secondary_frequency: bool = True
+    resonance_focus: bool = True
+    harmonic_profile: bool = True
+
+    @classmethod
+    def morph_neutral(cls) -> "SourceFilterComponentConfig":
+        return cls(**{name: False for name in SOURCE_FILTER_COMPONENT_NAMES})
+
+    @classmethod
+    def from_enabled(cls, enabled: frozenset[str]) -> "SourceFilterComponentConfig":
+        unknown = enabled - set(SOURCE_FILTER_COMPONENT_NAMES)
+        if unknown:
+            raise ValueError(f"unknown source-filter components: {sorted(unknown)}")
+        return cls(**{name: name in enabled for name in SOURCE_FILTER_COMPONENT_NAMES})
+
+    def enabled_names(self) -> tuple[str, ...]:
+        return tuple(name for name in SOURCE_FILTER_COMPONENT_NAMES if getattr(self, name))
+
+    def any_enabled(self) -> bool:
+        return any(getattr(self, name) for name in SOURCE_FILTER_COMPONENT_NAMES)
+
+
 class WhaleSourceFilterBank:
     """Validated temporal feature bank with optional family exclusions."""
 
@@ -582,9 +627,11 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
         *,
         source_filter_bank: WhaleSourceFilterBank | None = None,
         morph_bank: WhaleMorphBank | None = None,
+        component_config: SourceFilterComponentConfig | None = None,
     ) -> None:
         super().__init__(config, bank=morph_bank)
         self.source_filter_bank = source_filter_bank or WhaleSourceFilterBank()
+        self.source_filter_components = component_config or SourceFilterComponentConfig()
         self.source_filter_phrase_serial = 0
         self.source_filter_seed = 0
         self.source_filter_lowpass = 0.0
@@ -683,6 +730,10 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
         return value, value, first
 
     def _process_source_filter_block(self, base: list[float]) -> list[float]:
+        components = self.source_filter_components
+        if not components.any_enabled():
+            self.source_filter_control_position += len(base)
+            return list(base)
         sample_rate = self.config.sample_rate
         control = self.source_filter_control
         frequency = max(self.source_filter_control_frequency, 1.0)
@@ -694,14 +745,24 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
             * register_bass_weight
             * (3.0 - 2.0 * register_bass_weight)
         )
-        register_gain = 1.0 - 0.74 * register_bass_weight
+        register_gain = (
+            1.0 - 0.74 * register_bass_weight
+            if components.resonance_focus
+            else 1.0
+        )
         first_resonance = clamp(
             frequency * control.resonance_ratio_1, 92.0, 1_650.0
         )
         second_resonance = clamp(
             frequency * control.resonance_ratio_2, 180.0, 3_300.0
         )
-        low_cutoff = clamp(first_resonance * 0.72, 110.0, 3_400.0)
+        low_cutoff = clamp(
+            first_resonance * 0.72
+            if components.resonance_focus
+            else frequency * 3.0,
+            110.0,
+            3_400.0,
+        )
         low_alpha = 1.0 - math.exp(-2.0 * math.pi * low_cutoff / sample_rate)
         radius_a = math.exp(-1.0 / (sample_rate * (0.018 + 0.020 * self.distance)))
         radius_b = math.exp(-1.0 / (sample_rate * (0.012 + 0.014 * self.distance)))
@@ -711,8 +772,16 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
         coefficient_b = 2.0 * radius_b * math.cos(
             2.0 * math.pi * second_resonance / sample_rate
         )
-        roughness = clamp(control.roughness, 0.0, 1.0)
-        periodicity = clamp(control.periodicity, 0.0, 1.0)
+        roughness = (
+            clamp(control.roughness, 0.0, 1.0)
+            if components.periodicity_roughness
+            else 0.0
+        )
+        periodicity = (
+            clamp(control.periodicity, 0.0, 1.0)
+            if components.periodicity_roughness
+            else 0.0
+        )
         spectral_tilt = clamp(control.spectral_tilt, 0.0, 1.0)
         high_band = clamp(control.high_band_ratio, 0.0, 1.0)
         profile = control.harmonic_profile
@@ -727,16 +796,29 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
         harmonic_centroid = sum(
             index * value for index, value in enumerate(profile, start=1)
         )
-        low_gain = 0.86 + 0.26 * (1.0 - spectral_tilt) + 0.16 * low_harmonics
-        high_gain = (
-            1.30
-            + 0.34 * spectral_tilt
-            + 0.20 * high_band
-            + 0.22 * upper_harmonics
+        low_gain = 1.0
+        high_gain = 1.0
+        if components.periodicity_roughness:
+            low_gain += -0.14 + 0.26 * (1.0 - spectral_tilt)
+            high_gain += 0.30 + 0.34 * spectral_tilt + 0.20 * high_band
+        if components.harmonic_profile:
+            low_gain += 0.16 * low_harmonics
+            high_gain += 0.22 * upper_harmonics
+        envelope_gain = (
+            0.78 + 0.34 * math.sqrt(clamp(control.envelope, 0.0, 1.0))
+            if components.source_envelope
+            else 1.0
         )
-        envelope_gain = 0.78 + 0.34 * math.sqrt(clamp(control.envelope, 0.0, 1.0))
-        resonance_mix = 0.014 + 0.046 * periodicity + 0.018 * middle_harmonics
-        pulse_depth = 0.03 + 0.10 * control.pulse_strength
+        resonance_mix = (
+            0.014
+            + (0.046 * periodicity if components.periodicity_roughness else 0.0)
+            + (0.018 * middle_harmonics if components.harmonic_profile else 0.0)
+            if components.resonance_focus
+            else 0.0
+        )
+        pulse_depth = (
+            0.03 + 0.10 * control.pulse_strength if components.pulse else 0.0
+        )
         activity_attack = 1.0 - math.exp(-1.0 / (sample_rate * 0.006))
         activity_release = 1.0 - math.exp(-1.0 / (sample_rate * 0.055))
         output: list[float] = []
@@ -766,19 +848,23 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
                 )
                 * roughness
                 * (0.220 + 0.320 * high_band)
+                if components.periodicity_roughness
+                else 0.0
             )
-            harmonic_edge = math.tanh(
-                source_sample
-                * (2.8 + 4.0 * harmonic_second + 0.7 * harmonic_centroid)
-            )
-            harmonic_edge -= source_sample * (
-                2.4 + 3.2 * harmonic_third + 1.2 * even_harmonics
-            )
-            harmonic_edge *= (
-                0.014
-                + 0.020 * (harmonic_second + harmonic_third)
-                + 0.018 * upper_harmonics
-            )
+            harmonic_edge = 0.0
+            if components.harmonic_profile:
+                harmonic_edge = math.tanh(
+                    source_sample
+                    * (2.8 + 4.0 * harmonic_second + 0.7 * harmonic_centroid)
+                )
+                harmonic_edge -= source_sample * (
+                    2.4 + 3.2 * harmonic_third + 1.2 * even_harmonics
+                )
+                harmonic_edge *= (
+                    0.014
+                    + 0.020 * (harmonic_second + harmonic_third)
+                    + 0.018 * upper_harmonics
+                )
             excitation = source_sample + 0.24 * residual + 0.18 * harmonic_edge
             (
                 mode_a,
@@ -828,6 +914,8 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
                 * self.config.master_gain
                 * clamp(control.subharmonic_strength, 0.0, 0.55)
                 * 0.010
+                if components.subharmonic
+                else 0.0
             )
             secondary_ratio = clamp(control.secondary_ratio, 0.62, 2.20)
             self.source_filter_secondary_phase = (
@@ -841,6 +929,8 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
                 * self.config.master_gain
                 * clamp(control.secondary_strength, 0.0, 0.45)
                 * (0.006 + 0.008 * velocity)
+                if components.secondary_frequency
+                else 0.0
             )
             shaped_source = low_gain * low + high_gain * high
             raw = register_gain * (

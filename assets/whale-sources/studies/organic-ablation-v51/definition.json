@@ -1,0 +1,59 @@
+{
+  "candidate_selection": {
+    "maximum_cpu_seconds_per_audio_second": 0.65,
+    "maximum_variance_multiple_vs_morph": 1.5,
+    "maximum_worst_family_loss": 0.008,
+    "minimum_a0_a1_bass_ratio_vs_full_organic": 0.95,
+    "minimum_improved_families": 5,
+    "minimum_mean_similarity_gain": 0.001
+  },
+  "component_qualification": {
+    "maximum_isolated_worst_family_loss": 0.012,
+    "minimum_isolated_improved_families": 5,
+    "minimum_isolated_mean_delta": 0.00025,
+    "minimum_leave_out_mean_harm": 0.0001,
+    "minimum_leave_out_worsened_families": 4
+  },
+  "components": [
+    "source_envelope",
+    "periodicity_roughness",
+    "pulse",
+    "subharmonic",
+    "secondary_frequency",
+    "resonance_focus",
+    "harmonic_profile",
+    "register_bass",
+    "articulation_states",
+    "pitch_contour"
+  ],
+  "external_data_used_for_selection": false,
+  "family_weighting": "equal",
+  "kind": "humpback_whale_organic_ablation_definition",
+  "matrix": {
+    "combination_limit": 3,
+    "include_full_organic": true,
+    "include_isolated_component_variants": true,
+    "include_leave_one_component_out_variants": true,
+    "include_morph_baseline": true,
+    "qualified_combinations_only": true
+  },
+  "periodicity_complement_double_weighted": false,
+  "product_contracts": {
+    "chunk_invariance": "exact",
+    "maximum_cpu_seconds_per_audio_second": 0.65,
+    "maximum_peak": 0.25,
+    "pitch_keys": 88,
+    "silence": "exact-zero"
+  },
+  "schema_version": 1,
+  "selection_order": [
+    "product-contracts",
+    "a0-a1-bass-retention",
+    "mean-similarity",
+    "worst-family-fold",
+    "family-variance",
+    "cpu-cost",
+    "component-count"
+  ],
+  "tuning_data": "equal-weight-leave-one-source-family-out-only"
+}
