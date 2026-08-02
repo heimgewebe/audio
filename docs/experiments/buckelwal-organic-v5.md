@@ -1,210 +1,235 @@
-# Buckelwal Organic Voice v5
+# Buckelwal Organic Voice v5 – auditierte Fassung
 
-## Anlass
+## Status
 
-Organic v4 verbesserte zeitliche Zustandswechsel, blieb aber im Kern eine
-periodische Morphstimme mit algorithmisch ergänzten Klangzuständen. Die nächste
-Stufe sollte nicht mehr Rauigkeit oder Tonhöhenbewegung hinzufügen, sondern
-Originalaufnahmen nach zeitlich gekoppelten Stimmmerkmalen auswerten und diese
-als Grundengine verwenden.
+Die erste v5-Fassung wurde nach dem Merge erneut unabhängig gegen ihren
+Quellcode, das Modellformat und die Bewertungsmethodik auditiert. Dabei wurden
+konkrete Fehler in Sekundärfrequenzextraktion, Modellhashbindung,
+Downsampling, Auswahlgewichtung, Trajektorienübergang und Bewertung gefunden.
+Diese Datei beschreibt ausschließlich die korrigierte Fassung.
 
-Die physische Hörprüfung ist weiterhin offen, weil der Nutzer während der
-Umsetzung nicht zuhause ist. V5 wird deshalb nur aus reproduzierbaren
-Software-, Quellen- und Holdoutbelegen freigegeben. Die Walstimme wird nicht
-automatisch gestartet oder abgespielt.
+Die physische Hörprüfung bleibt offen. Die Stimme wird nicht automatisch
+gestartet oder abgespielt.
 
 ## Wissensgrundlage
 
-Die fachliche Referenz steht in
-`docs/knowledge/buckelwal-stimme-und-gesang.md`. Sie dokumentiert unter anderem:
+Die biologische und akustische Referenz steht in
+`docs/knowledge/buckelwal-stimme-und-gesang.md`. Die Engine bleibt ein
+musikalisch spielbares, quellengestütztes Instrument und kein vollständiges
+Stimmapparatmodell.
 
-- Quelle-Filter-Kopplung des Kehlkopfs;
-- tonale, gepulste, raue und chaotische Zustände;
-- Frequenzsprünge, Subharmonik und Biphonation;
-- asymmetrische Einsätze und Abschlüsse;
-- Hierarchie aus Einheit, Phrase, Thema und Songzyklus;
-- gerichtete Varianten statt identischer oder beliebig zufälliger Wiederholung;
-- Grenzen der Übertragung auf ein chromatisches 88-Tasten-Instrument.
+## Modellbank v2
 
-## Quellengebundener Analyse-Builder
+`scripts/build_whale_voice_model.py` analysiert 19 verarbeitete Clips aus exakt
+acht gebundenen Quellfamilien. Jeder Clip wird aus einem einzigen
+hashgeprüften Byte-Snapshot gelesen.
 
-`scripts/build_whale_voice_model.py` analysiert alle 19 verarbeiteten Clips als
-jeweils einen unveränderlichen, hashgeprüften Byte-Snapshot. Es entstehen pro
-Clip 48 relative Kontrollpunkte mit:
+Vor der Reduktion von 48 auf 4 kHz wird ein achtpoliger Butterworth-Tiefpass mit
+1.650 Hz Grenzfrequenz angewendet. Erst danach wird um Faktor zwölf dezimiert.
+Die frühere Boxmittelung mit messbarem Aliasing ist entfernt.
+
+Je Clip entstehen 48 Zeitpunkte mit:
 
 - Hüllkurve;
-- Periodizität und signalgebundener Rauigkeit;
-- Hochfrequenzanteil und spektraler Neigung;
-- achtteiliger Obertonverteilung;
-- zwei Resonanzverhältnissen;
+- Periodizität und komplementärer Rauigkeit;
+- bandbegrenztem Hochfrequenzanteil und spektraler Neigung;
+- achtteiliger harmonischer Energieverteilung;
+- zwei groben harmonischen Resonanzschwerpunkten;
 - Pulsrate und Pulsstärke;
 - Subharmonik;
-- sekundärer Frequenzspur.
+- getrenntem Verhältnis und Stärke einer sekundären Frequenzspur.
 
-Das resultierende Modell liegt unter
-`assets/whale-sources/voice-model/manifest.json`.
+Die Resonanzschwerpunkte werden nicht als biologisch gemessene Formanten
+bezeichnet.
 
 | Eigenschaft | Wert |
 |---|---:|
-| Modellgröße | 644.837 Byte |
-| SHA-256 | `c2f5a99f0d9c95f75830ba6f2122cfbdd12e847b54eca6bbee80b563d07a9541` |
+| Modellgröße | 650.191 Byte |
+| SHA-256 | `1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a` |
 | Trajektorien | 19 |
-| Trainings-Trajektorien | 12 |
-| Holdout-Trajektorien | 7 |
-| Trainings-Quellfamilien | 5 |
-| Holdout-Quellfamilien | 3 |
+| Quellfamilien | 8 |
 | Kontrollpunkte je Trajektorie | 48 |
+| Harmonische Bänder | 8 |
 
-Der Builder besitzt einen Byte-Reproduzierbarkeitscheck. Jede Veränderung am
-Quellmanifest oder einem Clip blockiert Modellbau beziehungsweise Live-Start.
+Der Loader, der Live-Doctor, das Profil und die Audiozentrale verlangen exakt
+diesen Modellhash. Auch eine schema-gültige Änderung eines einzelnen
+Steuerwerts blockiert die Modellbank.
 
-## Ganze Quellfamilien als Holdout
+## Korrigierte Sekundärfrequenz
 
-Nicht einzelne Ausschnitte, sondern vollständige Quellfamilien werden
-zurückgehalten.
+Die erste Fassung speicherte Verhältnis und Stärke irrtümlich als Produkt und
+versuchte beide Werte daraus wiederherzustellen. Dadurch kollabierte der größte
+Teil aktiver Sekundärkomponenten auf Verhältnis 1,0.
 
-### Training und Live-Auswahl
+Die korrigierte Analyse führt beide Größen getrennt. Im neu gebauten Modell
+besitzen 449 Kontrollpunkte eine aktive Sekundärkomponente; alle 449 liegen mehr
+als 0,05 vom Unisonoverhältnis entfernt. Die Verhältnisse reichen im gebundenen
+Korpus von ungefähr 0,605 bis 2,375. Die Liveamplitude bleibt weiterhin stark
+begrenzt.
 
-- `humpback-moo-nps`
-- `humpback-wheezeblow-nps`
-- `song-antarctic-area-v-2010`
-- `song-foraging-mn132a`
-- `song-new-caledonia-2010`
+## Quellfamilienbalancierte Laufzeitauswahl
 
-### Ausschließlicher Holdout
+Die Auswahl erfolgt zweistufig:
 
-- `humpback-song-cc0`
-- `song-eastern-australia-2010`
-- `song-foraging-mn133a`
+1. gleichgewichtete Wahl einer zur Registerkategorie passenden Quellfamilie;
+2. Wahl eines Clips innerhalb dieser Familie.
 
-Die Live-Engine kann keine Holdout-Trajektorie auswählen. Damit misst der
-Holdout nicht bloß die Reproduktion bereits verwendeter Aufnahmefamilien.
+Familien mit drei Clips erhalten dadurch nicht mehr automatisch mehr Gewicht
+als Familien mit zwei Clips.
 
-## Source-Filter-Grundengine
+## Rufeinheiten und Übergänge
 
-`scripts/whale_source_filter_engine.py` trennt die Klangproduktion in:
+Jede Trajektorie behält ihre eigene auf 1,45 bis 4,80 Sekunden begrenzte
+Einheitsdauer. Die erste Fassung verwendete irrtümlich die Dauer der ersten
+Trajektorie für alle folgenden Einheiten.
 
-1. bandbegrenzte, phasenkontinuierliche Morphquelle;
-2. zeitvariable spektrale Gewichtung;
-3. zwei bewegliche Resonanzen;
-4. quellseitig gesteuerte Pulsierung;
-5. signalgebundene Rauigkeit ohne unabhängigen Rauschgenerator;
-6. schwache, begrenzte Subharmonik;
-7. leise sekundäre Frequenzspur;
-8. relative Rufeinheiten mit Übergang zur nächsten verwandten Trajektorie.
+Beim Wechsel beginnt die neue Einheit am Endzustand der vorherigen. Über die
+ersten 14 Prozent der neuen Einheit wird kontinuierlich in deren eigenen
+Anfangsverlauf überblendet. Der frühere Rücksprung von einer vorab
+überblendeten Phase auf Phase null entfällt.
 
-Der Hauptgrundton bleibt an die gespielte Taste gebunden. Es wird keine
-aufgenommene Phrase abgespielt und kein Audioloop verwendet.
+## Nutzung des vollständigen Obertonprofils
 
-## Verschmelzung statt Effektestapel
+Alle acht gespeicherten Bänder beeinflussen nun die Laufzeit:
 
-Ein erster Prototyp legte die vollständige v4-Schicht über die neue
-Source-Filter-Basis. Das war fachlich redundant und benötigte ungefähr 0,65
-Sekunden CPU pro Audiosekunde. Die endgültige Fassung verschmilzt beide Ebenen:
+- tiefe, mittlere und obere harmonische Energie;
+- geradzahlige Harmonischenbalance;
+- harmonischer Schwerpunkt;
+- spektrale Tief-/Hochgewichtung;
+- Resonanzmischung und signalgebundene Kantenstruktur.
 
-- Source-Filter übernimmt Formanten, Spektralverlauf, Periodizität, Rauigkeit,
-  Puls, Subharmonik und sekundäre Frequenz;
-- Organic ergänzt nur Anti-UFO-Kontur, Tiefbass, Gestenreaktion und eine leichte
-  Gewichtung kurzer `tonal`-, `pulsed`-, `rough`- und `broken`-Fenster;
-- kräftigere Kanten entstehen ausschließlich, wenn sowohl der zeitliche Zustand
-  als auch die Originaltrajektorie Rauigkeit anzeigen.
+Die erste Fassung verwendete faktisch nur das zweite und dritte Band.
 
-## Vergleichswerte
+## Bewertung
 
-Die gleiche 17-sekündige Spielphrase wird mit identischen MIDI-Gesten
-verglichen. Die Werte sind Engineeringindikatoren und kein biologischer oder
-perzeptiver Echtheitsbeweis.
+### Zurückgezogene Aussage
 
-### Bisheriger globaler und zeitlicher Prüfer
+Der frühere Wert `0,1177` gegenüber `0,0993` war kein unabhängiger
+Generalisierungsnachweis. Die sogenannten Holdoutfamilien wurden während der
+Entwicklung wiederholt betrachtet; außerdem reduzierte der Prüfer Clips auf
+Medianwerte und gewichtete Periodizität sowie `1 − Periodizität` doppelt.
 
-| Merkmal | Morphbasis | Organic v4 | Organic v5 |
+### Korrigierte Cross-Validation
+
+`scripts/evaluate_whale_voice_model.py` verwendet Leave-one-source-family-out-
+Cross-Validation:
+
+- acht Außenfolds, je Quellfamilie einer;
+- die bewertete Familie ist im jeweiligen Organic-Render vollständig aus der
+  Liveauswahl entfernt;
+- alle Familien besitzen dasselbe Gewicht;
+- verglichen werden geordnete 48-Punkt-Verläufe;
+- Periodizität wird nur einmal gewichtet;
+- Hüllkurve, Spektrum, Resonanzschwerpunkte, Puls, Subharmonik,
+  Sekundärkomponente und vollständiges Obertonprofil fließen ein;
+- Modellmanifest und ausgewertete Trajektorien stammen aus demselben gebundenen
+  Bankobjekt, ohne zweite Pfadöffnung.
+
+Abschließende Messung:
+
+| Engine | mittlere Ähnlichkeit | Median | mittlere Distanz | Peak |
+|---|---:|---:|---:|---:|
+| Morph | 0,1447 | 0,1526 | 1,9968 | 0,0903 |
+| Organic | **0,1487** | 0,1496 | **1,9531** | 0,2078 |
+
+Organic verbessert fünf der acht Familienfolds und verschlechtert drei leicht.
+Der kleine Mittelwertvorteil ist ein Regressionsergebnis innerhalb des
+bekannten Korpus. Er ist kein unabhängiger Fremddatensatztest, kein biologischer
+Identitätsbeleg und kein subjektiver Hörnachweis.
+
+### Gesperrter unabhängiger Fremdtest
+
+Nach Abschluss aller DSP- und Modellreparaturen wurde eine bislang nicht im
+Repository verwendete NOAA-PMEL-Aufnahme als unveränderlicher Fremdtest
+festgeschrieben. Die Quelle ist eine Buckelwalaufnahme aus Alaska vom Winter
+1999; die veröffentlichte Datei ist zehnfach beschleunigt. Der gebundene
+Evaluationsausschnitt stellt die Nominalgeschwindigkeit wieder her und wird
+weder für Modellbau, Laufzeitauswahl noch Parameterabstimmung verwendet.
+
+| Engine | Ähnlichkeit | zeitliche Distanz | Peak |
 |---|---:|---:|---:|
-| globaler Vergleich | 0,314 | 0,341 | **0,327** |
-| zeitlicher Vergleich | 0,226 | 0,355 | **0,348** |
-| Zustandsentropie | 0,586 | 0,794 | **0,659** |
-| Pulsindex | 0,328 | 0,482 | **0,487** |
-| obere Hochfrequenzstruktur | 0,429 | 0,651 | **0,563** |
-| rauer Fensteranteil | 0,000 | 0,063 | **0,011** |
-| Konturspanne | 11,41 HT | 11,41 HT | **11,41 HT** |
+| Morph | **0,1707** | **1,7676** | 0,0903 |
+| Organic | 0,1538 | 1,8722 | 0,2078 |
 
-V5 hält den v4-Zeitwert bis auf rund 1,8 Prozent und verbessert den
-Morph-Zeitwert um rund 54 Prozent. Es optimiert bewusst nicht auf maximalen
-rauen Fensteranteil, weil dies in früheren physischen Tests Buzz- und
-UFO-Eindruck verstärkte.
+Organic ist diesem einzelnen unabhängigen Ruf weniger ähnlich als Morph. Das
+Ergebnis wurde nach seiner ersten Erhebung nicht zum Nachstimmen verwendet.
+Ein einzelner Ruf belegt keine Populationsgeneralisation; er widerlegt aber die
+Annahme, dass die Organic-Erweiterung außerhalb des Entwicklungskorpus bereits
+allgemein überlegen sei.
 
-### Neue Quellfamilien-Holdout-Prüfung
+Gebundene Evaluationsartefakte:
 
-| Engine | Holdoutwert |
-|---|---:|
-| Morphbasis | 0,0993 |
-| Organic v5 | **0,1177** |
+- `assets/whale-sources/evaluation/manifest.json`;
+- Rohdatei SHA-256
+  `54a91b3c3e488941697acdf01face985ad149ca91e5d85af0f3ec8b1ad00ab42`;
+- Evaluations-WAV SHA-256
+  `1a38ba45c88e3cabbf72ffc50026bdfb4fe9882018cebd5e7f3a658497484822`;
+- Evaluationsmanifest SHA-256
+  `a7409a5b27ca03bf04a4f10d558208b985b184933bc0b1b4b9d45d43bec8a0ff`.
 
-Das entspricht rund **18,5 Prozent relativer Verbesserung** auf vollständig
-unbenutzten Quellfamilien. Das technische Mindestgate liegt bei 15 Prozent.
+### Ergänzende Ausgangsmetriken
 
-## Tiefbass und Pegel
+Der ältere globale Prüfer liefert für die korrigierte Organic-Fassung:
 
-Die Source-Filter-Basis besitzt eine registerabhängige Pegelkompensation, damit
-der bewusste Organic-Basskörper nicht doppelt verstärkt wird.
+- globaler Vergleich `0,3203`;
+- zeitlicher Vergleich `0,3969`;
+- Pulsindex `0,4931`;
+- Zustandsentropie `0,6785`;
+- Tonumfang `11,53` Halbtöne;
+- Vergleichsphrase Peak `0,2312`.
+
+Diese Werte bleiben ergänzende Regressionen und sind dem familiengewichteten
+Zeitvergleich und dem unabhängigen Fremdtest methodisch nachgeordnet.
+
+### Tiefbass und Laufzeitreserve
 
 | Taste | Energie unter 120 Hz gegenüber Morph | Ein-Sekunden-Peak |
 |---|---:|---:|
-| A0 / MIDI 21 | **1,85×** | 0,127 |
-| A1 / MIDI 33 | **2,47×** | 0,135 |
-| A2 / MIDI 45 | **1,39×** | 0,136 |
+| A0 / MIDI 21 | 1,59× | 0,093 |
+| A1 / MIDI 33 | 2,36× | 0,109 |
+| A2 / MIDI 45 | 1,38× | 0,109 |
 
-Die vollständige Vergleichsphrase erreicht Peak `0,232`; die harte Grenze
-bleibt `0,25`.
-
-## Echtzeitreserve
-
-- Sieben Ein-Sekunden-Läufe im Mittelregister: Median ungefähr 0,58 Sekunden
-  CPU pro Audiosekunde, entsprechend rund 1,72× Echtzeitreserve.
-- Vollständige Acht-Sekunden-Zustandszyklen in Tief-, Mittel- und Hochregister:
-  schlechtester Wert 0,532 Sekunden CPU pro Audiosekunde, entsprechend
-  mindestens 1,88× Echtzeitreserve.
-- Maximaler Peak dieser Vollzyklen: 0,214.
+Der schlechteste gemessene Ein-Sekunden-Lauf benötigt `0,566 s` CPU pro
+Audiosekunde. Vollständige Acht-Sekunden-Zyklen benötigen höchstens `0,546 s`
+CPU pro Audiosekunde, entsprechend mindestens `1,83×` Echtzeitreserve; deren
+maximaler Peak liegt bei `0,151`.
 
 ## Erhaltene Produktverträge
 
-- alle 88 Zieltonhöhen bleiben chromatisch bei A4 = 440 Hz;
+- Hauptgrundton bleibt an die gespielte Taste gebunden;
 - zusätzliche Organic-Tonhöhenbewegung bleibt unter 20 Cent;
 - Organic-Legato bleibt bei höchstens 180 Millisekunden;
-- keine Samplezonen, Presets oder Steuertasten;
-- keine permanente Rauschschicht;
-- keine aufgenommene Langphrase und kein Audioloop;
-- exakte digitale Stille im Leerlauf und nach dem Ausklang;
+- keine Aufnahmephrase, Samplezone oder permanente Rauschschicht;
+- exakte digitale Stille nach endlichem Ausklang;
 - bitidentische Ausgabe und gleicher Zustand bei beliebigen Render-Chunkgrößen;
-- Holdout-Quellfamilien sind von der Live-Auswahl ausgeschlossen;
-- Doctor blockiert bei fehlender oder veränderter Zeitmodellbank;
+- A0/A1 behalten den materiellen Tiefbassvertrag;
 - Ausgabe bleibt unter 0,25;
-- Offline-Echtzeitreserve bleibt größer als 1,5×.
+- Echtzeitreserve bleibt automatisiert geprüft.
 
 ## Bedienung
 
-Der sichtbare Modus bleibt `organic`. Es entsteht kein neues Preset und kein
-zusätzlicher Modusschalter. Die Grundengine des vorhandenen Organic-Modus wird
-ausgetauscht.
+Der sichtbare Modus bleibt `organic`; es entsteht kein weiteres Preset.
 
 ```bash
 python3 scripts/build_whale_voice_model.py --check
 python3 scripts/evaluate_whale_voice_model.py \
   --engine organic \
-  --output /tmp/buckelwal-v5-holdout.json
+  --output /tmp/buckelwal-v5-cross-validation.json
+python3 scripts/evaluate_whale_voice_model.py \
+  --engine organic --external \
+  --output /tmp/buckelwal-v5-external-evaluation.json
 python3 scripts/whale_live.py doctor
 python3 scripts/whale_live.py mode organic
 ```
 
-Die letzte Zeile darf erst ausgeführt werden, wenn Roland, MOTU und Nutzer für
-die physische Hörprüfung verfügbar sind.
+Die letzte Zeile ist erst für die physische Hörprüfung mit verfügbarem Roland,
+MOTU und Nutzer vorgesehen.
 
-## Noch offene Hörfragen
+## Noch offen
 
-Software und Holdout können nicht entscheiden:
-
-- ob die Resonanzbewegungen wie ein Wal oder wie ein Filtereffekt wirken;
-- ob die sekundäre Frequenzspur als Biphonation oder als Akkord gehört wird;
-- ob der Tiefbass auf Focal Clear MG körperhaft statt dröhnend erscheint;
-- ob v5 gegenüber v4 subjektiv weniger Orgel, Buzz und UFO erzeugt;
-- ob lange Spielpassagen bereits ausreichend kohärent sind oder zusätzliches
-  Phrasengedächtnis benötigen.
+- A/B-Hörtest über MOTU M2 und Focal Clear MG;
+- Vergleich auf UFO-, Orgel-, Buzz- und Filtereffektcharakter;
+- unabhängiger Test mit neuen, bislang weder analysierten noch zur Entwicklung
+  betrachteten Buckelwalaufnahmen;
+- mögliche Erweiterung um ein Phrasengedächtnis, falls lange Spielpassagen trotz
+  kontinuierlicher Einheiten noch unverbunden wirken.

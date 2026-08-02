@@ -45,15 +45,15 @@
       "organic_features": [
         "source-derived-temporal-envelope",
         "source-derived-periodicity-and-signal-coupled-roughness",
-        "source-derived-spectral-tilt-and-formant-trajectories",
+        "source-derived-spectral-tilt-harmonic-profile-and-resonance-emphasis-trajectories",
         "source-derived-pulse-subharmonic-and-secondary-frequency-trajectories",
         "register-aware-deep-bass-body",
         "deterministic-temporal-articulation-states",
         "anti-theremin-bounded-pitch-drift"
       ],
-      "comparison": "global-temporal-and-source-family-holdout-comparison-against-source-bound-real-clips",
-      "hold": "successive-related-source-control-units-without-audio-loop",
-      "legato": "phase-continuous-short-frequency-timbre-and-formant-glide",
+      "comparison": "global-temporal-and-source-family-cross-validation-against-source-bound-real-clips",
+      "hold": "per-trajectory-duration-with-continuous-unit-crossfade",
+      "legato": "phase-continuous-short-frequency-timbre-and-resonance-glide",
       "detached_retrigger": "gesture-seeded-source-trajectory-family-with-bounded-state-reset",
       "repeated_note": "phase-preserving-pulsed-rearticulation",
       "pitch_bend_range_semitones": 2,
@@ -65,7 +65,9 @@
         "taper_end_note": 55,
         "fundamental_binding": "played-note-frequency",
         "second_harmonic_ratio": 0.23,
-        "subharmonic_amount": 0.018
+        "subharmonic_policy": "source-trajectory-scaled-signal-gated",
+        "subharmonic_control_cap": 0.55,
+        "subharmonic_output_gain": 0.01
       },
       "maximum_additional_pitch_drift_cents": 20,
       "temporal_articulation": {
@@ -84,14 +86,15 @@
         "excitation": "source-signal-coupled-without-independent-noise"
       },
       "voice_model_manifest": "assets/whale-sources/voice-model/manifest.json",
-      "voice_model_manifest_sha256": "c2f5a99f0d9c95f75830ba6f2122cfbdd12e847b54eca6bbee80b563d07a9541",
+      "voice_model_manifest_sha256": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a",
       "trajectory_count": 19,
-      "train_trajectory_count": 12,
-      "holdout_trajectory_count": 7,
-      "source_family_split": {
-        "train_count": 5,
-        "holdout_count": 3,
-        "holdout_policy": "whole-source-family-never-used-by-live-selection"
+      "source_family_count": 8,
+      "trajectory_selection": "gesture-seeded-family-then-clip-balanced",
+      "evaluation": {
+        "strategy": "leave-one-source-family-out-cross-validation",
+        "family_weighting": "equal",
+        "temporal_alignment": "normalized-48-point-sequence",
+        "independent_test_claim": false
       }
     },
     "realistic": {

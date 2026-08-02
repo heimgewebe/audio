@@ -50,12 +50,15 @@ benachbarten Klangfarben. Auch die bandbegrenzten Tabellenstufen werden weich
 überblendet, um harte Register- und Aliasgrenzen zu vermeiden.
 
 Für `organic` ergänzt `scripts/build_whale_voice_model.py` ein zweites,
-zeitvariables Modell aus allen 19 verarbeiteten Clips. Jeder Clip liefert 48
-relative Kontrollpunkte für Hüllkurve, Periodizität, signalgebundene Rauigkeit,
-spektrale Neigung, Obertonverteilung, Resonanzverhältnisse, Puls, Subharmonik
-und eine leise sekundäre Frequenzspur. Ganze Quellfamilien werden als Holdout
-zurückgehalten und sind von der Live-Auswahl ausgeschlossen. Details und
-Messwerte stehen in `buckelwal-organic-v5.md`; die fachliche Grundlage steht in
+zeitvariables Modell aus allen 19 verarbeiteten Clips. Jeder Clip liefert nach
+anti-aliased Reduktion 48 relative Kontrollpunkte für Hüllkurve, Periodizität,
+signalgebundene Rauigkeit, spektrale Neigung, achtteilige Obertonverteilung,
+harmonische Resonanzschwerpunkte, Puls, Subharmonik sowie getrenntes Verhältnis
+und Stärke einer sekundären Frequenzspur. Die Liveauswahl ist
+quellfamilienbalanciert. Zur Prüfung wird jeweils eine vollständige Familie aus
+der Auswahl entfernt; dies ist Cross-Validation innerhalb des bekannten Korpus,
+kein unabhängiger Fremddatensatztest. Details und Messwerte stehen in
+`buckelwal-organic-v5.md`; die fachliche Grundlage steht in
 `../knowledge/buckelwal-stimme-und-gesang.md`.
 
 ## Spielmodell
@@ -111,7 +114,8 @@ biologisch erzeugt.
 ```bash
 python3 scripts/build_whale_morph_bank.py
 python3 scripts/build_whale_voice_model.py --check
-python3 scripts/evaluate_whale_voice_model.py --engine organic --output /tmp/buckelwal-v5-holdout.json
+python3 scripts/evaluate_whale_voice_model.py --engine organic --output /tmp/buckelwal-v5-cross-validation.json
+python3 scripts/evaluate_whale_voice_model.py --engine organic --external --output /tmp/buckelwal-v5-external-evaluation.json
 python3 scripts/whale_live.py doctor
 python3 scripts/whale_live.py start --voice-mode morph
 python3 scripts/whale_live.py mode organic
@@ -124,7 +128,8 @@ python3 scripts/whale_live.py status
 Die entsprechenden `just`-Ziele heißen unter anderem `whale-morph`,
 `whale-organic`, `whale-realistic`, `whale-ufo`, `whale-morph-bank-build`,
 `whale-voice-model-build`, `whale-voice-model-check`,
-`whale-voice-model-evaluate`, `whale-toggle` und `whale-status`.
+`whale-voice-model-evaluate`, `whale-voice-model-evaluate-external`,
+`whale-toggle` und `whale-status`.
 
 ## Betriebs- und Sicherheitsvertrag
 
@@ -168,14 +173,16 @@ Audioformat:
 - ausreichende Offline-Echtzeitreserve im Testvertrag;
 - Organic-Modus mit exakter Leerlaufstille, chromatischer 88-Tasten-Abbildung
   und deterministischer Gestenreaktion;
-- 19 hashgebundene Zeittrajektorien mit Hüllkurve, Periodizität, Rauigkeit,
-  Spektralverlauf, Resonanzen, Puls, Subharmonik und sekundärer Frequenzspur;
-- fünf Trainings- und drei vollständig ausgeschlossene Holdout-Quellfamilien;
-- Live-Auswahl ausschließlich aus den zwölf Trainingstrajektorien;
+- 19 exakt hashgebundene Zeittrajektorien mit Hüllkurve, Periodizität,
+  Spektralverlauf, vollständigem achtteiligem Obertonprofil, Resonanzschwerpunkten,
+  Puls, Subharmonik und getrennter sekundärer Frequenzspur;
+- gleichgewichtete Auswahl zuerst nach Quellfamilie und danach nach Clip;
+- eigendauernde Rufeinheiten mit kontinuierlichem Übergang ohne Phasenrücksprung;
 - gestengebundene, weich überblendete tonale, gepulste, raue und gebrochene
   Zustände ohne unabhängigen Rauschgenerator oder Aufnahmephrase;
-- reproduzierbare globale, zeitliche und ganze Quellfamilien zurückhaltende
-  Holdout-Vergleiche; Details stehen in `buckelwal-organic-v5.md`.
+- reproduzierbare globale, zeitliche und Leave-one-source-family-out-
+  Cross-Validation ohne unabhängigen Fremddatensatzanspruch; Details stehen in
+  `buckelwal-organic-v5.md`.
 
 ## Physisch noch offen
 

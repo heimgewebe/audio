@@ -16,7 +16,7 @@ import os
 import pathlib
 import statistics
 import tempfile
-from typing import Iterable
+from collections.abc import Iterable
 
 from build_whale_morph_bank import (
     read_bound_regular_bytes,
@@ -33,12 +33,20 @@ ANALYSIS_RATE = 4_000
 DOWNSAMPLE = SAMPLE_RATE // ANALYSIS_RATE
 CONTROL_POINTS = 48
 HARMONIC_COUNT = 8
+LOWPASS_CUTOFF_HZ = 1_650.0
+LOWPASS_ORDER = 8
+BUTTERWORTH_Q = (0.50979558, 0.60134489, 0.89997622, 2.56291545)
 SOURCE_MANIFEST = ROOT / "assets" / "whale-sources" / "processed" / "manifest.json"
 DEFAULT_OUTPUT = ROOT / "assets" / "whale-sources" / "voice-model" / "manifest.json"
-HOLDOUT_SOURCE_IDS = (
+EXPECTED_SOURCE_IDS = (
+    "humpback-moo-nps",
     "humpback-song-cc0",
+    "humpback-wheezeblow-nps",
+    "song-antarctic-area-v-2010",
     "song-eastern-australia-2010",
+    "song-foraging-mn132a",
     "song-foraging-mn133a",
+    "song-new-caledonia-2010",
 )
 
 
@@ -57,13 +65,44 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[left] + (ordered[right] - ordered[left]) * amount
 
 
-def downsample(samples: Iterable[int]) -> list[float]:
-    values = list(samples)
-    usable = len(values) - len(values) % DOWNSAMPLE
-    return [
-        sum(values[index : index + DOWNSAMPLE]) / (32768.0 * DOWNSAMPLE)
-        for index in range(0, usable, DOWNSAMPLE)
-    ]
+def _lowpass_coefficients(cutoff_hz: float, sample_rate: int, q: float) -> tuple[float, ...]:
+    omega = 2.0 * math.pi * cutoff_hz / sample_rate
+    cosine = math.cos(omega)
+    alpha = math.sin(omega) / (2.0 * q)
+    a0 = 1.0 + alpha
+    return (
+        ((1.0 - cosine) * 0.5) / a0,
+        (1.0 - cosine) / a0,
+        ((1.0 - cosine) * 0.5) / a0,
+        (-2.0 * cosine) / a0,
+        (1.0 - alpha) / a0,
+    )
+
+
+def downsample(
+    samples: Iterable[int | float], *, input_scale: float = 32768.0
+) -> list[float]:
+    """Low-pass and decimate 48 kHz input to 4 kHz without spectral folding."""
+
+    if not math.isfinite(input_scale) or input_scale <= 0.0:
+        raise ValueError("input_scale must be finite and positive")
+    coefficients = tuple(
+        _lowpass_coefficients(LOWPASS_CUTOFF_HZ, SAMPLE_RATE, q)
+        for q in BUTTERWORTH_Q
+    )
+    states = [[0.0, 0.0] for _ in coefficients]
+    reduced: list[float] = []
+    for index, raw in enumerate(samples):
+        value = float(raw) / input_scale
+        for section, (b0, b1, b2, a1, a2) in enumerate(coefficients):
+            z1, z2 = states[section]
+            output = b0 * value + z1
+            states[section][0] = b1 * value - a1 * output + z2
+            states[section][1] = b2 * value - a2 * output
+            value = output
+        if index % DOWNSAMPLE == DOWNSAMPLE - 1:
+            reduced.append(value)
+    return reduced
 
 
 def normalized_autocorrelation(values: list[float], lag: int) -> float:
@@ -98,7 +137,9 @@ def windowed_frame(samples: list[float], center: int, frames: int) -> list[float
     ]
 
 
-def periodicity_features(frame: list[float]) -> tuple[float, float, float, float]:
+def periodicity_features(
+    frame: list[float],
+) -> tuple[float, float, float, float, float]:
     minimum_lag = max(2, round(ANALYSIS_RATE / 1_200.0))
     maximum_lag = min(len(frame) // 2, round(ANALYSIS_RATE / 28.0))
     scores = [
@@ -128,14 +169,11 @@ def periodicity_features(frame: list[float]) -> tuple[float, float, float, float
             continue
         if min(abs(ratio - target) for target in (0.5, 1.0, 2.0)) < 0.10:
             continue
-        if score < max(0.34, best_score * 0.72):
+        threshold = max(0.34, best_score * 0.72)
+        if score < threshold:
             continue
         secondary_ratio = ratio
-        secondary_strength = clamp(
-            (score - max(0.34, best_score * 0.72)) / 0.24,
-            0.0,
-            1.0,
-        )
+        secondary_strength = clamp((score - threshold) / 0.24, 0.0, 1.0)
         break
 
     double_score = (
@@ -144,7 +182,7 @@ def periodicity_features(frame: list[float]) -> tuple[float, float, float, float
         else 0.0
     )
     subharmonic = clamp((double_score - best_score * 0.76) / 0.24, 0.0, 1.0)
-    return f0, best_score, subharmonic, secondary_ratio * secondary_strength
+    return f0, best_score, subharmonic, secondary_ratio, secondary_strength
 
 
 def harmonic_profile(frame: list[float], f0_hz: float) -> list[float]:
@@ -168,6 +206,29 @@ def harmonic_profile(frame: list[float], f0_hz: float) -> list[float]:
     if total <= 1.0e-12:
         return [0.0] * HARMONIC_COUNT
     return [value / total for value in values]
+
+
+def resonance_emphasis_ratios(harmonics: list[float]) -> tuple[float, float]:
+    """Return two broad harmonic-emphasis ratios, not biological formants."""
+
+    ranked = sorted(
+        range(1, len(harmonics)),
+        key=lambda harmonic: harmonics[harmonic],
+        reverse=True,
+    )
+    selected: list[float] = []
+    for harmonic in ranked:
+        ratio = float(harmonic + 1)
+        if selected and abs(ratio - selected[0]) < 1.0:
+            continue
+        selected.append(ratio)
+        if len(selected) == 2:
+            break
+    defaults = (2.0, 4.0)
+    while len(selected) < 2:
+        selected.append(defaults[len(selected)])
+    selected.sort()
+    return selected[0], selected[1]
 
 
 def pulse_features(samples: list[float], center: int) -> tuple[float, float]:
@@ -196,6 +257,8 @@ def pulse_features(samples: list[float], center: int) -> tuple[float, float]:
 
 
 def analyze_clip(samples: list[float]) -> tuple[list[dict[str, object]], dict[str, float]]:
+    if len(samples) < round(0.25 * ANALYSIS_RATE):
+        raise RuntimeError("whale voice source clip is too short for analysis")
     peak = max(abs(value) for value in samples) or 1.0
     frame_size = round(0.18 * ANALYSIS_RATE)
     points: list[dict[str, object]] = []
@@ -210,34 +273,29 @@ def analyze_clip(samples: list[float]) -> tuple[list[dict[str, object]], dict[st
             (right - left) ** 2 for left, right in zip(frame, frame[1:])
         )
         energy = sum(value * value for value in frame) or 1.0
-        f0, periodicity, subharmonic, secondary_product = periodicity_features(frame)
+        (
+            f0,
+            periodicity,
+            subharmonic,
+            secondary_ratio,
+            secondary_strength,
+        ) = periodicity_features(frame)
         harmonics = harmonic_profile(frame, f0)
         weighted_harmonic = sum(
             (harmonic + 1) * value for harmonic, value in enumerate(harmonics)
         )
-        first_formants = sorted(
-            range(1, len(harmonics)),
-            key=lambda harmonic: harmonics[harmonic],
-            reverse=True,
-        )[:2]
-        formant_ratios = sorted(float(harmonic + 1) for harmonic in first_formants)
-        while len(formant_ratios) < 2:
-            formant_ratios.append(2.0 + len(formant_ratios) * 2.0)
+        resonance_ratio_1, resonance_ratio_2 = resonance_emphasis_ratios(harmonics)
         pulse_rate, pulse_strength = pulse_features(samples, center)
-        local = samples[max(0, center - round(0.08 * ANALYSIS_RATE)) : min(
-            len(samples), center + round(0.08 * ANALYSIS_RATE)
-        )]
+        local = samples[
+            max(0, center - round(0.08 * ANALYSIS_RATE)) : min(
+                len(samples), center + round(0.08 * ANALYSIS_RATE)
+            )
+        ]
         local_mean = statistics.fmean(abs(value) for value in local) if local else 0.0
         local_deviation = (
             statistics.pstdev(abs(value) for value in local) / local_mean
             if len(local) > 1 and local_mean > 1.0e-9
             else 0.0
-        )
-        secondary_strength = clamp(abs(secondary_product), 0.0, 1.0)
-        secondary_ratio = (
-            clamp(abs(secondary_product) / secondary_strength, 0.55, 2.40)
-            if secondary_strength > 0.0
-            else 1.0
         )
         points.append(
             {
@@ -245,15 +303,26 @@ def analyze_clip(samples: list[float]) -> tuple[list[dict[str, object]], dict[st
                 "envelope": round(clamp(rms / peak * 2.8, 0.0, 1.0), 8),
                 "periodicity": round(periodicity, 8),
                 "roughness": round(1.0 - periodicity, 8),
-                "high_band_ratio": round(clamp(derivative / energy / 2.5, 0.0, 1.0), 8),
-                "spectral_tilt": round(clamp((weighted_harmonic - 1.0) / 7.0, 0.0, 1.0), 8),
-                "formant_ratio_1": round(clamp(formant_ratios[0], 1.2, 8.0), 8),
-                "formant_ratio_2": round(clamp(formant_ratios[1], 1.8, 12.0), 8),
+                "high_band_ratio": round(
+                    clamp(derivative / energy / 2.5, 0.0, 1.0), 8
+                ),
+                "spectral_tilt": round(
+                    clamp((weighted_harmonic - 1.0) / 7.0, 0.0, 1.0), 8
+                ),
+                "resonance_ratio_1": round(
+                    clamp(resonance_ratio_1, 1.2, 8.0), 8
+                ),
+                "resonance_ratio_2": round(
+                    clamp(resonance_ratio_2, 1.8, 12.0), 8
+                ),
                 "harmonic_profile": [round(value, 8) for value in harmonics],
                 "pulse_rate_hz": round(clamp(pulse_rate, 1.2, 8.0), 8),
-                "pulse_strength": round(clamp(max(pulse_strength, local_deviation * 0.18), 0.0, 1.0), 8),
+                "pulse_strength": round(
+                    clamp(max(pulse_strength, local_deviation * 0.18), 0.0, 1.0),
+                    8,
+                ),
                 "subharmonic_strength": round(subharmonic, 8),
-                "secondary_ratio": round(secondary_ratio, 8),
+                "secondary_ratio": round(clamp(secondary_ratio, 0.55, 2.40), 8),
                 "secondary_strength": round(secondary_strength, 8),
             }
         )
@@ -263,14 +332,19 @@ def analyze_clip(samples: list[float]) -> tuple[list[dict[str, object]], dict[st
     duration = len(samples) / ANALYSIS_RATE
     summary = {
         "duration_seconds": round(duration, 8),
-        "median_f0_hz": round(statistics.median(f0_values) if f0_values else 0.0, 8),
+        "median_f0_hz": round(
+            statistics.median(f0_values) if f0_values else 0.0, 8
+        ),
         "median_periodicity": round(
-            statistics.median(periodicities) if periodicities else 0.0,
-            8,
+            statistics.median(periodicities) if periodicities else 0.0, 8
         ),
         "voiced_fraction": round(len(f0_values) / CONTROL_POINTS, 8),
-        "envelope_q10": round(percentile([float(point["envelope"]) for point in points], 0.10), 8),
-        "envelope_q90": round(percentile([float(point["envelope"]) for point in points], 0.90), 8),
+        "envelope_q10": round(
+            percentile([float(point["envelope"]) for point in points], 0.10), 8
+        ),
+        "envelope_q90": round(
+            percentile([float(point["envelope"]) for point in points], 0.90), 8
+        ),
     }
     return points, summary
 
@@ -303,13 +377,10 @@ def build_manifest() -> dict[str, object]:
         filename = raw_record.get("file")
         expected_sha = raw_record.get("sha256")
         category = raw_record.get("category")
-        if not all(isinstance(value, str) and value for value in (
-            clip_id,
-            source_id,
-            filename,
-            expected_sha,
-            category,
-        )):
+        if not all(
+            isinstance(value, str) and value
+            for value in (clip_id, source_id, filename, expected_sha, category)
+        ):
             raise RuntimeError("whale voice source clip metadata is incomplete")
         path = source_clip_path(source_root, filename)
         clip_payload = read_bound_regular_bytes(path, "whale voice source clip")
@@ -319,7 +390,6 @@ def build_manifest() -> dict[str, object]:
         pcm = read_pcm16_mono_bytes(clip_payload, str(path))
         reduced = downsample(pcm)
         points, summary = analyze_clip(reduced)
-        split = "holdout" if source_id in HOLDOUT_SOURCE_IDS else "train"
         source_ids.add(source_id)
         trajectories.append(
             {
@@ -329,21 +399,30 @@ def build_manifest() -> dict[str, object]:
                 "source_file": filename,
                 "source_sha256": actual_sha,
                 "category": category,
-                "split": split,
                 "summary": summary,
                 "points": points,
             }
         )
     trajectories.sort(key=lambda record: str(record["id"]))
-    train_sources = sorted(source_ids.difference(HOLDOUT_SOURCE_IDS))
-    holdout_sources = sorted(source_ids.intersection(HOLDOUT_SOURCE_IDS))
-    if len(train_sources) < 4 or len(holdout_sources) < 2:
-        raise RuntimeError("whale voice model split lacks source-family diversity")
+    expected_sources = set(EXPECTED_SOURCE_IDS)
+    if source_ids != expected_sources:
+        missing = sorted(expected_sources - source_ids)
+        unexpected = sorted(source_ids - expected_sources)
+        raise RuntimeError(
+            "whale voice source family catalog changed: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "humpback_whale_temporal_source_filter_bank",
         "sample_rate_hz": SAMPLE_RATE,
         "analysis_rate_hz": ANALYSIS_RATE,
+        "analysis_filter": {
+            "kind": "butterworth-lowpass-before-decimation",
+            "order": LOWPASS_ORDER,
+            "cutoff_hz": LOWPASS_CUTOFF_HZ,
+            "decimation_factor": DOWNSAMPLE,
+        },
         "control_points": CONTROL_POINTS,
         "harmonic_count": HARMONIC_COUNT,
         "note_range": [21, 108],
@@ -351,21 +430,26 @@ def build_manifest() -> dict[str, object]:
         "voice_count": 1,
         "source_sample_manifest": str(SOURCE_MANIFEST.relative_to(ROOT)),
         "source_sample_manifest_sha256": sha256_bytes(source_payload),
-        "train_source_ids": train_sources,
-        "holdout_source_ids": holdout_sources,
+        "source_ids": list(EXPECTED_SOURCE_IDS),
+        "evaluation_contract": {
+            "strategy": "leave-one-source-family-out-cross-validation",
+            "family_weighting": "equal",
+            "temporal_alignment": "normalized-48-point-sequence",
+            "independent_test_claim": False,
+        },
         "model_contract": {
             "plays_recorded_phrase": False,
             "permanent_noise_layer": False,
             "main_fundamental_bound_to_played_note": True,
-            "trajectory_selection": "gesture-seeded-source-family-balanced",
-            "long_hold": "successive-related-control-units-without-audio-loop",
+            "trajectory_selection": "gesture-seeded-family-then-clip-balanced",
+            "long_hold": "per-trajectory-duration-with-continuous-unit-crossfade",
             "features": [
                 "envelope",
                 "periodicity",
                 "roughness",
                 "high_band_ratio",
                 "spectral_tilt",
-                "formant_ratios",
+                "harmonic_resonance_emphasis_ratios",
                 "harmonic_profile",
                 "pulse_rate_and_strength",
                 "subharmonic_strength",

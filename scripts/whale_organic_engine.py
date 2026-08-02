@@ -14,7 +14,7 @@ import math
 
 from whale_live_engine import WhaleVoiceConfig, clamp
 from whale_morph_engine import MAX_MASTER_GAIN, WhaleMorphBank, frequency_to_midi_note
-from whale_source_filter_engine import WhaleSourceFilterVoice
+from whale_source_filter_engine import WhaleSourceFilterBank, WhaleSourceFilterVoice
 
 STATE_TONAL = 0
 STATE_PULSED = 1
@@ -75,8 +75,13 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
         config: WhaleVoiceConfig | None = None,
         *,
         bank: WhaleMorphBank | None = None,
+        source_filter_bank: WhaleSourceFilterBank | None = None,
     ) -> None:
-        super().__init__(config, morph_bank=bank)
+        super().__init__(
+            config,
+            source_filter_bank=source_filter_bank,
+            morph_bank=bank,
+        )
         self.organic_phrase_serial = 0
         self.organic_state_seed = 0
         self.organic_state_segment_seconds = 1.20
@@ -287,8 +292,8 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
                 2.0 * two_pi * self.organic_bass_phase
             )
             bass_body = (
-                0.48 * self.organic_bass_lowpass
-                + 0.52
+                0.47 * self.organic_bass_lowpass
+                + 0.55
                 * bass_oscillator
                 * self.organic_activity
                 * velocity_gain
@@ -321,7 +326,7 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
                 math.tanh(edge * (22.0 + 52.0 * source_roughness))
                 * state_texture
                 * source_roughness
-                * (0.040 + 0.070 * source_high_band)
+                * (0.041 + 0.072 * source_high_band)
             )
             raw = source_sample * pulse_gain + bass_body + state_edge
             sample = raw / (1.0 + 1.20 * abs(raw))

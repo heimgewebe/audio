@@ -83,6 +83,7 @@ bestehen. Er schaltet keine Aufnahme und keinen Produktions-Mixgraph.
 - [Wissen über Buckelwalstimme und Buckelwalgesang](docs/knowledge/buckelwal-stimme-und-gesang.md)
 - [Organische Buckelwalstimme und A/B-Vergleich](docs/experiments/buckelwal-organic-v5.md)
 - [Buckelwal-Samplequellen und Lizenzen](assets/whale-sources/README.md)
+- [Unabhängiger Buckelwal-Evaluationssatz](assets/whale-sources/evaluation/NOTICE.md)
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)

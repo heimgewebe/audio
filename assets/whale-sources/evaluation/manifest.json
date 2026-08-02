@@ -1,0 +1,36 @@
+{
+  "clips": [
+    {
+      "channels": 1,
+      "description": "Alaska humpback whale call recorded in winter 1999; source publication was accelerated 10x. Evaluation derivative restores nominal speed by 10x and selects source-time 25.5-27.5 seconds.",
+      "download_page": "https://commons.wikimedia.org/wiki/File:Akhumphi1x.ogg",
+      "duration_seconds": 20.0,
+      "id": "akhumphi1x-independent-01",
+      "license": "Public-Domain-US-NOAA",
+      "processed_file": "processed/akhumphi1x-independent-01.wav",
+      "processed_sha256": "1a38ba45c88e3cabbf72ffc50026bdfb4fe9882018cebd5e7f3a658497484822",
+      "processing": [
+        "decode Ogg Vorbis mono 8 kHz",
+        "select accelerated source interval 25.5-27.5 seconds",
+        "restore nominal speed with 800 Hz reinterpretation",
+        "resample to mono PCM16 48 kHz",
+        "20 Hz high-pass",
+        "1650 Hz low-pass",
+        "gain 0.75",
+        "100 ms fades"
+      ],
+      "raw_file": "raw/akhumphi1x.ogg",
+      "raw_sha256": "54a91b3c3e488941697acdf01face985ad149ca91e5d85af0f3ec8b1ad00ab42",
+      "sample_rate_hz": 48000,
+      "source_id": "noaa-pmel-alaska-winter-1999-independent",
+      "source_page": "https://www.pmel.noaa.gov/acoustics/whales/sounds/sounds_akhump.html"
+    }
+  ],
+  "kind": "humpback_whale_independent_evaluation_set",
+  "locked_at": "2026-08-02T06:29:00+02:00",
+  "model_or_parameter_tuning_forbidden": true,
+  "schema_version": 1,
+  "source_ids": [
+    "noaa-pmel-alaska-winter-1999-independent"
+  ]
+}

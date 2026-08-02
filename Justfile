@@ -128,8 +128,11 @@ whale-voice-model-build:
 whale-voice-model-check:
     python3 scripts/build_whale_voice_model.py --check
 
-whale-voice-model-evaluate engine="organic" output="/tmp/buckelwal-voice-model-evaluation.json":
+whale-voice-model-evaluate engine="organic" output="/tmp/buckelwal-voice-model-cross-validation.json":
     python3 scripts/evaluate_whale_voice_model.py --engine "{{engine}}" --output "{{output}}"
+
+whale-voice-model-evaluate-external engine="organic" output="/tmp/buckelwal-voice-model-external-evaluation.json":
+    python3 scripts/evaluate_whale_voice_model.py --engine "{{engine}}" --external --output "{{output}}"
 
 whale-install-controls:
     python3 scripts/install_whale_desktop_controls.py

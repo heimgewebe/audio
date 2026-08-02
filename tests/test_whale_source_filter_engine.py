@@ -1,3 +1,4 @@
+import collections
 import json
 import math
 import pathlib
@@ -15,131 +16,316 @@ import whale_live_engine as live  # noqa: E402
 import whale_morph_engine as morph  # noqa: E402
 import whale_source_filter_engine as source_filter  # noqa: E402
 
+MODEL_SHA256 = "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a"
+
 
 class WhaleVoiceModelBuilderTests(unittest.TestCase):
     def test_committed_model_is_byte_reproducible_from_bound_sources(self):
         expected = builder.encode_manifest(builder.build_manifest())
         actual = builder.DEFAULT_OUTPUT.read_bytes()
         self.assertEqual(expected, actual)
-        self.assertEqual(
-            builder.sha256_bytes(actual),
-            "c2f5a99f0d9c95f75830ba6f2122cfbdd12e847b54eca6bbee80b563d07a9541",
-        )
+        self.assertEqual(builder.sha256_bytes(actual), MODEL_SHA256)
 
-    def test_source_family_holdout_is_disjoint_and_complete(self):
+    def test_source_family_catalog_is_exact_and_complete(self):
         model = json.loads(builder.DEFAULT_OUTPUT.read_text(encoding="utf-8"))
-        train = set(model["train_source_ids"])
-        holdout = set(model["holdout_source_ids"])
         trajectories = model["trajectories"]
         processed = json.loads(builder.SOURCE_MANIFEST.read_text(encoding="utf-8"))
         source_index = {record["id"]: record for record in processed["clips"]}
-
-        self.assertFalse(train & holdout)
-        self.assertGreaterEqual(len(train), 4)
-        self.assertGreaterEqual(len(holdout), 2)
+        self.assertEqual(model["schema_version"], 2)
+        self.assertEqual(model["source_ids"], list(builder.EXPECTED_SOURCE_IDS))
         self.assertEqual(len(trajectories), len(processed["clips"]))
         self.assertEqual({record["clip_id"] for record in trajectories}, set(source_index))
         for record in trajectories:
             source = source_index[record["clip_id"]]
             self.assertEqual(record["source_id"], source["source_id"])
             self.assertEqual(record["source_sha256"], source["sha256"])
-            self.assertEqual(
-                record["split"],
-                "holdout" if record["source_id"] in holdout else "train",
-            )
             self.assertEqual(len(record["points"]), builder.CONTROL_POINTS)
             for point in record["points"]:
                 self.assertEqual(
                     len(point["harmonic_profile"]), builder.HARMONIC_COUNT
                 )
-                self.assertTrue(0.0 <= point["periodicity"] <= 1.0)
-                self.assertTrue(0.0 <= point["roughness"] <= 1.0)
-                self.assertTrue(0.0 <= point["pulse_strength"] <= 1.0)
+                self.assertAlmostEqual(
+                    point["periodicity"] + point["roughness"], 1.0, places=7
+                )
 
-    def test_model_declares_no_phrase_playback_or_permanent_noise(self):
+    def test_antialias_filter_suppresses_out_of_band_tones(self):
+        def tone(frequency):
+            return [
+                math.sin(2.0 * math.pi * frequency * index / builder.SAMPLE_RATE)
+                for index in range(builder.SAMPLE_RATE)
+            ]
+
+        passband = builder.downsample(tone(1_000.0), input_scale=1.0)
+        stopband = builder.downsample(tone(6_000.0), input_scale=1.0)
+        passband_rms = math.sqrt(sum(value * value for value in passband) / len(passband))
+        stopband_rms = math.sqrt(sum(value * value for value in stopband) / len(stopband))
+        self.assertGreater(passband_rms, 0.45)
+        self.assertLess(stopband_rms, passband_rms * 0.02)
+
+    def test_secondary_ratio_and_strength_are_independent(self):
+        model = json.loads(builder.DEFAULT_OUTPUT.read_text(encoding="utf-8"))
+        active = [
+            point
+            for record in model["trajectories"]
+            for point in record["points"]
+            if point["secondary_strength"] > 0.0
+        ]
+        non_unison = [
+            point for point in active if abs(point["secondary_ratio"] - 1.0) > 0.05
+        ]
+        self.assertGreater(len(active), 100)
+        self.assertGreater(len(non_unison), len(active) // 2)
+        self.assertTrue(
+            any(
+                abs(point["secondary_ratio"] - point["secondary_strength"]) > 0.1
+                for point in active
+            )
+        )
+
+    def test_model_declares_honest_analysis_and_no_phrase_playback(self):
         model = json.loads(builder.DEFAULT_OUTPUT.read_text(encoding="utf-8"))
         contract = model["model_contract"]
+        evaluation = model["evaluation_contract"]
         self.assertFalse(contract["plays_recorded_phrase"])
         self.assertFalse(contract["permanent_noise_layer"])
         self.assertTrue(contract["main_fundamental_bound_to_played_note"])
+        self.assertIn("harmonic_resonance_emphasis_ratios", contract["features"])
+        self.assertNotIn("formant_ratios", contract["features"])
+        self.assertEqual(
+            evaluation["strategy"], "leave-one-source-family-out-cross-validation"
+        )
+        self.assertFalse(evaluation["independent_test_claim"])
 
 
 class WhaleSourceFilterBankTests(unittest.TestCase):
     def setUp(self):
         self.bank = source_filter.WhaleSourceFilterBank()
 
-    def test_bank_is_source_bound_and_ready(self):
+    def test_bank_is_exact_hash_bound_and_ready(self):
         status = self.bank.status()
         self.assertTrue(status["ready"])
+        self.assertEqual(status["manifest_sha256"], MODEL_SHA256)
+        self.assertEqual(status["expected_manifest_sha256"], MODEL_SHA256)
         self.assertEqual(status["trajectory_count"], 19)
-        self.assertEqual(status["train_trajectory_count"], 12)
-        self.assertEqual(status["holdout_trajectory_count"], 7)
-        self.assertFalse(status["permanent_noise_layer"])
-        self.assertFalse(status["recorded_phrase_playback"])
-        self.assertFalse(
-            set(status["train_source_ids"]) & set(status["holdout_source_ids"])
-        )
+        self.assertEqual(status["live_trajectory_count"], 19)
+        self.assertEqual(status["source_ids"], list(builder.EXPECTED_SOURCE_IDS))
+        self.assertEqual(status["excluded_source_ids"], [])
 
-    def test_live_selection_never_uses_holdout_sources(self):
-        holdout = set(self.bank.holdout_source_ids)
-        selected = {
-            self.bank._trajectory(note, seed, unit).source_id
-            for note in (21, 33, 45, 57, 69, 84, 96, 108)
-            for seed in (0, 1, 0x12345678, 0xFFFFFFFF)
-            for unit in range(16)
-        }
-        self.assertTrue(selected)
-        self.assertFalse(selected & holdout)
-        self.assertTrue(selected <= set(self.bank.train_source_ids))
-
-    def test_long_hold_uses_evolving_source_controls(self):
-        values = [
-            self.bank.control(
-                note=45,
-                seed=0x12345678,
-                age_frames=round(seconds * 48_000),
-                sample_rate=48_000,
-            )
-            for seconds in (0.0, 0.4, 1.2, 2.6, 4.2, 6.8)
-        ]
-        signatures = {
-            (
-                round(value.envelope, 4),
-                round(value.periodicity, 4),
-                round(value.formant_ratio_1, 4),
-                round(value.pulse_strength, 4),
-                round(value.secondary_strength, 4),
-            )
-            for value in values
-        }
-        self.assertGreaterEqual(len(signatures), 5)
-
-    def test_tampered_source_manifest_binding_is_rejected(self):
+    def test_any_schema_valid_model_mutation_is_rejected_by_hash(self):
         value = json.loads(builder.DEFAULT_OUTPUT.read_text(encoding="utf-8"))
-        value["source_sample_manifest_sha256"] = "0" * 64
+        original = value["trajectories"][0]["points"][0]["envelope"]
+        value["trajectories"][0]["points"][0]["envelope"] = (
+            0.0 if original != 0.0 else 0.1
+        )
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "manifest.json"
             path.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
+            with self.assertRaisesRegex(RuntimeError, "manifest hash mismatch"):
                 source_filter.WhaleSourceFilterBank(path)
+            status = source_filter.source_filter_bank_status(path)
+            self.assertFalse(status["ready"])
+            self.assertIn("manifest hash mismatch", status["blocking_reason"])
+
+    def test_family_exclusion_is_complete(self):
+        excluded = builder.EXPECTED_SOURCE_IDS[3]
+        bank = source_filter.WhaleSourceFilterBank(
+            excluded_source_ids=frozenset({excluded})
+        )
+        selected = {
+            bank._trajectory(note, seed, unit).source_id
+            for note in (21, 57, 96)
+            for seed in range(32)
+            for unit in range(24)
+        }
+        self.assertNotIn(excluded, selected)
+        self.assertEqual(bank.status()["excluded_source_ids"], [excluded])
+
+    def test_family_then_clip_selection_is_balanced(self):
+        for note in (21, 57, 96):
+            families = self.bank._candidate_families(note)
+            counts = collections.Counter(
+                self.bank._trajectory(note, seed, unit).source_id
+                for seed in range(256)
+                for unit in range(32)
+            )
+            expected = 1.0 / len(families)
+            total = sum(counts.values())
+            for source_id, _clips in families:
+                self.assertAlmostEqual(counts[source_id] / total, expected, delta=0.02)
+
+    def test_unit_transition_is_continuous_and_each_unit_uses_own_duration(self):
+        note = 69
+        seed = 1
+        first = self.bank._trajectory(note, seed, 0)
+        second = self.bank._trajectory(note, seed, 1)
+        first_frames = self.bank._unit_frames(first, 48_000)
+        second_frames = self.bank._unit_frames(second, 48_000)
+        before = self.bank.control(
+            note=note,
+            seed=seed,
+            age_frames=first_frames - 1,
+            sample_rate=48_000,
+        )
+        boundary = self.bank.control(
+            note=note,
+            seed=seed,
+            age_frames=first_frames,
+            sample_rate=48_000,
+        )
+        scalar_names = (
+            "envelope",
+            "periodicity",
+            "high_band_ratio",
+            "spectral_tilt",
+            "resonance_ratio_1",
+            "resonance_ratio_2",
+            "pulse_rate_hz",
+            "pulse_strength",
+            "subharmonic_strength",
+            "secondary_ratio",
+            "secondary_strength",
+        )
+        self.assertLess(
+            max(abs(getattr(before, name) - getattr(boundary, name)) for name in scalar_names),
+            0.01,
+        )
+        self.assertLess(
+            max(
+                abs(left - right)
+                for left, right in zip(
+                    before.harmonic_profile, boundary.harmonic_profile
+                )
+            ),
+            0.01,
+        )
+        unit_index, _trajectory, _frames, _local = self.bank._unit_position(
+            note=note,
+            seed=seed,
+            age_frames=first_frames + second_frames - 1,
+            sample_rate=48_000,
+        )
+        self.assertEqual(unit_index, 1)
+        unit_index, _trajectory, _frames, _local = self.bank._unit_position(
+            note=note,
+            seed=seed,
+            age_frames=first_frames + second_frames,
+            sample_rate=48_000,
+        )
+        self.assertEqual(unit_index, 2)
+
+    def test_timeline_supports_full_six_hour_runtime_and_bounds_cache(self):
+        age_frames = 21_600 * 48_000 - 1
+        control = self.bank.control(
+            note=45,
+            seed=0x12345678,
+            age_frames=age_frames,
+            sample_rate=48_000,
+        )
+        self.assertTrue(0.0 <= control.envelope <= 1.0)
+        self.assertGreater(len(self.bank._timeline_cache[(45, 0x12345678, 48_000)]), 1_000)
+        for seed in range(40):
+            self.bank.control(
+                note=57,
+                seed=seed,
+                age_frames=0,
+                sample_rate=48_000,
+            )
+        self.assertLessEqual(
+            len(self.bank._timeline_cache), self.bank._timeline_cache_limit
+        )
+
+    def test_upper_harmonic_profile_changes_rendered_output(self):
+        value = json.loads(builder.DEFAULT_OUTPUT.read_text(encoding="utf-8"))
+        for record in value["trajectories"]:
+            for point in record["points"]:
+                profile = point["harmonic_profile"]
+                total = min(sum(profile), 1.0)
+                point["harmonic_profile"] = [0.0] * 7 + [total]
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            modified = source_filter.WhaleSourceFilterBank(
+                path, expected_manifest_sha256=None
+            )
+            config = live.WhaleVoiceConfig(
+                sample_rate=48_000, block_frames=128, master_gain=0.16
+            )
+            original_voice = source_filter.WhaleSourceFilterVoice(
+                config, source_filter_bank=self.bank
+            )
+            modified_voice = source_filter.WhaleSourceFilterVoice(
+                config, source_filter_bank=modified
+            )
+            for voice in (original_voice, modified_voice):
+                voice.note_on(57, 80)
+            self.assertNotEqual(original_voice.render(4096), modified_voice.render(4096))
 
 
-class WhaleVoiceModelHoldoutTests(unittest.TestCase):
-    def test_organic_voice_improves_whole_source_family_holdout(self):
-        morph_report = evaluator.evaluate("morph")
-        organic_report = evaluator.evaluate("organic")
-        morph_score = float(morph_report["holdout_similarity_score_0_to_1"])
-        organic_score = float(organic_report["holdout_similarity_score_0_to_1"])
-        self.assertGreater(organic_score, morph_score * 1.15)
-        self.assertLess(float(organic_report["peak"]), 0.24)
+class WhaleIndependentEvaluationTests(unittest.TestCase):
+    def test_independent_source_is_hash_bound_and_absent_from_model(self):
+        report = evaluator.evaluate_external("morph")
         self.assertEqual(
-            organic_report["holdout_source_ids"],
-            list(source_filter.WhaleSourceFilterBank().holdout_source_ids),
+            report["source_id"],
+            "noaa-pmel-alaska-winter-1999-independent",
         )
-        self.assertFalse(
-            set(organic_report["train_source_ids"])
-            & set(organic_report["holdout_source_ids"])
+        self.assertTrue(report["model_or_parameter_tuning_forbidden"])
+        self.assertIn("population_generalization", report["does_not_establish"])
+        self.assertNotIn(
+            report["source_id"],
+            source_filter.WhaleSourceFilterBank().source_ids,
         )
+        self.assertTrue(0.0 <= report["similarity_score_0_to_1"] <= 1.0)
+        self.assertEqual(
+            report["evaluation_manifest_sha256"],
+            evaluator.EXPECTED_EXTERNAL_EVALUATION_MANIFEST_SHA256,
+        )
+
+    def test_independent_processed_clip_mutation_is_rejected(self):
+        manifest_payload = evaluator.EXTERNAL_EVALUATION_MANIFEST.read_bytes()
+        manifest = json.loads(manifest_payload.decode("utf-8"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "raw").mkdir()
+            (root / "processed").mkdir()
+            evaluation_root = evaluator.EXTERNAL_EVALUATION_MANIFEST.parent
+            (root / manifest["clips"][0]["raw_file"]).write_bytes(
+                (evaluation_root / manifest["clips"][0]["raw_file"]).read_bytes()
+            )
+            processed_path = root / manifest["clips"][0]["processed_file"]
+            processed_payload = bytearray(
+                (evaluation_root / manifest["clips"][0]["processed_file"]).read_bytes()
+            )
+            processed_payload[-1] ^= 1
+            processed_path.write_bytes(processed_payload)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_bytes(manifest_payload)
+            old = evaluator.EXTERNAL_EVALUATION_MANIFEST
+            evaluator.EXTERNAL_EVALUATION_MANIFEST = manifest_path
+            try:
+                with self.assertRaisesRegex(RuntimeError, "processed whale clip"):
+                    evaluator.evaluate_external("morph")
+            finally:
+                evaluator.EXTERNAL_EVALUATION_MANIFEST = old
+
+
+class WhaleVoiceModelCrossValidationTests(unittest.TestCase):
+    def test_cross_validation_is_family_weighted_temporal_and_honest(self):
+        report = evaluator.evaluate("organic")
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(report["family_weighting"], "equal")
+        self.assertEqual(report["fold_count"], len(builder.EXPECTED_SOURCE_IDS))
+        self.assertIn(
+            "independent_unseen_dataset_generalization",
+            report["does_not_establish"],
+        )
+        self.assertNotIn("roughness", report["folds"][0]["feature_distances"])
+        self.assertIn("harmonic_profile_l1", report["folds"][0]["feature_distances"])
+        for fold in report["folds"]:
+            self.assertEqual(
+                fold["excluded_from_live_selection"], [fold["source_id"]]
+            )
+            self.assertTrue(0.0 <= fold["similarity_score_0_to_1"] <= 1.0)
+        self.assertLess(report["maximum_peak"], 0.25)
 
 
 class WhaleSourceFilterVoiceTests(unittest.TestCase):
