@@ -1,0 +1,147 @@
+{
+  "candidate": {
+    "candidate_id": "morph",
+    "enabled_components": [],
+    "evaluation_variant_id": "frozen-candidate",
+    "internal_report_sha256": "95d1b46290057fcccc1aad2f66db302a7f85e4eb3aff318fc16db01651636912",
+    "path": "assets/whale-sources/studies/organic-ablation-v51/frozen-candidate.json",
+    "sha256": "bf93de7f8c127876cc4b546b2e1317f6cdfd31d418ca73ec73d2487b071f1101",
+    "source_revision": "82e679c79d247a304568689355c22b29b2fa14fe"
+  },
+  "clip_count": 1,
+  "clips": [
+    {
+      "call_type": null,
+      "license": "Public-Domain-US-NOAA",
+      "population": null,
+      "processed_sha256": "1a38ba45c88e3cabbf72ffc50026bdfb4fe9882018cebd5e7f3a658497484822",
+      "raw_sha256": "54a91b3c3e488941697acdf01face985ad149ca91e5d85af0f3ec8b1ad00ab42",
+      "recording_conditions": null,
+      "results": [
+        {
+          "cpu_seconds_per_audio_second": 0.3009912766283378,
+          "enabled_components": [],
+          "envelope_distance": 1.5557881614583335,
+          "harmonic_profile_distance": 2.9931484529761914,
+          "high_band_distance": 1.3142733312500001,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 0.24953864236111112,
+          "pulse_rate_distance": 2.2792105125,
+          "pulse_strength_distance": 1.8970898217592593,
+          "resonance_focus_distance": 0.45014880952380953,
+          "secondary_ratio_distance": 1.4757416416666673,
+          "secondary_strength_distance": 4.308034879166667,
+          "similarity_score_0_to_1": 0.17073804499890638,
+          "spectral_tilt_distance": 1.6874496614583336,
+          "subharmonic_distance": 2.5509248479166655,
+          "temporal_total_distance": 1.7676247976300707,
+          "variant_id": "morph"
+        },
+        {
+          "cpu_seconds_per_audio_second": 0.5698877859977074,
+          "enabled_components": [
+            "articulation_states",
+            "harmonic_profile",
+            "periodicity_roughness",
+            "pitch_contour",
+            "pulse",
+            "register_bass",
+            "resonance_focus",
+            "secondary_frequency",
+            "source_envelope",
+            "subharmonic"
+          ],
+          "envelope_distance": 2.292517423177083,
+          "harmonic_profile_distance": 3.199529904761906,
+          "high_band_distance": 1.5134470916666671,
+          "peak": 0.20776427107280376,
+          "periodicity_distance": 0.2992150474537037,
+          "pulse_rate_distance": 1.9947493376388896,
+          "pulse_strength_distance": 1.8124879479166667,
+          "resonance_focus_distance": 0.43452380952380953,
+          "secondary_ratio_distance": 1.5585475750000002,
+          "secondary_strength_distance": 4.523742022916665,
+          "similarity_score_0_to_1": 0.15379037024906628,
+          "spectral_tilt_distance": 1.907445446180556,
+          "subharmonic_distance": 2.4952486166666668,
+          "temporal_total_distance": 1.8721648360355354,
+          "variant_id": "organic-full"
+        },
+        {
+          "cpu_seconds_per_audio_second": 0.3316655878734309,
+          "enabled_components": [],
+          "envelope_distance": 1.5557881614583335,
+          "harmonic_profile_distance": 2.9931484529761914,
+          "high_band_distance": 1.3142733312500001,
+          "peak": 0.09031123977862585,
+          "periodicity_distance": 0.24953864236111112,
+          "pulse_rate_distance": 2.2792105125,
+          "pulse_strength_distance": 1.8970898217592593,
+          "resonance_focus_distance": 0.45014880952380953,
+          "secondary_ratio_distance": 1.4757416416666673,
+          "secondary_strength_distance": 4.308034879166667,
+          "similarity_score_0_to_1": 0.17073804499890638,
+          "spectral_tilt_distance": 1.6874496614583336,
+          "subharmonic_distance": 2.5509248479166655,
+          "temporal_total_distance": 1.7676247976300707,
+          "variant_id": "frozen-candidate"
+        }
+      ],
+      "source_id": "noaa-pmel-alaska-winter-1999-independent",
+      "source_url": null,
+      "target_summary": {
+        "duration_seconds": 20.0,
+        "envelope_q10": 0.18376968,
+        "envelope_q90": 0.82257094,
+        "median_f0_hz": 666.66666667,
+        "median_periodicity": 0.98812073,
+        "voiced_fraction": 1.0
+      }
+    }
+  ],
+  "does_not_establish": [
+    "biological_identity",
+    "perceptual_equivalence",
+    "complete_population_generalization"
+  ],
+  "evaluation_manifests": [
+    {
+      "path": "assets/whale-sources/evaluation/manifest.json",
+      "sha256": "a7409a5b27ca03bf04a4f10d558208b985b184933bc0b1b4b9d45d43bec8a0ff"
+    }
+  ],
+  "kind": "humpback_whale_organic_external_generalization_study",
+  "model_or_parameter_tuning_forbidden": true,
+  "parameters_changed_after_external_results": false,
+  "schema_version": 1,
+  "summaries": [
+    {
+      "best_clip_similarity": 0.17073804499890638,
+      "clip_count": 1,
+      "mean_similarity": 0.17073804499890638,
+      "median_similarity": 0.17073804499890638,
+      "similarity_variance": 0.0,
+      "variant_id": "morph",
+      "worst_clip_similarity": 0.17073804499890638
+    },
+    {
+      "best_clip_similarity": 0.15379037024906628,
+      "clip_count": 1,
+      "mean_similarity": 0.15379037024906628,
+      "median_similarity": 0.15379037024906628,
+      "similarity_variance": 0.0,
+      "variant_id": "organic-full",
+      "worst_clip_similarity": 0.15379037024906628
+    },
+    {
+      "best_clip_similarity": 0.17073804499890638,
+      "clip_count": 1,
+      "mean_similarity": 0.17073804499890638,
+      "median_similarity": 0.17073804499890638,
+      "similarity_variance": 0.0,
+      "variant_id": "frozen-candidate",
+      "worst_clip_similarity": 0.17073804499890638
+    }
+  ],
+  "voice_model_manifest_sha256": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a"
+}

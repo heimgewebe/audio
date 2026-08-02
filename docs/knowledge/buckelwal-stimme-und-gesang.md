@@ -1,6 +1,6 @@
 # Wissen über Buckelwalstimme und Buckelwalgesang
 
-Stand: 1. August 2026
+Stand: 2. August 2026
 
 ## Zweck und Wahrheitsgrenze
 
@@ -200,7 +200,34 @@ Formanten**. Sie sind eine robuste, begrenzte Heuristik aus betonten
 Harmonischen. Aussagen über echte Resonanzräume bleiben wissenschaftliche
 Motivation, nicht Messbehauptung dieses Builders.
 
-## Technischer Zielzustand der Grundengine
+## Aktueller Grundengine-Befund
+
+Die revisionsgebundene Ablationsstudie vom 2. August 2026 trennt zehn
+Organic-Schichten. Keine Variante erfüllt die vorab festgelegten internen
+Robustheitskriterien; Morph bleibt deshalb die kanonische Grundengine.
+
+Gut belegt ist innerhalb des lokalen Korpus:
+
+- Periodizitäts-/Rauigkeitsformung besitzt den größten isolierten
+  Ähnlichkeitsgewinn, ist aber über Familien instabil;
+- der registergebundene Bass verbessert einzelne tiefe beziehungsweise
+  schwierige Folds, ist jedoch kein allgemeiner Ähnlichkeitsgewinn;
+- Resonanzfokus, Subharmonik und sekundäre Frequenzspur sind in ihrer heutigen
+  dauerhaften Aktivierung überwiegend neutral bis schädlich;
+- vollständiges Organic kostet deutlich mehr CPU als Morph.
+
+Die externe Evidenz ist widersprüchlich: Im gesperrten hochperiodischen
+Alaska-Ruf gewinnt Morph klar. In vier Stellwagen-Segmenten mit Schiffslärm und
+sehr niedriger Periodizität gewinnt Organic; vier Segmente aus
+Amerikanisch-Samoa sind gemischt. Das legt eine datenabhängige Wirkung nahe,
+belegt aber keine kausale adaptive Schaltung, weil Population, Rufart und
+Aufnahmebedingung gleichzeitig variieren. Der externe Satz bleibt für Tuning
+gesperrt.
+
+Die vollständige Methodik und alle Hashbindungen stehen in
+`docs/experiments/buckelwal-organic-v51-ablation.md`.
+
+## Historischer technischer v5-Zielzustand
 
 ### Schallquelle
 
@@ -316,8 +343,11 @@ Aufnahmesituationen oder menschliche Wahrnehmung.
 - ob die korrigierte v5-Fassung über die reale Wiedergabekette weniger nach UFO,
   Orgel oder Buzz klingt;
 - ob optionaler Unterwasserraum Immersion erhöht oder nur Fehler verdeckt;
-- wie gut die Engine auf einen wirklich unangetasteten externen Aufnahmesatz
-  generalisiert.
+- wie sich Morph und schwache adaptive Komponenten auf einem größeren, nach
+  Rufart und Aufnahmebedingung kontrollierten Satz unabhängiger Aufnahmen
+  verhalten;
+- ob die in geräuschreichen Segmenten gemessenen Organic-Vorteile Walmerkmale
+  oder lediglich Aufnahme- und Störgeräuschähnlichkeit abbilden.
 
 ## Primär- und Fachquellen
 
@@ -349,3 +379,5 @@ Aufnahmesituationen oder menschliche Wahrnehmung.
 - Modell-Builder: `scripts/build_whale_voice_model.py`
 - Source-Filter-Engine: `scripts/whale_source_filter_engine.py`
 - Holdout-Prüfung: `scripts/evaluate_whale_voice_model.py`
+- Ablationsstudie: `docs/experiments/buckelwal-organic-v51-ablation.md`
+- externer Zusatzsatz: `assets/whale-sources/evaluation-v2/manifest.json`

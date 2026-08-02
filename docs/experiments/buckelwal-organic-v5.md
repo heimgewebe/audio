@@ -2,6 +2,13 @@
 
 ## Status
 
+> **Nachfolgende Entscheidung vom 2. August 2026:** Die revisionsgebundene
+> Ablations- und Generalisierungsstudie in
+> `docs/experiments/buckelwal-organic-v51-ablation.md` qualifiziert keine
+> Organic-Variante als robuste neue Grundengine. Morph bleibt der kanonische
+> Standard. Vollständiges Organic bleibt eine experimentelle Referenz; es wird
+> weder weiter nach externen Ergebnissen abgestimmt noch als v5.1 veröffentlicht.
+
 Die erste v5-Fassung wurde nach dem Merge erneut unabhängig gegen ihren
 Quellcode, das Modellformat und die Bewertungsmethodik auditiert. Dabei wurden
 konkrete Fehler in Sekundärfrequenzextraktion, Modellhashbindung,
@@ -229,7 +236,8 @@ MOTU und Nutzer vorgesehen.
 
 - A/B-Hörtest über MOTU M2 und Focal Clear MG;
 - Vergleich auf UFO-, Orgel-, Buzz- und Filtereffektcharakter;
-- unabhängiger Test mit neuen, bislang weder analysierten noch zur Entwicklung
-  betrachteten Buckelwalaufnahmen;
+- der zusätzliche externe Test ist abgeschlossen; offen bleibt ein größerer,
+  nach Rufart und Aufnahmebedingung kontrollierter Datensatz mit wirklich
+  unabhängigen Aufnahmen statt mehrerer Segmente derselben Feldaufnahmen;
 - mögliche Erweiterung um ein Phrasengedächtnis, falls lange Spielpassagen trotz
   kontinuierlicher Einheiten noch unverbunden wirken.
