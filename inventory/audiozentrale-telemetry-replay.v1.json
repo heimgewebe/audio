@@ -1,0 +1,632 @@
+{
+  "schema_version": 1,
+  "kind": "audiozentrale_telemetry_replay_catalog",
+  "catalog_id": "audiozentrale-phase0-replay-v1",
+  "product_model_sha256": "87a36ce5cae399069adae5ad7b7b4fd015e2df5f71ed117dd950286d284e6d6f",
+  "schema_binding": {
+    "path": "schemas/audiozentrale-telemetry-replay.v1.schema.json",
+    "sha256": "35d57824c190a0fff810bcf0c31840328415618d218aafa98bf4871a921157fe"
+  },
+  "sample_interval_ms": 250,
+  "stale_after_ms": 2000,
+  "scenarios": [
+    {
+      "id": "normal",
+      "label": "Normalbetrieb",
+      "description": "Stabiler Pegel mit begrenzter Roland-MIDI-Aktivität und ohne XRuns.",
+      "frames": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "peak_dbfs": -42,
+          "rms_dbfs": -54,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 1,
+          "offset_ms": 250,
+          "peak_dbfs": -30,
+          "rms_dbfs": -43,
+          "midi_note": 60,
+          "midi_velocity": 54,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "midi"
+        },
+        {
+          "index": 2,
+          "offset_ms": 500,
+          "peak_dbfs": -18,
+          "rms_dbfs": -31,
+          "midi_note": 64,
+          "midi_velocity": 88,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "midi"
+        },
+        {
+          "index": 3,
+          "offset_ms": 750,
+          "peak_dbfs": -12,
+          "rms_dbfs": -25,
+          "midi_note": 67,
+          "midi_velocity": 104,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "midi"
+        },
+        {
+          "index": 4,
+          "offset_ms": 1000,
+          "peak_dbfs": -20,
+          "rms_dbfs": -33,
+          "midi_note": 67,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 5,
+          "offset_ms": 1250,
+          "peak_dbfs": -28,
+          "rms_dbfs": -41,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 6,
+          "offset_ms": 1500,
+          "peak_dbfs": -35,
+          "rms_dbfs": -48,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 7,
+          "offset_ms": 1750,
+          "peak_dbfs": -42,
+          "rms_dbfs": -54,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        }
+      ]
+    },
+    {
+      "id": "clip",
+      "label": "Clipping",
+      "description": "Ein kurzer Peak erreicht die digitale Obergrenze; RMS und Folgezustand bleiben nachvollziehbar.",
+      "frames": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "peak_dbfs": -24,
+          "rms_dbfs": -36,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 1,
+          "offset_ms": 250,
+          "peak_dbfs": -12,
+          "rms_dbfs": -24,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 2,
+          "offset_ms": 500,
+          "peak_dbfs": -3,
+          "rms_dbfs": -15,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 3,
+          "offset_ms": 750,
+          "peak_dbfs": -0.05,
+          "rms_dbfs": -10,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "clip"
+        },
+        {
+          "index": 4,
+          "offset_ms": 1000,
+          "peak_dbfs": -1,
+          "rms_dbfs": -11,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "clip"
+        },
+        {
+          "index": 5,
+          "offset_ms": 1250,
+          "peak_dbfs": -9,
+          "rms_dbfs": -22,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 6,
+          "offset_ms": 1500,
+          "peak_dbfs": -18,
+          "rms_dbfs": -31,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 7,
+          "offset_ms": 1750,
+          "peak_dbfs": -28,
+          "rms_dbfs": -41,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        }
+      ]
+    },
+    {
+      "id": "xrun",
+      "label": "XRun",
+      "description": "Der XRun-Zähler steigt genau einmal und bleibt danach monoton.",
+      "frames": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "peak_dbfs": -28,
+          "rms_dbfs": -40,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 4,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 1,
+          "offset_ms": 250,
+          "peak_dbfs": -20,
+          "rms_dbfs": -33,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 4,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 2,
+          "offset_ms": 500,
+          "peak_dbfs": -16,
+          "rms_dbfs": -29,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 4,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 3,
+          "offset_ms": 750,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 5,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "xrun"
+        },
+        {
+          "index": 4,
+          "offset_ms": 1000,
+          "peak_dbfs": -24,
+          "rms_dbfs": -37,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 5,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 5,
+          "offset_ms": 1250,
+          "peak_dbfs": -27,
+          "rms_dbfs": -40,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 5,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 6,
+          "offset_ms": 1500,
+          "peak_dbfs": -31,
+          "rms_dbfs": -44,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 5,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 7,
+          "offset_ms": 1750,
+          "peak_dbfs": -34,
+          "rms_dbfs": -47,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 5,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        }
+      ]
+    },
+    {
+      "id": "device-loss",
+      "label": "Geräteverlust",
+      "description": "Geräteverlust degradiert den Zustand ohne Route oder Default zu verändern.",
+      "frames": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "peak_dbfs": -26,
+          "rms_dbfs": -39,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 1,
+          "offset_ms": 250,
+          "peak_dbfs": -20,
+          "rms_dbfs": -33,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 2,
+          "offset_ms": 500,
+          "peak_dbfs": -18,
+          "rms_dbfs": -31,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 3,
+          "offset_ms": 750,
+          "peak_dbfs": -120,
+          "rms_dbfs": -120,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "lost",
+          "telemetry_age_ms": 250,
+          "event": "device-loss"
+        },
+        {
+          "index": 4,
+          "offset_ms": 1000,
+          "peak_dbfs": -120,
+          "rms_dbfs": -120,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "lost",
+          "telemetry_age_ms": 500,
+          "event": "device-loss"
+        },
+        {
+          "index": 5,
+          "offset_ms": 1250,
+          "peak_dbfs": -120,
+          "rms_dbfs": -120,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "lost",
+          "telemetry_age_ms": 750,
+          "event": "none"
+        },
+        {
+          "index": 6,
+          "offset_ms": 1500,
+          "peak_dbfs": -120,
+          "rms_dbfs": -120,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "lost",
+          "telemetry_age_ms": 1000,
+          "event": "none"
+        },
+        {
+          "index": 7,
+          "offset_ms": 1750,
+          "peak_dbfs": -120,
+          "rms_dbfs": -120,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "lost",
+          "telemetry_age_ms": 1250,
+          "event": "none"
+        }
+      ]
+    },
+    {
+      "id": "stale-telemetry",
+      "label": "Veraltete Telemetrie",
+      "description": "Die letzte Probe bleibt sichtbar und wird nach dem Alterslimit als stale markiert.",
+      "frames": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 1,
+          "offset_ms": 250,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 500,
+          "event": "none"
+        },
+        {
+          "index": 2,
+          "offset_ms": 500,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 1000,
+          "event": "none"
+        },
+        {
+          "index": 3,
+          "offset_ms": 750,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 1500,
+          "event": "none"
+        },
+        {
+          "index": 4,
+          "offset_ms": 1000,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 2000,
+          "event": "none"
+        },
+        {
+          "index": 5,
+          "offset_ms": 1250,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 2500,
+          "event": "stale"
+        },
+        {
+          "index": 6,
+          "offset_ms": 1500,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 3000,
+          "event": "stale"
+        },
+        {
+          "index": 7,
+          "offset_ms": 1750,
+          "peak_dbfs": -22,
+          "rms_dbfs": -35,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 3500,
+          "event": "stale"
+        }
+      ]
+    },
+    {
+      "id": "recovery",
+      "label": "Recovery",
+      "description": "Nach Geräteverlust folgen Recovery und ein stabiler Online-Readback.",
+      "frames": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "peak_dbfs": -120,
+          "rms_dbfs": -120,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "lost",
+          "telemetry_age_ms": 1000,
+          "event": "device-loss"
+        },
+        {
+          "index": 1,
+          "offset_ms": 250,
+          "peak_dbfs": -120,
+          "rms_dbfs": -120,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "recovering",
+          "telemetry_age_ms": 0,
+          "event": "recovery"
+        },
+        {
+          "index": 2,
+          "offset_ms": 500,
+          "peak_dbfs": -48,
+          "rms_dbfs": -60,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "recovering",
+          "telemetry_age_ms": 0,
+          "event": "recovery"
+        },
+        {
+          "index": 3,
+          "offset_ms": 750,
+          "peak_dbfs": -34,
+          "rms_dbfs": -47,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "recovery"
+        },
+        {
+          "index": 4,
+          "offset_ms": 1000,
+          "peak_dbfs": -24,
+          "rms_dbfs": -37,
+          "midi_note": 60,
+          "midi_velocity": 48,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "midi"
+        },
+        {
+          "index": 5,
+          "offset_ms": 1250,
+          "peak_dbfs": -18,
+          "rms_dbfs": -31,
+          "midi_note": 64,
+          "midi_velocity": 76,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "midi"
+        },
+        {
+          "index": 6,
+          "offset_ms": 1500,
+          "peak_dbfs": -24,
+          "rms_dbfs": -37,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        },
+        {
+          "index": 7,
+          "offset_ms": 1750,
+          "peak_dbfs": -31,
+          "rms_dbfs": -44,
+          "midi_note": null,
+          "midi_velocity": 0,
+          "xrun_total": 0,
+          "device_state": "online",
+          "telemetry_age_ms": 0,
+          "event": "none"
+        }
+      ]
+    }
+  ]
+}

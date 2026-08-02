@@ -3,11 +3,18 @@ check:
     bash scripts/check-audio-safety .
     python3 scripts/audio_control.py check
     ./scripts/audio-product-model check
+    ./scripts/audio-telemetry-replay check
     python3 -m unittest discover -s tests -v
     python3 -m compileall -q scripts tests
 
 product-model-check:
     ./scripts/audio-product-model check
+
+telemetry-replay-check:
+    ./scripts/audio-telemetry-replay check
+
+telemetry-replay-show:
+    ./scripts/audio-telemetry-replay show
 
 product-workspace-validate workspace="profiles/audiozentrale-workspace.example.v1.json":
     ./scripts/audio-product-model validate "{{workspace}}"

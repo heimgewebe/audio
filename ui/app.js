@@ -1,15 +1,18 @@
 "use strict";
 
 const ROUTES = {
-  start: { title: "Übersicht", eyebrow: "Betriebsbild" },
-  hoeren: { title: "Hören", eyebrow: "Wiedergabe" },
-  spielen: { title: "Spielen", eyebrow: "Live-Instrument" },
-  aufnehmen: { title: "Aufnehmen", eyebrow: "Quellen" },
+  now: { title: "Jetzt", eyebrow: "Aktiver Arbeitsstand" },
+  setups: { title: "Setups", eyebrow: "Signalbahnen und Vorlagen" },
+  library: { title: "Bibliothek", eyebrow: "Takes, Klänge und Replay" },
   system: { title: "System", eyebrow: "Betrieb und Integration" },
 };
 
 const ROUTE_ALIASES = {
-  klaenge: "spielen",
+  start: "now",
+  hoeren: "now",
+  spielen: "now",
+  aufnehmen: "now",
+  klaenge: "library",
   verbindungen: "system",
   diagnose: "system",
   einstellungen: "system",
@@ -82,14 +85,16 @@ const WARNING_LABELS = {
 };
 
 const INTERACTION_GRACE_MS = 1200;
-// The mode path may consume 8 s precheck + 25 s mutation + 40 s readback.
-const WHALE_ACTION_TIMEOUT_MS = 90000;
 
 const state = {
   snapshot: null,
-  route: "start",
+  replay: null,
+  replayScenarioId: "normal",
+  replayFrameIndex: 0,
+  replayPlaying: false,
+  replayTimer: null,
+  route: "now",
   loading: false,
-  actionPending: false,
   autoRefresh: true,
   timer: null,
   interactionUntil: 0,
@@ -276,7 +281,7 @@ function setLoading(loading) {
 }
 
 async function refreshSnapshot(force = false) {
-  if (state.loading || state.actionPending) return;
+  if (state.loading) return;
   setLoading(true);
   try {
     const suffix = force ? "?refresh=1" : "";
@@ -320,14 +325,84 @@ function renderAll() {
   byId("mobile-updated-at").textContent = formatTimestamp(
     state.snapshot.generated_at,
   ).replace("Stand ", "");
+  renderTruth();
   renderHome();
+  renderActiveLanes();
   renderWhale();
   renderProfiles();
+  renderLibrary();
   renderSounds();
   renderConnections();
   renderDeployment();
   renderDiagnostics();
   renderSettings();
+  renderReplay();
+}
+
+function renderTruth() {
+  const snapshot = state.snapshot;
+  const doctor = snapshot.doctor || {};
+  const graph = doctor.graph || {};
+  const presence = snapshot.presence || {};
+  const summary = snapshot.summary || {};
+  const observed = presence.observed_count ?? 0;
+  const desired = presence.desired_count ?? 0;
+  byId("truth-observed").textContent = doctor.status === "ok" ? `${observed}/${desired} Geräte` : "nicht lesbar";
+  byId("truth-observed-detail").textContent = doctor.status === "ok" ? "autoritativ zurückgelesen" : "kein positiver Zustand angenommen";
+  byId("truth-configured").textContent = graph.force_rate_hz ? `${graph.force_rate_hz} Hz` : "offen";
+  byId("truth-configured-detail").textContent = graph.default_sink ? `Ziel: ${formatEndpoint(graph.default_sink)}` : "kein Ziel lesbar";
+  const physicalCount = summary.physical_unknown_count || 0;
+  byId("truth-physical").textContent = physicalCount ? `${physicalCount} offen` : "belegt";
+  byId("truth-physical-detail").textContent = physicalCount ? "Vor-Ort-Nachweise fehlen" : "keine offenen Nachweise";
+  byId("truth-executable").textContent = "read-only";
+  byId("truth-executable-detail").textContent = "Replay lokal; Audioaktionen gesperrt";
+}
+
+function renderActiveLanes() {
+  const snapshot = state.snapshot;
+  const graph = snapshot.doctor?.graph || {};
+  const whale = snapshot.whale || {};
+  const recording = snapshot.recording || {};
+  const lanes = [
+    {
+      name: "Hören",
+      path: `${formatEndpoint(graph.default_source)} → ${formatEndpoint(graph.default_sink)}`,
+      observed: snapshot.doctor?.status === "ok" ? "Route gelesen" : "nicht lesbar",
+      configured: graph.force_rate_hz ? `${graph.force_rate_hz} Hz` : "offen",
+      physical: snapshot.summary?.physical_unknown_count ? "Belege offen" : "belegt",
+      executable: "keine Apply-Aktion",
+    },
+    {
+      name: "Spielen",
+      path: `Roland → ${displayMode(whale.service?.voice_mode || whale.contract?.default_mode)}`,
+      observed: whale.status === "ok" ? (whale.service?.active ? "aktiv" : "inaktiv") : "nicht lesbar",
+      configured: `${whale.contract?.keyboard?.key_count || 88} Tasten`,
+      physical: snapshot.presence?.observed?.roland_fp_30x ? "Roland beobachtet" : "Roland offen",
+      executable: "in T020 gesperrt",
+    },
+    {
+      name: "Aufnehmen",
+      path: "MOTU M2 → unveränderlicher Take",
+      observed: snapshot.presence?.observed?.motu_m2 ? "MOTU beobachtet" : "MOTU nicht beobachtet",
+      configured: recording.status || "geplant",
+      physical: snapshot.presence?.observed?.rode_nt1a ? "RØDE beobachtet" : "Mikrofon offen",
+      executable: "Recorder folgt in T022",
+    },
+  ];
+  byId("now-signal-lanes").replaceChildren(
+    ...lanes.map((lane) => {
+      const card = element("article", "lane-card");
+      appendText(card, "p", "eyebrow", lane.name);
+      appendText(card, "h3", "", lane.path);
+      const list = element("dl", "truth-list");
+      detailRow(list, "Beobachtet", lane.observed);
+      detailRow(list, "Konfiguriert", lane.configured);
+      detailRow(list, "Physisch offen", lane.physical);
+      detailRow(list, "Ausführbar", lane.executable);
+      card.append(list);
+      return card;
+    }),
+  );
 }
 
 function renderHome() {
@@ -423,26 +498,20 @@ function renderHome() {
 
   const tasks = [
     {
-      route: "hoeren",
-      glyph: "◖",
-      title: "Hören",
-      detail: `${profilesFor("listening").length} definierte Hörwege`,
+      route: "setups",
+      glyph: "◇",
+      title: "Setups",
+      detail: `${state.snapshot.profiles.length} Profile und Instrumentzustände`,
     },
     {
-      route: "spielen",
-      glyph: "♬",
-      title: "Spielen",
+      route: "library",
+      glyph: "≋",
+      title: "Bibliothek",
       detail: whaleStatusReadable
         ? activeWhale
-          ? `${displayMode(snapshot.whale.service.voice_mode)} aktiv`
-          : "Walstimme und Softwareinstrumente"
-        : "Zustand nicht lesbar · keine Inaktivitätsannahme",
-    },
-    {
-      route: "aufnehmen",
-      glyph: "●",
-      title: "Aufnehmen",
-      detail: `${profilesFor("recording").length} Profile · Voraussetzungen`,
+          ? `${displayMode(snapshot.whale.service.voice_mode)} beobachtet`
+          : "Klänge, Takes und Telemetrie-Replay"
+        : "Replay verfügbar · Livezustand nicht lesbar",
     },
     {
       route: "system",
@@ -470,9 +539,9 @@ function renderHome() {
   );
 
   const readinessAreas = [
-    ["Hören", "listening", "hoeren"],
-    ["Spielen", "playing", "spielen"],
-    ["Aufnehmen", "recording", "aufnehmen"],
+    ["Hören", "listening", "setups"],
+    ["Spielen", "playing", "setups"],
+    ["Aufnehmen", "recording", "setups"],
   ];
   byId("home-readiness").replaceChildren(
     ...readinessAreas.map(([label, area, route]) => {
@@ -543,47 +612,33 @@ function profilesFor(area) {
 }
 
 function renderWhale() {
-  const whale = state.snapshot.whale;
+  const whale = state.snapshot.whale || {};
   const service = whale.service || {};
-  const active = Boolean(service.active);
-  const currentMode = service.voice_mode || whale.contract.default_mode;
+  const contract = whale.contract || {};
+  const active = whale.status === "ok" && service.active === true;
+  const currentMode = service.voice_mode || contract.default_mode;
   const statusReadable = whale.status === "ok";
-  const keyboard = whale.contract.keyboard;
+  const keyboard = contract.keyboard || {};
 
   const intro = byId("play-intro-stat");
   intro.replaceChildren();
-  appendText(
-    intro,
-    "strong",
-    "",
-    active ? "Aktiv" : statusReadable ? "Inaktiv" : "Offen",
-  );
-  appendText(
-    intro,
-    "span",
-    "",
-    active
-      ? displayMode(currentMode)
-      : statusReadable
-        ? "Start prüft alle Voraussetzungen"
-        : "Status nicht lesbar",
-  );
+  appendText(intro, "strong", "", active ? "Beobachtet aktiv" : statusReadable ? "Beobachtet inaktiv" : "Nicht lesbar");
+  appendText(intro, "span", "", "Read-only · keine Start-, Stop- oder Modusaktion");
 
-  const wrapper = element("div", "whale-panel");
-  wrapper.setAttribute("aria-busy", String(state.actionPending));
+  const wrapper = element("div", "whale-panel read-only");
   const main = element("article", "whale-main");
   const title = element("div", "whale-title");
   const copy = element("div");
-  appendText(copy, "p", "eyebrow", "Walstimme");
+  appendText(copy, "p", "eyebrow", "Setup-Zustand");
   appendText(
     copy,
-    "h2",
+    "h3",
     "",
     active
       ? `${displayMode(currentMode)} · aktiv`
       : statusReadable
-        ? "Inaktiv"
-        : "Status offen",
+        ? "Instrument nicht aktiv"
+        : "Instrumentzustand offen",
   );
   appendText(
     copy,
@@ -591,174 +646,46 @@ function renderWhale() {
     "",
     active
       ? `${service.midi_port || "MIDI automatisch"} → ${service.target || "PipeWire-Standard"}`
-      : statusReadable
-        ? `${keyboard.key_count} Tasten · ${keyboard.lowest_key}–${keyboard.highest_key}`
-        : "Kein verlässlicher Laufzeit-Readback",
+      : `${keyboard.key_count || 88} Tasten · Setup kann nur geprüft werden`,
   );
   title.append(copy);
-  const statusPill = element(
+  appendText(
+    title,
     "span",
-    `status-pill ${statusReadable ? (active ? "ready" : "") : "unavailable"}`,
-    statusReadable ? (active ? "läuft" : "inaktiv") : "unbekannt",
+    `status-pill ${active ? "ready" : statusReadable ? "" : "unavailable"}`,
+    active ? "beobachtet aktiv" : statusReadable ? "beobachtet inaktiv" : "unbekannt",
   );
-  title.append(statusPill);
   main.append(title);
 
-  const modes = whale.contract.modes || [];
-  const picker = element("fieldset", "mode-picker");
-  appendText(picker, "legend", "", "Klangcharakter");
-  for (const mode of modes) {
-    const label = element("label", "mode-choice");
-    const input = element("input");
-    input.type = "radio";
-    input.name = "whale-mode";
-    input.value = mode.id;
-    input.checked = mode.id === currentMode;
-    input.disabled = state.loading || state.actionPending || !statusReadable;
-    label.append(input, element("span", "", displayMode(mode.id)));
-    picker.append(label);
+  const modes = element("div", "mode-picker read-only-modes");
+  appendText(modes, "h4", "", "Konfigurierte Klangcharaktere");
+  for (const mode of contract.modes || []) {
+    const item = element("div", `mode-choice${mode.id === currentMode ? " is-current" : ""}`);
+    appendText(item, "strong", "", displayMode(mode.id));
+    appendText(item, "span", "", mode.id === currentMode ? "aktueller Readback" : formatEndpoint(mode.backend));
+    modes.append(item);
   }
-  main.append(picker);
-
-  const actions = element("div", "card-actions");
-  const actionButton = element(
-    "button",
-    active ? "primary-button danger" : "primary-button",
-    active ? "Walstimme beenden" : "Walstimme starten",
+  main.append(modes);
+  appendText(
+    main,
+    "p",
+    "read-only-boundary",
+    "T020 stellt ausschließlich dar. Eine wirkende Instrumentsteuerung ist nicht Bestandteil dieser Produktoberfläche.",
   );
-  actionButton.type = "button";
-  actionButton.id = "whale-primary-action";
-  actionButton.disabled = state.loading || state.actionPending || !statusReadable;
-  actionButton.addEventListener("click", () => {
-    if (active) {
-      runWhaleAction("stop");
-    } else {
-      runWhaleAction("start", selectedWhaleMode());
-    }
-  });
-  actions.append(actionButton);
-
-  if (active) {
-    const modeButton = element("button", "secondary-button", "Modus übernehmen");
-    modeButton.type = "button";
-    modeButton.id = "whale-mode-action";
-    modeButton.disabled =
-      state.loading || state.actionPending || selectedWhaleMode() === currentMode;
-    picker.addEventListener("change", () => {
-      modeButton.disabled =
-        state.loading || state.actionPending || selectedWhaleMode() === currentMode;
-    });
-    modeButton.addEventListener("click", () =>
-      runWhaleAction("mode", selectedWhaleMode()),
-    );
-    actions.append(modeButton);
-  }
-  main.append(actions);
 
   const details = element("aside", "whale-details");
-  appendText(details, "p", "eyebrow", "Autoritativer Dienst");
-  appendText(details, "h2", "", statusReadable ? "Laufzeit" : "Nicht lesbar");
+  appendText(details, "p", "eyebrow", "Vier Wahrheitsebenen");
+  appendText(details, "h3", "", "Instrumentbezug");
   const list = element("dl");
-  detailRow(list, "Modus", active ? displayMode(currentMode) : "—");
-  detailRow(list, "MIDI-Port", service.midi_port || "automatisch");
-  detailRow(list, "Ausgabe", service.target || "PipeWire-Standard");
-  detailRow(
-    list,
-    "Block",
-    service.latency_frames
-      ? `${service.latency_frames} Frames`
-      : `${whale.contract.audio.block_frames || "—"} Frames`,
-  );
-  detailRow(
-    list,
-    "Laufzeitgrenze",
-    service.runtime_max_seconds
-      ? `${service.runtime_max_seconds} s`
-      : `${whale.contract.runtime.maximum_runtime_seconds || "—"} s`,
-  );
+  detailRow(list, "Beobachtet", statusReadable ? (active ? "Dienst läuft" : "Dienst inaktiv") : "nicht lesbar");
+  detailRow(list, "Konfiguriert", displayMode(currentMode));
+  detailRow(list, "Physisch offen", state.snapshot.presence?.observed?.roland_fp_30x ? "Roland beobachtet" : "Roland vor Ort zu belegen");
+  detailRow(list, "Ausführbar", "in T020 nicht freigeschaltet");
   details.append(list);
   if (whale.error) appendText(details, "p", "dialog-message", whale.error);
 
   wrapper.append(main, details);
   byId("whale-control").replaceChildren(wrapper);
-}
-
-function selectedWhaleMode() {
-  const checked = document.querySelector('input[name="whale-mode"]:checked');
-  return checked ? checked.value : state.snapshot.whale.contract.default_mode;
-}
-
-function setWhalePending(pending) {
-  const panel = byId("whale-control").querySelector(".whale-panel");
-  if (!panel) return;
-  panel.setAttribute("aria-busy", String(pending));
-  for (const control of panel.querySelectorAll("button, input")) {
-    control.disabled = pending;
-  }
-}
-
-async function runWhaleAction(operation, mode) {
-  if (!state.snapshot || state.loading || state.actionPending) return;
-  state.actionPending = true;
-  clearNotice();
-  setWhalePending(true);
-  try {
-    const payload = { operation };
-    if (mode) payload.mode = mode;
-    const result = await fetchJson("/api/v1/actions/whale", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Audio-Control-Token": state.snapshot.service.action_token,
-      },
-      body: JSON.stringify(payload),
-      timeoutMs: WHALE_ACTION_TIMEOUT_MS,
-    });
-    state.snapshot = result.snapshot;
-    renderAll();
-    const confirmation =
-      operation === "stop"
-        ? "Walstimme wurde beendet und als inaktiv zurückgelesen."
-        : `Walstimme wurde als ${displayMode(mode)} aktiv zurückgelesen.`;
-    showNotice(confirmation, "success");
-  } catch (error) {
-    const actionMessage =
-      error instanceof Error ? error.message : "Audioaktion wurde blockiert.";
-    try {
-      const snapshot = await fetchJson("/api/v1/snapshot?refresh=1", {
-        timeoutMs: 50000,
-      });
-      state.snapshot = snapshot;
-      renderAll();
-    } catch (readbackError) {
-      if (state.snapshot) {
-        state.snapshot = {
-          ...state.snapshot,
-          summary: {
-            ...state.snapshot.summary,
-            state: "attention",
-            active_whale: false,
-          },
-          whale: {
-            ...state.snapshot.whale,
-            status: "unavailable",
-            error:
-              readbackError instanceof Error
-                ? readbackError.message
-                : "Zustand nach der Audioaktion ist nicht lesbar.",
-            service: {},
-          },
-        };
-        renderAll();
-      }
-      renderAuthority(readbackError?.code === "snapshot_busy" ? "busy" : "offline");
-    }
-    showNotice(actionMessage);
-  } finally {
-    state.actionPending = false;
-    if (state.snapshot) renderWhale();
-    byId("whale-primary-action")?.focus({ preventScroll: true });
-  }
 }
 
 function detailRow(list, term, detail) {
@@ -947,6 +874,168 @@ function closeDialog() {
   state.lastDialogTrigger = null;
 }
 
+function renderLibrary() {
+  const recording = state.snapshot.recording || {};
+  const target = byId("library-takes");
+  const cards = [
+    {
+      label: "Takes",
+      value: "0 produktive Takes",
+      detail: recording.detail || "Recorder folgt in T022.",
+    },
+    {
+      label: "Unveränderlichkeit",
+      value: "gebunden",
+      detail: "Ein späterer Schnitt oder Loop erzeugt ein neues Objekt.",
+    },
+    {
+      label: "Klangzustände",
+      value: `${state.snapshot.whale?.contract?.modes?.length || 0} Walmodi`,
+      detail: "Konfigurationen sind sichtbar, aber nicht aus dieser Ansicht anwendbar.",
+    },
+  ];
+  target.replaceChildren(
+    ...cards.map((item) => {
+      const card = element("article", "metric-card");
+      appendText(card, "p", "eyebrow", item.label);
+      appendText(card, "strong", "", item.value);
+      appendText(card, "span", "", item.detail);
+      return card;
+    }),
+  );
+}
+
+async function loadReplay() {
+  try {
+    const replay = await fetchJson("/api/v1/replay", { timeoutMs: 12000 });
+    if (replay.authoritative !== false || replay.authority !== "synthetic-replay") {
+      throw new Error("Replay-Autoritätsgrenze ist ungültig.");
+    }
+    state.replay = replay;
+    const scenarios = replay.catalog?.scenarios || [];
+    if (!scenarios.some((scenario) => scenario.id === state.replayScenarioId)) {
+      state.replayScenarioId = scenarios[0]?.id || "normal";
+    }
+    state.replayFrameIndex = 0;
+    renderReplaySelector();
+    renderReplay();
+  } catch (error) {
+    state.replay = null;
+    stopReplay();
+    byId("replay-authority").textContent =
+      error instanceof Error ? error.message : "Replay ist nicht lesbar.";
+    for (const control of ["replay-scenario", "replay-play", "replay-step", "replay-reset"]) {
+      byId(control).disabled = true;
+    }
+  }
+}
+
+function replayScenarios() {
+  return state.replay?.catalog?.scenarios || [];
+}
+
+function currentReplayScenario() {
+  return replayScenarios().find((scenario) => scenario.id === state.replayScenarioId) || null;
+}
+
+function currentReplayFrame() {
+  const scenario = currentReplayScenario();
+  if (!scenario?.frames?.length) return null;
+  return scenario.frames[Math.min(state.replayFrameIndex, scenario.frames.length - 1)];
+}
+
+function renderReplaySelector() {
+  const select = byId("replay-scenario");
+  select.replaceChildren(
+    ...replayScenarios().map((scenario) => {
+      const option = element("option", "", scenario.label);
+      option.value = scenario.id;
+      option.selected = scenario.id === state.replayScenarioId;
+      return option;
+    }),
+  );
+  select.disabled = replayScenarios().length === 0;
+}
+
+function dbProgress(value) {
+  return Math.max(0, Math.min(120, Number(value) + 120));
+}
+
+function renderReplay() {
+  const scenario = currentReplayScenario();
+  const frame = currentReplayFrame();
+  const available = Boolean(state.replay && scenario && frame);
+  for (const control of ["replay-play", "replay-step", "replay-reset"]) {
+    byId(control).disabled = !available;
+  }
+  byId("replay-play").textContent = state.replayPlaying ? "Pause" : "Abspielen";
+  if (!available) return;
+  byId("replay-authority").textContent =
+    `${scenario.label}: ${scenario.description} · synthetisch, nicht autoritativ`;
+  byId("replay-peak").value = dbProgress(frame.peak_dbfs);
+  byId("replay-rms").value = dbProgress(frame.rms_dbfs);
+  byId("replay-peak-value").textContent = `${frame.peak_dbfs} dBFS`;
+  byId("replay-rms-value").textContent = `${frame.rms_dbfs} dBFS`;
+  byId("replay-midi").textContent =
+    frame.midi_note === null
+      ? "keine Note"
+      : `Note ${frame.midi_note} · Velocity ${frame.midi_velocity}`;
+  byId("replay-xruns").textContent = String(frame.xrun_total);
+  byId("replay-device").textContent =
+    { online: "online", lost: "verloren", recovering: "Recovery" }[frame.device_state] || frame.device_state;
+  byId("replay-event").textContent =
+    { none: "keins", midi: "MIDI", clip: "Clipping", xrun: "XRun", "device-loss": "Geräteverlust", stale: "veraltet", recovery: "Recovery" }[frame.event] || frame.event;
+  const detail = byId("replay-detail");
+  detail.replaceChildren();
+  detailRow(detail, "Frame", `${frame.index + 1}/${scenario.frames.length}`);
+  detailRow(detail, "Offset", `${frame.offset_ms} ms`);
+  detailRow(detail, "Telemetriealter", `${frame.telemetry_age_ms} ms`);
+  detailRow(detail, "Stale-Grenze", `${state.replay.catalog.stale_after_ms} ms`);
+  detailRow(detail, "Katalog", shortRevision(state.replay.catalog_sha256));
+  detailRow(detail, "Autorität", "synthetic-replay · false");
+}
+
+function stopReplay() {
+  if (state.replayTimer) window.clearInterval(state.replayTimer);
+  state.replayTimer = null;
+  state.replayPlaying = false;
+  if (byId("replay-play")) byId("replay-play").textContent = "Abspielen";
+}
+
+function stepReplay() {
+  const scenario = currentReplayScenario();
+  if (!scenario?.frames?.length) return;
+  if (state.replayFrameIndex >= scenario.frames.length - 1) {
+    stopReplay();
+    return;
+  }
+  state.replayFrameIndex += 1;
+  renderReplay();
+}
+
+function toggleReplay() {
+  if (state.replayPlaying) {
+    stopReplay();
+    renderReplay();
+    return;
+  }
+  const scenario = currentReplayScenario();
+  if (!scenario?.frames?.length) return;
+  if (state.replayFrameIndex >= scenario.frames.length - 1) state.replayFrameIndex = 0;
+  state.replayPlaying = true;
+  renderReplay();
+  state.replayTimer = window.setInterval(
+    stepReplay,
+    Math.max(state.replay.catalog.sample_interval_ms, prefersReducedMotion() ? 500 : 100),
+  );
+}
+
+function resetReplay() {
+  stopReplay();
+  state.replayFrameIndex = 0;
+  renderReplay();
+}
+
 function renderSounds() {
   const target = byId("sound-library");
   const whale = state.snapshot.whale;
@@ -974,8 +1063,8 @@ function renderSounds() {
     appendText(meta, "span", "", formatEndpoint(mode.backend));
     card.append(meta);
     const actions = element("div", "card-actions");
-    const link = element("a", "secondary-button", "Unter Spielen öffnen");
-    link.href = "#spielen";
+    const link = element("a", "secondary-button", "Unter Setups öffnen");
+    link.href = "#setups";
     actions.append(link);
     card.append(actions);
     return card;
@@ -1293,10 +1382,72 @@ function renderSettings() {
   panel.append(list);
 }
 
+function toggleDepth(panel, button) {
+  const detail = panel.querySelector(":scope > .depth-detail");
+  if (!detail) return;
+  const expanded = button.getAttribute("aria-expanded") === "true";
+  detail.hidden = expanded;
+  panel.classList.toggle("is-expanded", !expanded);
+  button.setAttribute("aria-expanded", String(!expanded));
+  button.textContent = expanded ? "Erweitern" : "Reduzieren";
+}
+
+function focusLines(panel) {
+  const candidates = panel.querySelectorAll("h2, h3, h4, p, strong, dt, dd");
+  const seen = new Set();
+  const lines = [];
+  for (const node of candidates) {
+    const value = node.textContent.trim().replace(/\s+/g, " ");
+    if (!value || seen.has(value) || value.length > 180) continue;
+    seen.add(value);
+    lines.push(value);
+    if (lines.length >= 10) break;
+  }
+  return lines;
+}
+
+function openDepthFocus(panel, trigger) {
+  state.dialogRequest += 1;
+  state.lastDialogTrigger = trigger;
+  byId("dialog-eyebrow").textContent = "Read-only Fokus · ein Fokus aktiv";
+  byId("dialog-title").textContent = panel.dataset.focusTitle || "Fokus";
+  const content = byId("dialog-content");
+  content.replaceChildren();
+  appendText(
+    content,
+    "p",
+    "dialog-message",
+    panel.dataset.focusSummary || "Diese Ansicht zeigt ausschließlich bestehenden Zustand.",
+  );
+  const list = element("ul", "focus-summary-list");
+  list.append(...focusLines(panel).map((line) => element("li", "", line)));
+  content.append(list);
+  appendText(
+    content,
+    "p",
+    "read-only-boundary",
+    "Fokus ändert weder Setup noch Route, Parameter, Aufnahme oder Gerät.",
+  );
+  content.setAttribute("aria-busy", "false");
+  byId("dialog-backdrop").hidden = false;
+  document.body.classList.add("dialog-open");
+  byId("app-shell").setAttribute("inert", "");
+  byId("dialog-close").focus();
+}
+
+function wireDepthPanels() {
+  for (const panel of document.querySelectorAll("[data-depth-panel]")) {
+    const toggle = panel.querySelector(":scope > .depth-heading .depth-toggle");
+    const focus = panel.querySelector(":scope > .depth-heading .depth-focus");
+    if (toggle) toggle.addEventListener("click", () => toggleDepth(panel, toggle));
+    if (focus) focus.addEventListener("click", () => openDepthFocus(panel, focus));
+  }
+}
+
 function routeFromHash() {
   const candidate = window.location.hash.slice(1);
   const resolved = ROUTE_ALIASES[candidate] || candidate;
-  return ROUTES[resolved] ? resolved : "start";
+  return ROUTES[resolved] ? resolved : "now";
 }
 
 function prefersReducedMotion() {
@@ -1366,7 +1517,6 @@ function autoRefreshBlocked() {
   return (
     !byId("dialog-backdrop").hidden ||
     state.loading ||
-    state.actionPending ||
     window.performance.now() < state.interactionUntil
   );
 }
@@ -1405,6 +1555,15 @@ function wireEvents() {
   });
   byId("refresh-button").addEventListener("click", () => refreshSnapshot(true));
   byId("diagnostic-refresh").addEventListener("click", () => refreshSnapshot(true));
+  byId("replay-scenario").addEventListener("change", (event) => {
+    stopReplay();
+    state.replayScenarioId = event.target.value;
+    state.replayFrameIndex = 0;
+    renderReplay();
+  });
+  byId("replay-play").addEventListener("click", toggleReplay);
+  byId("replay-step").addEventListener("click", stepReplay);
+  byId("replay-reset").addEventListener("click", resetReplay);
   byId("dialog-close").addEventListener("click", closeDialog);
   byId("dialog-backdrop").addEventListener("click", (event) => {
     if (event.target === byId("dialog-backdrop")) closeDialog();
@@ -1426,6 +1585,8 @@ function wireEvents() {
 
 loadPreferences();
 wireEvents();
+wireDepthPanels();
 applyRoute();
 scheduleAutoRefresh();
+loadReplay();
 refreshSnapshot(true);

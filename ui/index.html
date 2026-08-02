@@ -6,10 +6,11 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#0d1414">
     <meta name="audio-control-deployment-contract" content="revision-bound-v1">
+    <meta name="audiozentrale-product-surface" content="four-places-read-only-v1">
     <link rel="icon" href="data:,">
     <meta
       name="description"
-      content="Lokale Audiozentrale für Hören, Spielen, Aufnehmen und Systemdiagnose."
+      content="Read-only Audiozentrale für Jetzt, Setups, Bibliothek und System."
     >
     <title>Audiozentrale</title>
     <link rel="stylesheet" href="/styles.css">
@@ -20,268 +21,173 @@
 
     <div class="app-shell" id="app-shell">
       <aside class="sidebar" aria-label="Hauptnavigation">
-        <a class="brand" href="#start" aria-label="Audiozentrale – Übersicht">
+        <a class="brand" href="#now" aria-label="Audiozentrale – Jetzt">
           <span class="brand-mark" aria-hidden="true">
             <span></span><span></span><span></span><span></span>
           </span>
-          <span>
-            <strong>Audio</strong>
-            <small>Zentrale</small>
-          </span>
+          <span><strong>Audio</strong><small>Zentrale</small></span>
         </a>
 
         <nav class="primary-nav">
-          <a href="#start" data-route="start" aria-label="Übersicht">
-            <span class="nav-icon" aria-hidden="true">⌂</span>
-            <span>Übersicht</span>
+          <a href="#now" data-route="now" aria-label="Jetzt">
+            <span class="nav-icon" aria-hidden="true">●</span><span>Jetzt</span>
           </a>
-          <a href="#hoeren" data-route="hoeren" aria-label="Hören">
-            <span class="nav-icon" aria-hidden="true">◖</span>
-            <span>Hören</span>
+          <a href="#setups" data-route="setups" aria-label="Setups">
+            <span class="nav-icon" aria-hidden="true">◇</span><span>Setups</span>
           </a>
-          <a href="#spielen" data-route="spielen" aria-label="Spielen">
-            <span class="nav-icon" aria-hidden="true">♬</span>
-            <span>Spielen</span>
-          </a>
-          <a href="#aufnehmen" data-route="aufnehmen" aria-label="Aufnehmen">
-            <span class="nav-icon record-icon" aria-hidden="true"></span>
-            <span>Aufnehmen</span>
+          <a href="#library" data-route="library" aria-label="Bibliothek">
+            <span class="nav-icon" aria-hidden="true">≋</span><span>Bibliothek</span>
           </a>
           <a href="#system" data-route="system" aria-label="System">
-            <span class="nav-icon" aria-hidden="true">⊙</span>
-            <span>System</span>
+            <span class="nav-icon" aria-hidden="true">⊙</span><span>System</span>
             <span class="nav-badge" id="diagnostic-badge" hidden>0</span>
           </a>
         </nav>
 
         <div class="authority-note" role="status" aria-live="polite">
           <span class="authority-light" id="authority-light" aria-hidden="true"></span>
-          <div>
-            <strong id="authority-label">Verbinde …</strong>
-            <span>lokaler Control-Dienst</span>
-          </div>
+          <div><strong id="authority-label">Verbinde …</strong><span>lokaler Control-Dienst</span></div>
         </div>
       </aside>
 
       <main id="main-content" tabindex="-1">
         <header class="topbar">
           <div class="view-heading">
-            <p class="eyebrow" id="view-eyebrow">Betriebsbild</p>
-            <h1 id="view-title" tabindex="-1">Übersicht</h1>
+            <p class="eyebrow" id="view-eyebrow">Aktiver Arbeitsstand</p>
+            <h1 id="view-title" tabindex="-1">Jetzt</h1>
           </div>
           <div class="topbar-actions">
             <span class="mobile-authority" id="mobile-authority" role="status">
-              <span
-                class="authority-light"
-                id="mobile-authority-light"
-                aria-hidden="true"
-              ></span>
-              <span>
-                <strong id="mobile-authority-label">verbinde</strong>
-                <small id="mobile-updated-at">Zeit offen</small>
-              </span>
+              <span class="authority-light" id="mobile-authority-light" aria-hidden="true"></span>
+              <span><strong id="mobile-authority-label">verbinde</strong><small id="mobile-updated-at">Zeit offen</small></span>
             </span>
             <span class="updated-at" id="updated-at">Noch nicht aktualisiert</span>
             <button class="icon-button" id="refresh-button" type="button">
-              <span aria-hidden="true">↻</span>
-              <span class="sr-only">Zustand aktualisieren</span>
+              <span aria-hidden="true">↻</span><span class="sr-only">Zustand aktualisieren</span>
             </button>
           </div>
         </header>
 
-        <div
-          class="notice"
-          id="global-notice"
-          role="status"
-          aria-live="polite"
-          hidden
-        ></div>
-
-        <section class="view is-active" id="view-start" data-view="start">
-          <div class="overview-grid">
-            <article class="state-card" id="home-state-card">
-              <div class="skeleton skeleton-title"></div>
-              <div class="skeleton skeleton-line"></div>
-            </article>
-            <div class="metric-grid home-metrics" id="home-metrics"></div>
-          </div>
-
-          <div class="section-heading compact">
-            <h2>Arbeitsbereiche</h2>
-          </div>
-          <div class="task-grid" id="home-tasks"></div>
-
-          <div class="section-heading compact">
-            <h2>Profilreife</h2>
-          </div>
-          <div class="readiness-grid" id="home-readiness"></div>
-
-          <div class="section-heading compact">
-            <h2>Hinweise</h2>
-            <a class="text-link" href="#system">System <span>→</span></a>
-          </div>
-          <div class="insight-grid" id="home-insights"></div>
+        <section class="truth-strip" id="truth-strip" aria-label="Wahrheitsebenen">
+          <article data-truth-layer="observed"><span>Beobachtet</span><strong id="truth-observed">wird gelesen</strong><small id="truth-observed-detail">Backend-Readback</small></article>
+          <article data-truth-layer="configured"><span>Konfiguriert</span><strong id="truth-configured">wird gelesen</strong><small id="truth-configured-detail">Sollzustand</small></article>
+          <article data-truth-layer="physical-open"><span>Physisch offen</span><strong id="truth-physical">wird gelesen</strong><small id="truth-physical-detail">Vor-Ort-Belege</small></article>
+          <article data-truth-layer="executable"><span>Ausführbar</span><strong id="truth-executable">read-only</strong><small id="truth-executable-detail">keine Audiowirkung</small></article>
         </section>
 
-        <section class="view" id="view-hoeren" data-view="hoeren" hidden>
-          <div class="view-toolbar">
-            <div>
-              <p class="eyebrow">Wiedergabe</p>
-              <h2>Hörwege</h2>
+        <div class="notice" id="global-notice" role="status" aria-live="polite" hidden></div>
+
+        <section class="view is-active" id="view-now" data-view="now">
+          <article class="depth-panel" data-depth-panel data-focus-title="Aktiver Systemzustand" data-focus-summary="Autoritativer aktueller Readback ohne Audioaktion.">
+            <header class="depth-heading">
+              <div><p class="eyebrow">Aktives Setup</p><h2>Jetzt</h2></div>
+              <div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div>
+            </header>
+            <div class="depth-compact">
+              <div class="overview-grid">
+                <article class="state-card" id="home-state-card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div></article>
+                <div class="metric-grid home-metrics" id="home-metrics"></div>
+              </div>
             </div>
-            <div class="intro-stat" id="listen-intro-stat"></div>
-          </div>
-          <div class="profile-grid" id="listening-profiles"></div>
+            <div class="depth-detail" hidden>
+              <div class="section-heading compact"><h3>Signalbahnen</h3></div>
+              <div class="active-lane-grid" id="now-signal-lanes"></div>
+              <div class="section-heading compact"><h3>Profilreife</h3></div>
+              <div class="readiness-grid" id="home-readiness"></div>
+            </div>
+          </article>
+
+          <article class="depth-panel" data-depth-panel data-focus-title="Nächste Orte" data-focus-summary="Vier stabile Produktorte ersetzen die bisherige Aufgabenzerlegung.">
+            <header class="depth-heading"><div><p class="eyebrow">Navigation</p><h2>Weiterarbeiten</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="task-grid" id="home-tasks"></div>
+            <div class="depth-detail" hidden><div class="section-heading compact"><h3>Hinweise</h3></div><div class="insight-grid" id="home-insights"></div></div>
+          </article>
         </section>
 
-        <section class="view" id="view-spielen" data-view="spielen" hidden>
-          <div class="view-toolbar">
-            <div>
-              <p class="eyebrow">Live-Instrument</p>
-              <h2>Spielen</h2>
-            </div>
+        <section class="view" id="view-setups" data-view="setups" hidden>
+          <article class="depth-panel" data-depth-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Read-only Instrumentzustand; Start, Stop und Moduswechsel sind in T020 nicht freigeschaltet.">
+            <header class="depth-heading"><div><p class="eyebrow">Instrument</p><h2>Buckelwal</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="play-intro-stat"></div>
-          </div>
-          <div id="whale-control"></div>
-          <div class="section-heading compact">
-            <h2>Spielprofile</h2>
-          </div>
-          <div class="profile-grid" id="playing-profiles"></div>
-          <div class="section-heading compact">
-            <h2>Klangsysteme</h2>
-          </div>
-          <div class="sound-grid" id="sound-library"></div>
+            <div id="whale-control"></div>
+            <div class="depth-detail" hidden><div class="section-heading compact"><h3>Spielprofile</h3></div><div class="profile-grid" id="playing-profiles"></div></div>
+          </article>
+
+          <article class="depth-panel" data-depth-panel data-focus-title="Hör-Setups" data-focus-summary="Definierte Hörwege und ihre beobachteten, konfigurierten und ausführbaren Voraussetzungen.">
+            <header class="depth-heading"><div><p class="eyebrow">Wiedergabe</p><h2>Hören</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="intro-stat" id="listen-intro-stat"></div>
+            <div class="profile-grid" id="listening-profiles"></div>
+            <div class="depth-detail" hidden><p class="callout">Profilpläne bleiben nebenwirkungsfrei. Sie zeigen Voraussetzungen, führen aber kein Apply aus.</p></div>
+          </article>
+
+          <article class="depth-panel" data-depth-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile sind sichtbar; Recorder-Start und Dateiwirkung folgen erst in T022.">
+            <header class="depth-heading"><div><p class="eyebrow">Aufnahmeplanung</p><h2>Aufnehmen</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="callout" id="recording-boundary"></div>
+            <div class="depth-detail" hidden><div class="profile-grid" id="recording-profiles"></div></div>
+          </article>
         </section>
 
-        <section class="view" id="view-aufnehmen" data-view="aufnehmen" hidden>
-          <div class="view-toolbar">
-            <div>
-              <p class="eyebrow">Aufnahme</p>
-              <h2>Quellen und Profile</h2>
+        <section class="view" id="view-library" data-view="library" hidden>
+          <article class="depth-panel" data-depth-panel data-focus-title="Takes und Klänge" data-focus-summary="Bibliotheksobjekte bleiben unveränderlich; Bearbeitung würde später ein neues Objekt erzeugen.">
+            <header class="depth-heading"><div><p class="eyebrow">Unveränderliche Objekte</p><h2>Bibliothek</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="library-summary" id="library-takes"></div>
+            <div class="depth-detail" hidden><div class="section-heading compact"><h3>Klangsysteme</h3></div><div class="sound-grid" id="sound-library"></div></div>
+          </article>
+
+          <article class="depth-panel replay-panel" data-depth-panel data-focus-title="Telemetrie-Replay" data-focus-summary="Synthetische, hashgebundene Daten ohne Autorität über Geräte, Routen oder Audioaktionen.">
+            <header class="depth-heading"><div><p class="eyebrow">Synthetisch · nicht autoritativ</p><h2>Telemetrie-Replay</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="replay-toolbar">
+              <label for="replay-scenario">Szenario<select id="replay-scenario"></select></label>
+              <button id="replay-play" class="primary-button" type="button">Abspielen</button>
+              <button id="replay-step" class="secondary-button" type="button">Schritt</button>
+              <button id="replay-reset" class="secondary-button" type="button">Anfang</button>
             </div>
-            <span class="boundary-pill">Planung ohne Recorder-Apply</span>
-          </div>
-          <div class="callout" id="recording-boundary"></div>
-          <div class="profile-grid" id="recording-profiles"></div>
+            <p class="replay-authority" id="replay-authority">Replay wird geladen. Es verändert keinen Livezustand.</p>
+            <div class="replay-grid" id="replay-grid">
+              <article class="replay-meter"><span>Peak</span><progress id="replay-peak" max="120" value="0"></progress><strong id="replay-peak-value">— dBFS</strong></article>
+              <article class="replay-meter"><span>RMS</span><progress id="replay-rms" max="120" value="0"></progress><strong id="replay-rms-value">— dBFS</strong></article>
+              <article class="replay-stat"><span>MIDI</span><strong id="replay-midi">keine Note</strong></article>
+              <article class="replay-stat"><span>XRuns</span><strong id="replay-xruns">0</strong></article>
+              <article class="replay-stat"><span>Gerät</span><strong id="replay-device">offen</strong></article>
+              <article class="replay-stat"><span>Ereignis</span><strong id="replay-event">keins</strong></article>
+            </div>
+            <div class="depth-detail" hidden><dl class="service-list" id="replay-detail"></dl></div>
+          </article>
         </section>
 
         <section class="view" id="view-system" data-view="system" hidden>
-          <div class="view-toolbar">
-            <div>
-              <p class="eyebrow">Betrieb und Integration</p>
-              <h2>System</h2>
-            </div>
-            <button class="secondary-button" id="diagnostic-refresh" type="button">
-              Neu prüfen
-            </button>
-          </div>
-
-          <div class="metric-grid system-summary" id="system-summary"></div>
-
-          <section class="system-section" aria-labelledby="signal-heading">
-            <div class="section-heading compact">
-              <h2 id="signal-heading">Signalweg</h2>
-              <div class="connection-legend" id="connection-legend"></div>
-            </div>
-            <div class="connection-map" id="connection-map"></div>
-          </section>
-
-          <div class="system-columns">
-            <section class="system-section" aria-labelledby="physical-heading">
-              <div class="section-heading compact">
-                <h2 id="physical-heading">Vor Ort zu belegen</h2>
+          <article class="depth-panel" data-depth-panel data-focus-title="Systemwahrheit" data-focus-summary="Geräte, Route, Deployment und Doctor bleiben die technische Autorität.">
+            <header class="depth-heading"><div><p class="eyebrow">Betrieb und Integration</p><h2>System</h2></div><div class="depth-actions"><button class="secondary-button" id="diagnostic-refresh" type="button">Neu prüfen</button><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="metric-grid system-summary" id="system-summary"></div>
+            <div class="depth-detail" hidden>
+              <div class="section-heading compact"><h3>Signalweg</h3><div class="connection-legend" id="connection-legend"></div></div>
+              <div class="connection-map" id="connection-map"></div>
+              <div class="system-columns">
+                <section><div class="section-heading compact"><h3>Physisch offen</h3></div><div class="fact-list" id="physical-facts"></div></section>
+                <section><div class="section-heading compact"><h3>Deployment</h3></div><article class="panel" id="deployment-status"></article></section>
               </div>
-              <div class="fact-list" id="physical-facts"></div>
-            </section>
-
-            <section class="system-section" aria-labelledby="deployment-heading">
-              <div class="section-heading compact">
-                <h2 id="deployment-heading">Deployment</h2>
-              </div>
-              <article class="panel" id="deployment-status"></article>
-            </section>
-          </div>
-
-          <section class="system-section" aria-labelledby="diagnostic-heading">
-            <div class="section-heading compact">
-              <h2 id="diagnostic-heading">Diagnose</h2>
             </div>
+          </article>
+
+          <article class="depth-panel" data-depth-panel data-focus-title="Diagnose" data-focus-summary="Read-only Doctor, Werkzeuge und Laufzeitwarnungen.">
+            <header class="depth-heading"><div><p class="eyebrow">Doctor</p><h2>Diagnose</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="metric-grid" id="diagnostic-metrics"></div>
-            <div class="diagnostic-layout">
-              <div>
-                <div class="section-heading compact">
-                  <h3>Hinweise</h3>
-                </div>
-                <div class="warning-list" id="warning-list"></div>
-              </div>
-              <div>
-                <div class="section-heading compact">
-                  <h3>Werkzeuge</h3>
-                </div>
-                <div class="command-list" id="command-health"></div>
-              </div>
-            </div>
-          </section>
+            <div class="depth-detail diagnostic-layout" hidden><div><div class="section-heading compact"><h3>Hinweise</h3></div><div class="warning-list" id="warning-list"></div></div><div><div class="section-heading compact"><h3>Werkzeuge</h3></div><div class="command-list" id="command-health"></div></div></div>
+          </article>
 
-          <section class="system-section" aria-labelledby="settings-heading">
-            <div class="section-heading compact">
-              <h2 id="settings-heading">Konfiguration</h2>
-            </div>
-            <div class="settings-grid">
-              <article class="panel" id="service-settings"></article>
-              <article class="panel">
-                <div class="panel-heading">
-                  <h2>Browseransicht</h2>
-                </div>
-                <label class="setting-row" for="motion-toggle">
-                  <span>
-                    <strong id="motion-toggle-label">Bewegung reduzieren</strong>
-                    <small id="motion-toggle-description">Nur diese Browseransicht.</small>
-                  </span>
-                  <input
-                    id="motion-toggle"
-                    type="checkbox"
-                    role="switch"
-                    aria-labelledby="motion-toggle-label"
-                    aria-describedby="motion-toggle-description"
-                  >
-                </label>
-                <label class="setting-row" for="auto-refresh-toggle">
-                  <span>
-                    <strong id="auto-refresh-toggle-label">Automatisch aktualisieren</strong>
-                    <small id="auto-refresh-toggle-description">
-                      Alle acht Sekunden Backendzustand lesen.
-                    </small>
-                  </span>
-                  <input
-                    id="auto-refresh-toggle"
-                    type="checkbox"
-                    role="switch"
-                    aria-labelledby="auto-refresh-toggle-label"
-                    aria-describedby="auto-refresh-toggle-description"
-                    checked
-                  >
-                </label>
-              </article>
-            </div>
-          </section>
+          <article class="depth-panel" data-depth-panel data-focus-title="Lokale Konfiguration" data-focus-summary="Browserpräferenzen und Dienstidentität; keine physische Hardwaresteuerung.">
+            <header class="depth-heading"><div><p class="eyebrow">Konfiguration</p><h2>Dienst und Ansicht</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="settings-grid"><article class="panel" id="service-settings"></article><article class="panel"><div class="panel-heading"><h3>Browseransicht</h3></div><label class="setting-row" for="motion-toggle"><span><strong id="motion-toggle-label">Bewegung reduzieren</strong><small id="motion-toggle-description">Nur diese Browseransicht.</small></span><input id="motion-toggle" type="checkbox" role="switch" aria-labelledby="motion-toggle-label" aria-describedby="motion-toggle-description"></label><label class="setting-row" for="auto-refresh-toggle"><span><strong id="auto-refresh-toggle-label">Automatisch aktualisieren</strong><small id="auto-refresh-toggle-description">Alle acht Sekunden Systemwahrheit lesen.</small></span><input id="auto-refresh-toggle" type="checkbox" role="switch" aria-labelledby="auto-refresh-toggle-label" aria-describedby="auto-refresh-toggle-description" checked></label></article></div>
+            <div class="depth-detail" hidden><p class="callout">Die App-Shell und der Browser verwenden dieselben Dateien <code>index.html</code>, <code>app.js</code> und <code>styles.css</code>.</p></div>
+          </article>
         </section>
       </main>
     </div>
 
     <div class="dialog-backdrop" id="dialog-backdrop" hidden>
-      <section
-        class="dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="dialog-title"
-      >
-        <button class="dialog-close" id="dialog-close" type="button">
-          <span aria-hidden="true">×</span>
-          <span class="sr-only">Dialog schließen</span>
-        </button>
-        <p class="eyebrow" id="dialog-eyebrow">Profilplan</p>
-        <h2 id="dialog-title">Plan wird geprüft</h2>
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+        <button class="dialog-close" id="dialog-close" type="button"><span aria-hidden="true">×</span><span class="sr-only">Dialog schließen</span></button>
+        <p class="eyebrow" id="dialog-eyebrow">Read-only Fokus</p>
+        <h2 id="dialog-title">Fokus</h2>
         <div id="dialog-content" aria-live="polite"></div>
       </section>
     </div>
