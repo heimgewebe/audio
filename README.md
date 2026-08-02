@@ -83,6 +83,15 @@ progressive Darstellungsebenen. KI, ein früher Pluginhost, ein freier
 Modulargraph und eine vollständige DAW liegen ausdrücklich außerhalb des
 bewiesenen Kerns.
 
+Das [maschinenlesbare Produkt- und Zustandsmodell](docs/audiozentrale-product-model.md)
+bindet diesen Plan an die Objekte Setup, Signalbahn, Modul, Verknüpfung, Szene
+und Take. Es erzwingt höchstens ein aktives Setup, lineare typisierte
+Modulketten, unveränderliche Takes und die Trennung von Wahrheitsebenen und
+Darstellungstiefe. Freie Ports, Routingzyklen, Skripte, Timeline, Comping sowie
+Modulation von Aufnahme, Ausgabe, Masterpegel oder Sicherheitsfunktionen werden
+fail-closed abgewiesen. Der Vertrag ist noch read-only und erweitert keine
+Audioautorität.
+
 ## Dokumente
 
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
@@ -95,6 +104,7 @@ bewiesenen Kerns.
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
 - [Produktplan Audiozentrale v2](docs/plans/audiozentrale-product-v2.md)
+- [Audiozentrale-Produkt- und Zustandsmodell](docs/audiozentrale-product-model.md)
 - [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)
 - [Spezifikation der lokalen Audiozentrale](docs/plans/local-audio-control-ui-v1.md)
 - [Deployment der Audiozentrale](docs/control-deployment.md)
@@ -116,6 +126,8 @@ bewiesenen Kerns.
 
 ```bash
 just check
+./scripts/audio-product-model check
+./scripts/audio-product-model validate profiles/audiozentrale-workspace.example.v1.json
 ./scripts/audio-doctor --pretty
 ./scripts/audio-truth capture --output ~/.local/state/audio/truth/latest.v1.json
 ./scripts/audio-truth verify ~/.local/state/audio/truth/latest.v1.json

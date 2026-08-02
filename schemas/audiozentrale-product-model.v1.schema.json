@@ -1,0 +1,676 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.local/schemas/audiozentrale-product-model.v1.schema.json",
+  "title": "Audiozentrale Product Model v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "model_id",
+    "plan_binding",
+    "schema_bindings",
+    "profile_catalog_binding",
+    "navigation",
+    "contracts",
+    "signal_types",
+    "insertion_slots",
+    "module_catalog",
+    "modulation_contract",
+    "setup_templates"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "audiozentrale_product_model"
+    },
+    "model_id": {
+      "const": "audiozentrale-v2"
+    },
+    "plan_binding": {
+      "$ref": "#/$defs/plan_binding"
+    },
+    "schema_bindings": {
+      "$ref": "#/$defs/schema_bindings"
+    },
+    "profile_catalog_binding": {
+      "$ref": "#/$defs/path_binding"
+    },
+    "navigation": {
+      "$ref": "#/$defs/navigation"
+    },
+    "contracts": {
+      "$ref": "#/$defs/contracts"
+    },
+    "signal_types": {
+      "const": [
+        "audio-mono",
+        "audio-stereo",
+        "midi"
+      ]
+    },
+    "insertion_slots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "module_catalog": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/module"
+      },
+      "minItems": 1
+    },
+    "modulation_contract": {
+      "$ref": "#/$defs/modulation_contract"
+    },
+    "setup_templates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/template"
+      },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "path_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "plan_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "path",
+        "commit",
+        "document_sha256"
+      ],
+      "properties": {
+        "repository": {
+          "const": "heimgewebe/audio"
+        },
+        "path": {
+          "const": "docs/plans/audiozentrale-product-v2.md"
+        },
+        "commit": {
+          "const": "25d790ff2fee589f725b8f96a3fd1e9d8ec34dfc"
+        },
+        "document_sha256": {
+          "const": "61979e0e4182291b460274153bee4ce2c770225a5d6c7940ee52bdc4785e47ae"
+        }
+      }
+    },
+    "schema_bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_model",
+        "workspace_state"
+      ],
+      "properties": {
+        "product_model": {
+          "$ref": "#/$defs/path_binding"
+        },
+        "workspace_state": {
+          "$ref": "#/$defs/path_binding"
+        }
+      }
+    },
+    "place": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "purpose"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "now",
+            "setups",
+            "library",
+            "system"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "truth_layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "authority"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "observed",
+            "configured",
+            "physical-open",
+            "executable"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "display_depth": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "label",
+            "maximum_primary_controls"
+          ],
+          "properties": {
+            "id": {
+              "enum": [
+                "compact",
+                "expanded"
+              ]
+            },
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maximum_primary_controls": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "label",
+            "maximum_simultaneous_focus"
+          ],
+          "properties": {
+            "id": {
+              "const": "focus"
+            },
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maximum_simultaneous_focus": {
+              "const": 1
+            }
+          }
+        }
+      ]
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "destinations",
+        "primary"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "start",
+            "hoeren",
+            "spielen",
+            "aufnehmen",
+            "system"
+          ]
+        },
+        "destinations": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "now",
+              "setups",
+              "library",
+              "system"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "primary": {
+          "enum": [
+            "now",
+            "setups",
+            "library",
+            "system"
+          ]
+        }
+      }
+    },
+    "navigation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "places",
+        "truth_layers",
+        "display_depths",
+        "legacy_area_migration"
+      ],
+      "properties": {
+        "places": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/place"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "truth_layers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/truth_layer"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "display_depths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/display_depth"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "legacy_area_migration": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/migration"
+          },
+          "minItems": 5,
+          "maxItems": 5
+        }
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_active_setups",
+        "module_topology",
+        "internal_modules_only_through_commercial_v1",
+        "free_audio_or_midi_ports",
+        "arbitrary_sidechains",
+        "user_scripts",
+        "routing_cycles",
+        "takes_immutable",
+        "timeline",
+        "comping",
+        "clip_editing",
+        "cloud_required",
+        "account_required",
+        "ai_or_ml_required"
+      ],
+      "properties": {
+        "maximum_active_setups": {
+          "const": 1
+        },
+        "module_topology": {
+          "const": "linear-typed-chain"
+        },
+        "internal_modules_only_through_commercial_v1": {
+          "const": true
+        },
+        "free_audio_or_midi_ports": {
+          "const": false
+        },
+        "arbitrary_sidechains": {
+          "const": false
+        },
+        "user_scripts": {
+          "const": false
+        },
+        "routing_cycles": {
+          "const": false
+        },
+        "takes_immutable": {
+          "const": true
+        },
+        "timeline": {
+          "const": false
+        },
+        "comping": {
+          "const": false
+        },
+        "clip_editing": {
+          "const": false
+        },
+        "cloud_required": {
+          "const": false
+        },
+        "account_required": {
+          "const": false
+        },
+        "ai_or_ml_required": {
+          "const": false
+        }
+      }
+    },
+    "number_parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "unit",
+        "minimum",
+        "maximum",
+        "default",
+        "modulatable"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "number"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "default": {
+          "type": "number"
+        },
+        "modulatable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "enum_parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "values",
+        "default",
+        "modulatable"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "enum"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "default": {
+          "type": "string"
+        },
+        "modulatable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "boolean_parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "default",
+        "modulatable"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "boolean"
+        },
+        "default": {
+          "type": "boolean"
+        },
+        "modulatable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "parameter": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/number_parameter"
+        },
+        {
+          "$ref": "#/$defs/enum_parameter"
+        },
+        {
+          "$ref": "#/$defs/boolean_parameter"
+        }
+      ]
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "slot",
+        "input_signal_types",
+        "output_signal_type",
+        "latency_class",
+        "cpu_class",
+        "failure_mode",
+        "device_loss_mode",
+        "modulation_source_kinds",
+        "parameters"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slot": {
+          "$ref": "#/$defs/id"
+        },
+        "input_signal_types": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "audio-mono",
+              "audio-stereo",
+              "midi"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "output_signal_type": {
+          "enum": [
+            "audio-mono",
+            "audio-stereo",
+            "midi",
+            "same-as-input"
+          ]
+        },
+        "latency_class": {
+          "enum": [
+            "zero",
+            "low",
+            "buffered"
+          ]
+        },
+        "cpu_class": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "failure_mode": {
+          "enum": [
+            "bypass-and-report",
+            "silence-and-report",
+            "preserve-and-bypass"
+          ]
+        },
+        "device_loss_mode": {
+          "enum": [
+            "silence-and-report",
+            "stop-and-report"
+          ]
+        },
+        "modulation_source_kinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/parameter"
+          }
+        }
+      }
+    },
+    "modulation_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kinds",
+        "target_kinds",
+        "forbidden_target_kinds",
+        "maximum_links_per_setup",
+        "maximum_absolute_depth",
+        "maximum_smoothing_ms"
+      ],
+      "properties": {
+        "source_kinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "target_kinds": {
+          "const": [
+            "module-parameter",
+            "lane-macro"
+          ]
+        },
+        "forbidden_target_kinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "maximum_links_per_setup": {
+          "const": 64
+        },
+        "maximum_absolute_depth": {
+          "const": 1.0
+        },
+        "maximum_smoothing_ms": {
+          "const": 10000
+        }
+      }
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "profile_refs",
+        "feature_refs"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profile_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "feature_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}
