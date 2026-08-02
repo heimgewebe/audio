@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "kind": "humpback_whale_f0_evaluator_v2_definition",
+  "task_id": "AUDIO-CONTROL-PLANE-V1-T030",
+  "frozen_before_external_evaluation": true,
+  "external_data_used_for_parameter_selection": false,
+  "analysis": {
+    "input_sample_rate_hz": 48000,
+    "analysis_sample_rate_hz": 4000,
+    "frame_seconds": 0.18,
+    "control_points": 48,
+    "f0_search_hz": [28.0, 800.0],
+    "minimum_rms": 1e-05,
+    "minimum_periodicity": 0.38,
+    "minimum_peak_prominence": 0.04,
+    "boundary_guard_lags": 1,
+    "octave_candidate_multiples": [2, 3],
+    "octave_score_ratio": 0.88,
+    "confidence_components": [
+      "periodicity_above_floor",
+      "non_harmonic_peak_prominence",
+      "search_boundary_clearance"
+    ],
+    "unvoiced_policy": "silence, insufficient periodicity, insufficient prominence, or any selected search-boundary lag returns null f0 with an explicit reason",
+    "boundary_policy": "a boundary hit is diagnostic-only and can never contribute an exact f0 or harmonic profile",
+    "octave_policy": "prefer the longest integer-multiple lag whose score remains within the frozen ratio of the strongest candidate"
+  },
+  "bandwidth_strata": {
+    "f0_voicing_minimum_nyquist_hz": 1000.0,
+    "high_band_ratio_minimum_nyquist_hz": 4000.0,
+    "missing_feature_policy": "mark unavailable; do not impute, silently reweight, or tune from test outcomes"
+  },
+  "controlled_reference_corpus": {
+    "duration_seconds": 2.0,
+    "deterministic_noise_seed": 230030,
+    "cases": [
+      {"id": "tone-80", "kind": "synthetic-tone", "expected_f0_hz": 80.0, "maximum_relative_error": 0.03, "minimum_voiced_fraction": 0.80},
+      {"id": "tone-220", "kind": "synthetic-tone", "expected_f0_hz": 220.0, "maximum_relative_error": 0.03, "minimum_voiced_fraction": 0.80},
+      {"id": "tone-520", "kind": "synthetic-tone", "expected_f0_hz": 520.0, "maximum_relative_error": 0.04, "minimum_voiced_fraction": 0.75},
+      {"id": "missing-fundamental-110", "kind": "synthetic-harmonic-complex", "expected_f0_hz": 110.0, "maximum_relative_error": 0.06, "minimum_voiced_fraction": 0.70},
+      {"id": "pulsed-tone-150", "kind": "synthetic-pulsed-tone", "expected_f0_hz": 150.0, "maximum_relative_error": 0.05, "minimum_voiced_fraction": 0.55},
+      {"id": "tone-180-with-ship-noise", "kind": "synthetic-tone-noise-mixture", "expected_f0_hz": 180.0, "maximum_relative_error": 0.06, "minimum_voiced_fraction": 0.50},
+      {"id": "white-noise", "kind": "deterministic-noise", "maximum_voiced_fraction": 0.05},
+      {"id": "upper-bound-tone-800", "kind": "synthetic-search-boundary", "maximum_voiced_boundary_hits": 0, "expected_reason": "search-boundary-high"},
+      {
+        "id": "independent-whale-annotation-105hz",
+        "kind": "prior-frozen-real-whale-annotation",
+        "source_clip": "assets/whale-sources/processed/humpback-song-cc0-02.wav",
+        "source_sha256": "6bbbd349a623e685850b9e6fe2fd6a345a28c2dc0e9350c96c683075d53c8767",
+        "annotation_source": "assets/whale-sources/morph/manifest.json",
+        "annotation_clip_id": "humpback-song-cc0-02",
+        "expected_f0_hz": 105.49450549450549,
+        "maximum_relative_error": 0.25,
+        "minimum_voiced_fraction": 0.20,
+        "does_not_establish": "biological ground-truth f0"
+      }
+    ]
+  },
+  "locked_external_sets": [
+    {"path": "assets/whale-sources/evaluation/manifest.json", "role": "test-only"},
+    {"path": "assets/whale-sources/evaluation-v2/manifest.json", "role": "test-only"}
+  ],
+  "external_success_contract": {
+    "legacy_stellwagen_boundary_counts_first_three": [36, 40, 34],
+    "legacy_boundary_lag": 3,
+    "legacy_boundary_frequency_hz": 1333.3333333333333,
+    "new_voiced_boundary_hits_must_equal": 0,
+    "recording_level_aggregation_required": true,
+    "segment_level_results_required": true,
+    "score_improvement_threshold": null,
+    "interpretation": "diagnostic sensitivity only; external values cannot select parameters, weights, or release thresholds"
+  },
+  "non_claims": [
+    "biological f0 truth",
+    "species classification accuracy",
+    "perceptual whale similarity",
+    "engine release approval",
+    "physical Roland, MOTU, or Focal validation",
+    "retroactive reinterpretation of T029"
+  ]
+}
