@@ -26,6 +26,9 @@ class AudioControlDeployTests(unittest.TestCase):
     ) -> None:
         files = {
             "scripts/audio_control.py": b"print('control')\n",
+            "scripts/audio_telemetry_replay.py": b"def load_replay_contract(): return {}\n",
+            "inventory/audiozentrale-telemetry-replay.v1.json": b"{}\n",
+            "schemas/audiozentrale-telemetry-replay.v1.schema.json": b"{}\n",
             "ui/index.html": b"<!doctype html><title>Audio</title>\n",
             "ui/app.js": b'"use strict";\n',
             "ui/styles.css": b"body { margin: 0; }\n",
@@ -62,6 +65,25 @@ class AudioControlDeployTests(unittest.TestCase):
             host="127.0.0.1",
             port=8765,
         )
+
+    def test_replay_runtime_files_are_release_critical(self):
+        expected = {
+            "scripts/audio_telemetry_replay.py",
+            "inventory/audiozentrale-telemetry-replay.v1.json",
+            "schemas/audiozentrale-telemetry-replay.v1.schema.json",
+        }
+        self.assertTrue(expected <= set(MODULE.BASE_CRITICAL_RELEASE_FILES))
+        commit = "9" * 40
+        for missing in sorted(expected):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
 
     def test_member_names_are_fail_closed(self):
         self.assertEqual(

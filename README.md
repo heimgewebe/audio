@@ -156,3 +156,7 @@ python3 scripts/whale_live.py demo /tmp/buckelwal-live-voice-v1-demo.wav
 # Oberfläche danach lokal unter http://127.0.0.1:8765/
 ./scripts/audio-control stop
 ```
+
+## Audiozentrale v2 Produktoberfläche
+
+Siehe [`docs/audiozentrale-readonly-replay.md`](docs/audiozentrale-readonly-replay.md).

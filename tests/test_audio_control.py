@@ -907,13 +907,11 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(report["whale_keyboard_keys"], 88)
         self.assertEqual(
             set(report["areas"]),
-            {
-                "start",
-                "hoeren",
-                "spielen",
-                "aufnehmen",
-                "system",
-            },
+            {"now", "setups", "library", "system"},
+        )
+        self.assertEqual(
+            report["replay_scenarios"],
+            ["normal", "clip", "xrun", "device-loss", "stale-telemetry", "recovery"],
         )
 
     def test_serve_validates_contract_before_claiming_readiness(self):
@@ -1074,13 +1072,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(len(parser.ids), len(set(parser.ids)))
         self.assertEqual(
             set(parser.routes),
-            {
-                "start",
-                "hoeren",
-                "spielen",
-                "aufnehmen",
-                "system",
-            },
+            {"now", "setups", "library", "system"},
         )
         self.assertEqual(parser.inline_handlers, [])
         self.assertNotIn(None, parser.route_labels)
@@ -1099,11 +1091,12 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("AbortController", javascript)
         self.assertIn("keepDialogFocus", javascript)
         self.assertIn("prefersReducedMotion", javascript)
-        self.assertIn("setWhalePending(true)", javascript)
-        self.assertIn('byId("whale-primary-action")?.focus', javascript)
+        self.assertIn("wireDepthPanels", javascript)
+        self.assertIn("openDepthFocus", javascript)
+        self.assertIn('fetchJson("/api/v1/replay"', javascript)
         self.assertIn('"snapshot_busy"', javascript)
         self.assertIn("Backend beschäftigt", javascript)
-        self.assertIn("/api/v1/actions/whale", javascript)
+        self.assertNotIn("/api/v1/actions/", javascript)
 
     def test_static_surface_prioritizes_compact_functional_controls(self):
         html = (ROOT / "ui" / "index.html").read_text()
@@ -1115,7 +1108,9 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('id="home-readiness"', html)
         self.assertIn('id="deployment-status"', html)
         self.assertIn('id="system-summary"', html)
-        self.assertIn('class="view-toolbar"', html)
+        self.assertIn('class="truth-strip"', html)
+        self.assertIn("data-depth-panel", html)
+        self.assertIn('id="replay-scenario"', html)
         self.assertNotIn('data-route="diagnose"', html)
         self.assertNotIn('data-route="einstellungen"', html)
 
@@ -1125,19 +1120,21 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn(".overview-grid", styles)
         self.assertIn(".readiness-grid", styles)
         self.assertIn(".signal-topology", styles)
-        self.assertIn(".mode-choice:has(input:focus-visible)", styles)
+        self.assertIn(".truth-strip", styles)
+        self.assertIn(".depth-panel", styles)
+        self.assertIn(".replay-grid", styles)
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", styles)
 
         javascript = (ROOT / "ui" / "app.js").read_text()
         self.assertIn('byId("home-metrics")', javascript)
         self.assertIn('byId("home-readiness")', javascript)
         self.assertIn('byId("deployment-status")', javascript)
-        self.assertIn('klaenge: "spielen"', javascript)
+        self.assertIn('klaenge: "library"', javascript)
         self.assertIn('diagnose: "system"', javascript)
         self.assertIn('["Rate", graph.force_rate_hz', javascript)
         self.assertIn('["Quantum",', javascript)
 
-    def test_auto_refresh_policy_does_not_treat_persistent_focus_as_interaction(self):
+    def test_auto_refresh_policy_blocks_dialogs_without_live_action_state(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         policy_start = javascript.index("function autoRefreshBlocked()")
         policy_end = javascript.index("function autoRefreshTick()", policy_start)
@@ -1145,22 +1142,13 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn("activeElement", policy)
         self.assertIn('!byId("dialog-backdrop").hidden', policy)
         self.assertIn("state.loading", policy)
-        self.assertIn("state.actionPending", policy)
         self.assertIn("state.interactionUntil", policy)
-        action_start = javascript.index("async function runWhaleAction")
-        action_end = javascript.index("function detailRow", action_start)
-        action = javascript[action_start:action_end]
-        self.assertIn("const WHALE_ACTION_TIMEOUT_MS = 90000;", javascript)
-        self.assertIn("timeoutMs: WHALE_ACTION_TIMEOUT_MS", action)
-        self.assertNotIn("timeoutMs: 70000", action)
-        self.assertIn('fetchJson("/api/v1/snapshot?refresh=1"', action)
-        readback = action.index('fetchJson("/api/v1/snapshot?refresh=1"')
-        self.assertLess(
-            action.index("renderAll()", readback),
-            action.index("showNotice(actionMessage)"),
-        )
-        self.assertIn('status: "unavailable"', action)
-        self.assertIn("service: {}", action)
+        self.assertNotIn("state.actionPending", policy)
+        self.assertNotIn("runWhaleAction", javascript)
+        self.assertNotIn("WHALE_ACTION_TIMEOUT_MS", javascript)
+        self.assertNotIn("/api/v1/actions/", javascript)
+        self.assertIn("state.replayPlaying", javascript)
+        self.assertIn("stopReplay", javascript)
 
     def test_home_view_preserves_unreadable_whale_truth(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
@@ -1169,7 +1157,7 @@ class AudioControlTests(unittest.TestCase):
         home = javascript[home_start:home_end]
         self.assertIn('snapshot.whale.status === "ok"', home)
         self.assertIn('"Walstatus nicht lesbar"', home)
-        self.assertIn('"Zustand nicht lesbar · keine Inaktivitätsannahme"', home)
+        self.assertIn('"Replay verfügbar · Livezustand nicht lesbar"', home)
 
     def test_sound_library_requires_confirmed_active_whale_truth(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
@@ -1330,6 +1318,22 @@ class AudioControlHTTPTests(unittest.TestCase):
         self.assertTrue(report["read_only"])
         self.assertEqual(report["profile"], "desktop-mixed")
 
+    def test_replay_endpoint_is_synthetic_read_only_and_rejects_query(self):
+        before = list(self.runner.calls)
+        status, _headers, payload = self.request("GET", "/api/v1/replay")
+        self.assertEqual(status, 200)
+        report = json.loads(payload)
+        self.assertFalse(report["authoritative"])
+        self.assertEqual(report["authority"], "synthetic-replay")
+        self.assertEqual(len(report["catalog"]["scenarios"]), 6)
+        self.assertEqual(self.runner.calls, before)
+        status, _headers, payload = self.request(
+            "GET", "/api/v1/replay?scenario=normal"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(payload)["error"]["code"], "invalid_query")
+        self.assertEqual(self.runner.calls, before)
+
 
 class AudioControlInMemoryHTTPTests(unittest.TestCase):
     def setUp(self):
@@ -1382,6 +1386,11 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         status, _headers, payload = self.request("GET", "/")
         self.assertEqual(status, 200)
         self.assertIn(b"Audiozentrale", payload)
+        before = list(self.runner.calls)
+        status, _headers, payload = self.request("GET", "/api/v1/replay")
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(payload)["authoritative"])
+        self.assertEqual(self.runner.calls, before)
         status, _headers, _payload = self.request("GET", "/../../README.md")
         self.assertEqual(status, 404)
 

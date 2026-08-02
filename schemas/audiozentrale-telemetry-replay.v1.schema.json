@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.local/schemas/audiozentrale-telemetry-replay.v1.schema.json",
+  "title": "Audiozentrale Telemetry Replay Catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "catalog_id",
+    "product_model_sha256",
+    "schema_binding",
+    "sample_interval_ms",
+    "stale_after_ms",
+    "scenarios"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "audiozentrale_telemetry_replay_catalog"
+    },
+    "catalog_id": {
+      "const": "audiozentrale-phase0-replay-v1"
+    },
+    "product_model_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "schema_binding": {
+      "$ref": "#/$defs/schema_binding"
+    },
+    "sample_interval_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 2000
+    },
+    "stale_after_ms": {
+      "type": "integer",
+      "minimum": 500,
+      "maximum": 10000
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/scenario"
+      },
+      "minItems": 6,
+      "maxItems": 6
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "schema_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "const": "schemas/audiozentrale-telemetry-replay.v1.schema.json"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "offset_ms",
+        "peak_dbfs",
+        "rms_dbfs",
+        "midi_note",
+        "midi_velocity",
+        "xrun_total",
+        "device_state",
+        "telemetry_age_ms",
+        "event"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "offset_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "peak_dbfs": {
+          "type": "number",
+          "minimum": -120,
+          "maximum": 0
+        },
+        "rms_dbfs": {
+          "type": "number",
+          "minimum": -120,
+          "maximum": 0
+        },
+        "midi_note": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 127
+        },
+        "midi_velocity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 127
+        },
+        "xrun_total": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "device_state": {
+          "enum": [
+            "online",
+            "lost",
+            "recovering"
+          ]
+        },
+        "telemetry_age_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        },
+        "event": {
+          "enum": [
+            "none",
+            "midi",
+            "clip",
+            "xrun",
+            "device-loss",
+            "stale",
+            "recovery"
+          ]
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "description",
+        "frames"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/frame"
+          },
+          "minItems": 4,
+          "maxItems": 64
+        }
+      }
+    }
+  }
+}
