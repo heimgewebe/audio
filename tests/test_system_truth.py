@@ -441,6 +441,19 @@ class SystemTruthTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "state digest"):
             MODULE.verify_report(missing_digest)
 
+    def test_schema_v1_rejects_explicit_null_state_readability(self):
+        report = self.report()
+        report["schema_version"] = 1
+        for projection in (
+            report["physical"], report["laboratory"], report["device_exercises"]
+        ):
+            projection["state_readable"] = None
+            projection.pop("state_status")
+            projection.pop("state_issue_code")
+        recompute(report)
+        with self.assertRaisesRegex(ValueError, "state readability is invalid"):
+            MODULE.verify_report(report)
+
     def test_readiness_projection_separates_integrity_from_operation(self):
         report = self.report()
         readiness = MODULE.readiness_projection(report)

@@ -1470,10 +1470,13 @@ def validate_sha(value: Any, label: str) -> None:
 def validate_state_readability(
     projection: dict[str, Any], label: str, *, allow_legacy: bool
 ) -> str:
+    marker_present = "state_readable" in projection
     readable = projection.get("state_readable")
     status = projection.get("state_status")
     issue_code = projection.get("state_issue_code")
     if readable is None:
+        if marker_present:
+            raise ValueError(f"{label} state readability is invalid")
         if not allow_legacy:
             raise ValueError(f"{label} state readability is missing")
         if status is not None or issue_code is not None:
