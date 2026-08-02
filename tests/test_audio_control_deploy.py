@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import importlib.util
 import json
 import pathlib
@@ -132,6 +133,103 @@ class AudioControlDeployTests(unittest.TestCase):
             (release / "ui" / "styles.css").write_text("tampered", encoding="utf-8")
             with self.assertRaises(MODULE.DeployError):
                 MODULE.verify_release_marker(release, expected_commit=commit)
+
+    def test_incomplete_marker_upgrade_is_git_blob_bound(self):
+        commit = "c" * 40
+        missing = {
+            "scripts/audio_telemetry_replay.py",
+            "inventory/audiozentrale-telemetry-replay.v1.json",
+            "schemas/audiozentrale-telemetry-replay.v1.schema.json",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            deploy_root = pathlib.Path(directory)
+            release = deploy_root / "releases" / commit
+            self.write_release(release, commit)
+            marker_path = release / ".audio-control-release.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            for relative in missing:
+                marker["critical_sha256"].pop(relative)
+            marker_path.write_text(json.dumps(marker), encoding="utf-8")
+            previous_sha256 = hashlib.sha256(marker_path.read_bytes()).hexdigest()
+            MODULE.switch_current(deploy_root, commit)
+            expected_payloads = {
+                relative: (release / relative).read_bytes()
+                for relative in MODULE.critical_release_paths(release)
+            }
+
+            def git_readback(argv, **_kwargs):
+                command = tuple(argv)
+                if command[-1] == "--show-object-format":
+                    return MODULE.CommandResult(command, 0, "sha1\n", "", 0.1)
+                relative = command[-1].split(":", 1)[1]
+                oid = MODULE.git_blob_oid(expected_payloads[relative], "sha1")
+                return MODULE.CommandResult(command, 0, oid + "\n", "", 0.1)
+
+            with mock.patch.object(MODULE, "run_command", side_effect=git_readback):
+                receipt = MODULE.upgrade_current_release_marker(
+                    pathlib.Path(directory) / "repository.git", deploy_root
+                )
+
+            self.assertTrue(receipt["changed"])
+            self.assertEqual(receipt["critical_file_count"], len(expected_payloads))
+            upgraded = MODULE.verify_release_marker(release, expected_commit=commit)
+            self.assertEqual(
+                set(upgraded["critical_sha256"]), set(expected_payloads)
+            )
+            self.assertEqual(
+                upgraded["upgraded_from_marker_sha256"], previous_sha256
+            )
+
+    def test_incomplete_marker_upgrade_rejects_unbound_file(self):
+        commit = "d" * 40
+        missing = "scripts/audio_telemetry_replay.py"
+        with tempfile.TemporaryDirectory() as directory:
+            deploy_root = pathlib.Path(directory)
+            release = deploy_root / "releases" / commit
+            self.write_release(release, commit)
+            expected_payloads = {
+                relative: (release / relative).read_bytes()
+                for relative in MODULE.critical_release_paths(release)
+            }
+            marker_path = release / ".audio-control-release.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker["critical_sha256"].pop(missing)
+            marker_path.write_text(json.dumps(marker), encoding="utf-8")
+            previous_marker = marker_path.read_bytes()
+            (release / missing).write_bytes(b"tampered replay\n")
+            MODULE.switch_current(deploy_root, commit)
+
+            def git_readback(argv, **_kwargs):
+                command = tuple(argv)
+                if command[-1] == "--show-object-format":
+                    return MODULE.CommandResult(command, 0, "sha1\n", "", 0.1)
+                relative = command[-1].split(":", 1)[1]
+                oid = MODULE.git_blob_oid(expected_payloads[relative], "sha1")
+                return MODULE.CommandResult(command, 0, oid + "\n", "", 0.1)
+
+            with (
+                mock.patch.object(MODULE, "run_command", side_effect=git_readback),
+                self.assertRaisesRegex(MODULE.DeployError, "Git-Blob"),
+            ):
+                MODULE.upgrade_current_release_marker(
+                    pathlib.Path(directory) / "repository.git", deploy_root
+                )
+            self.assertEqual(marker_path.read_bytes(), previous_marker)
+
+    def test_current_marker_upgrade_is_a_noop(self):
+        commit = "e" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            deploy_root = pathlib.Path(directory)
+            release = deploy_root / "releases" / commit
+            self.write_release(release, commit)
+            MODULE.switch_current(deploy_root, commit)
+            with mock.patch.object(MODULE, "run_command") as run:
+                receipt = MODULE.upgrade_current_release_marker(
+                    pathlib.Path(directory) / "repository.git", deploy_root
+                )
+            self.assertEqual(receipt["reason"], "marker-current")
+            self.assertFalse(receipt["changed"])
+            run.assert_not_called()
 
     def test_service_activation_fails_closed_when_stop_fails(self):
         daemon_reload = MODULE.CommandResult(
