@@ -170,49 +170,35 @@ Technische Folgen:
 Das Repository enthält 19 verarbeitete Clips aus acht Quellfamilien. Quellen
 und Lizenzen sind in `assets/whale-sources/SOURCES.json`,
 `assets/whale-sources/NOTICE.md` und
-`assets/whale-sources/processed/manifest.json` gebunden.
+`assets/whale-sources/processed/manifest.json` gebunden. Der Builder verlangt
+exakt diese acht Familien. Eine fehlende oder unerwartete Familie verändert
+nicht stillschweigend den Bewertungs- oder Laufzeitbestand, sondern blockiert
+den Modellbau.
 
-Der v5-Analyse-Builder teilt ganze Quellfamilien, nicht einzelne Ausschnitte.
+## Lokal extrahierte Steuermerkmale
 
-### Training
+`scripts/build_whale_voice_model.py` liest jeden Clip einmal als unveränderlichen,
+hashgeprüften Byte-Snapshot. Vor der Reduktion von 48 auf 4 kHz begrenzt ein
+achtpoliger Tiefpass das Signal auf 1.650 Hz; erst danach wird um Faktor zwölf
+dezimiert. Damit werden hohe Aufnahmeanteile nicht wie in der ersten v5-Fassung
+in den Analysebereich zurückgefaltet.
 
-- `humpback-moo-nps`
-- `humpback-wheezeblow-nps`
-- `song-antarctic-area-v-2010`
-- `song-foraging-mn132a`
-- `song-new-caledonia-2010`
+Jeder Clip liefert 48 normalisierte Zeitpunkte mit:
 
-### Holdout
+- Hüllkurve;
+- Periodizität und ihrem komplementären Rauigkeitswert;
+- Hochfrequenzanteil innerhalb des analysierten Bandes;
+- spektraler Neigung;
+- achtteiliger harmonischer Energieverteilung;
+- zwei groben harmonischen Resonanzschwerpunkten;
+- Pulsrate und Pulsstärke;
+- Subharmonik;
+- getrenntem Verhältnis und Stärke einer sekundären Frequenzspur.
 
-- `humpback-song-cc0`
-- `song-eastern-australia-2010`
-- `song-foraging-mn133a`
-
-Damit kann keine Quellfamilie zugleich Live-Trajektorien liefern und den
-Holdout-Erfolg bestimmen.
-
-## Lokal gemessene Muster
-
-Der Builder analysiert jeden Clip als unveränderlichen, hashgeprüften
-Byte-Snapshot. Er erzeugt 48 relative Kontrollpunkte mit Hüllkurve,
-Periodizität, Rauigkeit, Hochfrequenzanteil, spektraler Neigung, achtteiliger
-Obertonverteilung, zwei Resonanzverhältnissen, Pulsrate, Subharmonik und einer
-sekundären Frequenzspur.
-
-Im Trainingskorpus zeigt der Medianverlauf:
-
-| relative Rufphase | Periodizität | Rauigkeit | Pulsstärke | Interpretation |
-|---:|---:|---:|---:|---|
-| 0,00 | 0,236 | 0,764 | 0,167 | unruhiger Einsatz |
-| 0,09 | 0,330 | 0,670 | 0,173 | frühe Entwicklung |
-| 0,26 | 0,208 | 0,792 | 0,319 | raues Übergangsfenster |
-| 0,51 | 0,827 | 0,173 | 0,697 | geordneter, gepulster Rufkörper |
-| 0,77 | 0,522 | 0,478 | 0,137 | Auflösung des Körpers |
-| 0,91 | 0,272 | 0,728 | 0,141 | rauer Abschluss |
-| 1,00 | 0,233 | 0,767 | 0,179 | Endtransiente |
-
-Diese Werte beschreiben nur das kleine lokale Korpus. Aufnahmegeräusch, Art des
-Lauts und Quellbedingungen wirken mit; sie sind keine biologischen Konstanten.
+Die Resonanzschwerpunkte sind ausdrücklich **keine biologisch identifizierten
+Formanten**. Sie sind eine robuste, begrenzte Heuristik aus betonten
+Harmonischen. Aussagen über echte Resonanzräume bleiben wissenschaftliche
+Motivation, nicht Messbehauptung dieses Builders.
 
 ## Technischer Zielzustand der Grundengine
 
@@ -226,15 +212,23 @@ Hauptgrundton folgt der gespielten Taste.
 Quelltrajektorien steuern relativ zur Rufphase:
 
 - dunkle beziehungsweise helle spektrale Gewichtung;
-- bewegliche Resonanzen;
+- harmonische Energie über alle acht gespeicherten Bänder;
+- zwei bewegliche Resonanzschwerpunkte;
 - Periodizität und signalgebundene Rauigkeit;
 - Pulsgruppen;
 - schwache Subharmonik;
-- seltene sekundäre Frequenzspur;
+- eine getrennt geschätzte sekundäre Frequenzspur;
 - asymmetrische Hüllkurvenentwicklung.
 
-Lange Töne spielen keinen Audioloop. Nach einer relativen Rufeinheit folgt eine
-verwandte nächste Steuertrajektorie mit Kreuzblende.
+Die Laufzeitauswahl ist zweistufig: zuerst wird eine Quellfamilie gleichgewichtet
+gewählt, anschließend ein Clip innerhalb dieser Familie. Unterschiedliche
+Clipzahlen geben einer Familie damit kein höheres Gewicht.
+
+Lange Töne spielen keinen Audioloop. Jede ausgewählte Trajektorie behält ihre
+eigene begrenzte Dauer. Am Beginn der folgenden Einheit wird der Endzustand der
+vorherigen Einheit über 14 Prozent der neuen Einheit in deren Anfangszustand
+überführt; es gibt keinen Rücksprung von einer vorab eingeblendeten Phase auf
+Phase null.
 
 ### Tiefbass
 
@@ -251,23 +245,48 @@ und bleibt unter der harten Pegelgrenze.
 - keine langsame zweite Glissandokurve über der Morphquelle;
 - keine zufälligen großen Sprünge des Hauptgrundtons.
 
-### Stille und Determinismus
+### Stille, Determinismus und Integrität
 
 - im Leerlauf exakt null Ausgabe;
 - nach endlichem Ausklang exakt null Ausgabe;
 - keine permanente Rauschschicht;
 - gleiche Gesten und Ausgangszustände liefern bitidentische Ausgabe;
-- Render-Chunkgrößen verändern Ausgabe und Zustand nicht.
+- Render-Chunkgrößen verändern Ausgabe und Zustand nicht;
+- der Loader und der Live-Doctor verlangen den im Profil festgeschriebenen
+  SHA-256 der vollständigen Modellbank;
+- auch eine schema-gültige Änderung eines einzelnen Steuerwerts blockiert den
+  Start.
 
 ## Bewertung
 
-Kein einzelner Gesamtwert darf die Entwicklung steuern. Nötig sind getrennte
-Prüfungen für Hauptton, zeitliche und spektrale Natürlichkeit, Tiefbass, Pegel,
-Phrasenvariation, Echtzeitreserve, Holdout-Generalisierung und die subjektive
-Hörprüfung über Roland FP-30X, MOTU M2 und Focal Clear MG.
+Die erste v5-Bewertung wurde nachträglich als methodisch zu stark bezeichnet:
+Sie reduzierte jeden Clip auf Medianwerte, gewichtete Periodizität und deren
+Komplement Rauigkeit doppelt und verwendete die als Holdout bezeichneten
+Familien während der Entwicklung zur Abstimmung. Ihr früherer Wert ist daher
+kein unabhängiger Generalisierungsnachweis.
 
-Ein objektiver Vergleich ist ein Regressionsindikator. Er beweist weder
-biologische Identität noch menschlich wahrgenommene Echtheit.
+Die korrigierte Prüfung verwendet Leave-one-source-family-out-Cross-Validation:
+
+1. Eine vollständige Quellfamilie wird aus der Organic-Liveauswahl entfernt.
+2. Dieselbe feste Spielgeste wird gerendert.
+3. Das Ergebnis wird als geordnete 48-Punkt-Trajektorie analysiert.
+4. Hüllkurve, Periodizität, Spektrum, Resonanzschwerpunkte, Puls,
+   Subharmonik, Sekundärspur und vollständiges Obertonprofil werden zeitpunktweise
+   verglichen.
+5. Jede der acht Familien bildet genau einen gleichgewichteten Außenfold.
+
+Diese Cross-Validation ist ein ehrlicher Regressionstest innerhalb des kleinen
+bekannten Korpus. Sie ist weiterhin kein Artenklassifikator und kein Beleg
+menschlich wahrgenommener Echtheit.
+
+Zusätzlich ist unter `assets/whale-sources/evaluation/` eine zuvor unbenutzte,
+nach Abschluss der DSP-Reparaturen gesperrte NOAA-PMEL-Aufnahme aus Alaska
+gebunden. Sie darf weder Modellbau noch Parameterabstimmung beeinflussen. Der
+erste und einzige Vergleich ergab für diesen einzelnen Ruf eine Ähnlichkeit von
+`0,1707` für Morph und `0,1538` für Organic. Organic ist diesem Fremdruf also
+weniger ähnlich. Der Befund wird nicht wegoptimiert. Eine einzelne Aufnahme ist
+ein unabhängiger Negativbefund, aber noch kein Test über Populationen,
+Aufnahmesituationen oder menschliche Wahrnehmung.
 
 ## Evidenzstufen
 
@@ -284,8 +303,8 @@ biologische Identität noch menschlich wahrgenommene Echtheit.
 
 - quellabgeleitete Kontrolltrajektorien wirken natürlicher als frei erfundene
   Zufallsmodulation;
-- Formantbewegung kann Walcharakter erhöhen, ohne die Tastaturtonhöhe zu
-  zerstören;
+- bewegliche Resonanzschwerpunkte können Walcharakter erhöhen, ohne die
+  Tastaturtonhöhe zu zerstören;
 - gestengebundene Varianten wirken organischer als identische Wiederholungen;
 - relatives Phrasengedächtnis kann lange Spielpassagen kohärenter machen.
 
@@ -294,8 +313,11 @@ biologische Identität noch menschlich wahrgenommene Echtheit.
 - welche Einzelmerkmale subjektiv den größten Anteil am Walcharakter haben;
 - wie stark Biphonation sein darf, bevor sie als Akkord wahrgenommen wird;
 - wie weit der Eindruck über acht chromatische Oktaven trägt;
-- ob v5 über die reale Wiedergabekette weniger nach UFO, Orgel oder Buzz klingt;
-- ob optionaler Unterwasserraum Immersion erhöht oder nur Fehler verdeckt.
+- ob die korrigierte v5-Fassung über die reale Wiedergabekette weniger nach UFO,
+  Orgel oder Buzz klingt;
+- ob optionaler Unterwasserraum Immersion erhöht oder nur Fehler verdeckt;
+- wie gut die Engine auf einen wirklich unangetasteten externen Aufnahmesatz
+  generalisiert.
 
 ## Primär- und Fachquellen
 

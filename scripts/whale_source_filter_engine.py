@@ -9,9 +9,11 @@ recorded phrase is played and no independent noise generator exists.
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import pathlib
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from build_whale_morph_bank import (
@@ -31,6 +33,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = (
     ROOT / "assets" / "whale-sources" / "voice-model" / "manifest.json"
 )
+EXPECTED_MANIFEST_SHA256 = "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a"
+EXPECTED_SOURCE_IDS = (
+    "humpback-moo-nps",
+    "humpback-song-cc0",
+    "humpback-wheezeblow-nps",
+    "song-antarctic-area-v-2010",
+    "song-eastern-australia-2010",
+    "song-foraging-mn132a",
+    "song-foraging-mn133a",
+    "song-new-caledonia-2010",
+)
 TAIL_THRESHOLD = 1.0e-8
 
 
@@ -42,8 +55,8 @@ class SourceFilterPoint:
     roughness: float
     high_band_ratio: float
     spectral_tilt: float
-    formant_ratio_1: float
-    formant_ratio_2: float
+    resonance_ratio_1: float
+    resonance_ratio_2: float
     harmonic_profile: tuple[float, ...]
     pulse_rate_hz: float
     pulse_strength: float
@@ -58,7 +71,6 @@ class SourceFilterTrajectory:
     clip_id: str
     source_id: str
     category: str
-    split: str
     duration_seconds: float
     median_f0_hz: float
     points: tuple[SourceFilterPoint, ...]
@@ -71,8 +83,8 @@ class SourceFilterControl:
     roughness: float
     high_band_ratio: float
     spectral_tilt: float
-    formant_ratio_1: float
-    formant_ratio_2: float
+    resonance_ratio_1: float
+    resonance_ratio_2: float
     harmonic_profile: tuple[float, ...]
     pulse_rate_hz: float
     pulse_strength: float
@@ -82,9 +94,15 @@ class SourceFilterControl:
 
 
 class WhaleSourceFilterBank:
-    """Validated temporal feature bank with a source-family holdout split."""
+    """Validated temporal feature bank with optional family exclusions."""
 
-    def __init__(self, manifest_path: pathlib.Path = DEFAULT_MANIFEST) -> None:
+    def __init__(
+        self,
+        manifest_path: pathlib.Path = DEFAULT_MANIFEST,
+        *,
+        expected_manifest_sha256: str | None = EXPECTED_MANIFEST_SHA256,
+        excluded_source_ids: frozenset[str] = frozenset(),
+    ) -> None:
         self.manifest_path = regular_file_path(
             manifest_path, "whale source-filter manifest"
         )
@@ -92,11 +110,17 @@ class WhaleSourceFilterBank:
             self.manifest_path, "whale source-filter manifest"
         )
         self.manifest_sha256 = sha256_bytes(manifest_payload)
+        self.expected_manifest_sha256 = expected_manifest_sha256
+        if (
+            expected_manifest_sha256 is not None
+            and self.manifest_sha256 != expected_manifest_sha256
+        ):
+            raise RuntimeError("whale source-filter manifest hash mismatch")
         value = json.loads(manifest_payload.decode("utf-8"))
         if not isinstance(value, dict):
             raise RuntimeError("whale source-filter manifest root must be an object")
         if (
-            value.get("schema_version") != 1
+            value.get("schema_version") != 2
             or value.get("kind") != "humpback_whale_temporal_source_filter_bank"
             or value.get("sample_rate_hz") != 48_000
             or value.get("analysis_rate_hz") != 4_000
@@ -105,6 +129,17 @@ class WhaleSourceFilterBank:
             or value.get("voice_count") != 1
         ):
             raise RuntimeError("whale source-filter manifest has the wrong schema")
+        analysis_filter = value.get("analysis_filter")
+        if (
+            not isinstance(analysis_filter, dict)
+            or analysis_filter.get("kind")
+            != "butterworth-lowpass-before-decimation"
+            or analysis_filter.get("order") != 8
+            or analysis_filter.get("decimation_factor") != 12
+            or not isinstance(analysis_filter.get("cutoff_hz"), (int, float))
+            or not 1_400.0 <= float(analysis_filter["cutoff_hz"]) <= 1_800.0
+        ):
+            raise RuntimeError("whale source-filter analysis filter is invalid")
         control_points = value.get("control_points")
         harmonic_count = value.get("harmonic_count")
         if (
@@ -156,17 +191,18 @@ class WhaleSourceFilterBank:
                 raise RuntimeError("whale source-filter source clip is invalid")
             source_clips[record["id"]] = record
 
-        train_ids = value.get("train_source_ids")
-        holdout_ids = value.get("holdout_source_ids")
+        source_ids = value.get("source_ids")
         if (
-            not isinstance(train_ids, list)
-            or not isinstance(holdout_ids, list)
-            or not all(isinstance(item, str) and item for item in train_ids + holdout_ids)
-            or set(train_ids).intersection(holdout_ids)
+            not isinstance(source_ids, list)
+            or source_ids != list(EXPECTED_SOURCE_IDS)
+            or not all(isinstance(item, str) and item for item in source_ids)
         ):
-            raise RuntimeError("whale source-filter source split is invalid")
-        self.train_source_ids = tuple(train_ids)
-        self.holdout_source_ids = tuple(holdout_ids)
+            raise RuntimeError("whale source-filter source family catalog changed")
+        excluded = frozenset(excluded_source_ids)
+        if not excluded <= set(source_ids):
+            raise RuntimeError("whale source-filter exclusions contain unknown families")
+        self.source_ids = tuple(source_ids)
+        self.excluded_source_ids = tuple(sorted(excluded))
 
         raw_trajectories = value.get("trajectories")
         if not isinstance(raw_trajectories, list) or len(raw_trajectories) < 6:
@@ -182,7 +218,6 @@ class WhaleSourceFilterBank:
             source_file = raw.get("source_file")
             source_clip_sha = raw.get("source_sha256")
             category = raw.get("category")
-            split = raw.get("split")
             summary = raw.get("summary")
             raw_points = raw.get("points")
             if (
@@ -195,11 +230,10 @@ class WhaleSourceFilterBank:
                         source_file,
                         source_clip_sha,
                         category,
-                        split,
                     )
                 )
                 or trajectory_id in seen_ids
-                or split not in {"train", "holdout"}
+                or source_id not in self.source_ids
                 or not isinstance(summary, dict)
                 or not isinstance(raw_points, list)
                 or len(raw_points) != control_points
@@ -215,11 +249,6 @@ class WhaleSourceFilterBank:
                 raise RuntimeError(
                     "whale source-filter trajectory provenance does not match source"
                 )
-            expected_split = "holdout" if source_id in holdout_ids else "train"
-            if split != expected_split or (
-                split == "train" and source_id not in train_ids
-            ):
-                raise RuntimeError("whale source-filter trajectory split is inconsistent")
             duration = summary.get("duration_seconds")
             median_f0 = summary.get("median_f0_hz")
             if (
@@ -239,7 +268,6 @@ class WhaleSourceFilterBank:
                     clip_id=clip_id,
                     source_id=source_id,
                     category=category,
-                    split=split,
                     duration_seconds=float(duration),
                     median_f0_hz=float(median_f0),
                     points=points,
@@ -247,14 +275,22 @@ class WhaleSourceFilterBank:
             )
             seen_ids.add(trajectory_id)
         self.trajectories = tuple(trajectories)
-        self.train = tuple(
-            trajectory for trajectory in trajectories if trajectory.split == "train"
+        self.live = tuple(
+            trajectory
+            for trajectory in trajectories
+            if trajectory.source_id not in excluded
         )
-        self.holdout = tuple(
-            trajectory for trajectory in trajectories if trajectory.split == "holdout"
-        )
-        if len(self.train) < 5 or len(self.holdout) < 2:
-            raise RuntimeError("whale source-filter split lacks trajectories")
+        groups: dict[str, list[SourceFilterTrajectory]] = {}
+        for trajectory in self.live:
+            groups.setdefault(trajectory.source_id, []).append(trajectory)
+        self.live_by_source = {
+            source_id: tuple(sorted(items, key=lambda item: item.trajectory_id))
+            for source_id, items in sorted(groups.items())
+        }
+        if len(self.live_by_source) < 2 or len(self.live) < 4:
+            raise RuntimeError("whale source-filter exclusions leave too little diversity")
+        self._timeline_cache: OrderedDict[tuple[int, int, int], list[int]] = OrderedDict()
+        self._timeline_cache_limit = 32
 
     @staticmethod
     def _bounded_number(
@@ -290,15 +326,23 @@ class WhaleSourceFilterBank:
             or sum(float(value) for value in profile) > 1.000001
         ):
             raise RuntimeError("whale source-filter harmonic profile is invalid")
+        periodicity = cls._bounded_number(raw, "periodicity", 0.0, 1.0)
+        roughness = cls._bounded_number(raw, "roughness", 0.0, 1.0)
+        if abs(periodicity + roughness - 1.0) > 2.0e-6:
+            raise RuntimeError("whale source-filter periodicity complement is invalid")
         return SourceFilterPoint(
             phase=phase,
             envelope=cls._bounded_number(raw, "envelope", 0.0, 1.0),
-            periodicity=cls._bounded_number(raw, "periodicity", 0.0, 1.0),
-            roughness=cls._bounded_number(raw, "roughness", 0.0, 1.0),
+            periodicity=periodicity,
+            roughness=roughness,
             high_band_ratio=cls._bounded_number(raw, "high_band_ratio", 0.0, 1.0),
             spectral_tilt=cls._bounded_number(raw, "spectral_tilt", 0.0, 1.0),
-            formant_ratio_1=cls._bounded_number(raw, "formant_ratio_1", 1.2, 8.0),
-            formant_ratio_2=cls._bounded_number(raw, "formant_ratio_2", 1.8, 12.0),
+            resonance_ratio_1=cls._bounded_number(
+                raw, "resonance_ratio_1", 1.2, 8.0
+            ),
+            resonance_ratio_2=cls._bounded_number(
+                raw, "resonance_ratio_2", 1.8, 12.0
+            ),
             harmonic_profile=tuple(float(value) for value in profile),
             pulse_rate_hz=cls._bounded_number(raw, "pulse_rate_hz", 1.2, 8.0),
             pulse_strength=cls._bounded_number(raw, "pulse_strength", 0.0, 1.0),
@@ -316,11 +360,11 @@ class WhaleSourceFilterBank:
             "ready": True,
             "manifest": str(self.manifest_path),
             "manifest_sha256": self.manifest_sha256,
+            "expected_manifest_sha256": self.expected_manifest_sha256,
             "trajectory_count": len(self.trajectories),
-            "train_trajectory_count": len(self.train),
-            "holdout_trajectory_count": len(self.holdout),
-            "train_source_ids": list(self.train_source_ids),
-            "holdout_source_ids": list(self.holdout_source_ids),
+            "live_trajectory_count": len(self.live),
+            "source_ids": list(self.source_ids),
+            "excluded_source_ids": list(self.excluded_source_ids),
             "permanent_noise_layer": False,
             "recorded_phrase_playback": False,
         }
@@ -335,26 +379,36 @@ class WhaleSourceFilterBank:
         value ^= value >> 16
         return value & 0xFFFFFFFF
 
-    def _candidates(self, note: int) -> tuple[SourceFilterTrajectory, ...]:
+    def _candidate_families(
+        self, note: int
+    ) -> tuple[tuple[str, tuple[SourceFilterTrajectory, ...]], ...]:
         if note <= 42:
             preferred = {"low", "song"}
         elif note >= 84:
             preferred = {"high", "song"}
         else:
             preferred = {"song"}
-        candidates = tuple(
-            trajectory for trajectory in self.train if trajectory.category in preferred
-        )
-        return candidates or self.train
+        groups: list[tuple[str, tuple[SourceFilterTrajectory, ...]]] = []
+        for source_id, trajectories in self.live_by_source.items():
+            matches = tuple(
+                trajectory
+                for trajectory in trajectories
+                if trajectory.category in preferred
+            )
+            if matches:
+                groups.append((source_id, matches))
+        return tuple(groups) or tuple(self.live_by_source.items())
 
     def _trajectory(
         self, note: int, seed: int, unit_index: int
     ) -> SourceFilterTrajectory:
-        candidates = self._candidates(note)
+        families = self._candidate_families(note)
         mixed = self._mix32(
             seed + unit_index * 0x9E3779B9 + note * 0x85EBCA6B
         )
-        return candidates[mixed % len(candidates)]
+        _source_id, candidates = families[mixed % len(families)]
+        clip_mixed = self._mix32(mixed ^ 0xA511E9B3)
+        return candidates[clip_mixed % len(candidates)]
 
     @staticmethod
     def _interpolate_point(
@@ -385,8 +439,8 @@ class WhaleSourceFilterBank:
             roughness=mix("roughness"),
             high_band_ratio=mix("high_band_ratio"),
             spectral_tilt=mix("spectral_tilt"),
-            formant_ratio_1=mix("formant_ratio_1"),
-            formant_ratio_2=mix("formant_ratio_2"),
+            resonance_ratio_1=mix("resonance_ratio_1"),
+            resonance_ratio_2=mix("resonance_ratio_2"),
             harmonic_profile=profile,
             pulse_rate_hz=mix("pulse_rate_hz"),
             pulse_strength=mix("pulse_strength"),
@@ -413,8 +467,8 @@ class WhaleSourceFilterBank:
             roughness=mix("roughness"),
             high_band_ratio=mix("high_band_ratio"),
             spectral_tilt=mix("spectral_tilt"),
-            formant_ratio_1=mix("formant_ratio_1"),
-            formant_ratio_2=mix("formant_ratio_2"),
+            resonance_ratio_1=mix("resonance_ratio_1"),
+            resonance_ratio_2=mix("resonance_ratio_2"),
             harmonic_profile=tuple(
                 left_value + (right_value - left_value) * shaped
                 for left_value, right_value in zip(
@@ -428,6 +482,57 @@ class WhaleSourceFilterBank:
             secondary_strength=mix("secondary_strength"),
         )
 
+    @staticmethod
+    def _unit_frames(
+        trajectory: SourceFilterTrajectory, sample_rate: int
+    ) -> int:
+        seconds = clamp(trajectory.duration_seconds * 0.55, 1.45, 4.80)
+        return max(1, round(seconds * sample_rate))
+
+    def _timeline_ends(
+        self,
+        *,
+        note: int,
+        seed: int,
+        age_frames: int,
+        sample_rate: int,
+    ) -> list[int]:
+        key = (note, seed & 0xFFFFFFFF, sample_rate)
+        ends = self._timeline_cache.pop(key, None)
+        if ends is None:
+            ends = []
+        self._timeline_cache[key] = ends
+        while len(self._timeline_cache) > self._timeline_cache_limit:
+            self._timeline_cache.popitem(last=False)
+        target = max(0, age_frames)
+        while not ends or ends[-1] <= target:
+            unit_index = len(ends)
+            trajectory = self._trajectory(note, seed, unit_index)
+            frames = self._unit_frames(trajectory, sample_rate)
+            ends.append((ends[-1] if ends else 0) + frames)
+        return ends
+
+    def _unit_position(
+        self,
+        *,
+        note: int,
+        seed: int,
+        age_frames: int,
+        sample_rate: int,
+    ) -> tuple[int, SourceFilterTrajectory, int, int]:
+        target = max(0, age_frames)
+        ends = self._timeline_ends(
+            note=note,
+            seed=seed,
+            age_frames=target,
+            sample_rate=sample_rate,
+        )
+        unit_index = bisect.bisect_right(ends, target)
+        start = ends[unit_index - 1] if unit_index else 0
+        trajectory = self._trajectory(note, seed, unit_index)
+        frames = ends[unit_index] - start
+        return unit_index, trajectory, frames, target - start
+
     def control(
         self,
         *,
@@ -436,26 +541,30 @@ class WhaleSourceFilterBank:
         age_frames: int,
         sample_rate: int,
     ) -> SourceFilterControl:
-        first = self._trajectory(note, seed, 0)
-        nominal_unit_seconds = clamp(first.duration_seconds * 0.55, 1.45, 4.80)
-        unit_frames = max(1, round(nominal_unit_seconds * sample_rate))
-        unit_index, local_frames = divmod(max(0, age_frames), unit_frames)
+        unit_index, current, unit_frames, local_frames = self._unit_position(
+            note=note,
+            seed=seed,
+            age_frames=age_frames,
+            sample_rate=sample_rate,
+        )
         phase = local_frames / unit_frames
-        current = self._trajectory(note, seed, unit_index)
         current_control = self._interpolate_point(current, phase)
-        if phase < 0.86:
+        if unit_index == 0 or phase >= 0.14:
             return current_control
-        following = self._trajectory(note, seed, unit_index + 1)
-        next_phase = (phase - 0.86) / 0.14 * 0.12
-        next_control = self._interpolate_point(following, next_phase)
-        return self._mix_control(current_control, next_control, (phase - 0.86) / 0.14)
-
+        previous = self._trajectory(note, seed, unit_index - 1)
+        previous_control = self._interpolate_point(previous, 1.0)
+        return self._mix_control(previous_control, current_control, phase / 0.14)
 
 def source_filter_bank_status(
     manifest_path: pathlib.Path = DEFAULT_MANIFEST,
+    *,
+    expected_manifest_sha256: str | None = EXPECTED_MANIFEST_SHA256,
 ) -> dict[str, object]:
     try:
-        return WhaleSourceFilterBank(manifest_path).status()
+        return WhaleSourceFilterBank(
+            manifest_path,
+            expected_manifest_sha256=expected_manifest_sha256,
+        ).status()
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         return {
             "ready": False,
@@ -586,28 +695,47 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
             * (3.0 - 2.0 * register_bass_weight)
         )
         register_gain = 1.0 - 0.74 * register_bass_weight
-        first_formant = clamp(frequency * control.formant_ratio_1, 92.0, 1_650.0)
-        second_formant = clamp(frequency * control.formant_ratio_2, 180.0, 3_300.0)
-        low_cutoff = clamp(first_formant * 0.72, 110.0, 3_400.0)
+        first_resonance = clamp(
+            frequency * control.resonance_ratio_1, 92.0, 1_650.0
+        )
+        second_resonance = clamp(
+            frequency * control.resonance_ratio_2, 180.0, 3_300.0
+        )
+        low_cutoff = clamp(first_resonance * 0.72, 110.0, 3_400.0)
         low_alpha = 1.0 - math.exp(-2.0 * math.pi * low_cutoff / sample_rate)
         radius_a = math.exp(-1.0 / (sample_rate * (0.018 + 0.020 * self.distance)))
         radius_b = math.exp(-1.0 / (sample_rate * (0.012 + 0.014 * self.distance)))
         coefficient_a = 2.0 * radius_a * math.cos(
-            2.0 * math.pi * first_formant / sample_rate
+            2.0 * math.pi * first_resonance / sample_rate
         )
         coefficient_b = 2.0 * radius_b * math.cos(
-            2.0 * math.pi * second_formant / sample_rate
+            2.0 * math.pi * second_resonance / sample_rate
         )
         roughness = clamp(control.roughness, 0.0, 1.0)
         periodicity = clamp(control.periodicity, 0.0, 1.0)
         spectral_tilt = clamp(control.spectral_tilt, 0.0, 1.0)
         high_band = clamp(control.high_band_ratio, 0.0, 1.0)
-        harmonic_second = control.harmonic_profile[1] if len(control.harmonic_profile) > 1 else 0.0
-        harmonic_third = control.harmonic_profile[2] if len(control.harmonic_profile) > 2 else 0.0
-        low_gain = 0.92 + 0.22 * (1.0 - spectral_tilt)
-        high_gain = 1.46 + 0.38 * spectral_tilt + 0.22 * high_band
+        profile = control.harmonic_profile
+        harmonic_second = profile[1] if len(profile) > 1 else 0.0
+        harmonic_third = profile[2] if len(profile) > 2 else 0.0
+        low_harmonics = sum(profile[:2])
+        middle_harmonics = sum(profile[2:5])
+        upper_harmonics = sum(profile[5:])
+        even_harmonics = sum(
+            value for index, value in enumerate(profile, start=1) if index % 2 == 0
+        )
+        harmonic_centroid = sum(
+            index * value for index, value in enumerate(profile, start=1)
+        )
+        low_gain = 0.86 + 0.26 * (1.0 - spectral_tilt) + 0.16 * low_harmonics
+        high_gain = (
+            1.30
+            + 0.34 * spectral_tilt
+            + 0.20 * high_band
+            + 0.22 * upper_harmonics
+        )
         envelope_gain = 0.78 + 0.34 * math.sqrt(clamp(control.envelope, 0.0, 1.0))
-        formant_mix = 0.018 + 0.052 * periodicity
+        resonance_mix = 0.014 + 0.046 * periodicity + 0.018 * middle_harmonics
         pulse_depth = 0.03 + 0.10 * control.pulse_strength
         activity_attack = 1.0 - math.exp(-1.0 / (sample_rate * 0.006))
         activity_release = 1.0 - math.exp(-1.0 / (sample_rate * 0.055))
@@ -639,9 +767,18 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
                 * roughness
                 * (0.220 + 0.320 * high_band)
             )
-            harmonic_edge = math.tanh(source_sample * (3.0 + 7.0 * harmonic_second))
-            harmonic_edge -= source_sample * (2.6 + 4.0 * harmonic_third)
-            harmonic_edge *= 0.018 + 0.030 * (harmonic_second + harmonic_third)
+            harmonic_edge = math.tanh(
+                source_sample
+                * (2.8 + 4.0 * harmonic_second + 0.7 * harmonic_centroid)
+            )
+            harmonic_edge -= source_sample * (
+                2.4 + 3.2 * harmonic_third + 1.2 * even_harmonics
+            )
+            harmonic_edge *= (
+                0.014
+                + 0.020 * (harmonic_second + harmonic_third)
+                + 0.018 * upper_harmonics
+            )
             excitation = source_sample + 0.24 * residual + 0.18 * harmonic_edge
             (
                 mode_a,
@@ -710,7 +847,7 @@ class WhaleSourceFilterVoice(WhaleMorphVoice):
                 shaped_source
                 + residual
                 + harmonic_edge
-                + formant_mix * (0.68 * mode_a + 0.32 * mode_b)
+                + resonance_mix * (0.68 * mode_a + 0.32 * mode_b)
                 + subharmonic
                 + secondary
             ) * envelope_gain * pulse_gain
