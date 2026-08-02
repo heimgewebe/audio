@@ -310,18 +310,19 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
         return tuple(weights)  # type: ignore[return-value]
 
     def _process_block(self, base: list[float]) -> list[float]:
-        if not (
-            self.organic_components.register_bass
-            or self.organic_components.articulation_states
-        ):
+        register_bass = self.organic_components.register_bass
+        articulation_states = self.organic_components.articulation_states
+        if not (register_bass or articulation_states):
             return list(base)
+
         sample_rate = self.config.sample_rate
+        master_gain = self.config.master_gain
         frequency = max(self.organic_control_frequency, 1.0)
         velocity = self.organic_control_velocity
         note = frequency_to_midi_note(frequency)
         bass_weight = clamp((55.0 - note) / 24.0, 0.0, 1.0)
         bass_weight = bass_weight * bass_weight * (3.0 - 2.0 * bass_weight)
-        if not self.organic_components.register_bass:
+        if not register_bass:
             bass_weight = 0.0
         bass_cutoff = clamp(frequency * 3.2, 75.0, 560.0)
         bass_alpha = 1.0 - math.exp(-2.0 * math.pi * bass_cutoff / sample_rate)
@@ -337,77 +338,98 @@ class OrganicWhaleMorphVoice(WhaleSourceFilterVoice):
         )
         two_pi = 2.0 * math.pi
         velocity_gain = 0.22 + 0.78 * velocity**1.3
+        # Bind invariant lookups and mutable state locally without regrouping
+        # the per-sample arithmetic; the rendered doubles remain bit-identical.
+        source_filter_control = self.source_filter_control
+        source_roughness = clamp(source_filter_control.roughness, 0.0, 1.0)
+        source_high_band = clamp(source_filter_control.high_band_ratio, 0.0, 1.0)
+        state_edge_drive = 22.0 + 52.0 * source_roughness
+        activity_denominator = max(master_gain * 0.08, 1.0e-6)
+        expression = self.expression
+        organic_control_age_start = self.organic_control_age_start
+        organic_control_position = self.organic_control_position
+        organic_bass_lowpass = self.organic_bass_lowpass
+        organic_bass_phase = self.organic_bass_phase
+        organic_activity = self.organic_activity
+        organic_pulse_strength = self.organic_pulse_strength
+        organic_state_phase_offset = self.organic_state_phase_offset
+        bass_phase_increment = frequency / sample_rate
         output: list[float] = []
+        append = output.append
+        clamp_value = clamp
+        sin = math.sin
+        tanh = math.tanh
+
         for source_sample in base:
-            self.organic_bass_lowpass += (
-                source_sample - self.organic_bass_lowpass
+            organic_bass_lowpass += (
+                source_sample - organic_bass_lowpass
             ) * bass_alpha
-            activity_target = clamp(
-                abs(source_sample) / max(self.config.master_gain * 0.08, 1.0e-6),
+            activity_target = clamp_value(
+                abs(source_sample) / activity_denominator,
                 0.0,
                 1.0,
             )
             activity_alpha = (
                 activity_attack
-                if activity_target > self.organic_activity
+                if activity_target > organic_activity
                 else activity_release
             )
-            self.organic_activity += (
-                activity_target - self.organic_activity
+            organic_activity += (
+                activity_target - organic_activity
             ) * activity_alpha
-            age_frames = self.organic_control_age_start + self.organic_control_position
-            self.organic_control_position += 1
-            self.organic_bass_phase = (
-                self.organic_bass_phase + frequency / sample_rate
+            age_frames = organic_control_age_start + organic_control_position
+            organic_control_position += 1
+            organic_bass_phase = (
+                organic_bass_phase + bass_phase_increment
             ) % 1.0
-            bass_oscillator = math.sin(two_pi * self.organic_bass_phase)
-            bass_oscillator += 0.23 * math.sin(
-                2.0 * two_pi * self.organic_bass_phase
+            bass_oscillator = sin(two_pi * organic_bass_phase)
+            bass_oscillator += 0.23 * sin(
+                2.0 * two_pi * organic_bass_phase
             )
             bass_body = (
-                0.47 * self.organic_bass_lowpass
+                0.47 * organic_bass_lowpass
                 + 0.55
                 * bass_oscillator
-                * self.organic_activity
+                * organic_activity
                 * velocity_gain
-                * self.expression
-                * self.config.master_gain
+                * expression
+                * master_gain
             ) * bass_weight * (1.05 + 0.45 * (1.0 - velocity))
-            self.organic_pulse_strength += (
-                0.0 - self.organic_pulse_strength
+            organic_pulse_strength += (
+                0.0 - organic_pulse_strength
             ) * pulse_decay
             state_seconds = age_frames / sample_rate
             pulse_phase = (
-                state_pulse_rate * state_seconds + self.organic_state_phase_offset
+                state_pulse_rate * state_seconds + organic_state_phase_offset
             ) % 1.0
             pulse_wave = 1.0 - abs(2.0 * pulse_phase - 1.0)
             pulse_wave = pulse_wave * pulse_wave * (3.0 - 2.0 * pulse_wave)
             pulse_gain = (
                 1.0
-                + 0.10 * self.organic_pulse_strength
+                + 0.10 * organic_pulse_strength
                 - pulsed * 0.055 * (1.0 - pulse_wave)
                 - broken * 0.035 * (1.0 - pulse_wave)
-                if self.organic_components.articulation_states
+                if articulation_states
                 else 1.0
             )
-            edge = source_sample - self.organic_bass_lowpass
-            source_roughness = clamp(
-                self.source_filter_control.roughness, 0.0, 1.0
-            )
-            source_high_band = clamp(
-                self.source_filter_control.high_band_ratio, 0.0, 1.0
-            )
+            edge = source_sample - organic_bass_lowpass
             state_edge = (
-                math.tanh(edge * (22.0 + 52.0 * source_roughness))
+                tanh(edge * state_edge_drive)
                 * state_texture
                 * source_roughness
                 * (0.041 + 0.072 * source_high_band)
-                if self.organic_components.articulation_states
+                if articulation_states
                 else 0.0
             )
             raw = source_sample * pulse_gain + bass_body + state_edge
             sample = raw / (1.0 + 1.20 * abs(raw))
-            output.append(clamp(sample, -MAX_MASTER_GAIN, MAX_MASTER_GAIN))
+            append(clamp_value(sample, -MAX_MASTER_GAIN, MAX_MASTER_GAIN))
+
+        self.organic_bass_lowpass = organic_bass_lowpass
+        self.organic_bass_phase = organic_bass_phase
+        self.organic_activity = organic_activity
+        self.organic_pulse_strength = organic_pulse_strength
+        self.organic_control_position = organic_control_position
         if super().silent:
             self.organic_bass_lowpass = 0.0
             self.organic_activity = 0.0
