@@ -79,16 +79,16 @@ Keine Aufnahme wurde physisch wiedergegeben. Der Wal-Dienst blieb inaktiv.
 
 | Gegenstand | Bindung |
 |---|---|
-| Studienquellstand | `9fe1238d5a669cad350fdc893734c6689bfe4f65` |
+| Studienquellstand | `e1dfac1c1414c58a4f349c8ae2ae6bedeb58ad95` |
 | Modellbank | `1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a` |
 | Studiendefinition | `6266cafa0ed2ebb79081669963b704dc71632957964d46165b996e4de8dafeba` |
-| interner Bericht | `ff99cec2d834372d2f586cd8a628200055c4ceb0d624c10ced7b34381752d7c6` |
+| interner Bericht | `5b4af52b2ae861bfd88b76bf62bcf6432780915e9c8a1d84a88f4797592c5d32` |
 | interne CSV | `bf36640b99c8325979d81deb84d4652e37bd19d3bfed919cee0103d1ceb7dd05` |
-| eingefrorener Kandidat | `73558c8a080e978c98705f19d498d415704e9841456ed2f8f14907b7ae6e236f` |
+| eingefrorener Kandidat | `5255f89c15c8f2ffb2e4c18634a67b1a82bd67bbe16715c6828fc017dd89485d` |
 | Alaska-Manifest | `9bdcf78fdc4d0f1fce77d4e2defa877910ea5102e66e515704fceaee123dd39d` |
 | Zusatzmanifest v2 | `e42272161dd3864950b7b17f1cecce810b20ab83fec1a71ab763b10c9c07166f` |
-| Alaska-Bericht | `a14fefcf49e1c96bd5dd8c8f30e13fd1d49e762f610e0e05b6499fe584b9517a` |
-| externer Gesamtbericht | `d5d8408cbf3ae6724c49fd5fb7b04744e940c67f843ac6d46cff5817c30edb0d` |
+| Alaska-Bericht | `7d3909e1e40165c10e25813bac9fc5d879976e7a034a91456187863e1c32aa86` |
+| externer Gesamtbericht | `8a36d21e24d63314e32d7495cf94fc54069336441beb2f9c5f640d000778942f` |
 | externe CSV | `a47192302cc8ba868cad3c2505eebcf6051e5eade9989d445990ad5b04df6985` |
 
 Der Kandidat wurde aus dem internen Bericht erzeugt und vor externer
@@ -236,6 +236,16 @@ Analyse-Tiefpass liegt bei 1,65 kHz und damit unter dieser Grenze; trotzdem kann
 dieser Datensatz keine Information über höhere Quellanteile liefern. Er ist ein
 bandbegrenzter Robustheitstest, kein vollbandiger Stimmvergleich.
 
+Der bestehende Autokorrelations-Pitchtracker erreicht in Stellwagen häufig seine
+obere Suchgrenze: In den ersten drei Segmenten liegen 36/48, 40/48 und 34/48
+Kontrollpunkte beim kürzesten zulässigen Lag 3, entsprechend 1.333,33 Hz, obwohl
+die mittlere Periodizität dieser Punkte nur ungefähr 0,33 bis 0,36 beträgt. Das
+ist als Suchraum-Sättigung beziehungsweise Störgeräusch-Artefakt zu behandeln,
+nicht als belastbarer Buckelwal-Grundton. Weil der Befund erst aus der externen
+Auswertung stammt, wird die aktuelle Distanzfunktion nicht nachträglich
+verändert. Der Stellwagen-Vorteil bleibt ein technischer Feature-Befund unter
+Störbedingungen, kein sauberer F0- oder Walähnlichkeitsnachweis.
+
 ### Korrigierte Sinc-Ergebnisse
 
 | Aufnahme/Satz | Morph | vollständiges Organic | Einordnung |
@@ -259,7 +269,9 @@ interpolierten Derivaten und ist zurückgezogen.
 **Belegt:**
 
 - Morph bleibt für den Alaska-Ruf deutlich näher.
-- Organic ist in allen vier Stellwagen-Segmenten näher.
+- Organic ist in allen vier Stellwagen-Segmenten nach der bestehenden Metrik näher.
+- Der Stellwagen-Pitchtracker sättigt jedoch häufig am oberen Suchrand; die
+  kausale und biologische Interpretation dieses Vorteils ist dadurch schwach.
 - Amerikanisch-Samoa zeigt keinen mittleren Organic-Vorteil.
 - Die externe Wirkung ist aufnahmeabhängig und nicht allgemein stabil.
 
@@ -290,6 +302,8 @@ weil Population, Rufart und Aufnahmebedingung gleichzeitig variieren.
 Eine spätere Studie sollte:
 
 - mehr unabhängige Rohaufnahmen statt mehr Segmente derselben Dateien verwenden;
+- einen vorregistrierten, noise-robusten F0-/Voicing-Evaluator mit expliziter
+  Suchrand-, Oktavfehler- und Konfidenzdiagnostik entwickeln;
 - Rufart, Population, Störbedingung und Bandbreite getrennt kontrollieren;
 - einen neuen Entwicklungsdatensatz für adaptive Aktivierungslogik reservieren;
 - den hier verwendeten externen Satz dauerhaft als Testmenge sperren;

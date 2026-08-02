@@ -225,10 +225,13 @@ sehr niedriger Periodizität gewinnt Organic. In der bandbegrenzten
 Amerikanisch-Samoa-Aufnahme gewinnt Morph im Mittel knapp; Organic verbessert
 nur eines von vier Segmenten, aber den schlechtesten Fall. Die linear
 interpolierte Vorfassung dieses Zusatztests wurde nach externem Review
-verworfen und mit Lanczos-Sinc neu berechnet. Das legt eine aufnahmeabhängige
-Wirkung nahe, belegt aber keine kausale adaptive Schaltung, weil Population,
-Rufart und Aufnahmebedingung gleichzeitig variieren. Der externe Satz bleibt
-für Tuning gesperrt.
+verworfen und mit Lanczos-Sinc neu berechnet. Zugleich sättigt der einfache
+Autokorrelations-Pitchtracker in drei Stellwagen-Segmenten überwiegend am
+kürzesten Lag und meldet 1.333,33 Hz bei nur ungefähr 0,33 bis 0,36
+Periodizität. Dieser Wert ist als Störgeräusch- beziehungsweise Suchrandartefakt
+zu behandeln. Das legt eine aufnahmeabhängige Wirkung nahe, belegt aber keine
+kausale adaptive Schaltung, weil Population, Rufart und Aufnahmebedingung
+gleichzeitig variieren. Der externe Satz bleibt für Tuning gesperrt.
 
 Die vollständige Methodik und alle Hashbindungen stehen in
 `docs/experiments/buckelwal-organic-v51-ablation.md`.
