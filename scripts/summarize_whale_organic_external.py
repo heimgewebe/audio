@@ -13,6 +13,7 @@ from typing import Any
 
 FIELDS = (
     "source_id",
+    "source_recording_id",
     "population",
     "recording_conditions",
     "call_type",
@@ -31,7 +32,9 @@ FIELDS = (
     "secondary_ratio_distance",
     "secondary_strength_distance",
     "peak",
-    "cpu_seconds_per_audio_second",
+    "source_sample_rate_hz",
+    "source_nyquist_hz",
+    "analysis_lowpass_hz",
     "raw_sha256",
     "processed_sha256",
 )
@@ -47,7 +50,7 @@ def build_csv(report_payload: bytes) -> bytes:
     report = json.loads(report_payload.decode("utf-8"))
     if (
         not isinstance(report, dict)
-        or report.get("schema_version") != 1
+        or report.get("schema_version") != 2
         or report.get("kind")
         != "humpback_whale_organic_external_generalization_study"
         or not isinstance(report.get("clips"), list)
@@ -61,9 +64,13 @@ def build_csv(report_payload: bytes) -> bytes:
             raise RuntimeError("invalid external study clip")
         common = {
             "source_id": clip.get("source_id"),
+            "source_recording_id": clip.get("source_recording_id"),
             "population": clip.get("population"),
             "recording_conditions": clip.get("recording_conditions"),
             "call_type": clip.get("call_type"),
+            "source_sample_rate_hz": clip.get("source_sample_rate_hz"),
+            "source_nyquist_hz": clip.get("source_nyquist_hz"),
+            "analysis_lowpass_hz": clip.get("analysis_lowpass_hz"),
             "raw_sha256": clip.get("raw_sha256"),
             "processed_sha256": clip.get("processed_sha256"),
         }

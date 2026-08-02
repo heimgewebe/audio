@@ -1,6 +1,5 @@
 {
   "candidate_selection": {
-    "maximum_cpu_seconds_per_audio_second": 0.65,
     "maximum_variance_multiple_vs_morph": 1.5,
     "maximum_worst_family_loss": 0.008,
     "minimum_a0_a1_bass_ratio_vs_full_organic": 0.95,
@@ -37,22 +36,32 @@
     "include_morph_baseline": true,
     "qualified_combinations_only": true
   },
+  "methodology_amendment": {
+    "effect": "removes wall-clock timing from candidate selection and canonical study artifacts",
+    "performance_evidence": "separate repository runtime tests and non-canonical benchmarks",
+    "reason": "external review identified non-reproducible wall-clock values in the locked report",
+    "unchanged": [
+      "component thresholds",
+      "bass threshold",
+      "family weighting",
+      "distance model",
+      "external blindness"
+    ]
+  },
   "periodicity_complement_double_weighted": false,
   "product_contracts": {
     "chunk_invariance": "exact",
-    "maximum_cpu_seconds_per_audio_second": 0.65,
     "maximum_peak": 0.25,
     "pitch_keys": 88,
     "silence": "exact-zero"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "selection_order": [
     "product-contracts",
     "a0-a1-bass-retention",
     "mean-similarity",
     "worst-family-fold",
     "family-variance",
-    "cpu-cost",
     "component-count"
   ],
   "tuning_data": "equal-weight-leave-one-source-family-out-only"

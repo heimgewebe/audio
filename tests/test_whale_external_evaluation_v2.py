@@ -1,13 +1,16 @@
 import hashlib
 import json
 import pathlib
+import struct
 import sys
 import unittest
+import wave
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import build_whale_external_evaluation_v2 as builder  # noqa: E402
+import study_whale_organic_ablation as study  # noqa: E402
 import summarize_whale_organic_external as summary  # noqa: E402
 import whale_source_filter_engine as source_filter  # noqa: E402
 
@@ -29,6 +32,7 @@ class WhaleExternalEvaluationV2Tests(unittest.TestCase):
         self.assertEqual(len(self.manifest["clips"]), 8)
         self.assertEqual(len(self.manifest["source_bindings"]), 2)
         self.assertEqual(len(set(self.manifest["source_ids"])), 8)
+        self.assertIn("methodology_amendment", self.manifest)
 
     def test_segment_intervals_are_fixed_non_overlapping_and_in_bounds(self):
         clips_by_raw: dict[str, list[dict[str, object]]] = {}
@@ -36,6 +40,9 @@ class WhaleExternalEvaluationV2Tests(unittest.TestCase):
             clips_by_raw.setdefault(str(clip["raw_file"]), []).append(clip)
             self.assertEqual(clip["duration_seconds"], 2.0)
             self.assertEqual(clip["sample_rate_hz"], 48_000)
+            self.assertIn(clip["source_sample_rate_hz"], {5_000, 44_100})
+            self.assertEqual(clip["analysis_lowpass_hz"], 1_650)
+            self.assertLess(clip["analysis_lowpass_hz"], clip["source_nyquist_hz"])
             self.assertEqual(
                 clip["call_type"], "unclassified fixed-interval field segment"
             )
@@ -47,6 +54,16 @@ class WhaleExternalEvaluationV2Tests(unittest.TestCase):
                 self.assertEqual(end - start, 2_000)
                 self.assertLessEqual(end, following[0])
             self.assertEqual(intervals[-1][1] - intervals[-1][0], 2_000)
+
+    def test_lanczos_derivatives_fade_to_exact_zero(self):
+        for clip in self.manifest["clips"]:
+            path = self.root / str(clip["processed_file"])
+            with wave.open(str(path), "rb") as handle:
+                raw = handle.readframes(handle.getnframes())
+            samples = struct.unpack(f"<{len(raw) // 2}h", raw)
+            self.assertEqual(samples[0], 0)
+            self.assertEqual(samples[-1], 0)
+            self.assertIn("Lanczos-windowed sinc", " ".join(clip["processing"]))
 
     def test_raw_and_processed_bytes_are_hash_bound(self):
         for clip in self.manifest["clips"]:
@@ -80,7 +97,43 @@ class WhaleExternalEvaluationV2Tests(unittest.TestCase):
         self.assertEqual(
             csv_path.read_bytes(), summary.build_csv(report_path.read_bytes())
         )
-        self.assertEqual(len(csv_path.read_text(encoding="utf-8").splitlines()), 28)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        expected_lines = 1 + sum(len(clip["results"]) for clip in report["clips"])
+        self.assertEqual(
+            len(csv_path.read_text(encoding="utf-8").splitlines()), expected_lines
+        )
+
+    def test_frozen_morph_candidate_is_an_alias_not_a_duplicate_render(self):
+        report_path = (
+            ROOT
+            / "assets"
+            / "whale-sources"
+            / "studies"
+            / "organic-ablation-v51"
+            / "external-report-all.json"
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(
+            report["candidate"]["evaluation_alias"],
+            {"alias": "frozen-candidate", "target": "morph"},
+        )
+        for clip in report["clips"]:
+            self.assertEqual(
+                [result["variant_id"] for result in clip["results"]],
+                ["morph", "organic-full"],
+            )
+            self.assertEqual(len(clip["results"]), 2)
+
+    def test_repository_relative_candidate_paths_are_supported(self):
+        relative = pathlib.Path(
+            "assets/whale-sources/studies/organic-ablation-v51/frozen-candidate.json"
+        )
+        safe, repository_relative = study.repository_regular_path(
+            relative, "test candidate"
+        )
+        self.assertTrue(safe.is_absolute())
+        self.assertEqual(repository_relative, relative)
 
     def test_external_sources_never_enter_model_or_runtime(self):
         model_source_ids = set(source_filter.WhaleSourceFilterBank().source_ids)

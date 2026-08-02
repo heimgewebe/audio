@@ -9,16 +9,17 @@ read-only phase and can never alter the frozen candidate configuration.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import hashlib
 import io
 import json
 import math
+import os
 import pathlib
 import statistics
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -95,6 +96,18 @@ def sha256_path(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def repository_regular_path(
+    path: pathlib.Path, label: str
+) -> tuple[pathlib.Path, pathlib.Path]:
+    candidate = path if path.is_absolute() else ROOT / path
+    safe = regular_file_path(candidate, label)
+    try:
+        relative = safe.relative_to(ROOT)
+    except ValueError as error:
+        raise RuntimeError(f"{label} must remain inside the repository") from error
+    return safe, relative
+
+
 def source_bindings() -> dict[str, str]:
     return {str(path.relative_to(ROOT)): sha256_path(path) for path in ENGINE_SOURCE_PATHS}
 
@@ -107,7 +120,7 @@ def load_definition() -> dict[str, Any]:
     value = json.loads(payload.decode("utf-8"))
     if (
         not isinstance(value, dict)
-        or value.get("schema_version") != 1
+        or value.get("schema_version") != 2
         or value.get("kind") != "humpback_whale_organic_ablation_definition"
         or tuple(value.get("components", ())) != COMPONENTS
         or value.get("external_data_used_for_selection") is not False
@@ -156,12 +169,11 @@ def render_phrase(
     variant: Variant,
     *,
     bank: WhaleSourceFilterBank | None,
-) -> tuple[list[float], float]:
+) -> list[float]:
     voice = new_voice(variant, bank=bank)
     output: list[float] = []
     cursor = 0
     total = round(DURATION_SECONDS * SAMPLE_RATE)
-    started = time.perf_counter()
     for timestamp, event in organic_phrase_events():
         target = min(round(timestamp * SAMPLE_RATE), total)
         if target > cursor:
@@ -172,8 +184,7 @@ def render_phrase(
         voice.dispatch(event)
     if cursor < total:
         output.extend(voice.render(total - cursor))
-    elapsed = time.perf_counter() - started
-    return output, elapsed / DURATION_SECONDS
+    return output
 
 
 def low_band_mean_square(samples: list[float], cutoff_hz: float = 120.0) -> float:
@@ -282,26 +293,20 @@ def feature_metrics(feature_distances: dict[str, float]) -> dict[str, float]:
     }
 
 
-def evaluate_fold(
-    variant: Variant,
-    source_id: str,
-    base_bank: WhaleSourceFilterBank,
-) -> dict[str, object]:
+def evaluate_fold(variant: Variant, source_id: str) -> dict[str, object]:
+    base_bank = WhaleSourceFilterBank()
     bank = (
         None
         if variant.variant_id == "morph"
         else WhaleSourceFilterBank(excluded_source_ids=frozenset({source_id}))
     )
     target = evaluator.family_trajectory(base_bank, source_id)
-    samples, cpu_ratio = render_phrase(variant, bank=bank)
+    samples = render_phrase(variant, bank=bank)
     synthetic = evaluator.synthetic_trajectory(samples)
     distance, distances = evaluator.temporal_distance(synthetic, target)
     product = {
         "peak": max(abs(value) for value in samples),
-        "cpu_seconds_per_audio_second": cpu_ratio,
         "bass_energy": bass_energy(variant, bank=bank),
-        "pitch_binding": pitch_binding(variant, bank=bank),
-        "silence": silence_contract(variant, bank=bank),
         "chunk_invariance": chunk_contract(variant, bank=bank),
     }
     return {
@@ -316,17 +321,30 @@ def evaluate_fold(
     }
 
 
+def _evaluate_fold_job(job: tuple[Variant, str]) -> dict[str, object]:
+    return evaluate_fold(*job)
+
+
+def evaluate_variant_folds(
+    variant: Variant, source_ids: tuple[str, ...], workers: int
+) -> list[dict[str, object]]:
+    jobs = [(variant, source_id) for source_id in source_ids]
+    if workers <= 1:
+        return [_evaluate_fold_job(job) for job in jobs]
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+        return list(executor.map(_evaluate_fold_job, jobs))
+
+
 def aggregate_variant(
     variant: Variant,
     folds: list[dict[str, object]],
 ) -> dict[str, object]:
     similarities = [float(fold["similarity_score_0_to_1"]) for fold in folds]
     distances = [float(fold["temporal_total_distance"]) for fold in folds]
-    cpu_values = [
-        float(dict(fold["product"])["cpu_seconds_per_audio_second"])
-        for fold in folds
-    ]
     peaks = [float(dict(fold["product"])["peak"]) for fold in folds]
+    pitch = pitch_binding(variant, bank=None)
+    silence = silence_contract(variant, bank=None)
+    chunk_results = [dict(dict(fold["product"])["chunk_invariance"]) for fold in folds]
     bass: dict[str, dict[str, float]] = {}
     for note in NOTE_CASES:
         key = f"midi_{note}_below_120hz_mean_square"
@@ -338,16 +356,29 @@ def aggregate_variant(
             "minimum": min(values),
             "maximum": max(values),
         }
+    contracts = {
+        "maximum_peak": max(peaks),
+        "pitch_binding": pitch,
+        "silence": silence,
+        "chunk_invariance": {
+            "folds_checked": len(chunk_results),
+            "exact": all(bool(item["exact"]) for item in chunk_results),
+            "maximum_absolute_delta": max(
+                float(item["maximum_absolute_delta"]) for item in chunk_results
+            ),
+        },
+    }
     product_pass = (
-        max(peaks) <= 0.25 + 1.0e-12
-        and max(cpu_values) <= 0.65
-        and all(dict(dict(fold["product"])["pitch_binding"])["pass"] for fold in folds)
-        and all(dict(dict(fold["product"])["silence"])["exact_zero"] for fold in folds)
-        and all(dict(dict(fold["product"])["chunk_invariance"])["exact"] for fold in folds)
+        float(contracts["maximum_peak"]) <= 0.25 + 1.0e-12
+        and bool(dict(contracts["pitch_binding"])["pass"])
+        and bool(dict(contracts["silence"])["exact_zero"])
+        and bool(dict(contracts["chunk_invariance"])["exact"])
     )
+    contracts["pass"] = product_pass
     return {
         **variant.as_dict(),
         "folds": folds,
+        "product_contracts": contracts,
         "summary": {
             "mean_similarity": statistics.fmean(similarities),
             "median_similarity": statistics.median(similarities),
@@ -357,8 +388,6 @@ def aggregate_variant(
             "similarity_stddev": statistics.pstdev(similarities),
             "mean_temporal_total_distance": statistics.fmean(distances),
             "maximum_peak": max(peaks),
-            "mean_cpu_seconds_per_audio_second": statistics.fmean(cpu_values),
-            "maximum_cpu_seconds_per_audio_second": max(cpu_values),
             "bass_energy": bass,
             "product_contracts_pass": product_pass,
         },
@@ -491,26 +520,26 @@ def pareto_front(records: list[dict[str, object]]) -> list[str]:
     front: list[str] = []
     for candidate in candidates:
         summary = dict(candidate["summary"])
+        complexity = len(candidate["enabled_components"])
         dominated = False
         for other in candidates:
             if other is candidate:
                 continue
             other_summary = dict(other["summary"])
+            other_complexity = len(other["enabled_components"])
             no_worse = (
                 float(other_summary["mean_similarity"])
                 >= float(summary["mean_similarity"])
                 and float(other_summary["worst_fold_similarity"])
                 >= float(summary["worst_fold_similarity"])
-                and float(other_summary["mean_cpu_seconds_per_audio_second"])
-                <= float(summary["mean_cpu_seconds_per_audio_second"])
+                and other_complexity <= complexity
             )
             strictly_better = (
                 float(other_summary["mean_similarity"])
                 > float(summary["mean_similarity"])
                 or float(other_summary["worst_fold_similarity"])
                 > float(summary["worst_fold_similarity"])
-                or float(other_summary["mean_cpu_seconds_per_audio_second"])
-                < float(summary["mean_cpu_seconds_per_audio_second"])
+                or other_complexity < complexity
             )
             if no_worse and strictly_better:
                 dominated = True
@@ -570,10 +599,6 @@ def choose_candidate(
                 morph_summary["similarity_variance"]
             ) * float(criteria["maximum_variance_multiple_vs_morph"]):
                 reasons.append("unstable_across_families")
-            if float(summary["maximum_cpu_seconds_per_audio_second"]) > float(
-                criteria["maximum_cpu_seconds_per_audio_second"]
-            ):
-                reasons.append("cpu_cost")
             passes = not reasons
         decision = {
             "variant_id": record["id"],
@@ -592,7 +617,6 @@ def choose_candidate(
             float(dict(record["summary"])["mean_similarity"]),
             float(dict(record["summary"])["worst_fold_similarity"]),
             -float(dict(record["summary"])["similarity_variance"]),
-            -float(dict(record["summary"])["mean_cpu_seconds_per_audio_second"]),
             -len(record["enabled_components"]),
             str(record["id"]),
         ),
@@ -641,8 +665,6 @@ def csv_summary(records: list[dict[str, object]]) -> str:
         "improved_families_vs_morph",
         "worsened_families_vs_morph",
         "maximum_peak",
-        "mean_cpu_seconds_per_audio_second",
-        "maximum_cpu_seconds_per_audio_second",
         "product_contracts_pass",
     ]
     writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
@@ -662,8 +684,6 @@ def csv_summary(records: list[dict[str, object]]) -> str:
                 "improved_families_vs_morph": comparison["improved_family_count"],
                 "worsened_families_vs_morph": comparison["worsened_family_count"],
                 "maximum_peak": f"{float(summary['maximum_peak']):.9f}",
-                "mean_cpu_seconds_per_audio_second": f"{float(summary['mean_cpu_seconds_per_audio_second']):.6f}",
-                "maximum_cpu_seconds_per_audio_second": f"{float(summary['maximum_cpu_seconds_per_audio_second']):.6f}",
                 "product_contracts_pass": str(summary["product_contracts_pass"]).lower(),
             }
         )
@@ -673,28 +693,24 @@ def csv_summary(records: list[dict[str, object]]) -> str:
 def run_internal(args: argparse.Namespace) -> dict[str, object]:
     definition = load_definition()
     base_bank = WhaleSourceFilterBank()
+    source_ids = tuple(base_bank.source_ids)
+    workers = max(1, min(int(args.workers), len(source_ids)))
     records: list[dict[str, object]] = []
     for variant in base_variants():
         print(f"internal variant: {variant.variant_id}", file=sys.stderr, flush=True)
-        folds = [
-            evaluate_fold(variant, source_id, base_bank)
-            for source_id in base_bank.source_ids
-        ]
+        folds = evaluate_variant_folds(variant, source_ids, workers)
         records.append(aggregate_variant(variant, folds))
     annotate_against(records, "morph")
     evidence = component_evidence(records, definition)
     combinations = combination_variants(evidence)
     for variant in combinations:
         print(f"internal variant: {variant.variant_id}", file=sys.stderr, flush=True)
-        folds = [
-            evaluate_fold(variant, source_id, base_bank)
-            for source_id in base_bank.source_ids
-        ]
+        folds = evaluate_variant_folds(variant, source_ids, workers)
         records.append(aggregate_variant(variant, folds))
     annotate_against(records, "morph")
     selected, selection_decisions = choose_candidate(records, definition)
     report: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "humpback_whale_organic_ablation_internal_study",
         "source_revision": args.source_revision,
         "definition": {
@@ -704,9 +720,19 @@ def run_internal(args: argparse.Namespace) -> dict[str, object]:
         "source_bindings": source_bindings(),
         "voice_model_manifest_sha256": base_bank.manifest_sha256,
         "method": "equal-weight-leave-one-source-family-out-component-ablation",
+        "distance_model": {
+            "aggregation": "mean-of-normalized-capped-feature-distances",
+            "feature_scales": evaluator.FEATURE_SCALES,
+            "per_control_point_cap": 8.0,
+            "control_points": evaluator.CONTROL_POINTS,
+        },
         "external_data_used_for_selection": False,
         "periodicity_complement_double_weighted": False,
-        "source_ids": list(base_bank.source_ids),
+        "wall_clock_timings_included": False,
+        "performance_evidence": (
+            "separate repository runtime contracts; not part of the locked candidate"
+        ),
+        "source_ids": list(source_ids),
         "component_evidence": evidence,
         "variants": records,
         "pareto_front_variant_ids": pareto_front(records),
@@ -719,6 +745,7 @@ def run_internal(args: argparse.Namespace) -> dict[str, object]:
             "biological_identity",
             "perceptual_equivalence",
             "subjective_naturalness",
+            "cross-host-performance-equivalence",
         ],
     }
     report_payload = canonical_json(report)
@@ -727,7 +754,7 @@ def run_internal(args: argparse.Namespace) -> dict[str, object]:
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     args.csv.write_text(csv_summary(records), encoding="utf-8")
     candidate = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "humpback_whale_organic_frozen_candidate",
         "candidate_id": selected["id"],
         "enabled_components": selected["enabled_components"],
@@ -738,6 +765,7 @@ def run_internal(args: argparse.Namespace) -> dict[str, object]:
         "voice_model_manifest_sha256": base_bank.manifest_sha256,
         "external_data_used_for_selection": False,
         "parameters_frozen_before_external_evaluation": True,
+        "wall_clock_timings_included": False,
     }
     args.candidate.parent.mkdir(parents=True, exist_ok=True)
     args.candidate.write_bytes(canonical_json(candidate))
@@ -752,7 +780,7 @@ def load_frozen_candidate(path: pathlib.Path) -> tuple[dict[str, Any], Variant]:
     value = json.loads(payload.decode("utf-8"))
     if (
         not isinstance(value, dict)
-        or value.get("schema_version") != 1
+        or value.get("schema_version") != 2
         or value.get("kind") != "humpback_whale_organic_frozen_candidate"
         or value.get("external_data_used_for_selection") is not False
         or value.get("parameters_frozen_before_external_evaluation") is not True
@@ -794,6 +822,7 @@ def external_clip_target(
         "raw_sha256",
         "processed_file",
         "processed_sha256",
+        "source_recording_id",
     )
     if not all(isinstance(record.get(key), str) and record[key] for key in required):
         raise RuntimeError("external evaluation record binding is incomplete")
@@ -822,6 +851,10 @@ def external_clip_target(
         "population": record.get("population"),
         "call_type": record.get("call_type"),
         "recording_conditions": record.get("recording_conditions"),
+        "source_recording_id": record["source_recording_id"],
+        "source_sample_rate_hz": record.get("source_sample_rate_hz"),
+        "source_nyquist_hz": record.get("source_nyquist_hz"),
+        "analysis_lowpass_hz": record.get("analysis_lowpass_hz"),
     }
 
 
@@ -830,7 +863,7 @@ def evaluate_external_variant(
     target: list[dict[str, object]],
 ) -> dict[str, object]:
     bank = None if variant.variant_id == "morph" else WhaleSourceFilterBank()
-    samples, cpu_ratio = render_phrase(variant, bank=bank)
+    samples = render_phrase(variant, bank=bank)
     synthetic = evaluator.synthetic_trajectory(samples)
     distance, distances = evaluator.temporal_distance(synthetic, target)
     return {
@@ -840,7 +873,6 @@ def evaluate_external_variant(
         "similarity_score_0_to_1": math.exp(-distance),
         **feature_metrics(distances),
         "peak": max(abs(value) for value in samples),
-        "cpu_seconds_per_audio_second": cpu_ratio,
     }
 
 
@@ -860,10 +892,39 @@ def external_summary(clips: list[dict[str, object]], variant_id: str) -> dict[st
     }
 
 
+def recording_summaries(
+    clips: list[dict[str, object]], variant_ids: list[str]
+) -> list[dict[str, object]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for clip in clips:
+        grouped.setdefault(str(clip["source_recording_id"]), []).append(clip)
+    result: list[dict[str, object]] = []
+    for recording_id, members in sorted(grouped.items()):
+        result.append(
+            {
+                "source_recording_id": recording_id,
+                "population": members[0].get("population"),
+                "recording_conditions": members[0].get("recording_conditions"),
+                "segment_count": len(members),
+                "variant_summaries": [
+                    external_summary(members, variant_id)
+                    for variant_id in variant_ids
+                ],
+            }
+        )
+    return result
+
+
 def run_external(args: argparse.Namespace) -> dict[str, object]:
-    candidate_value, candidate = load_frozen_candidate(args.candidate)
-    manifests = [evaluator.EXTERNAL_EVALUATION_MANIFEST]
-    manifests.extend(args.additional_manifest)
+    candidate_path, candidate_relative = repository_regular_path(
+        args.candidate, "frozen Organic candidate"
+    )
+    candidate_value, candidate = load_frozen_candidate(candidate_path)
+    manifest_paths = [evaluator.EXTERNAL_EVALUATION_MANIFEST]
+    manifest_paths.extend(
+        repository_regular_path(path, "external whale evaluation manifest")[0]
+        for path in args.additional_manifest
+    )
     bank = WhaleSourceFilterBank()
     candidate_evaluation = Variant(
         "frozen-candidate", candidate.enabled_components, "frozen-candidate"
@@ -871,15 +932,29 @@ def run_external(args: argparse.Namespace) -> dict[str, object]:
     variants = [
         Variant("morph", frozenset(), "baseline"),
         Variant("organic-full", frozenset(COMPONENTS), "baseline"),
-        candidate_evaluation,
     ]
+    alias_target = next(
+        (
+            variant.variant_id
+            for variant in variants
+            if variant.enabled_components == candidate_evaluation.enabled_components
+        ),
+        None,
+    )
+    if alias_target is None:
+        variants.append(candidate_evaluation)
+        alias_target = candidate_evaluation.variant_id
     unique: dict[str, Variant] = {variant.variant_id: variant for variant in variants}
     clips: list[dict[str, object]] = []
     manifest_bindings: list[dict[str, str]] = []
     seen_sources: set[str] = set()
-    for manifest_path in manifests:
+    for manifest_path in manifest_paths:
         manifest_sha, manifest = load_external_manifest(manifest_path)
-        if manifest_path == evaluator.EXTERNAL_EVALUATION_MANIFEST and manifest_sha != evaluator.EXPECTED_EXTERNAL_EVALUATION_MANIFEST_SHA256:
+        if (
+            manifest_path == evaluator.EXTERNAL_EVALUATION_MANIFEST
+            and manifest_sha
+            != evaluator.EXPECTED_EXTERNAL_EVALUATION_MANIFEST_SHA256
+        ):
             raise RuntimeError("locked NOAA-PMEL evaluation manifest changed")
         manifest_bindings.append(
             {
@@ -903,30 +978,48 @@ def run_external(args: argparse.Namespace) -> dict[str, object]:
                 for variant in unique.values()
             ]
             clips.append({**metadata, "results": results})
-    summaries = [external_summary(clips, variant_id) for variant_id in unique]
+    variant_ids = list(unique)
+    summaries = [external_summary(clips, variant_id) for variant_id in variant_ids]
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "humpback_whale_organic_external_generalization_study",
         "candidate": {
-            "path": str(args.candidate.relative_to(ROOT)),
-            "sha256": sha256_path(args.candidate),
+            "path": str(candidate_relative),
+            "sha256": sha256_path(candidate_path),
             "candidate_id": candidate.variant_id,
-            "evaluation_variant_id": candidate_evaluation.variant_id,
+            "evaluation_variant_id": alias_target,
+            "evaluation_alias": {
+                "alias": candidate_evaluation.variant_id,
+                "target": alias_target,
+            },
             "enabled_components": sorted(candidate.enabled_components),
             "source_revision": candidate_value["source_revision"],
             "internal_report_sha256": candidate_value["internal_report_sha256"],
         },
+        "distance_model": {
+            "aggregation": "mean-of-normalized-capped-feature-distances",
+            "feature_scales": evaluator.FEATURE_SCALES,
+            "per_control_point_cap": 8.0,
+            "control_points": evaluator.CONTROL_POINTS,
+            "periodicity_complement_double_weighted": False,
+        },
         "model_or_parameter_tuning_forbidden": True,
         "parameters_changed_after_external_results": False,
+        "wall_clock_timings_included": False,
         "voice_model_manifest_sha256": bank.manifest_sha256,
         "evaluation_manifests": manifest_bindings,
-        "clip_count": len(clips),
+        "independent_field_recording_count": len(
+            {str(clip["source_recording_id"]) for clip in clips}
+        ),
+        "segment_count": len(clips),
         "clips": clips,
         "summaries": summaries,
+        "recording_summaries": recording_summaries(clips, variant_ids),
         "does_not_establish": [
             "biological_identity",
             "perceptual_equivalence",
             "complete_population_generalization",
+            "independence_of_segments_from_the_same_recording",
         ],
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -952,6 +1045,12 @@ def main() -> int:
     internal.add_argument("--csv", type=pathlib.Path, required=True)
     internal.add_argument("--candidate", type=pathlib.Path, required=True)
     internal.add_argument("--source-revision", default=current_revision())
+    internal.add_argument(
+        "--workers",
+        type=int,
+        default=min(4, os.cpu_count() or 1),
+        help="bounded process count for independent family folds",
+    )
     external = subparsers.add_parser("external")
     external.add_argument("--candidate", type=pathlib.Path, required=True)
     external.add_argument("--output", type=pathlib.Path, required=True)

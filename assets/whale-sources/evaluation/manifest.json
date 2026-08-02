@@ -1,12 +1,14 @@
 {
   "clips": [
     {
+      "call_type": "unclassified humpback whale call",
       "channels": 1,
       "description": "Alaska humpback whale call recorded in winter 1999; source publication was accelerated 10x. Evaluation derivative restores nominal speed by 10x and selects source-time 25.5-27.5 seconds.",
       "download_page": "https://commons.wikimedia.org/wiki/File:Akhumphi1x.ogg",
       "duration_seconds": 20.0,
       "id": "akhumphi1x-independent-01",
       "license": "Public-Domain-US-NOAA",
+      "population": "North Pacific / Alaska",
       "processed_file": "processed/akhumphi1x-independent-01.wav",
       "processed_sha256": "1a38ba45c88e3cabbf72ffc50026bdfb4fe9882018cebd5e7f3a658497484822",
       "processing": [
@@ -21,9 +23,11 @@
       ],
       "raw_file": "raw/akhumphi1x.ogg",
       "raw_sha256": "54a91b3c3e488941697acdf01face985ad149ca91e5d85af0f3ec8b1ad00ab42",
+      "recording_conditions": "winter 1999 field recording; published source accelerated 10x; derivative restores nominal speed",
       "sample_rate_hz": 48000,
       "source_id": "noaa-pmel-alaska-winter-1999-independent",
-      "source_page": "https://www.pmel.noaa.gov/acoustics/whales/sounds/sounds_akhump.html"
+      "source_page": "https://www.pmel.noaa.gov/acoustics/whales/sounds/sounds_akhump.html",
+      "source_recording_id": "alaska-winter-1999"
     }
   ],
   "kind": "humpback_whale_independent_evaluation_set",

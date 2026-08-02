@@ -22,8 +22,14 @@ Source and rights page:
 
 `scripts/build_whale_external_evaluation_v2.py` deterministically selects four
 fixed, non-overlapping two-second intervals from each recording, resamples them
-to mono PCM16 at 48 kHz with integer linear interpolation, and applies only
-20 ms boundary fades. It performs no normalization, denoising, filtering,
-listening-based selection, or engine-result-based selection.
+to mono PCM16 at 48 kHz with a 32-tap Lanczos-windowed sinc interpolator and
+applies 20 ms boundary fades that reach exact zero. It performs no
+normalization, denoising, content filtering, listening-based selection, or
+engine-result-based selection.
+
+The pre-merge linear-interpolation derivatives and their scores were invalidated
+after external review identified spectral imaging, especially for the 5 kHz
+American-Samoa source. Raw bytes, segment boundaries, the frozen candidate,
+engine parameters, and the distance model were not changed.
 
 All interval definitions and derivative hashes are recorded in `manifest.json`.

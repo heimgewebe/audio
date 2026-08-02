@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import pathlib
 import struct
 import wave
@@ -21,7 +22,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = ROOT / "assets" / "whale-sources" / "evaluation-v2"
 TARGET_RATE = 48_000
 FADE_FRAMES = 960
-LOCKED_AT = "2026-08-02T09:20:00+02:00"
+LANCZOS_RADIUS = 16
+ANALYSIS_LOWPASS_HZ = 1_650
+LOCKED_AT = "2026-08-02T11:40:00+02:00"
 RIGHTS_STATEMENT = (
     "NOAA PMEL states that, unless otherwise noted, information on its "
     "Acoustics Program pages is public information that may be distributed "
@@ -109,26 +112,46 @@ def rounded_division(numerator: int, denominator: int) -> int:
     return -((-numerator + denominator // 2) // denominator)
 
 
-def resample_linear_pcm16(
+def normalized_sinc(value: float) -> float:
+    if abs(value) < 1.0e-15:
+        return 1.0
+    angle = math.pi * value
+    return math.sin(angle) / angle
+
+
+def resample_lanczos_pcm16(
     samples: list[int],
     *,
     source_rate: int,
     output_frames: int,
+    radius: int = LANCZOS_RADIUS,
 ) -> list[int]:
-    if len(samples) < 2 or source_rate <= 0 or output_frames <= 0:
+    """Band-limited deterministic interpolation with a Lanczos window.
+
+    Both bound sources are upsampled. Sinc reconstruction suppresses spectral
+    images that linear interpolation would introduce; the committed output
+    hashes make any platform-specific floating-point drift fail closed.
+    """
+
+    if len(samples) < 2 or source_rate <= 0 or output_frames <= 0 or radius < 4:
         raise ValueError("invalid resampling input")
     output: list[int] = []
-    for index in range(output_frames):
-        position = index * source_rate
-        left_index, remainder = divmod(position, TARGET_RATE)
-        if left_index >= len(samples):
-            raise RuntimeError("resampling reads past the bound source segment")
-        right_index = min(left_index + 1, len(samples) - 1)
-        numerator = (
-            samples[left_index] * (TARGET_RATE - remainder)
-            + samples[right_index] * remainder
-        )
-        value = rounded_division(numerator, TARGET_RATE)
+    for output_index in range(output_frames):
+        position = output_index * source_rate / TARGET_RATE
+        center = math.floor(position)
+        weighted = 0.0
+        weight_total = 0.0
+        for source_index in range(center - radius + 1, center + radius + 1):
+            delta = position - source_index
+            if abs(delta) >= radius:
+                continue
+            weight = normalized_sinc(delta) * normalized_sinc(delta / radius)
+            bounded_index = min(max(source_index, 0), len(samples) - 1)
+            weighted += samples[bounded_index] * weight
+            weight_total += weight
+        if abs(weight_total) < 1.0e-15:
+            raise RuntimeError("Lanczos resampling produced a zero weight sum")
+        value = round(weighted / weight_total)
         output.append(max(-32768, min(32767, value)))
     return output
 
@@ -136,11 +159,13 @@ def resample_linear_pcm16(
 def apply_fades(samples: list[int]) -> list[int]:
     result = list(samples)
     fade = min(FADE_FRAMES, len(result) // 2)
+    if fade <= 1:
+        return [0 for _value in result]
+    denominator = fade - 1
     for index in range(fade):
-        gain = index + 1
-        result[index] = rounded_division(result[index] * gain, fade)
+        result[index] = rounded_division(result[index] * index, denominator)
         mirrored = len(result) - 1 - index
-        result[mirrored] = rounded_division(result[mirrored] * gain, fade)
+        result[mirrored] = rounded_division(result[mirrored] * index, denominator)
     return result
 
 
@@ -202,7 +227,7 @@ def build_payloads(raw_root: pathlib.Path) -> tuple[bytes, dict[str, bytes]]:
             end_frame = end_ms * sample_rate // 1000
             segment = samples[start_frame:end_frame]
             converted = apply_fades(
-                resample_linear_pcm16(
+                resample_lanczos_pcm16(
                     segment,
                     source_rate=sample_rate,
                     output_frames=output_frames,
@@ -227,13 +252,17 @@ def build_payloads(raw_root: pathlib.Path) -> tuple[bytes, dict[str, bytes]]:
                     "processed_sha256": sha256_bytes(processed_payload),
                     "processing": [
                         f"select fixed raw interval {start_ms / 1000:.3f}-{end_ms / 1000:.3f} seconds",
-                        "deterministic integer linear resampling to mono PCM16 48 kHz",
-                        "deterministic 20 ms boundary fades",
-                        "no normalization, denoising, filtering, listening, or engine-based selection",
+                        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+                        "deterministic 20 ms boundary fades reaching exact zero",
+                        "no normalization, denoising, content filtering, listening, or engine-based selection",
                     ],
                     "raw_file": f"raw/{source.filename}",
                     "raw_sha256": actual_sha,
                     "recording_conditions": source.recording_conditions,
+                    "source_recording_id": source.key,
+                    "source_sample_rate_hz": sample_rate,
+                    "source_nyquist_hz": sample_rate / 2,
+                    "analysis_lowpass_hz": ANALYSIS_LOWPASS_HZ,
                     "sample_rate_hz": TARGET_RATE,
                     "source_id": source_id,
                     "source_page": source.source_page,
@@ -248,6 +277,17 @@ def build_payloads(raw_root: pathlib.Path) -> tuple[bytes, dict[str, bytes]]:
         "kind": "humpback_whale_independent_evaluation_set",
         "license_basis": RIGHTS_STATEMENT,
         "locked_at": LOCKED_AT,
+        "methodology_amendment": {
+            "reason": "external review identified spectral imaging from linear interpolation",
+            "effect": "replaces the pre-merge linear-resampled derivatives and invalidates their scores",
+            "unchanged": [
+                "raw source bytes",
+                "segment boundaries",
+                "frozen candidate",
+                "engine parameters",
+                "distance model",
+            ],
+        },
         "model_or_parameter_tuning_forbidden": True,
         "schema_version": 1,
         "segment_count": len(clips),

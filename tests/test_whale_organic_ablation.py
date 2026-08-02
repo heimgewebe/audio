@@ -151,6 +151,7 @@ class OrganicAblationSwitchTests(unittest.TestCase):
 class OrganicAblationStudyContractTests(unittest.TestCase):
     def test_definition_is_external_blind_and_periodicity_is_not_doubled(self):
         definition = study.load_definition()
+        self.assertEqual(definition["schema_version"], 2)
         self.assertFalse(definition["external_data_used_for_selection"])
         self.assertFalse(definition["periodicity_complement_double_weighted"])
         self.assertEqual(tuple(definition["components"]), study.COMPONENTS)
@@ -177,8 +178,6 @@ class OrganicAblationStudyContractTests(unittest.TestCase):
                     "mean_similarity": similarity,
                     "worst_fold_similarity": similarity,
                     "similarity_variance": 0.0001,
-                    "mean_cpu_seconds_per_audio_second": 0.1,
-                    "maximum_cpu_seconds_per_audio_second": 0.1,
                     "product_contracts_pass": True,
                     "bass_energy": {
                         "midi_21_below_120hz_mean_square": {"mean": bass},
@@ -207,6 +206,26 @@ class OrganicAblationStudyContractTests(unittest.TestCase):
         self.assertEqual(roles.count("baseline"), 2)
         self.assertEqual(roles.count("leave-one-component-out"), 10)
         self.assertEqual(roles.count("isolated-over-morph"), 10)
+
+    def test_distance_model_is_explicitly_scaled_and_capped(self):
+        self.assertEqual(set(evaluator.FEATURE_SCALES), {
+            *evaluator.SCALAR_FEATURES,
+            "secondary_ratio",
+            "harmonic_profile_l1",
+        })
+        synthetic = [{
+            **{key: 0.0 for key in evaluator.SCALAR_FEATURES},
+            "secondary_ratio": 0.0,
+            "harmonic_profile": [0.0] * 8,
+        } for _ in range(evaluator.CONTROL_POINTS)]
+        target = [{
+            **{key: (1.0 if key == "secondary_strength" else 1.0e9)
+               for key in evaluator.SCALAR_FEATURES},
+            "secondary_ratio": 1.0e9,
+            "harmonic_profile": [1.0e9] * 8,
+        } for _ in range(evaluator.CONTROL_POINTS)]
+        _total, distances = evaluator.temporal_distance(synthetic, target)
+        self.assertTrue(all(value <= 8.0 for value in distances.values()))
 
     def test_study_exposes_all_required_distance_metrics(self):
         distances = {

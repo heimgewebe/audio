@@ -1,18 +1,19 @@
 {
   "clips": [
     {
+      "analysis_lowpass_hz": 1650,
       "call_type": "unclassified fixed-interval field segment",
       "description": "Fixed non-overlapping segment 1 from the NOAA PMEL stellwagen field recording; selected without listening or engine-result inspection.",
       "duration_seconds": 2.0,
       "license": "NOAA-PMEL-public-information-free-distribution",
       "population": "North Atlantic / Stellwagen Bank",
       "processed_file": "processed/stellwagen-01.wav",
-      "processed_sha256": "bebc7c0e5226bd3c978cab129eb702ec00f71deed0666677722fc028bdf5973b",
+      "processed_sha256": "9a3d3662c1b01761cb0bffc6de7997d54f1419719ea063f803fd91eb230032e8",
       "processing": [
         "select fixed raw interval 0.250-2.250 seconds",
-        "deterministic integer linear resampling to mono PCM16 48 kHz",
-        "deterministic 20 ms boundary fades",
-        "no normalization, denoising, filtering, listening, or engine-based selection"
+        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+        "deterministic 20 ms boundary fades reaching exact zero",
+        "no normalization, denoising, content filtering, listening, or engine-based selection"
       ],
       "raw_file": "raw/HB-ship-SBNMS.wav",
       "raw_sha256": "24bf234e0d302ca91fd3e31f3b964185244403f74666569b753ca12080b59750",
@@ -23,22 +24,26 @@
         250,
         2250
       ],
+      "source_nyquist_hz": 22050.0,
       "source_page": "https://www.pmel.noaa.gov/acoustics/multimedia.html",
+      "source_recording_id": "stellwagen",
+      "source_sample_rate_hz": 44100,
       "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-SBNMS.wav"
     },
     {
+      "analysis_lowpass_hz": 1650,
       "call_type": "unclassified fixed-interval field segment",
       "description": "Fixed non-overlapping segment 2 from the NOAA PMEL stellwagen field recording; selected without listening or engine-result inspection.",
       "duration_seconds": 2.0,
       "license": "NOAA-PMEL-public-information-free-distribution",
       "population": "North Atlantic / Stellwagen Bank",
       "processed_file": "processed/stellwagen-02.wav",
-      "processed_sha256": "397c93b2aeaff73bd76d98994c1976709f6e7531957fc598e482976107f6cdf9",
+      "processed_sha256": "79400963a41471f5b1d9561aa4aa6dc5f230d9d6f2b6e1f249384cee2636f153",
       "processing": [
         "select fixed raw interval 2.500-4.500 seconds",
-        "deterministic integer linear resampling to mono PCM16 48 kHz",
-        "deterministic 20 ms boundary fades",
-        "no normalization, denoising, filtering, listening, or engine-based selection"
+        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+        "deterministic 20 ms boundary fades reaching exact zero",
+        "no normalization, denoising, content filtering, listening, or engine-based selection"
       ],
       "raw_file": "raw/HB-ship-SBNMS.wav",
       "raw_sha256": "24bf234e0d302ca91fd3e31f3b964185244403f74666569b753ca12080b59750",
@@ -49,22 +54,26 @@
         2500,
         4500
       ],
+      "source_nyquist_hz": 22050.0,
       "source_page": "https://www.pmel.noaa.gov/acoustics/multimedia.html",
+      "source_recording_id": "stellwagen",
+      "source_sample_rate_hz": 44100,
       "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-SBNMS.wav"
     },
     {
+      "analysis_lowpass_hz": 1650,
       "call_type": "unclassified fixed-interval field segment",
       "description": "Fixed non-overlapping segment 3 from the NOAA PMEL stellwagen field recording; selected without listening or engine-result inspection.",
       "duration_seconds": 2.0,
       "license": "NOAA-PMEL-public-information-free-distribution",
       "population": "North Atlantic / Stellwagen Bank",
       "processed_file": "processed/stellwagen-03.wav",
-      "processed_sha256": "a8c2522c71a8447b0d8f0676d2d2e878eeae9560c2d284d8c238379170c06ab2",
+      "processed_sha256": "14f8301aa781113d31b4cbb844acee34af12bee31a7431100eb285cd721e0dce",
       "processing": [
         "select fixed raw interval 4.750-6.750 seconds",
-        "deterministic integer linear resampling to mono PCM16 48 kHz",
-        "deterministic 20 ms boundary fades",
-        "no normalization, denoising, filtering, listening, or engine-based selection"
+        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+        "deterministic 20 ms boundary fades reaching exact zero",
+        "no normalization, denoising, content filtering, listening, or engine-based selection"
       ],
       "raw_file": "raw/HB-ship-SBNMS.wav",
       "raw_sha256": "24bf234e0d302ca91fd3e31f3b964185244403f74666569b753ca12080b59750",
@@ -75,22 +84,26 @@
         4750,
         6750
       ],
+      "source_nyquist_hz": 22050.0,
       "source_page": "https://www.pmel.noaa.gov/acoustics/multimedia.html",
+      "source_recording_id": "stellwagen",
+      "source_sample_rate_hz": 44100,
       "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-SBNMS.wav"
     },
     {
+      "analysis_lowpass_hz": 1650,
       "call_type": "unclassified fixed-interval field segment",
       "description": "Fixed non-overlapping segment 4 from the NOAA PMEL stellwagen field recording; selected without listening or engine-result inspection.",
       "duration_seconds": 2.0,
       "license": "NOAA-PMEL-public-information-free-distribution",
       "population": "North Atlantic / Stellwagen Bank",
       "processed_file": "processed/stellwagen-04.wav",
-      "processed_sha256": "59be4a500d63ea0eca64bc4452a625dcbacd3dd7ede3805b7bfb4841333b24de",
+      "processed_sha256": "6754c80d5dd736cf4d27947cb0d38cfda9fb4d1449f99f47af3e869a085a18db",
       "processing": [
         "select fixed raw interval 7.000-9.000 seconds",
-        "deterministic integer linear resampling to mono PCM16 48 kHz",
-        "deterministic 20 ms boundary fades",
-        "no normalization, denoising, filtering, listening, or engine-based selection"
+        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+        "deterministic 20 ms boundary fades reaching exact zero",
+        "no normalization, denoising, content filtering, listening, or engine-based selection"
       ],
       "raw_file": "raw/HB-ship-SBNMS.wav",
       "raw_sha256": "24bf234e0d302ca91fd3e31f3b964185244403f74666569b753ca12080b59750",
@@ -101,22 +114,26 @@
         7000,
         9000
       ],
+      "source_nyquist_hz": 22050.0,
       "source_page": "https://www.pmel.noaa.gov/acoustics/multimedia.html",
+      "source_recording_id": "stellwagen",
+      "source_sample_rate_hz": 44100,
       "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-SBNMS.wav"
     },
     {
+      "analysis_lowpass_hz": 1650,
       "call_type": "unclassified fixed-interval field segment",
       "description": "Fixed non-overlapping segment 1 from the NOAA PMEL american-samoa field recording; selected without listening or engine-result inspection.",
       "duration_seconds": 2.0,
       "license": "NOAA-PMEL-public-information-free-distribution",
       "population": "South Pacific / American Samoa",
       "processed_file": "processed/american-samoa-01.wav",
-      "processed_sha256": "75c259c4967466f758183023f75289727c932a06a48d8006d23df2bcf01efdd7",
+      "processed_sha256": "7dee15ac65730cff5e50ae670b154f832094f6967a501f6aa6e8db1114d444b2",
       "processing": [
         "select fixed raw interval 0.200-2.200 seconds",
-        "deterministic integer linear resampling to mono PCM16 48 kHz",
-        "deterministic 20 ms boundary fades",
-        "no normalization, denoising, filtering, listening, or engine-based selection"
+        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+        "deterministic 20 ms boundary fades reaching exact zero",
+        "no normalization, denoising, content filtering, listening, or engine-based selection"
       ],
       "raw_file": "raw/HB-ship-AMSNP.wav",
       "raw_sha256": "2a6c7035808ae31576146d561e4ca08aea77f0851e4212530974cd6abd0bd0a1",
@@ -127,22 +144,26 @@
         200,
         2200
       ],
+      "source_nyquist_hz": 2500.0,
       "source_page": "https://www.pmel.noaa.gov/acoustics/multimedia.html",
+      "source_recording_id": "american-samoa",
+      "source_sample_rate_hz": 5000,
       "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-AMSNP.wav"
     },
     {
+      "analysis_lowpass_hz": 1650,
       "call_type": "unclassified fixed-interval field segment",
       "description": "Fixed non-overlapping segment 2 from the NOAA PMEL american-samoa field recording; selected without listening or engine-result inspection.",
       "duration_seconds": 2.0,
       "license": "NOAA-PMEL-public-information-free-distribution",
       "population": "South Pacific / American Samoa",
       "processed_file": "processed/american-samoa-02.wav",
-      "processed_sha256": "eb3447b58da40076895a19a1e90277eeb840c6dad8f0226c490b9542bc1fe102",
+      "processed_sha256": "f594e5b26163318f7811f7377b21829b8e93c91f1fa0bd062563504ae0805319",
       "processing": [
         "select fixed raw interval 2.300-4.300 seconds",
-        "deterministic integer linear resampling to mono PCM16 48 kHz",
-        "deterministic 20 ms boundary fades",
-        "no normalization, denoising, filtering, listening, or engine-based selection"
+        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+        "deterministic 20 ms boundary fades reaching exact zero",
+        "no normalization, denoising, content filtering, listening, or engine-based selection"
       ],
       "raw_file": "raw/HB-ship-AMSNP.wav",
       "raw_sha256": "2a6c7035808ae31576146d561e4ca08aea77f0851e4212530974cd6abd0bd0a1",
@@ -153,22 +174,26 @@
         2300,
         4300
       ],
+      "source_nyquist_hz": 2500.0,
       "source_page": "https://www.pmel.noaa.gov/acoustics/multimedia.html",
+      "source_recording_id": "american-samoa",
+      "source_sample_rate_hz": 5000,
       "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-AMSNP.wav"
     },
     {
+      "analysis_lowpass_hz": 1650,
       "call_type": "unclassified fixed-interval field segment",
       "description": "Fixed non-overlapping segment 3 from the NOAA PMEL american-samoa field recording; selected without listening or engine-result inspection.",
       "duration_seconds": 2.0,
       "license": "NOAA-PMEL-public-information-free-distribution",
       "population": "South Pacific / American Samoa",
       "processed_file": "processed/american-samoa-03.wav",
-      "processed_sha256": "147f5a97523a25a379eace77eaeb851f66be970ae1d978686e409e5806b3c5c7",
+      "processed_sha256": "ebfa42c4617e5e2bdf7fb40b46b1c799f7511895f43806094bbbf1d3cbe99121",
       "processing": [
         "select fixed raw interval 4.400-6.400 seconds",
-        "deterministic integer linear resampling to mono PCM16 48 kHz",
-        "deterministic 20 ms boundary fades",
-        "no normalization, denoising, filtering, listening, or engine-based selection"
+        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+        "deterministic 20 ms boundary fades reaching exact zero",
+        "no normalization, denoising, content filtering, listening, or engine-based selection"
       ],
       "raw_file": "raw/HB-ship-AMSNP.wav",
       "raw_sha256": "2a6c7035808ae31576146d561e4ca08aea77f0851e4212530974cd6abd0bd0a1",
@@ -179,22 +204,26 @@
         4400,
         6400
       ],
+      "source_nyquist_hz": 2500.0,
       "source_page": "https://www.pmel.noaa.gov/acoustics/multimedia.html",
+      "source_recording_id": "american-samoa",
+      "source_sample_rate_hz": 5000,
       "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-AMSNP.wav"
     },
     {
+      "analysis_lowpass_hz": 1650,
       "call_type": "unclassified fixed-interval field segment",
       "description": "Fixed non-overlapping segment 4 from the NOAA PMEL american-samoa field recording; selected without listening or engine-result inspection.",
       "duration_seconds": 2.0,
       "license": "NOAA-PMEL-public-information-free-distribution",
       "population": "South Pacific / American Samoa",
       "processed_file": "processed/american-samoa-04.wav",
-      "processed_sha256": "ee10a96aad66fa826a8c5a0ec7f0ca442ac1a26174ae0d5bf68db3c73e2027f9",
+      "processed_sha256": "50dccf40c1e73421dfff498e60ee338dda9fe90f3e2d340851c6577a2477ec28",
       "processing": [
         "select fixed raw interval 6.500-8.500 seconds",
-        "deterministic integer linear resampling to mono PCM16 48 kHz",
-        "deterministic 20 ms boundary fades",
-        "no normalization, denoising, filtering, listening, or engine-based selection"
+        "deterministic 32-tap Lanczos-windowed sinc interpolation to mono PCM16 48 kHz",
+        "deterministic 20 ms boundary fades reaching exact zero",
+        "no normalization, denoising, content filtering, listening, or engine-based selection"
       ],
       "raw_file": "raw/HB-ship-AMSNP.wav",
       "raw_sha256": "2a6c7035808ae31576146d561e4ca08aea77f0851e4212530974cd6abd0bd0a1",
@@ -205,14 +234,28 @@
         6500,
         8500
       ],
+      "source_nyquist_hz": 2500.0,
       "source_page": "https://www.pmel.noaa.gov/acoustics/multimedia.html",
+      "source_recording_id": "american-samoa",
+      "source_sample_rate_hz": 5000,
       "source_url": "https://www.pmel.noaa.gov/acoustics/multimedia/HB-ship-AMSNP.wav"
     }
   ],
   "independent_field_recording_count": 2,
   "kind": "humpback_whale_independent_evaluation_set",
   "license_basis": "NOAA PMEL states that, unless otherwise noted, information on its Acoustics Program pages is public information that may be distributed freely with NOAA PMEL attribution.",
-  "locked_at": "2026-08-02T09:20:00+02:00",
+  "locked_at": "2026-08-02T11:40:00+02:00",
+  "methodology_amendment": {
+    "effect": "replaces the pre-merge linear-resampled derivatives and invalidates their scores",
+    "reason": "external review identified spectral imaging from linear interpolation",
+    "unchanged": [
+      "raw source bytes",
+      "segment boundaries",
+      "frozen candidate",
+      "engine parameters",
+      "distance model"
+    ]
+  },
   "model_or_parameter_tuning_forbidden": true,
   "schema_version": 1,
   "segment_count": 8,
