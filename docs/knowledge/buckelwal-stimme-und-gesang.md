@@ -213,16 +213,22 @@ Gut belegt ist innerhalb des lokalen Korpus:
 - der registergebundene Bass verbessert einzelne tiefe beziehungsweise
   schwierige Folds, ist jedoch kein allgemeiner Ähnlichkeitsgewinn;
 - Resonanzfokus, Subharmonik und sekundäre Frequenzspur sind in ihrer heutigen
-  dauerhaften Aktivierung überwiegend neutral bis schädlich;
-- vollständiges Organic kostet deutlich mehr CPU als Morph.
+  dauerhaften Aktivierung überwiegend neutral bis schädlich.
+
+Laufzeitreserve wird in separaten Produkt- und Runtime-Tests geprüft.
+Hostabhängige Wandzeitwerte gehören nicht in den eingefrorenen
+Wissenschaftsbericht und beeinflussen die Kandidatenwahl nicht.
 
 Die externe Evidenz ist widersprüchlich: Im gesperrten hochperiodischen
 Alaska-Ruf gewinnt Morph klar. In vier Stellwagen-Segmenten mit Schiffslärm und
-sehr niedriger Periodizität gewinnt Organic; vier Segmente aus
-Amerikanisch-Samoa sind gemischt. Das legt eine datenabhängige Wirkung nahe,
-belegt aber keine kausale adaptive Schaltung, weil Population, Rufart und
-Aufnahmebedingung gleichzeitig variieren. Der externe Satz bleibt für Tuning
-gesperrt.
+sehr niedriger Periodizität gewinnt Organic. In der bandbegrenzten
+Amerikanisch-Samoa-Aufnahme gewinnt Morph im Mittel knapp; Organic verbessert
+nur eines von vier Segmenten, aber den schlechtesten Fall. Die linear
+interpolierte Vorfassung dieses Zusatztests wurde nach externem Review
+verworfen und mit Lanczos-Sinc neu berechnet. Das legt eine aufnahmeabhängige
+Wirkung nahe, belegt aber keine kausale adaptive Schaltung, weil Population,
+Rufart und Aufnahmebedingung gleichzeitig variieren. Der externe Satz bleibt
+für Tuning gesperrt.
 
 Die vollständige Methodik und alle Hashbindungen stehen in
 `docs/experiments/buckelwal-organic-v51-ablation.md`.
@@ -309,11 +315,14 @@ menschlich wahrgenommener Echtheit.
 Zusätzlich ist unter `assets/whale-sources/evaluation/` eine zuvor unbenutzte,
 nach Abschluss der DSP-Reparaturen gesperrte NOAA-PMEL-Aufnahme aus Alaska
 gebunden. Sie darf weder Modellbau noch Parameterabstimmung beeinflussen. Der
-erste und einzige Vergleich ergab für diesen einzelnen Ruf eine Ähnlichkeit von
-`0,1707` für Morph und `0,1538` für Organic. Organic ist diesem Fremdruf also
-weniger ähnlich. Der Befund wird nicht wegoptimiert. Eine einzelne Aufnahme ist
-ein unabhängiger Negativbefund, aber noch kein Test über Populationen,
-Aufnahmesituationen oder menschliche Wahrnehmung.
+Vergleich ergibt für diesen einzelnen Ruf eine Ähnlichkeit von `0,1707` für
+Morph und `0,1538` für Organic. Organic ist diesem Fremdruf also weniger
+ähnlich. Unter `assets/whale-sources/evaluation-v2/` liegen zwei weitere
+Rohaufnahmen mit acht vorab festgelegten Segmenten. Nach Sinc-korrigierter
+Aufbereitung gewinnt Organic in Stellwagen, verliert im Mittel knapp in
+Amerikanisch-Samoa und liegt über alle neun Segmente nur leicht vorn. Diese
+Aufnahmen sind ein begrenzter externer Robustheitstest, aber kein Beleg über
+Populationen, Rufarten oder menschliche Wahrnehmung.
 
 ## Evidenzstufen
 

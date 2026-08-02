@@ -8,6 +8,9 @@
 > Organic-Variante als robuste neue Grundengine. Morph bleibt der kanonische
 > Standard. Vollständiges Organic bleibt eine experimentelle Referenz; es wird
 > weder weiter nach externen Ergebnissen abgestimmt noch als v5.1 veröffentlicht.
+> Die v5.1-Studie wurde nach externem Review mit Sinc statt linearer
+> Interpolation neu ausgeführt; ihre korrigierten Werte ändern diese Entscheidung
+> nicht.
 
 Die erste v5-Fassung wurde nach dem Merge erneut unabhängig gegen ihren
 Quellcode, das Modellformat und die Bewertungsmethodik auditiert. Dabei wurden
@@ -172,7 +175,7 @@ Gebundene Evaluationsartefakte:
 - Evaluations-WAV SHA-256
   `1a38ba45c88e3cabbf72ffc50026bdfb4fe9882018cebd5e7f3a658497484822`;
 - Evaluationsmanifest SHA-256
-  `a7409a5b27ca03bf04a4f10d558208b985b184933bc0b1b4b9d45d43bec8a0ff`.
+  `9bdcf78fdc4d0f1fce77d4e2defa877910ea5102e66e515704fceaee123dd39d`.
 
 ### Ergänzende Ausgangsmetriken
 

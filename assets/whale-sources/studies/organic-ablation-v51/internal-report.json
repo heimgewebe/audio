@@ -104,13 +104,33 @@
   ],
   "definition": {
     "path": "assets/whale-sources/studies/organic-ablation-v51/definition.json",
-    "sha256": "e22e73d711e17fe0949e89d1ff387e30714931af342d122158db178a25fde7e6"
+    "sha256": "6266cafa0ed2ebb79081669963b704dc71632957964d46165b996e4de8dafeba"
+  },
+  "distance_model": {
+    "aggregation": "mean-of-normalized-capped-feature-distances",
+    "control_points": 48,
+    "feature_scales": {
+      "envelope": 0.16,
+      "harmonic_profile_l1": 0.35,
+      "high_band_ratio": 0.1,
+      "periodicity": 0.18,
+      "pulse_rate_hz": 1.5,
+      "pulse_strength": 0.18,
+      "resonance_ratio_1": 1.4,
+      "resonance_ratio_2": 2.0,
+      "secondary_ratio": 0.45,
+      "secondary_strength": 0.1,
+      "spectral_tilt": 0.12,
+      "subharmonic_strength": 0.1
+    },
+    "per_control_point_cap": 8.0
   },
   "does_not_establish": [
     "independent_external_generalization",
     "biological_identity",
     "perceptual_equivalence",
-    "subjective_naturalness"
+    "subjective_naturalness",
+    "cross-host-performance-equivalence"
   ],
   "external_data_used_for_selection": false,
   "kind": "humpback_whale_organic_ablation_internal_study",
@@ -120,8 +140,9 @@
     "organic-only-periodicity_roughness",
     "organic-only-register_bass"
   ],
+  "performance_evidence": "separate repository runtime contracts; not part of the locked candidate",
   "periodicity_complement_double_weighted": false,
-  "schema_version": 1,
+  "schema_version": 2,
   "selected_candidate_enabled_components": [],
   "selected_candidate_id": "morph",
   "selection_decisions": [
@@ -304,13 +325,13 @@
   ],
   "source_bindings": {
     "assets/whale-sources/morph/manifest.json": "70fb0f19dddf812ac9a83160cd55c751340c18b7522101b6f42110c594717600",
-    "assets/whale-sources/studies/organic-ablation-v51/definition.json": "e22e73d711e17fe0949e89d1ff387e30714931af342d122158db178a25fde7e6",
+    "assets/whale-sources/studies/organic-ablation-v51/definition.json": "6266cafa0ed2ebb79081669963b704dc71632957964d46165b996e4de8dafeba",
     "assets/whale-sources/voice-model/manifest.json": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a",
     "scripts/build_whale_morph_bank.py": "5b5a87738f053f6287d4591606b0dca335ef7ca88f7e86f72cd78175a51faa73",
     "scripts/build_whale_voice_model.py": "aabfb913678e272d9a83aa60909767195e20f2d88ba991a240e992f17cfb1a89",
     "scripts/compare_whale_organic.py": "a766ef6352ccc7fa8b2ff22d367715ea56bb05597fa2816a0554695ef8ecc264",
-    "scripts/evaluate_whale_voice_model.py": "7c46e0946c6d58461b9cb2227f3f555d50f1dd360926b6875b9f76b7863cfe3c",
-    "scripts/study_whale_organic_ablation.py": "65f9f5e5b7d968ffc307d0303d15b6f856f579901a44e2526591822c2d0e1946",
+    "scripts/evaluate_whale_voice_model.py": "8dd6fb92dc8e43a90da3faee51a8a47608bfb931a7f75041a0c17f9405852e25",
+    "scripts/study_whale_organic_ablation.py": "20153bcfaae621a9071f15d2e5c9a38601ea7d99dd43978735e8b7081b4ac33a",
     "scripts/whale_live_engine.py": "5691e58a7d6cb9bbe982b96fd84c26b6f0bc3f2a71f371e8d7167450619172fc",
     "scripts/whale_morph_engine.py": "523f000ee7275a93e902d914ce5e9ce6103ce26718a9d753326e3ca870764783",
     "scripts/whale_organic_engine.py": "bbc841cf65b74080c5cfb35b447b035c2b272e0eff84995029ac3ab7b28f5c66",
@@ -326,7 +347,7 @@
     "song-foraging-mn133a",
     "song-new-caledonia-2010"
   ],
-  "source_revision": "82e679c79d247a304568689355c22b29b2fa14fe",
+  "source_revision": "9fe1238d5a669cad350fdc893734c6689bfe4f65",
   "variants": [
     {
       "comparison_to_morph": {
@@ -368,17 +389,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.2963706046284642,
-            "peak": 0.09031123977862585,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09031123977862585
           },
           "pulse_rate_distance": 1.5881094620833336,
           "pulse_strength_distance": 2.925216508101853,
@@ -408,17 +419,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.2994525448739296,
-            "peak": 0.09031123977862585,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09031123977862585
           },
           "pulse_rate_distance": 0.8723436652777777,
           "pulse_strength_distance": 2.1385515868055562,
@@ -448,17 +449,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3000228353703278,
-            "peak": 0.09031123977862585,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09031123977862585
           },
           "pulse_rate_distance": 2.0042454837499997,
           "pulse_strength_distance": 2.4210388888888894,
@@ -488,17 +479,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.30177357712818775,
-            "peak": 0.09031123977862585,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09031123977862585
           },
           "pulse_rate_distance": 0.9175137396527778,
           "pulse_strength_distance": 1.9133680260416668,
@@ -528,17 +509,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.305593115001102,
-            "peak": 0.09031123977862585,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09031123977862585
           },
           "pulse_rate_distance": 0.5847927489583333,
           "pulse_strength_distance": 1.1533010017361114,
@@ -568,17 +539,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3061261416223715,
-            "peak": 0.09031123977862585,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09031123977862585
           },
           "pulse_rate_distance": 1.8237504425,
           "pulse_strength_distance": 2.4560862916666664,
@@ -608,17 +569,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.30344152599718655,
-            "peak": 0.09031123977862585,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09031123977862585
           },
           "pulse_rate_distance": 0.9176285020138891,
           "pulse_strength_distance": 1.939881733217593,
@@ -648,17 +599,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3025824551295955,
-            "peak": 0.09031123977862585,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09031123977862585
           },
           "pulse_rate_distance": 0.6807224409027776,
           "pulse_strength_distance": 1.1736993738425923,
@@ -673,6 +614,24 @@
         }
       ],
       "id": "morph",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.09031123977862585,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "baseline",
       "summary": {
         "bass_energy": {
@@ -693,9 +652,7 @@
           }
         },
         "best_fold_similarity": 0.22005935257703876,
-        "maximum_cpu_seconds_per_audio_second": 0.3061261416223715,
         "maximum_peak": 0.09031123977862585,
-        "mean_cpu_seconds_per_audio_second": 0.3019203499688956,
         "mean_similarity": 0.14473169513087297,
         "mean_temporal_total_distance": 1.9968084765013725,
         "median_similarity": 0.15263430362036928,
@@ -751,17 +708,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5584960685009719,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.683401120972223,
           "pulse_strength_distance": 2.7926650856481494,
@@ -793,17 +740,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5552012797488715,
-            "peak": 0.18390618804882977,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.18390618804882977
           },
           "pulse_rate_distance": 1.4259381943055554,
           "pulse_strength_distance": 1.6979224479166666,
@@ -835,17 +772,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5614724517508876,
-            "peak": 0.20776427107280376,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20776427107280376
           },
           "pulse_rate_distance": 1.6048580474999998,
           "pulse_strength_distance": 2.2442321932870373,
@@ -877,17 +804,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5506644868801231,
-            "peak": 0.14292275764927548,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.14292275764927548
           },
           "pulse_rate_distance": 1.1773846461805555,
           "pulse_strength_distance": 1.9782740989583336,
@@ -919,17 +836,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5622395283717196,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 0.9013321670138886,
           "pulse_strength_distance": 1.587147843171297,
@@ -961,17 +868,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5475117605019477,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.9127398222222223,
           "pulse_strength_distance": 2.593616991898148,
@@ -1003,17 +900,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5450209266273305,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.0512478600694448,
           "pulse_strength_distance": 2.238849120949074,
@@ -1045,17 +932,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5450346017532866,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.0259555527083337,
           "pulse_strength_distance": 1.109261755787037,
@@ -1070,6 +947,24 @@
         }
       ],
       "id": "organic-full",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.20776427107280376,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "baseline",
       "summary": {
         "bass_energy": {
@@ -1090,9 +985,7 @@
           }
         },
         "best_fold_similarity": 0.20843250555323622,
-        "maximum_cpu_seconds_per_audio_second": 0.5622395283717196,
         "maximum_peak": 0.20776427107280376,
-        "mean_cpu_seconds_per_audio_second": 0.5532051380168923,
         "mean_similarity": 0.14867826886795146,
         "mean_temporal_total_distance": 1.9531046631239195,
         "median_similarity": 0.14958730531725906,
@@ -1149,17 +1042,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5516351177502656,
-            "peak": 0.20715589825910705,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20715589825910705
           },
           "pulse_rate_distance": 1.7275958987500004,
           "pulse_strength_distance": 2.774700809027778,
@@ -1191,17 +1074,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5432516378787113,
-            "peak": 0.1931682914725526,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.1931682914725526
           },
           "pulse_rate_distance": 1.4658609704166665,
           "pulse_strength_distance": 1.6713340474537037,
@@ -1233,17 +1106,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5726343236237881,
-            "peak": 0.21433050493625136,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.21433050493625136
           },
           "pulse_rate_distance": 1.6583425094444444,
           "pulse_strength_distance": 2.2544207129629634,
@@ -1275,17 +1138,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5756388542504283,
-            "peak": 0.1607015475845322,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.1607015475845322
           },
           "pulse_rate_distance": 1.162931892013889,
           "pulse_strength_distance": 1.9247778015046302,
@@ -1317,17 +1170,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5665319931213162,
-            "peak": 0.20715589825910705,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20715589825910705
           },
           "pulse_rate_distance": 0.9794720054861111,
           "pulse_strength_distance": 1.4971195329861118,
@@ -1359,17 +1202,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5461267356222379,
-            "peak": 0.20715589825910705,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20715589825910705
           },
           "pulse_rate_distance": 1.9401550230555555,
           "pulse_strength_distance": 2.4838575879629627,
@@ -1401,17 +1234,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5490576984957443,
-            "peak": 0.20715589825910705,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20715589825910705
           },
           "pulse_rate_distance": 1.1293876985416667,
           "pulse_strength_distance": 2.203477418402778,
@@ -1443,17 +1266,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5521766908786958,
-            "peak": 0.20715589825910705,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20715589825910705
           },
           "pulse_rate_distance": 0.9775724157638894,
           "pulse_strength_distance": 1.0812800983796296,
@@ -1468,6 +1281,24 @@
         }
       ],
       "id": "organic-drop-source_envelope",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.21433050493625136,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -1488,9 +1319,7 @@
           }
         },
         "best_fold_similarity": 0.21167341617796723,
-        "maximum_cpu_seconds_per_audio_second": 0.5756388542504283,
         "maximum_peak": 0.21433050493625136,
-        "mean_cpu_seconds_per_audio_second": 0.5571316314526484,
         "mean_similarity": 0.1486487306163631,
         "mean_temporal_total_distance": 1.9542133162910755,
         "median_similarity": 0.14868491654147195,
@@ -1547,17 +1376,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5386901253732503,
-            "peak": 0.06959126265631717,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06959126265631717
           },
           "pulse_rate_distance": 1.6143295648611113,
           "pulse_strength_distance": 3.007827645833333,
@@ -1589,17 +1408,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.538272046498605,
-            "peak": 0.06959126265631717,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06959126265631717
           },
           "pulse_rate_distance": 1.005432948055556,
           "pulse_strength_distance": 1.9539279398148148,
@@ -1631,17 +1440,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5445881388732232,
-            "peak": 0.07091820347725149,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.07091820347725149
           },
           "pulse_rate_distance": 1.8878889222222226,
           "pulse_strength_distance": 2.392704251157408,
@@ -1673,17 +1472,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5540870927507058,
-            "peak": 0.07346420004965006,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.07346420004965006
           },
           "pulse_rate_distance": 1.0889653018749998,
           "pulse_strength_distance": 1.9409173802083337,
@@ -1715,17 +1504,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5512950864940649,
-            "peak": 0.07346420004965004,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.07346420004965004
           },
           "pulse_rate_distance": 1.0236283410416667,
           "pulse_strength_distance": 1.2890580989583338,
@@ -1757,17 +1536,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5533597813700908,
-            "peak": 0.07346420004965004,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.07346420004965004
           },
           "pulse_rate_distance": 1.9170443213888888,
           "pulse_strength_distance": 2.4599037071759255,
@@ -1799,17 +1568,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5429477468715049,
-            "peak": 0.07346420004965004,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.07346420004965004
           },
           "pulse_rate_distance": 1.1452240350694447,
           "pulse_strength_distance": 2.074950134837963,
@@ -1841,17 +1600,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5416397933804546,
-            "peak": 0.07346420004965007,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.07346420004965007
           },
           "pulse_rate_distance": 1.1164410984027777,
           "pulse_strength_distance": 1.0540645844907408,
@@ -1866,6 +1615,24 @@
         }
       ],
       "id": "organic-drop-periodicity_roughness",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.07346420004965007,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -1886,9 +1653,7 @@
           }
         },
         "best_fold_similarity": 0.19609558939785446,
-        "maximum_cpu_seconds_per_audio_second": 0.5540870927507058,
         "maximum_peak": 0.07346420004965007,
-        "mean_cpu_seconds_per_audio_second": 0.5456099764514875,
         "mean_similarity": 0.14689526187792096,
         "mean_temporal_total_distance": 1.950412584114717,
         "median_similarity": 0.15354828361078016,
@@ -1945,17 +1710,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5480621074966621,
-            "peak": 0.20584922893374694,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20584922893374694
           },
           "pulse_rate_distance": 1.7033763223611118,
           "pulse_strength_distance": 2.8054768078703707,
@@ -1987,17 +1742,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5571828811225714,
-            "peak": 0.18607709983874268,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.18607709983874268
           },
           "pulse_rate_distance": 1.3596569625,
           "pulse_strength_distance": 1.7392061967592596,
@@ -2029,17 +1774,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5671424803731497,
-            "peak": 0.20791211359370304,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20791211359370304
           },
           "pulse_rate_distance": 1.5977201843055555,
           "pulse_strength_distance": 2.2525847013888893,
@@ -2071,17 +1806,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5597872229991481,
-            "peak": 0.1490249492182788,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.1490249492182788
           },
           "pulse_rate_distance": 1.185955372013889,
           "pulse_strength_distance": 1.961002058449074,
@@ -2113,17 +1838,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5616170243738452,
-            "peak": 0.20584922893374694,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20584922893374694
           },
           "pulse_rate_distance": 0.9099028928472221,
           "pulse_strength_distance": 1.557951455439815,
@@ -2155,17 +1870,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5821496543721878,
-            "peak": 0.20584922893374694,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20584922893374694
           },
           "pulse_rate_distance": 1.9213105480555557,
           "pulse_strength_distance": 2.553644884259259,
@@ -2197,17 +1902,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5975033934955718,
-            "peak": 0.20584922893374694,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20584922893374694
           },
           "pulse_rate_distance": 1.0503292828472224,
           "pulse_strength_distance": 2.192656382523148,
@@ -2239,17 +1934,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.6039195477569592,
-            "peak": 0.20584922893374694,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20584922893374694
           },
           "pulse_rate_distance": 1.023984422291667,
           "pulse_strength_distance": 1.125109899305556,
@@ -2264,6 +1949,24 @@
         }
       ],
       "id": "organic-drop-pulse",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.20791211359370304,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -2284,9 +1987,7 @@
           }
         },
         "best_fold_similarity": 0.2083329897461283,
-        "maximum_cpu_seconds_per_audio_second": 0.6039195477569592,
         "maximum_peak": 0.20791211359370304,
-        "mean_cpu_seconds_per_audio_second": 0.5721705389987619,
         "mean_similarity": 0.1480443063768508,
         "mean_temporal_total_distance": 1.9589165793186751,
         "median_similarity": 0.1491348844439469,
@@ -2343,17 +2044,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5757512733762269,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.683401120972223,
           "pulse_strength_distance": 2.792586668981483,
@@ -2385,17 +2076,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5858429189975141,
-            "peak": 0.18390618804882977,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.18390618804882977
           },
           "pulse_rate_distance": 1.4259381943055554,
           "pulse_strength_distance": 1.6978533414351855,
@@ -2427,17 +2108,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5802672006248031,
-            "peak": 0.20776427107280376,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20776427107280376
           },
           "pulse_rate_distance": 1.6048580474999998,
           "pulse_strength_distance": 2.244146105324074,
@@ -2469,17 +2140,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5967350639984943,
-            "peak": 0.1429227513630545,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.1429227513630545
           },
           "pulse_rate_distance": 1.1773846461805555,
           "pulse_strength_distance": 1.9783882899305558,
@@ -2511,17 +2172,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5586515788745601,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 0.9013321670138886,
           "pulse_strength_distance": 1.587373508680556,
@@ -2553,17 +2204,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5549362776218913,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.9127398222222223,
           "pulse_strength_distance": 2.593876085648148,
@@ -2595,17 +2236,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5419346279959427,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.0512478600694448,
           "pulse_strength_distance": 2.239013524884259,
@@ -2637,17 +2268,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5440220961245359,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.0259555527083337,
           "pulse_strength_distance": 1.1091390520833333,
@@ -2662,6 +2283,24 @@
         }
       ],
       "id": "organic-drop-subharmonic",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.20776427107280376,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -2682,9 +2321,7 @@
           }
         },
         "best_fold_similarity": 0.20841437959617926,
-        "maximum_cpu_seconds_per_audio_second": 0.5967350639984943,
         "maximum_peak": 0.20776427107280376,
-        "mean_cpu_seconds_per_audio_second": 0.567267629701746,
         "mean_similarity": 0.1485973127126476,
         "mean_temporal_total_distance": 1.9536209812472498,
         "median_similarity": 0.14947134815554575,
@@ -2741,17 +2378,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5496474097453756,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.683401120972223,
           "pulse_strength_distance": 2.7925701423611127,
@@ -2783,17 +2410,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5527402312436607,
-            "peak": 0.18390618804882977,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.18390618804882977
           },
           "pulse_rate_distance": 1.4259381943055554,
           "pulse_strength_distance": 1.697877998842593,
@@ -2825,17 +2442,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.541879296375555,
-            "peak": 0.20776427107280376,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20776427107280376
           },
           "pulse_rate_distance": 1.6048580474999998,
           "pulse_strength_distance": 2.243991875,
@@ -2867,17 +2474,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.544985699125391,
-            "peak": 0.14292276487111377,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.14292276487111377
           },
           "pulse_rate_distance": 1.1773846461805555,
           "pulse_strength_distance": 1.9781998802083336,
@@ -2909,17 +2506,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5693453628700809,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 0.9013321670138886,
           "pulse_strength_distance": 1.5870995966435189,
@@ -2951,17 +2538,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.545417564251693,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.9127398222222223,
           "pulse_strength_distance": 2.5938652800925928,
@@ -2993,17 +2570,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5497337527485797,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.0512478600694448,
           "pulse_strength_distance": 2.2398579820601854,
@@ -3035,17 +2602,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5504401180005516,
-            "peak": 0.20513405514939625,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513405514939625
           },
           "pulse_rate_distance": 1.0259555527083337,
           "pulse_strength_distance": 1.1098961712962965,
@@ -3060,6 +2617,24 @@
         }
       ],
       "id": "organic-drop-secondary_frequency",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.20776427107280376,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -3080,9 +2655,7 @@
           }
         },
         "best_fold_similarity": 0.20842218023124534,
-        "maximum_cpu_seconds_per_audio_second": 0.5693453628700809,
         "maximum_peak": 0.20776427107280376,
-        "mean_cpu_seconds_per_audio_second": 0.5505236792951109,
         "mean_similarity": 0.14864959225289648,
         "mean_temporal_total_distance": 1.9532555964818377,
         "median_similarity": 0.1495735778015983,
@@ -3139,17 +2712,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.562636636874231,
-            "peak": 0.2218663141474409,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2218663141474409
           },
           "pulse_rate_distance": 1.6862250759722224,
           "pulse_strength_distance": 2.8894991284722225,
@@ -3181,17 +2744,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5625092761256383,
-            "peak": 0.2218663141474409,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2218663141474409
           },
           "pulse_rate_distance": 1.3372797331944444,
           "pulse_strength_distance": 2.0144729270833337,
@@ -3223,17 +2776,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5774237267469289,
-            "peak": 0.24947461926678507,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.24947461926678507
           },
           "pulse_rate_distance": 1.789023915277778,
           "pulse_strength_distance": 2.452222428240741,
@@ -3265,17 +2808,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5963432442513295,
-            "peak": 0.1730294809293033,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.1730294809293033
           },
           "pulse_rate_distance": 1.2253228635416669,
           "pulse_strength_distance": 1.984509624421296,
@@ -3307,17 +2840,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.6082678827515338,
-            "peak": 0.20678851322879332,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20678851322879332
           },
           "pulse_rate_distance": 0.9214534500694445,
           "pulse_strength_distance": 1.4279384623842597,
@@ -3349,17 +2872,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5792039907537401,
-            "peak": 0.20678851322879332,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20678851322879332
           },
           "pulse_rate_distance": 1.9785424772222224,
           "pulse_strength_distance": 2.5035993900462965,
@@ -3391,17 +2904,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5874070253776154,
-            "peak": 0.20678851322879332,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20678851322879332
           },
           "pulse_rate_distance": 1.057681542430556,
           "pulse_strength_distance": 2.039060227430556,
@@ -3433,17 +2936,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5619376228787587,
-            "peak": 0.20678851322879332,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20678851322879332
           },
           "pulse_rate_distance": 0.9566619431250004,
           "pulse_strength_distance": 1.0835915023148148,
@@ -3458,6 +2951,24 @@
         }
       ],
       "id": "organic-drop-resonance_focus",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.24947461926678507,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -3478,9 +2989,7 @@
           }
         },
         "best_fold_similarity": 0.20986638886163794,
-        "maximum_cpu_seconds_per_audio_second": 0.6082678827515338,
         "maximum_peak": 0.24947461926678507,
-        "mean_cpu_seconds_per_audio_second": 0.5794661757199719,
         "mean_similarity": 0.15093523267116726,
         "mean_temporal_total_distance": 1.9282322940656245,
         "median_similarity": 0.15140814573689204,
@@ -3537,17 +3046,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5438152087517665,
-            "peak": 0.20513335555049847,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513335555049847
           },
           "pulse_rate_distance": 1.6710703177777784,
           "pulse_strength_distance": 2.801943812500001,
@@ -3579,17 +3078,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5475566301247454,
-            "peak": 0.18382908029284484,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.18382908029284484
           },
           "pulse_rate_distance": 1.5181826944444445,
           "pulse_strength_distance": 1.6922834155092594,
@@ -3621,17 +3110,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5610698991222307,
-            "peak": 0.20769571044377816,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20769571044377816
           },
           "pulse_rate_distance": 1.6154908780555557,
           "pulse_strength_distance": 2.2742402962962966,
@@ -3663,17 +3142,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5990373233798891,
-            "peak": 0.14150790359252027,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.14150790359252027
           },
           "pulse_rate_distance": 1.1785420535416666,
           "pulse_strength_distance": 1.9517262968750002,
@@ -3705,17 +3174,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5601153761235764,
-            "peak": 0.20513335555049847,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513335555049847
           },
           "pulse_rate_distance": 0.9024895743750001,
           "pulse_strength_distance": 1.5792867864583338,
@@ -3747,17 +3206,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5513899722500355,
-            "peak": 0.20513335555049847,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513335555049847
           },
           "pulse_rate_distance": 1.9138972295833334,
           "pulse_strength_distance": 2.5453945428240745,
@@ -3789,17 +3238,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.551509244251065,
-            "peak": 0.20513335555049847,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513335555049847
           },
           "pulse_rate_distance": 1.052405267430556,
           "pulse_strength_distance": 2.2047006163194447,
@@ -3831,17 +3270,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5751511636262876,
-            "peak": 0.20513335555049847,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20513335555049847
           },
           "pulse_rate_distance": 1.0286912428472226,
           "pulse_strength_distance": 1.1013681493055556,
@@ -3856,6 +3285,24 @@
         }
       ],
       "id": "organic-drop-harmonic_profile",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.20769571044377816,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -3876,9 +3323,7 @@
           }
         },
         "best_fold_similarity": 0.20972828459547765,
-        "maximum_cpu_seconds_per_audio_second": 0.5990373233798891,
         "maximum_peak": 0.20769571044377816,
-        "mean_cpu_seconds_per_audio_second": 0.5612056022036995,
         "mean_similarity": 0.14923557047727476,
         "mean_temporal_total_distance": 1.9482561968302525,
         "median_similarity": 0.14915030908725302,
@@ -3935,17 +3380,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5661780972441193,
-            "peak": 0.19253809691089915,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.19253809691089915
           },
           "pulse_rate_distance": 1.6737362790277786,
           "pulse_strength_distance": 2.7941877233796304,
@@ -3977,17 +3412,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5674271318785031,
-            "peak": 0.17827608165344846,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.17827608165344846
           },
           "pulse_rate_distance": 1.4469751509722222,
           "pulse_strength_distance": 1.6499696516203706,
@@ -4019,17 +3444,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5505375397478929,
-            "peak": 0.19253809691089915,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.19253809691089915
           },
           "pulse_rate_distance": 1.5311930386111108,
           "pulse_strength_distance": 2.1991231053240745,
@@ -4061,17 +3476,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.568992070875538,
-            "peak": 0.13680670362404318,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.13680670362404318
           },
           "pulse_rate_distance": 1.2283513228472225,
           "pulse_strength_distance": 2.0857281822916667,
@@ -4103,17 +3508,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5556610404964886,
-            "peak": 0.19224258042176282,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.19224258042176282
           },
           "pulse_rate_distance": 0.9126500411805557,
           "pulse_strength_distance": 1.5651194612268522,
@@ -4145,17 +3540,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5847830153725226,
-            "peak": 0.19224258042176282,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.19224258042176282
           },
           "pulse_rate_distance": 1.939461256666667,
           "pulse_strength_distance": 2.6151255578703703,
@@ -4187,17 +3572,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5746919872544822,
-            "peak": 0.19224258042176282,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.19224258042176282
           },
           "pulse_rate_distance": 0.9464816193750002,
           "pulse_strength_distance": 2.216027031828704,
@@ -4229,17 +3604,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5697591714997543,
-            "peak": 0.19224258042176282,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.19224258042176282
           },
           "pulse_rate_distance": 1.0421383860416669,
           "pulse_strength_distance": 1.0981856111111112,
@@ -4254,6 +3619,24 @@
         }
       ],
       "id": "organic-drop-register_bass",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.19253809691089915,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -4274,9 +3657,7 @@
           }
         },
         "best_fold_similarity": 0.21296362427167875,
-        "maximum_cpu_seconds_per_audio_second": 0.5847830153725226,
         "maximum_peak": 0.19253809691089915,
-        "mean_cpu_seconds_per_audio_second": 0.5672537567961626,
         "mean_similarity": 0.14653314851285093,
         "mean_temporal_total_distance": 1.983947788429394,
         "median_similarity": 0.15307699010984,
@@ -4333,17 +3714,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5742486323724734,
-            "peak": 0.2056558755817736,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2056558755817736
           },
           "pulse_rate_distance": 1.6670865776388892,
           "pulse_strength_distance": 2.8122804444444447,
@@ -4375,17 +3746,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5655173757477314,
-            "peak": 0.18389767035106844,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.18389767035106844
           },
           "pulse_rate_distance": 1.4788544344444443,
           "pulse_strength_distance": 1.6836887175925932,
@@ -4417,17 +3778,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5801305773711647,
-            "peak": 0.2056558755817736,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2056558755817736
           },
           "pulse_rate_distance": 1.6747817030555556,
           "pulse_strength_distance": 2.2502386273148147,
@@ -4459,17 +3810,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.553791274120158,
-            "peak": 0.1419368802948092,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.1419368802948092
           },
           "pulse_rate_distance": 1.176933708263889,
           "pulse_strength_distance": 2.0132989728009263,
@@ -4501,17 +3842,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5520575819973601,
-            "peak": 0.2056558755817736,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2056558755817736
           },
           "pulse_rate_distance": 0.9008812290972221,
           "pulse_strength_distance": 1.615599479745371,
@@ -4543,17 +3874,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5439901694990112,
-            "peak": 0.2056558755817736,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2056558755817736
           },
           "pulse_rate_distance": 1.9122888843055559,
           "pulse_strength_distance": 2.632848181712963,
@@ -4585,17 +3906,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5372060828740359,
-            "peak": 0.2056558755817736,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2056558755817736
           },
           "pulse_rate_distance": 1.050796922152778,
           "pulse_strength_distance": 2.274355100115741,
@@ -4627,17 +3938,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5493399955012137,
-            "peak": 0.2056558755817736,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2056558755817736
           },
           "pulse_rate_distance": 0.9759640704861114,
           "pulse_strength_distance": 1.058234047453704,
@@ -4652,6 +3953,24 @@
         }
       ],
       "id": "organic-drop-articulation_states",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.2056558755817736,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -4672,9 +3991,7 @@
           }
         },
         "best_fold_similarity": 0.21058600885653633,
-        "maximum_cpu_seconds_per_audio_second": 0.5801305773711647,
         "maximum_peak": 0.2056558755817736,
-        "mean_cpu_seconds_per_audio_second": 0.5570352111853936,
         "mean_similarity": 0.1484101642104295,
         "mean_temporal_total_distance": 1.9561160135433424,
         "median_similarity": 0.14909075902552416,
@@ -4731,17 +4048,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5547306406224379,
-            "peak": 0.20511790193800353,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20511790193800353
           },
           "pulse_rate_distance": 1.677407609444445,
           "pulse_strength_distance": 2.779173861111111,
@@ -4773,17 +4080,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5532199308800045,
-            "peak": 0.18389594731291134,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.18389594731291134
           },
           "pulse_rate_distance": 1.4341315116666669,
           "pulse_strength_distance": 1.6864905509259265,
@@ -4815,17 +4112,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.545534541750385,
-            "peak": 0.2081994707589777,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.2081994707589777
           },
           "pulse_rate_distance": 1.6016197283333333,
           "pulse_strength_distance": 2.226587461805556,
@@ -4857,17 +4144,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5548735751290224,
-            "peak": 0.1423168918380017,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.1423168918380017
           },
           "pulse_rate_distance": 1.184294342986111,
           "pulse_strength_distance": 1.9640832679398157,
@@ -4899,17 +4176,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.553206245880574,
-            "peak": 0.20511790193800353,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20511790193800353
           },
           "pulse_rate_distance": 0.9082418638194446,
           "pulse_strength_distance": 1.5862578107638894,
@@ -4941,17 +4208,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5557217398745706,
-            "peak": 0.20511790193800353,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20511790193800353
           },
           "pulse_rate_distance": 1.9196495190277778,
           "pulse_strength_distance": 2.579741649305556,
@@ -4983,17 +4240,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5543091720028315,
-            "peak": 0.20511790193800353,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20511790193800353
           },
           "pulse_rate_distance": 1.0677936931250003,
           "pulse_strength_distance": 2.2707547633101854,
@@ -5025,17 +4272,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5561904724963824,
-            "peak": 0.20511790193800353,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.20511790193800353
           },
           "pulse_rate_distance": 1.0348334756250004,
           "pulse_strength_distance": 1.1393969965277777,
@@ -5050,6 +4287,24 @@
         }
       ],
       "id": "organic-drop-pitch_contour",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.2081994707589777,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "leave-one-component-out",
       "summary": {
         "bass_energy": {
@@ -5070,9 +4325,7 @@
           }
         },
         "best_fold_similarity": 0.21245468695245104,
-        "maximum_cpu_seconds_per_audio_second": 0.5561904724963824,
         "maximum_peak": 0.2081994707589777,
-        "mean_cpu_seconds_per_audio_second": 0.553473289829526,
         "mean_similarity": 0.14805337777826,
         "mean_temporal_total_distance": 1.9542868143746066,
         "median_similarity": 0.149768471510947,
@@ -5129,17 +4382,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.42884897312615067,
-            "peak": 0.0795970790443891,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.0795970790443891
           },
           "pulse_rate_distance": 1.6132477225000004,
           "pulse_strength_distance": 3.096403212962963,
@@ -5171,17 +4414,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.421919689499191,
-            "peak": 0.0795970790443891,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.0795970790443891
           },
           "pulse_rate_distance": 0.8813512004166667,
           "pulse_strength_distance": 2.2391813541666674,
@@ -5213,17 +4446,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4393624042495503,
-            "peak": 0.07838749604510332,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.07838749604510332
           },
           "pulse_rate_distance": 2.0293837441666667,
           "pulse_strength_distance": 2.6001407488425934,
@@ -5255,17 +4478,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.42752205325086834,
-            "peak": 0.08540995382867236,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08540995382867236
           },
           "pulse_rate_distance": 0.9469019660416667,
           "pulse_strength_distance": 2.065951904513889,
@@ -5297,17 +4510,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4274889367443393,
-            "peak": 0.08540995382867236,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08540995382867236
           },
           "pulse_rate_distance": 0.7574117265972221,
           "pulse_strength_distance": 1.3078410885416671,
@@ -5339,17 +4542,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.43226835100358585,
-            "peak": 0.08540995382867236,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08540995382867236
           },
           "pulse_rate_distance": 1.9386771125000004,
           "pulse_strength_distance": 2.5731554606481484,
@@ -5381,17 +4574,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4242130985003314,
-            "peak": 0.08540995382867236,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08540995382867236
           },
           "pulse_rate_distance": 0.8355101849305555,
           "pulse_strength_distance": 2.011956254050926,
@@ -5423,17 +4606,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.42697105024853954,
-            "peak": 0.08540995382867236,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08540995382867236
           },
           "pulse_rate_distance": 0.684430334236111,
           "pulse_strength_distance": 1.233696238425926,
@@ -5448,6 +4621,24 @@
         }
       ],
       "id": "organic-only-source_envelope",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.08540995382867236,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -5468,9 +4659,7 @@
           }
         },
         "best_fold_similarity": 0.22042255016885137,
-        "maximum_cpu_seconds_per_audio_second": 0.4393624042495503,
         "maximum_peak": 0.08540995382867236,
-        "mean_cpu_seconds_per_audio_second": 0.42857431957781955,
         "mean_similarity": 0.1425597399961877,
         "mean_temporal_total_distance": 2.0157729567916918,
         "median_similarity": 0.1499922411919101,
@@ -5527,17 +4716,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.43793381387513364,
-            "peak": 0.25,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.25
           },
           "pulse_rate_distance": 1.6249479980555561,
           "pulse_strength_distance": 2.901523458333333,
@@ -5569,17 +4748,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.44702712575235637,
-            "peak": 0.25,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.25
           },
           "pulse_rate_distance": 1.2671408841666667,
           "pulse_strength_distance": 1.874083018518519,
@@ -5611,17 +4780,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4528622858779272,
-            "peak": 0.25,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.25
           },
           "pulse_rate_distance": 1.7552958158333336,
           "pulse_strength_distance": 2.436481376157408,
@@ -5653,17 +4812,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4490357995018712,
-            "peak": 0.18992187315203374,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.18992187315203374
           },
           "pulse_rate_distance": 1.1026120213194446,
           "pulse_strength_distance": 1.950211009837963,
@@ -5695,17 +4844,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.44650537300185533,
-            "peak": 0.25,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.25
           },
           "pulse_rate_distance": 0.8953418302083332,
           "pulse_strength_distance": 1.3974802563657416,
@@ -5737,17 +4876,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.44267581399617484,
-            "peak": 0.25,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.25
           },
           "pulse_rate_distance": 1.9286213334722222,
           "pulse_strength_distance": 2.461875878472222,
@@ -5779,17 +4908,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4505118102460983,
-            "peak": 0.25,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.25
           },
           "pulse_rate_distance": 1.0452760629861113,
           "pulse_strength_distance": 2.0798225642361112,
@@ -5821,17 +4940,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4453115924989106,
-            "peak": 0.25,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.25
           },
           "pulse_rate_distance": 0.9052172471527782,
           "pulse_strength_distance": 1.0255508668981481,
@@ -5846,6 +4955,24 @@
         }
       ],
       "id": "organic-only-periodicity_roughness",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.25,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -5866,9 +4993,7 @@
           }
         },
         "best_fold_similarity": 0.20702282266563768,
-        "maximum_cpu_seconds_per_audio_second": 0.4528622858779272,
         "maximum_peak": 0.25,
-        "mean_cpu_seconds_per_audio_second": 0.44648295184379094,
         "mean_similarity": 0.1529531495114261,
         "mean_temporal_total_distance": 1.912923647248372,
         "median_similarity": 0.15667565910982365,
@@ -5925,17 +5050,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4494129378726939,
-            "peak": 0.08159834792395493,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08159834792395493
           },
           "pulse_rate_distance": 1.6300247809722224,
           "pulse_strength_distance": 2.858112350694445,
@@ -5967,17 +5082,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4749575566238491,
-            "peak": 0.08159834792395493,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08159834792395493
           },
           "pulse_rate_distance": 0.8922177754166665,
           "pulse_strength_distance": 2.0520729039351857,
@@ -6009,17 +5114,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4598887751271832,
-            "peak": 0.08163420926823867,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08163420926823867
           },
           "pulse_rate_distance": 1.9648744423611113,
           "pulse_strength_distance": 2.2793431215277784,
@@ -6051,17 +5146,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4527213351248065,
-            "peak": 0.08174150945503032,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08174150945503032
           },
           "pulse_rate_distance": 0.9075039910416666,
           "pulse_strength_distance": 1.867823844328704,
@@ -6093,17 +5178,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4533135597521323,
-            "peak": 0.08174150945503032,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08174150945503032
           },
           "pulse_rate_distance": 0.7697028028472221,
           "pulse_strength_distance": 1.0838779866898152,
@@ -6135,17 +5210,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.44441288500092924,
-            "peak": 0.08174150945503032,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08174150945503032
           },
           "pulse_rate_distance": 1.9301094180555556,
           "pulse_strength_distance": 2.413158855324074,
@@ -6177,17 +5242,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4559240292510367,
-            "peak": 0.08174150945503032,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08174150945503032
           },
           "pulse_rate_distance": 0.8212651707638888,
           "pulse_strength_distance": 1.9662744519675925,
@@ -6219,17 +5274,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.43788662350561935,
-            "peak": 0.08174150945503032,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08174150945503032
           },
           "pulse_rate_distance": 0.8065813309027776,
           "pulse_strength_distance": 1.0156245185185186,
@@ -6244,6 +5289,24 @@
         }
       ],
       "id": "organic-only-pulse",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.08174150945503032,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -6264,9 +5327,7 @@
           }
         },
         "best_fold_similarity": 0.22027171718288915,
-        "maximum_cpu_seconds_per_audio_second": 0.4749575566238491,
         "maximum_peak": 0.08174150945503032,
-        "mean_cpu_seconds_per_audio_second": 0.4535647127822813,
         "mean_similarity": 0.14417626279150003,
         "mean_temporal_total_distance": 2.0005193160138237,
         "median_similarity": 0.15194929716379746,
@@ -6323,17 +5384,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4892868079987238,
-            "peak": 0.08209503107737694,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08209503107737694
           },
           "pulse_rate_distance": 1.5695909436111115,
           "pulse_strength_distance": 2.907102965277778,
@@ -6365,17 +5416,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.47242805374844465,
-            "peak": 0.08209503107737694,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08209503107737694
           },
           "pulse_rate_distance": 0.8723436652777777,
           "pulse_strength_distance": 2.109151738425926,
@@ -6407,17 +5448,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.47709995500190416,
-            "peak": 0.08201548884277214,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08201548884277214
           },
           "pulse_rate_distance": 1.9857269652777776,
           "pulse_strength_distance": 2.3933513125000005,
@@ -6449,17 +5480,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4771768878781586,
-            "peak": 0.08208491817504983,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08208491817504983
           },
           "pulse_rate_distance": 0.9175137396527778,
           "pulse_strength_distance": 1.9039300387731481,
@@ -6491,17 +5512,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4758517753725755,
-            "peak": 0.08208491817504983,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08208491817504983
           },
           "pulse_rate_distance": 0.5847927489583333,
           "pulse_strength_distance": 1.1367695526620374,
@@ -6533,17 +5544,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4706472113757627,
-            "peak": 0.08208491817504983,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08208491817504983
           },
           "pulse_rate_distance": 1.8237504425,
           "pulse_strength_distance": 2.433095048611111,
@@ -6575,17 +5576,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.48973386800207663,
-            "peak": 0.08208491817504983,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08208491817504983
           },
           "pulse_rate_distance": 0.9176285020138891,
           "pulse_strength_distance": 1.9407601996527777,
@@ -6617,17 +5608,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5008810026265564,
-            "peak": 0.08208491817504983,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08208491817504983
           },
           "pulse_rate_distance": 0.6749354038194443,
           "pulse_strength_distance": 1.155200263888889,
@@ -6642,6 +5623,24 @@
         }
       ],
       "id": "organic-only-subharmonic",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.08209503107737694,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -6662,9 +5661,7 @@
           }
         },
         "best_fold_similarity": 0.21932756143731588,
-        "maximum_cpu_seconds_per_audio_second": 0.5008810026265564,
         "maximum_peak": 0.08209503107737694,
-        "mean_cpu_seconds_per_audio_second": 0.4816381952505253,
         "mean_similarity": 0.1427707613172758,
         "mean_temporal_total_distance": 2.0119724316371106,
         "median_similarity": 0.15046265722995397,
@@ -6721,17 +5718,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.49378362049901625,
-            "peak": 0.08237426087339297,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08237426087339297
           },
           "pulse_rate_distance": 1.5881094620833336,
           "pulse_strength_distance": 2.9069572997685182,
@@ -6763,17 +5750,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4863674291264033,
-            "peak": 0.08237426087339297,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08237426087339297
           },
           "pulse_rate_distance": 0.8723436652777777,
           "pulse_strength_distance": 2.1048630659722227,
@@ -6805,17 +5782,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.49375552037963644,
-            "peak": 0.08201548884277214,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08201548884277214
           },
           "pulse_rate_distance": 2.0042454837499997,
           "pulse_strength_distance": 2.394784928240741,
@@ -6847,17 +5814,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5175470318717998,
-            "peak": 0.08201097429763095,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08201097429763095
           },
           "pulse_rate_distance": 0.9175137396527778,
           "pulse_strength_distance": 1.9056714565972228,
@@ -6889,17 +5846,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5005514607546502,
-            "peak": 0.08201097429763095,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08201097429763095
           },
           "pulse_rate_distance": 0.5847927489583333,
           "pulse_strength_distance": 1.1343049600694448,
@@ -6931,17 +5878,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.49528787525196094,
-            "peak": 0.08201097429763095,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08201097429763095
           },
           "pulse_rate_distance": 1.8237504425,
           "pulse_strength_distance": 2.421146890046296,
@@ -6973,17 +5910,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.49878693212667713,
-            "peak": 0.08201097429763095,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08201097429763095
           },
           "pulse_rate_distance": 0.9176285020138891,
           "pulse_strength_distance": 1.9407653535879634,
@@ -7015,17 +5942,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4865849028719822,
-            "peak": 0.08201097429763095,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08201097429763095
           },
           "pulse_rate_distance": 0.6807224409027776,
           "pulse_strength_distance": 1.148828284722222,
@@ -7040,6 +5957,24 @@
         }
       ],
       "id": "organic-only-secondary_frequency",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.08237426087339297,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -7060,9 +5995,7 @@
           }
         },
         "best_fold_similarity": 0.21928942255225808,
-        "maximum_cpu_seconds_per_audio_second": 0.5175470318717998,
         "maximum_peak": 0.08237426087339297,
-        "mean_cpu_seconds_per_audio_second": 0.4965830966102658,
         "mean_similarity": 0.14281104822922003,
         "mean_temporal_total_distance": 2.0116537634612714,
         "median_similarity": 0.15059320768570866,
@@ -7119,17 +6052,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4927764436288271,
-            "peak": 0.06535202343876462,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06535202343876462
           },
           "pulse_rate_distance": 1.6745012834722226,
           "pulse_strength_distance": 3.051567458333334,
@@ -7161,17 +6084,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.47141373449994717,
-            "peak": 0.06369842113952413,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06369842113952413
           },
           "pulse_rate_distance": 0.9455079736111114,
           "pulse_strength_distance": 2.308747849537037,
@@ -7203,17 +6116,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.46878888974606525,
-            "peak": 0.06535202343876462,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06535202343876462
           },
           "pulse_rate_distance": 2.033657248472222,
           "pulse_strength_distance": 2.535251415509259,
@@ -7245,17 +6148,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.46907006125547923,
-            "peak": 0.06369842113952413,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06369842113952413
           },
           "pulse_rate_distance": 0.8781424359027777,
           "pulse_strength_distance": 2.134030427662037,
@@ -7287,17 +6180,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4775013346225023,
-            "peak": 0.06535202343876462,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06535202343876462
           },
           "pulse_rate_distance": 0.6700533485416668,
           "pulse_strength_distance": 1.3692106822916672,
@@ -7329,17 +6212,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5045820320010534,
-            "peak": 0.06535202343876462,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06535202343876462
           },
           "pulse_rate_distance": 1.8837007044444445,
           "pulse_strength_distance": 2.6621791238425923,
@@ -7371,17 +6244,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.5070472407533089,
-            "peak": 0.06535202343876462,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06535202343876462
           },
           "pulse_rate_distance": 0.864000213263889,
           "pulse_strength_distance": 2.062806285300926,
@@ -7413,17 +6276,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.47621768500539474,
-            "peak": 0.06535202343876462,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.06535202343876462
           },
           "pulse_rate_distance": 0.7499573995138888,
           "pulse_strength_distance": 1.3500192835648148,
@@ -7438,6 +6291,24 @@
         }
       ],
       "id": "organic-only-resonance_focus",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.06535202343876462,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -7458,9 +6329,7 @@
           }
         },
         "best_fold_similarity": 0.21665195340662374,
-        "maximum_cpu_seconds_per_audio_second": 0.5070472407533089,
         "maximum_peak": 0.06535202343876462,
-        "mean_cpu_seconds_per_audio_second": 0.48342467768907227,
         "mean_similarity": 0.1375127633869141,
         "mean_temporal_total_distance": 2.0530641139406103,
         "median_similarity": 0.14270627041810338,
@@ -7517,17 +6386,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.48746578150166897,
-            "peak": 0.09012216139031841,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09012216139031841
           },
           "pulse_rate_distance": 1.6725485140277778,
           "pulse_strength_distance": 2.8650706307870366,
@@ -7559,17 +6418,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4859010802465491,
-            "peak": 0.09012216139031841,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09012216139031841
           },
           "pulse_rate_distance": 0.8988555522222224,
           "pulse_strength_distance": 2.106468864583334,
@@ -7601,17 +6450,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.479966818500543,
-            "peak": 0.08270900873126684,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08270900873126684
           },
           "pulse_rate_distance": 1.8844182479166667,
           "pulse_strength_distance": 2.391678266203704,
@@ -7643,17 +6482,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4740519003753434,
-            "peak": 0.09445135392381176,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09445135392381176
           },
           "pulse_rate_distance": 0.8288448102083333,
           "pulse_strength_distance": 1.7648824728009258,
@@ -7685,17 +6514,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.480918843379186,
-            "peak": 0.09445135392381176,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09445135392381176
           },
           "pulse_rate_distance": 0.6385429229861113,
           "pulse_strength_distance": 1.111979850115741,
@@ -7727,17 +6546,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.47078476187743945,
-            "peak": 0.09445135392381176,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09445135392381176
           },
           "pulse_rate_distance": 1.8110209651388889,
           "pulse_strength_distance": 2.3477173842592594,
@@ -7769,17 +6578,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4825268451240845,
-            "peak": 0.09445135392381176,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09445135392381176
           },
           "pulse_rate_distance": 1.0613998345138889,
           "pulse_strength_distance": 2.2269140526620372,
@@ -7811,17 +6610,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4833432158702635,
-            "peak": 0.09445135392381176,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09445135392381176
           },
           "pulse_rate_distance": 0.7426994100694443,
           "pulse_strength_distance": 0.8784053703703703,
@@ -7836,6 +6625,24 @@
         }
       ],
       "id": "organic-only-harmonic_profile",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.09445135392381176,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -7856,9 +6663,7 @@
           }
         },
         "best_fold_similarity": 0.2269951573269525,
-        "maximum_cpu_seconds_per_audio_second": 0.48746578150166897,
         "maximum_peak": 0.09445135392381176,
-        "mean_cpu_seconds_per_audio_second": 0.48061990585938474,
         "mean_similarity": 0.14265335967532042,
         "mean_temporal_total_distance": 2.01538829409501,
         "median_similarity": 0.1502411535531306,
@@ -7915,17 +6720,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4185310263710562,
-            "peak": 0.09454558497786929,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09454558497786929
           },
           "pulse_rate_distance": 1.318523996805556,
           "pulse_strength_distance": 2.5898261412037034,
@@ -7957,17 +6752,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.40674198049964616,
-            "peak": 0.09454558497786929,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09454558497786929
           },
           "pulse_rate_distance": 1.1171854222222224,
           "pulse_strength_distance": 1.7488754212962965,
@@ -7999,17 +6784,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4200840640041861,
-            "peak": 0.09454558497786929,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09454558497786929
           },
           "pulse_rate_distance": 1.5160655681944444,
           "pulse_strength_distance": 2.25697340162037,
@@ -8041,17 +6816,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.40529166950000217,
-            "peak": 0.09454558497786929,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09454558497786929
           },
           "pulse_rate_distance": 1.260856572013889,
           "pulse_strength_distance": 2.065754825810185,
@@ -8083,17 +6848,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.40138699362432817,
-            "peak": 0.09454558497786929,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09454558497786929
           },
           "pulse_rate_distance": 0.981432055763889,
           "pulse_strength_distance": 1.3312401151620377,
@@ -8125,17 +6880,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3942777857519104,
-            "peak": 0.09454558497786929,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09454558497786929
           },
           "pulse_rate_distance": 1.8101233833333337,
           "pulse_strength_distance": 2.655776234953704,
@@ -8167,17 +6912,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.39975582374609075,
-            "peak": 0.09454558497786929,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09454558497786929
           },
           "pulse_rate_distance": 1.5811363249305554,
           "pulse_strength_distance": 2.490159896412037,
@@ -8209,17 +6944,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4055193466192577,
-            "peak": 0.09454558497786929,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09454558497786929
           },
           "pulse_rate_distance": 0.8934731199305558,
           "pulse_strength_distance": 0.9394953900462961,
@@ -8234,6 +6959,24 @@
         }
       ],
       "id": "organic-only-register_bass",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.09454558497786929,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -8254,9 +6997,7 @@
           }
         },
         "best_fold_similarity": 0.2047305179651268,
-        "maximum_cpu_seconds_per_audio_second": 0.4200840640041861,
         "maximum_peak": 0.09454558497786929,
-        "mean_cpu_seconds_per_audio_second": 0.4064485862645597,
         "mean_similarity": 0.14645813877509162,
         "mean_temporal_total_distance": 1.9469212483471046,
         "median_similarity": 0.14864672578481647,
@@ -8313,17 +7054,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4270054079970578,
-            "peak": 0.08335469895874252,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08335469895874252
           },
           "pulse_rate_distance": 1.6863042955555558,
           "pulse_strength_distance": 2.9382469363425936,
@@ -8355,17 +7086,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.42201693962852005,
-            "peak": 0.08335469895874252,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08335469895874252
           },
           "pulse_rate_distance": 0.9093807023611112,
           "pulse_strength_distance": 1.9406077604166672,
@@ -8397,17 +7118,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4289946772478288,
-            "peak": 0.08335469895874252,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08335469895874252
           },
           "pulse_rate_distance": 2.07763873,
           "pulse_strength_distance": 2.4292812037037037,
@@ -8439,17 +7150,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.43311457799427444,
-            "peak": 0.08335469895874252,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08335469895874252
           },
           "pulse_rate_distance": 0.8619581840972222,
           "pulse_strength_distance": 1.8436189438657404,
@@ -8481,17 +7182,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4307805841235677,
-            "peak": 0.08335469895874252,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08335469895874252
           },
           "pulse_rate_distance": 0.6588668229861111,
           "pulse_strength_distance": 1.0284527285879632,
@@ -8523,17 +7214,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.42803841537534026,
-            "peak": 0.08335469895874252,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08335469895874252
           },
           "pulse_rate_distance": 1.8100628419444444,
           "pulse_strength_distance": 2.3252760023148147,
@@ -8565,17 +7246,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.4084019750007428,
-            "peak": 0.08335469895874252,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08335469895874252
           },
           "pulse_rate_distance": 0.9917025760416669,
           "pulse_strength_distance": 2.005672527199074,
@@ -8607,17 +7278,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.40368190449953545,
-            "peak": 0.08335469895874252,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.08335469895874252
           },
           "pulse_rate_distance": 0.7855699354861109,
           "pulse_strength_distance": 0.9716645601851853,
@@ -8632,6 +7293,24 @@
         }
       ],
       "id": "organic-only-articulation_states",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.08335469895874252,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -8652,9 +7331,7 @@
           }
         },
         "best_fold_similarity": 0.22215680560927253,
-        "maximum_cpu_seconds_per_audio_second": 0.43311457799427444,
         "maximum_peak": 0.08335469895874252,
-        "mean_cpu_seconds_per_audio_second": 0.4227543102333584,
         "mean_similarity": 0.1443431816885744,
         "mean_temporal_total_distance": 2.001230949538975,
         "median_similarity": 0.1520100920817687,
@@ -8711,17 +7388,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.32644506587530486,
-            "peak": 0.09025712662162558,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09025712662162558
           },
           "pulse_rate_distance": 1.6538460129166666,
           "pulse_strength_distance": 2.848741991898148,
@@ -8753,17 +7420,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3273112747556297,
-            "peak": 0.09025712662162558,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09025712662162558
           },
           "pulse_rate_distance": 0.9705477488888891,
           "pulse_strength_distance": 2.126735450231482,
@@ -8795,17 +7452,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.33042021075380035,
-            "peak": 0.09025712662162558,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09025712662162558
           },
           "pulse_rate_distance": 2.1038535134722225,
           "pulse_strength_distance": 2.346302620370371,
@@ -8837,17 +7484,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3246408538761898,
-            "peak": 0.09025712662162558,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09025712662162558
           },
           "pulse_rate_distance": 0.9637946003472222,
           "pulse_strength_distance": 1.9433843917824076,
@@ -8879,17 +7516,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.32914307437022217,
-            "peak": 0.09025712662162558,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09025712662162558
           },
           "pulse_rate_distance": 0.6361705649305555,
           "pulse_strength_distance": 1.2103711105324078,
@@ -8921,17 +7548,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3240792943761335,
-            "peak": 0.09025712662162558,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09025712662162558
           },
           "pulse_rate_distance": 1.8554141762500007,
           "pulse_strength_distance": 2.4018384930555556,
@@ -8963,17 +7580,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3221213764991262,
-            "peak": 0.09025712662162558,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09025712662162558
           },
           "pulse_rate_distance": 0.7826061174305554,
           "pulse_strength_distance": 1.8448595619212964,
@@ -9005,17 +7612,7 @@
               "frames_checked": 8192,
               "maximum_absolute_delta": 0.0
             },
-            "cpu_seconds_per_audio_second": 0.3184160195014556,
-            "peak": 0.09025712662162558,
-            "pitch_binding": {
-              "keys_checked": 88,
-              "maximum_target_error_cents": 0.0,
-              "pass": true
-            },
-            "silence": {
-              "exact_zero": true,
-              "frames_checked": 512
-            }
+            "peak": 0.09025712662162558
           },
           "pulse_rate_distance": 0.711801111597222,
           "pulse_strength_distance": 1.1506275011574074,
@@ -9030,6 +7627,24 @@
         }
       ],
       "id": "organic-only-pitch_contour",
+      "product_contracts": {
+        "chunk_invariance": {
+          "exact": true,
+          "folds_checked": 8,
+          "maximum_absolute_delta": 0.0
+        },
+        "maximum_peak": 0.09025712662162558,
+        "pass": true,
+        "pitch_binding": {
+          "keys_checked": 88,
+          "maximum_target_error_cents": 0.0,
+          "pass": true
+        },
+        "silence": {
+          "exact_zero": true,
+          "frames_checked": 512
+        }
+      },
       "role": "isolated-over-morph",
       "summary": {
         "bass_energy": {
@@ -9050,9 +7665,7 @@
           }
         },
         "best_fold_similarity": 0.21288971672444798,
-        "maximum_cpu_seconds_per_audio_second": 0.33042021075380035,
         "maximum_peak": 0.09025712662162558,
-        "mean_cpu_seconds_per_audio_second": 0.32532214625098277,
         "mean_similarity": 0.14351545521877174,
         "mean_temporal_total_distance": 2.006172641531884,
         "median_similarity": 0.15036383953200155,
@@ -9063,5 +7676,6 @@
       }
     }
   ],
-  "voice_model_manifest_sha256": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a"
+  "voice_model_manifest_sha256": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a",
+  "wall_clock_timings_included": false
 }

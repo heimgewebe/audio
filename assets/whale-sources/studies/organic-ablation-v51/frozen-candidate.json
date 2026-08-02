@@ -1,26 +1,27 @@
 {
   "candidate_id": "morph",
-  "definition_sha256": "e22e73d711e17fe0949e89d1ff387e30714931af342d122158db178a25fde7e6",
+  "definition_sha256": "6266cafa0ed2ebb79081669963b704dc71632957964d46165b996e4de8dafeba",
   "enabled_components": [],
   "external_data_used_for_selection": false,
-  "internal_report_sha256": "95d1b46290057fcccc1aad2f66db302a7f85e4eb3aff318fc16db01651636912",
+  "internal_report_sha256": "ff99cec2d834372d2f586cd8a628200055c4ceb0d624c10ced7b34381752d7c6",
   "kind": "humpback_whale_organic_frozen_candidate",
   "parameters_frozen_before_external_evaluation": true,
-  "schema_version": 1,
+  "schema_version": 2,
   "source_bindings": {
     "assets/whale-sources/morph/manifest.json": "70fb0f19dddf812ac9a83160cd55c751340c18b7522101b6f42110c594717600",
-    "assets/whale-sources/studies/organic-ablation-v51/definition.json": "e22e73d711e17fe0949e89d1ff387e30714931af342d122158db178a25fde7e6",
+    "assets/whale-sources/studies/organic-ablation-v51/definition.json": "6266cafa0ed2ebb79081669963b704dc71632957964d46165b996e4de8dafeba",
     "assets/whale-sources/voice-model/manifest.json": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a",
     "scripts/build_whale_morph_bank.py": "5b5a87738f053f6287d4591606b0dca335ef7ca88f7e86f72cd78175a51faa73",
     "scripts/build_whale_voice_model.py": "aabfb913678e272d9a83aa60909767195e20f2d88ba991a240e992f17cfb1a89",
     "scripts/compare_whale_organic.py": "a766ef6352ccc7fa8b2ff22d367715ea56bb05597fa2816a0554695ef8ecc264",
-    "scripts/evaluate_whale_voice_model.py": "7c46e0946c6d58461b9cb2227f3f555d50f1dd360926b6875b9f76b7863cfe3c",
-    "scripts/study_whale_organic_ablation.py": "65f9f5e5b7d968ffc307d0303d15b6f856f579901a44e2526591822c2d0e1946",
+    "scripts/evaluate_whale_voice_model.py": "8dd6fb92dc8e43a90da3faee51a8a47608bfb931a7f75041a0c17f9405852e25",
+    "scripts/study_whale_organic_ablation.py": "20153bcfaae621a9071f15d2e5c9a38601ea7d99dd43978735e8b7081b4ac33a",
     "scripts/whale_live_engine.py": "5691e58a7d6cb9bbe982b96fd84c26b6f0bc3f2a71f371e8d7167450619172fc",
     "scripts/whale_morph_engine.py": "523f000ee7275a93e902d914ce5e9ce6103ce26718a9d753326e3ca870764783",
     "scripts/whale_organic_engine.py": "bbc841cf65b74080c5cfb35b447b035c2b272e0eff84995029ac3ab7b28f5c66",
     "scripts/whale_source_filter_engine.py": "3792999d5f63d0aa7d1a3a7fd5aa978699bef83c5c3ef6e03967eb9e7bbb2c83"
   },
-  "source_revision": "82e679c79d247a304568689355c22b29b2fa14fe",
-  "voice_model_manifest_sha256": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a"
+  "source_revision": "9fe1238d5a669cad350fdc893734c6689bfe4f65",
+  "voice_model_manifest_sha256": "1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a",
+  "wall_clock_timings_included": false
 }

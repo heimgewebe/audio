@@ -4,73 +4,113 @@ Stand: 2. August 2026
 
 ## Entscheidung
 
-**Morph bleibt vorerst die kanonische Grundengine.**
+**Morph bleibt die kanonische Grundengine.**
 
-Die vorab festgelegte interne Auswahlregel hat keine Organic-Variante als
-hinreichend robust qualifiziert. Der eingefrorene Kandidat ist deshalb Morph.
-Die danach ausgeführten Fremdtests wurden nicht zum Nachstimmen verwendet.
+Keine Organic-Variante erfüllt die vorab festgelegten akustischen,
+familienübergreifenden und Tiefbass-Kriterien. Der eingefrorene Kandidat besitzt
+keine aktivierte Organic-Komponente und ist damit bitgenau Morph.
 
-Eine neue v5.1-Laufzeitengine ist durch diese Studie **nicht** gerechtfertigt.
-Die Studie liefert aber konkrete Richtungen für eine spätere adaptive Engine:
-Periodizität beziehungsweise signalgebundene Rauigkeit ist intern am stärksten,
-während Resonanzfokus, Subharmonik und sekundäre Frequenzspur in ihrer heutigen
-Daueraktivierung zurückgebaut oder nur ereignisgebunden verwendet werden
-sollten.
+Die externen Auswertungen rechtfertigen keine nachträgliche Änderung:
+Vollständiges Organic hilft reproduzierbar in der einen Stellwagen-Aufnahme mit
+Schiffslärm, verliert jedoch im hochperiodischen Alaska-Ruf deutlich und ist in
+der bandbegrenzten Amerikanisch-Samoa-Aufnahme im Mittel knapp schlechter als
+Morph. Eine neue v5.1-Laufzeitengine wird daher nicht veröffentlicht.
+
+## Review-Amendment
+
+Zwei externe Reviews fanden vor dem Merge einen echten Methodikfehler und
+mehrere Architekturprobleme. Daraufhin wurde die Studie korrigiert und
+vollständig neu ausgeführt.
+
+### Korrigiert
+
+- Die lineare 5/44,1-kHz-zu-48-kHz-Interpolation wurde durch eine deterministische
+  32-Tap-Lanczos-Fenster-Sinc-Interpolation ersetzt.
+- Die Randfades erreichen nun exakt null.
+- Die früheren linearen v2-Derivate und alle daraus berechneten externen Werte
+  sind ausdrücklich **ungültig**.
+- Rohdateien und Segmentgrenzen blieben unverändert; es gab keine Hörprobe,
+  Neu-Auswahl oder Anpassung an Engine-Ergebnisse.
+- Der eingefrorene Morph-Kandidat wird extern als Alias auf das bereits
+  berechnete Morph-Ergebnis geführt statt nochmals gerendert.
+- Hostabhängige Wandzeitwerte wurden aus den kanonischen Berichten und aus der
+  Kandidatenwahl entfernt. Laufzeitreserve bleibt ein separater Produktvertrag.
+- Produktverträge werden pro Variante zusammengefasst statt vollständig in
+  jedem Fold wiederholt.
+- Unabhängige Folds können über höchstens vier Prozesse ausgewertet werden.
+- Relative Repositorypfade für Kandidat und Zusatzmanifest werden unterstützt.
+- Alaska besitzt nun Population, Rufklassifikation, Aufnahmebedingungen und
+  eine Aufnahme-ID.
+- Distanzskalierung, Feature-Cap und Aggregation sind im Bericht explizit.
+
+### Nicht geändert
+
+- die zehn Organic-Komponenten;
+- die acht gleichgewichteten internen Quellfamilien;
+- die festen Spielgesten und 48 Kontrollpunkte;
+- Feature-Skalen und Distanzfunktion;
+- Schwellen für Mittelwertgewinn, Worst-Fold, Familienzahl und Tiefbass;
+- Segmentgrenzen der externen Aufnahmen;
+- die Engineparameter;
+- der nach externer Auswertung nicht mehr abstimmbare Kandidatensatz.
+
+Das Entfernen des Wandzeitkriteriums ist entscheidungsneutral: Alle Varianten
+hatten den bisherigen Laufzeitgrenzwert bestanden. Morph bleibt auch ohne dieses
+hostabhängige Kriterium der ausgewählte Kandidat.
 
 ## Wahrheitsgrenze
 
-Die Messungen vergleichen eine feste musikalische Spielgeste mit extrahierten
-akustischen Trajektorien. Sie prüfen Reproduzierbarkeit, Robustheit über
-Quellfamilien und begrenzte externe Generalisierung. Sie beweisen weder
-biologische Identität noch menschlich wahrgenommene Echtheit.
+Die Studie vergleicht eine feste musikalische Spielgeste mit extrahierten
+akustischen Trajektorien. Sie prüft technische Reproduzierbarkeit, Robustheit
+über bekannte Quellfamilien und begrenzte externe Übertragbarkeit.
 
-Keine Aufnahme wurde physisch wiedergegeben. Der Wal-Dienst blieb während der
-Studie inaktiv.
+Sie beweist nicht:
+
+- biologische Identität;
+- menschlich wahrgenommene Echtheit;
+- Generalisierung über die Art oder alle Populationen;
+- statistische Unabhängigkeit mehrerer Segmente derselben Aufnahme;
+- dass Störgeräuschähnlichkeit Walstimmenähnlichkeit bedeutet;
+- gleiche Laufzeit auf anderen Rechnern.
+
+Keine Aufnahme wurde physisch wiedergegeben. Der Wal-Dienst blieb inaktiv.
 
 ## Revisions- und Hashbindung
 
 | Gegenstand | Bindung |
 |---|---|
-| Auswahlquellstand | `82e679c79d247a304568689355c22b29b2fa14fe` |
-| Kandidaten-Freeze-Commit | `7ee05d2` |
+| Studienquellstand | `9fe1238d5a669cad350fdc893734c6689bfe4f65` |
 | Modellbank | `1bbd10566bbfc9ee9159c994de456d408ed003cea65602faee8076b308d0ee8a` |
-| Studiendefinition | `e22e73d711e17fe0949e89d1ff387e30714931af342d122158db178a25fde7e6` |
-| interner Bericht | `95d1b46290057fcccc1aad2f66db302a7f85e4eb3aff318fc16db01651636912` |
-| eingefrorener Kandidat | `bf93de7f8c127876cc4b546b2e1317f6cdfd31d418ca73ec73d2487b071f1101` |
-| externer Gesamtbericht | `ce33d96c90f73ad132dc53ba23949b0573fb3e3615678a032ceaf87f7c0a4e2b` |
-| externe CSV | `3cf6a4b02a0ebe88c2f29b1a243fd6d54ead6735c7779902be529a69565f904a` |
+| Studiendefinition | `6266cafa0ed2ebb79081669963b704dc71632957964d46165b996e4de8dafeba` |
+| interner Bericht | `ff99cec2d834372d2f586cd8a628200055c4ceb0d624c10ced7b34381752d7c6` |
+| interne CSV | `bf36640b99c8325979d81deb84d4652e37bd19d3bfed919cee0103d1ceb7dd05` |
+| eingefrorener Kandidat | `73558c8a080e978c98705f19d498d415704e9841456ed2f8f14907b7ae6e236f` |
+| Alaska-Manifest | `9bdcf78fdc4d0f1fce77d4e2defa877910ea5102e66e515704fceaee123dd39d` |
+| Zusatzmanifest v2 | `e42272161dd3864950b7b17f1cecce810b20ab83fec1a71ab763b10c9c07166f` |
+| Alaska-Bericht | `a14fefcf49e1c96bd5dd8c8f30e13fd1d49e762f610e0e05b6499fe584b9517a` |
+| externer Gesamtbericht | `d5d8408cbf3ae6724c49fd5fb7b04744e940c67f843ac6d46cff5817c30edb0d` |
+| externe CSV | `a47192302cc8ba868cad3c2505eebcf6051e5eade9989d445990ad5b04df6985` |
 
-Der Kandidat wurde vor jeder externen Auswertung festgeschrieben. Sein
-Komponentensatz ist leer, also bitgenau Morph. Der Bericht deklariert
-`parameters_changed_after_external_results: false`.
+Der Kandidat wurde aus dem internen Bericht erzeugt und vor externer
+Auswertung festgeschrieben. Die externen Berichte deklarieren
+`parameters_changed_after_external_results: false` und enthalten keine
+Wandzeitwerte.
 
-## Methodik
+## Interne Methodik
 
-### Tuningseite
-
-Die Auswahl verwendet ausschließlich:
-
-- acht gleichgewichtete Leave-one-source-family-out-Folds;
-- den bestehenden Modellbestand aus 19 Clips und acht Familien;
-- Peak-, CPU-, Bass-, Pitch-, Stille- und Chunk-Verträge;
-- eine vorab definierte Robustheitsregel.
-
-Periodizität wird nur einmal gewichtet. Rauigkeit ist kein zweites Gewicht für
-`1 − Periodizität`.
-
-### Ablationsmatrix
+### Matrix
 
 Die deterministische Basismatrix enthält 22 Varianten:
 
 - Morph;
 - vollständiges Organic;
-- zehn Varianten mit jeweils einer deaktivierten Organic-Komponente;
-- zehn Varianten mit jeweils nur einer Organic-Komponente über Morph.
+- zehn Leave-one-component-out-Varianten;
+- zehn isolierte Komponenten über Morph.
 
-Kombinationen wären nur aus Komponenten erzeugt worden, die sowohl isoliert als
-auch beim Herausnehmen aus vollständigem Organic robust positiv erscheinen.
-Keine Komponente erfüllte diese vorab festgelegte Bedingung; deshalb wurde keine
-nachträgliche Kombination zusammengestellt.
+Kombinationen werden nur erzeugt, wenn Komponenten sowohl isoliert als auch
+beim Entfernen aus vollständigem Organic vorab definierte Evidenzgrenzen
+bestehen. Keine Komponente qualifizierte sich; deshalb entstand keine
+nachträglich optimierte Kombination.
 
 ### Komponenten
 
@@ -85,161 +125,183 @@ nachträgliche Kombination zusammengestellt.
 9. zeitliche Artikulationszustände;
 10. Organic-Pitchkontur.
 
-Alle Schalter sind Morph-neutral definiert. Alle Schalter aus ergeben bitgenau
-Morph; alle Schalter an ergeben bitgenau das bisherige vollständige Organic.
+Alle Schalter aus ergeben bitgenau Morph. Alle Schalter an ergeben bitgenau das
+bisherige vollständige Organic.
+
+### Distanzmodell
+
+Jeder Fold vergleicht geordnete 48-Punkt-Trajektorien. Hüllkurve,
+Periodizität, Hochbandanteil, spektrale Neigung, zwei Resonanzverhältnisse,
+Pulsrate, Pulsstärke, Subharmonik, sekundäre Stärke, sekundäres Verhältnis und
+das achtteilige Obertonprofil werden durch festgelegte Feature-Skalen
+normalisiert. Jede Feature-Distanz pro Kontrollpunkt wird bei `8,0` gekappt;
+anschließend wird gleichgewichtet gemittelt.
+
+Periodizität wird einmal gewichtet. Rauigkeit wird nicht nochmals als
+`1 − Periodizität` in die Distanz aufgenommen.
+
+### Produktverträge
+
+Die Studie bindet pro Variante:
+
+- Peak höchstens `0,25`;
+- exakte Tonhöhenbindung über 88 Tasten;
+- exakte digitale Stille im Leerlauf;
+- bitgenaue Chunk-Invarianz;
+- Tiefbasswerte für A0, A1 und A2.
+
+Laufzeitmessungen sind nicht Teil des eingefrorenen Wissenschaftsberichts. Die
+bestehenden Runtime-Tests prüfen Echtzeitreserve separat, weil Wandzeit keine
+bitreproduzierbare Eigenschaft eines Artefakts ist.
 
 ## Interne Ergebnisse
 
 ### Baselines
 
-| Variante | Mittel | Median | schlechtester Fold | verbessert / verschlechtert | CPU je Audiosekunde | Peak |
-|---|---:|---:|---:|---:|---:|---:|
-| Morph | 0,144732 | 0,152634 | 0,080041 | 0 / 0 | 0,3019 | 0,0903 |
-| vollständiges Organic | 0,148678 | 0,149587 | 0,088430 | 5 / 3 | 0,5532 | 0,2078 |
+| Variante | Mittel | Median | schlechtester Fold | verbessert / verschlechtert | Peak |
+|---|---:|---:|---:|---:|---:|
+| Morph | 0,144732 | 0,152634 | 0,080041 | 0 / 0 | 0,0903 |
+| vollständiges Organic | 0,148678 | 0,149587 | 0,088430 | 5 / 3 | 0,2078 |
 
-Organic gewinnt im Mittel, kostet aber ungefähr 83 Prozent mehr CPU und
-verschlechtert drei Familien. Mindestens eine dieser Verschlechterungen
-überschreitet die vorab erlaubte Worst-Fold-Grenze. Der globale Mittelwert
-reicht daher nicht für eine Freigabe.
+Die akustischen Ergebnisse sind gegenüber der ersten Studienfassung bitgleich.
+Organic gewinnt im Mittel, verletzt aber in mindestens einem Familienfold die
+vorab erlaubte Verlustgrenze. Der Mittelwert allein reicht nicht zur Freigabe.
 
 ### Einzelkomponenten
 
 | Komponente | isolierter Befund | Herausnahme aus Organic | Urteil |
 |---|---|---|---|
-| Periodizität/Rauigkeit | Mittel 0,152953; 5/8 Familien besser; schlechtester Fold 0,099566 | Organic ohne sie fällt auf 0,146895 | **intern nützlich, aber instabil**: ein Familienverlust ist zu groß; Peak erreicht 0,25 |
-| Registerbass | Mittel 0,146458; bester isolierter schlechtester Fold 0,103980; nur 3/8 Familien besser | Organic ohne ihn fällt auf 0,146533 | **funktional wichtig für Tiefe, statistisch nicht allgemein nützlich**; nicht als Ähnlichkeitsmodul behandeln |
-| Resonanzfokus | 0/8 Familien besser; Mittel 0,137513 | Herausnahme verbessert Organic auf 0,150935 | **schädlich in heutiger Dauerform**; stärkster Rückbaukandidat |
-| Obertonprofil | Mittel 0,142653; 2/8 besser | Herausnahme verbessert Organic leicht auf 0,149236 | überwiegend Färbung; keine robuste Generalisierung |
+| Periodizität/Rauigkeit | Mittel 0,152953; 5/8 Familien besser; schlechtester Fold 0,099566 | Organic ohne sie fällt auf 0,146895 | intern stärkste Komponente, aber ein Familienverlust ist zu groß |
+| Registerbass | Mittel 0,146458; isolierter schlechtester Fold 0,103980; 3/8 besser | Organic ohne ihn fällt auf 0,146533 | für Tiefe funktional wichtig, kein allgemeines Ähnlichkeitsmodul |
+| Resonanzfokus | 0/8 besser; Mittel 0,137513 | Herausnahme verbessert Organic auf 0,150935 | stärkster Rückbaukandidat in heutiger Dauerform |
+| Obertonprofil | Mittel 0,142653; 2/8 besser | Herausnahme verbessert Organic leicht auf 0,149236 | überwiegend Färbung, keine robuste Generalisierung |
 | Hüllkurve | Mittel 0,142560; 2/8 besser | Herausnahme nahezu neutral | neutral bis leicht schädlich in heutiger Stärke |
-| Puls | Mittel 0,144176; 4/8 besser | Herausnahme verschlechtert Organic leicht | kleine kontextabhängige Wirkung, allein nicht tragfähig |
-| Artikulationszustände | Mittel 0,144343; 4/8 besser | Herausnahme verschlechtert Organic leicht | kleine kontextabhängige Wirkung, allein nicht tragfähig |
-| Pitchkontur | Mittel 0,143515; 2/8 besser | Herausnahme verschlechtert Organic leicht | kein objektiver Generalisierungsvorteil; Hörfrage bleibt offen |
-| Subharmonik | 0/8 besser; Mittel 0,142771 | Herausnahme nahezu neutral und in allen acht Folds nicht schlechter | **statistisch schädlich beziehungsweise unnötig** in Daueraktivierung |
-| sekundäre Frequenzspur | 0/8 besser; Mittel 0,142811 | Herausnahme nahezu neutral | **statistisch schädlich beziehungsweise unnötig** in Daueraktivierung |
+| Puls | Mittel 0,144176; 4/8 besser | Herausnahme verschlechtert Organic leicht | kleine kontextabhängige Wirkung |
+| Artikulationszustände | Mittel 0,144343; 4/8 besser | Herausnahme verschlechtert Organic leicht | kleine kontextabhängige Wirkung |
+| Pitchkontur | Mittel 0,143515; 2/8 besser | Herausnahme verschlechtert Organic leicht | kein objektiver Generalisierungsvorteil |
+| Subharmonik | 0/8 besser; Mittel 0,142771 | Herausnahme nahezu neutral | in Daueraktivierung statistisch unnötig bis schädlich |
+| sekundäre Frequenzspur | 0/8 besser; Mittel 0,142811 | Herausnahme nahezu neutral | in Daueraktivierung statistisch unnötig bis schädlich |
 
 ### Pareto-Front
 
-Nur drei Varianten liegen auf der internen Pareto-Front aus Ähnlichkeit,
-schlechtestem Fold, CPU und Produktverträgen:
+Die interne Pareto-Front verwendet mittlere Ähnlichkeit, schlechtesten Fold,
+Komponentenanzahl und Produktverträge. Sie enthält:
 
 - Morph;
 - nur Periodizität/Rauigkeit;
 - nur Registerbass.
 
-Die beiden Organic-Einzelvarianten scheitern trotzdem an den vorab definierten
-Freigabekriterien. Morph bleibt der stabile Rückfallpunkt.
+Die beiden Einzelvarianten scheitern dennoch an den vorab festgelegten
+Freigabekriterien. Morph bleibt der robuste Rückfallpunkt.
+
+## Berichtshygiene und Durchsatz
+
+Der interne JSON-Bericht schrumpfte durch Normalisierung von `359.148` auf
+`309.168` Byte und von `9.067` auf `7.681` Zeilen. Alle `220`
+Wandzeitfelder wurden entfernt. Produktverträge stehen pro Variante; nur
+bankabhängige Bass- und Chunk-Werte verbleiben auf Fold-Ebene.
+
+Der interne Lauf kann die acht unabhängigen Folds pro Variante über höchstens
+vier Prozesse verteilen. Die Reihenfolge der Ergebnisse bleibt deterministisch.
+Ein kompiliertes Backend ist nicht Teil dieser Änderung.
 
 ## Externe Generalisierung
 
-### Gesperrter Alaska-Fremdtest
+### Gesperrter Alaska-Test
 
-Der bestehende NOAA-PMEL-Test blieb byte- und hashidentisch.
+Die Audiodateien und akustischen Werte bleiben unverändert. Nur Metadaten,
+Aliasdarstellung und Berichtsschema wurden verbessert.
 
 | Variante | Ähnlichkeit | Distanz | Peak |
 |---|---:|---:|---:|
-| Morph | **0,170738** | **1,767625** | 0,0903 |
+| Morph / eingefrorener Kandidat | **0,170738** | **1,767625** | 0,0903 |
 | vollständiges Organic | 0,153790 | 1,872165 | 0,2078 |
-| eingefrorener Kandidat | **0,170738** | **1,767625** | 0,0903 |
 
-Der negative Organic-Befund wird bestätigt.
+Organic verliert in diesem stark periodischen Ruf deutlich.
 
-### Zusätzlicher NOAA-PMEL-Satz
+### Zusatzsatz v2
 
-Der zusätzliche Satz besteht aus zwei unabhängigen Feldaufnahmen:
+Der Zusatzsatz enthält zwei unabhängige Rohaufnahmen:
 
-- Stellwagen Bank, Nordatlantik, Buckelwalrufe mit Schiffslärm;
-- Amerikanisch-Samoa, Südpazifik, Buckelwalrufe mit Schnappkrebsen.
+- Stellwagen Bank, 44,1 kHz, Rufe mit Schiffslärm;
+- Amerikanisch-Samoa, 5 kHz, Rufe mit Schnappkrebsen.
 
-Aus jeder Aufnahme wurden vor der Engine-Auswertung vier nicht überlappende,
-gleichmäßig verteilte Zwei-Sekunden-Intervalle festgelegt. Es handelt sich also
-um acht Segmente, aber nur zwei unabhängige Aufnahmen. Die Segmentgrenzen wurden
-ohne Hörprobe, Normalisierung, Entrauschung oder ergebnisabhängige Auswahl
-bestimmt.
+Aus jeder Aufnahme stammen vier vorab fixierte, nicht überlappende
+Zwei-Sekunden-Segmente. Zusammen mit Alaska sind das neun Segmente aus drei
+unabhängigen Feldaufnahmen. Die acht Zusatzsegmente sind untereinander nicht
+unabhängig, weil je vier aus derselben Aufnahme stammen.
 
-| Satz | Morph | vollständiges Organic | Ergebnis |
+Die 5-kHz-Samoa-Aufnahme besitzt eine Nyquist-Grenze von 2,5 kHz. Der
+Analyse-Tiefpass liegt bei 1,65 kHz und damit unter dieser Grenze; trotzdem kann
+dieser Datensatz keine Information über höhere Quellanteile liefern. Er ist ein
+bandbegrenzter Robustheitstest, kein vollbandiger Stimmvergleich.
+
+### Korrigierte Sinc-Ergebnisse
+
+| Aufnahme/Satz | Morph | vollständiges Organic | Einordnung |
 |---|---:|---:|---|
-| acht Zusatzsegmente gesamt | 0,107306 | **0,113359** | Organic leicht besser |
-| Stellwagen, 4 Segmente | 0,066165 | **0,076096** | Organic in allen vier Segmenten besser |
-| Amerikanisch-Samoa, 4 Segmente | 0,148447 | **0,150622** | gemischt: je zwei Segmentgewinne |
-| alle 9 externen Segmente | 0,114354 | **0,117852** | Organic leicht besser, geringere Varianz |
+| Alaska, 1 Segment | **0,170738** | 0,153790 | Morph klar besser |
+| Stellwagen, 4 Segmente | 0,066128 | **0,076069** | Organic in allen vier Segmenten besser |
+| Amerikanisch-Samoa, 4 Segmente | **0,133911** | 0,133594 | Morph im Mittel knapp besser; Organic verbessert den schlechtesten Fall |
+| alle 9 Segmente | 0,107877 | **0,110271** | Organic leicht besser, geringere Varianz |
 
-Über alle neun Segmente verbessert Organic den schlechtesten Wert von 0,063164
-auf 0,074487 und senkt die Varianz von 0,002531 auf 0,001871. Der Vorteil wird
-jedoch stark von den vier Stellwagen-Segmenten mit Schiffslärm und geringer
-gemessener Periodizität getragen. Im hochperiodischen Alaska-Ruf verliert
-Organic deutlich.
+Über alle neun Segmente verbessert Organic den schlechtesten Wert von
+`0,063110` auf `0,074427` und senkt die Varianz von `0,002081` auf
+`0,001394`. Der Gesamtvorteil beträgt jedoch nur ungefähr `0,002394` und wird
+praktisch vollständig von Stellwagen getragen.
+
+In Amerikanisch-Samoa gewinnt Organic nur eines von vier Segmenten. Die
+frühere Aussage „je zwei Segmentgewinne“ beruhte auf den ungültigen linear
+interpolierten Derivaten und ist zurückgezogen.
 
 ### Interpretation
 
-**Belegt:** Organic ist nicht allgemein schlechter. Es hilft in den vier
-Stellwagen-Segmenten und teilweise in Amerikanisch-Samoa.
+**Belegt:**
 
-**Plausibel:** Organic wirkt besonders bei rauen, gestörten oder wenig
-periodischen Zielsignalen günstiger, während Morph für stark tonale,
-hochperiodische Rufe stabiler ist.
+- Morph bleibt für den Alaska-Ruf deutlich näher.
+- Organic ist in allen vier Stellwagen-Segmenten näher.
+- Amerikanisch-Samoa zeigt keinen mittleren Organic-Vorteil.
+- Die externe Wirkung ist aufnahmeabhängig und nicht allgemein stabil.
 
-**Nicht belegt:** Dass Rauigkeit selbst die Ursache ist. Population,
-Aufnahmegerät, Schiffslärm, Schnappkrebse, Pegel und Rufart ändern sich zugleich.
-Eine datenabhängige Aktivierung darf deshalb noch nicht aus diesen Fremddaten
-abgeleitet oder abgestimmt werden.
+**Plausibel:**
+
+Organic kann in stark gestörten, wenig periodischen Zielsignalen einige
+Merkmaldistanzen reduzieren. Dass dies eine bessere Walstimme statt nur eine
+bessere Anpassung an Störstruktur bedeutet, ist nicht belegt.
+
+**Spekulativ:**
+
+Eine adaptive Aktivierung von Periodizitäts-/Rauigkeitsformung könnte sinnvoll
+sein. Diese Hypothese darf nicht aus dem externen Satz parametrisiert werden,
+weil Population, Rufart und Aufnahmebedingung gleichzeitig variieren.
 
 ## Architekturentscheidung
 
 ### Jetzt
 
-- Morph bleibt die gemeinsame Grundengine.
-- Vollständiges Organic wird nicht zum neuen Standard erklärt.
-- Es entstehen keine neuen sichtbaren Presets oder Spielmodi.
-- Der Laufzeitvertrag und das aktive Profil bleiben unverändert.
+- Morph bleibt Standard und gemeinsamer Grundsignalpfad.
+- Vollständiges Organic bleibt experimentelle Referenz.
+- Es entstehen keine neuen sichtbaren Presets oder Modi.
+- Aktives Profil und Laufzeitvertrag bleiben unverändert.
+- Externe Ergebnisse fließen nicht in Parameter oder Schwellen zurück.
 
-### Nächster belastbarer Entwicklungspfad
+### Nächster belastbarer Pfad
 
-Eine spätere adaptive Engine sollte **nicht** den vollständigen Organic-Modus
-pauschal einschalten. Zu prüfen ist stattdessen:
+Eine spätere Studie sollte:
 
-- schwache, signalgebundene Periodizitäts-/Rauigkeitsformung;
-- Registerbass weiterhin ausschließlich an den gespielten Grundton gebunden;
-- Resonanzfokus in heutiger Form entfernen oder wesentlich schwächen;
-- Subharmonik und Sekundärspur nur bei eindeutig quellseitig belegten
-  Ereignissen aktivieren;
-- Puls und Artikulation als schwache, gemessene Trajektorien statt dauerhafter
-  Klangmodus;
-- Intensität aus tatsächlichen Kontrollmerkmalen ableiten, nicht aus dem Namen
-  `organic`.
+- mehr unabhängige Rohaufnahmen statt mehr Segmente derselben Dateien verwenden;
+- Rufart, Population, Störbedingung und Bandbreite getrennt kontrollieren;
+- einen neuen Entwicklungsdatensatz für adaptive Aktivierungslogik reservieren;
+- den hier verwendeten externen Satz dauerhaft als Testmenge sperren;
+- Periodizitäts-/Rauigkeitsformung und Registerbass getrennt prüfen;
+- Resonanzfokus, Subharmonik und sekundäre Spur nicht pauschal dauerhaft
+  aktivieren;
+- subjektive Natürlichkeit in einem geblendeten A/B-Hörtest separat messen.
 
-Dieser Pfad gilt nur, wenn ein neuer Entwicklungsdatensatz oder eine sauber
-verschachtelte Cross-Validation die Aktivierungslogik bestimmt. Der vorliegende
-externe Satz darf dafür nicht verwendet werden.
-
-## Zurückgezogene oder korrigierte Aussagen
-
-- „Organic ist die bessere Grundengine“ ist zurückgezogen.
-- „Fünf von acht interne Folds reichen als Generalisierungsbeleg“ ist
-  zurückgezogen.
-- „Der einzelne negative NOAA-Test widerlegt Organic insgesamt“ ist ebenfalls
-  zu stark. Die Zusatzsegmente zeigen kontextabhängige Vorteile.
-- Korrekte Aussage: **Morph ist derzeit der robustere Standard; Organic enthält
-  einzelne nützliche, aber nicht stabil generalisierende Schichten.**
-
-## Offene Hörfragen
-
-Objektive Metriken beantworten nicht:
-
-- ob Periodizitäts-/Rauigkeitsformung subjektiv natürlicher oder nur körniger
-  klingt;
-- ob der Registerbass körperhaft oder synthetisch-suboszillatorisch wirkt;
-- ob Pitchkontur den UFO-Eindruck tatsächlich reduziert;
-- ob der Resonanzrückbau Walcharakter entfernt, obwohl die Metrik steigt;
-- wie sich Morph und Organic über MOTU M2 und Focal Clear MG verhalten.
-
-Diese Fragen benötigen später einen geblendeten A/B-Hörtest. Er war nicht Teil
-dieser Aufgabe.
+Eine Lockerung der bestehenden Worst-Fold-Schwelle nach Sichtung der Ergebnisse
+ist ausdrücklich kein zulässiger Pfad.
 
 ## Reproduktion
-
-Die Kandidatendatei erwartet wegen der strikten Repository-Bindung derzeit
-einen absoluten Pfad. Die folgenden Befehle erzeugen beziehungsweise prüfen
-die kanonischen Artefakte ohne Wiedergabe oder Dienststart:
 
 ```bash
 python3 scripts/build_whale_external_evaluation_v2.py --check
@@ -248,13 +310,10 @@ python3 scripts/summarize_whale_organic_external.py \
   --output assets/whale-sources/studies/organic-ablation-v51/external-summary.csv \
   --check
 python3 scripts/study_whale_organic_ablation.py external \
-  --candidate "$(realpath assets/whale-sources/studies/organic-ablation-v51/frozen-candidate.json)" \
-  --additional-manifest "$(realpath assets/whale-sources/evaluation-v2/manifest.json)" \
+  --candidate assets/whale-sources/studies/organic-ablation-v51/frozen-candidate.json \
+  --additional-manifest assets/whale-sources/evaluation-v2/manifest.json \
   --output /tmp/buckelwal-organic-v51-external.json
 ```
-
-Die relative-Pfad-Einschränkung ist eine CLI-Ergonomielücke, kein Fehler der
-Studienwerte. Sie darf erst nach dem Kandidatenfreeze separat behoben werden.
 
 ## Kanonische Artefakte
 
@@ -265,8 +324,9 @@ Studienwerte. Sie darf erst nach dem Kandidatenfreeze separat behoben werden.
 - `assets/whale-sources/studies/organic-ablation-v51/external-report-noaa.json`
 - `assets/whale-sources/studies/organic-ablation-v51/external-report-all.json`
 - `assets/whale-sources/studies/organic-ablation-v51/external-summary.csv`
+- `assets/whale-sources/evaluation/manifest.json`
 - `assets/whale-sources/evaluation-v2/manifest.json`
+- `assets/whale-sources/evaluation-v2/NOTICE.md`
 
-Die Roh- und Verarbeitungsdateien des Zusatzsatzes sind ausschließlich externe
-Evaluation. Tests verhindern ihren Eintritt in Modellbuilder, Laufzeitauswahl
-und Live-Engine.
+Tests verhindern den Eintritt externer Audiodateien in Modellbuilder,
+Laufzeitauswahl und Live-Engine.
