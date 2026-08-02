@@ -75,6 +75,14 @@ Der neue `desktop-mixed`-Transitionsvertrag ist zunächst nur per CLI
 freigegeben, bis Browserbestätigung, Recoveryanzeige und Laborabnahme separat
 bestehen. Er schaltet keine Aufnahme und keinen Produktions-Mixgraph.
 
+Der [Produktplan Audiozentrale v2](docs/plans/audiozentrale-product-v2.md)
+ordnet die längerfristige Produktoberfläche neu. Er ersetzt weder die heutige
+System- und Fallbackoberfläche noch ihre Sicherheitsverträge. Der Plan setzt auf
+ein aktives Setup mit geordneten Signalbahnen, echte Live-Telemetrie und drei
+progressive Darstellungsebenen. KI, ein früher Pluginhost, ein freier
+Modulargraph und eine vollständige DAW liegen ausdrücklich außerhalb des
+bewiesenen Kerns.
+
 ## Dokumente
 
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
@@ -86,6 +94,7 @@ bestehen. Er schaltet keine Aufnahme und keinen Produktions-Mixgraph.
 - [Unabhängiger Buckelwal-Evaluationssatz](assets/whale-sources/evaluation/NOTICE.md)
 - [Bewertung von hausKI-audio](docs/migration/hauski-audio-assessment.md)
 - [Plan zur Audio-Neukonfiguration](docs/plans/audio-configuration-redesign-v1.md)
+- [Produktplan Audiozentrale v2](docs/plans/audiozentrale-product-v2.md)
 - [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)
 - [Spezifikation der lokalen Audiozentrale](docs/plans/local-audio-control-ui-v1.md)
 - [Deployment der Audiozentrale](docs/control-deployment.md)

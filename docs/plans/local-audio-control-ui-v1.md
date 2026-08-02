@@ -293,8 +293,8 @@ belegte Rückkehr zum Referenzzustand.
 
 ### Funktion
 
-- Alle acht Bereiche sind direkt navigierbar und auf 320 Pixel Breite nutzbar.
-- Start zeigt Backendzeit, Doctorzustand, Warnungszahl und Wal-Laufzustand.
+- Alle fünf Kernbereiche sind direkt navigierbar und auf 320 Pixel Breite nutzbar.
+- Übersicht zeigt Backendzeit, Doctorzustand, Warnungszahl und Wal-Laufzustand.
 - Buckelwalmodi stammen aus dem Profil und nicht aus einer UI-Konstante.
 - Start, Moduswechsel und Stop liefern erst nach Backend-Readback Erfolg.
 - Jeder Profilplan bleibt read-only und zeigt Apply-Autorität sowie Blocker.
