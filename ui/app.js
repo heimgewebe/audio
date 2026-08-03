@@ -93,6 +93,11 @@ const state = {
   replayFrameIndex: 0,
   replayPlaying: false,
   replayTimer: null,
+  whaleLesson: null,
+  whaleLessonError: null,
+  lessonAudio: null,
+  blindOrder: [],
+  blindAnswered: false,
   route: "now",
   loading: false,
   autoRefresh: true,
@@ -329,6 +334,7 @@ function renderAll() {
   renderHome();
   renderActiveLanes();
   renderWhale();
+  renderWhaleLessonSummary();
   renderProfiles();
   renderLibrary();
   renderSounds();
@@ -863,6 +869,7 @@ function renderProfilePlan(plan) {
 
 function closeDialog() {
   state.dialogRequest += 1;
+  stopLessonAudio();
   byId("dialog-backdrop").hidden = true;
   document.body.classList.remove("dialog-open");
   byId("app-shell").removeAttribute("inert");
@@ -1407,6 +1414,10 @@ function focusLines(panel) {
 }
 
 function openDepthFocus(panel, trigger) {
+  if (panel.dataset.focusKind === "whale-learning") {
+    openWhaleLesson(trigger);
+    return;
+  }
   state.dialogRequest += 1;
   state.lastDialogTrigger = trigger;
   byId("dialog-eyebrow").textContent = "Read-only Fokus · ein Fokus aktiv";
@@ -1589,4 +1600,5 @@ wireDepthPanels();
 applyRoute();
 scheduleAutoRefresh();
 loadReplay();
+loadWhaleLesson();
 refreshSnapshot(true);

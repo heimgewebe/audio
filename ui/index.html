@@ -14,6 +14,7 @@
     >
     <title>Audiozentrale</title>
     <link rel="stylesheet" href="/styles.css">
+    <script src="/whale-lesson.js" defer></script>
     <script src="/app.js" defer></script>
   </head>
   <body>
@@ -110,6 +111,30 @@
             <div class="intro-stat" id="play-intro-stat"></div>
             <div id="whale-control"></div>
             <div class="depth-detail" hidden><div class="section-heading compact"><h3>Spielprofile</h3></div><div class="profile-grid" id="playing-profiles"></div></div>
+          </article>
+
+          <article
+            class="depth-panel whale-learning-panel"
+            id="whale-learning-lesson"
+            data-depth-panel
+            data-focus-kind="whale-learning"
+            data-focus-title="Vom reinen Ton zur Buckelwaleinheit"
+            data-focus-summary="Eine echte Beobachtung und vier reproduzierbare Modellstufen; read-only und ohne Live-Audiowirkung."
+          >
+            <header class="depth-heading">
+              <div><p class="eyebrow">Geführtes Hören</p><h2>Walgesang verstehen</h2></div>
+              <div class="depth-actions">
+                <button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button>
+                <button class="depth-focus primary-button" type="button">Lektion öffnen</button>
+              </div>
+            </header>
+            <div class="lesson-summary" id="whale-lesson-summary" aria-live="polite">
+              <div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div>
+            </div>
+            <div class="depth-detail" hidden>
+              <div class="lesson-stage-list" id="whale-lesson-stages"></div>
+              <p class="read-only-boundary">Die Hörproben sind vorberechnet. Diese Ansicht startet weder Engine noch Gerät und speichert kein Urteil.</p>
+            </div>
           </article>
 
           <article class="depth-panel" data-depth-panel data-focus-title="Hör-Setups" data-focus-summary="Definierte Hörwege und ihre beobachteten, konfigurierten und ausführbaren Voraussetzungen.">

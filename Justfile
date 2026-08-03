@@ -4,6 +4,8 @@ check:
     python3 scripts/audio_control.py check
     ./scripts/audio-product-model check
     ./scripts/audio-telemetry-replay check
+    python3 scripts/build_whale_learning_lesson.py --check
+    python3 scripts/whale_learning_lesson.py
     python3 -m unittest discover -s tests -v
     python3 -m compileall -q scripts tests
 
@@ -15,6 +17,10 @@ telemetry-replay-check:
 
 telemetry-replay-show:
     ./scripts/audio-telemetry-replay show
+
+whale-learning-check:
+    python3 scripts/build_whale_learning_lesson.py --check
+    python3 scripts/whale_learning_lesson.py
 
 product-workspace-validate workspace="profiles/audiozentrale-workspace.example.v1.json":
     ./scripts/audio-product-model validate "{{workspace}}"

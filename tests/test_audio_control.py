@@ -1,3 +1,4 @@
+import hashlib
 import contextlib
 import http.client
 import importlib.util
@@ -1094,6 +1095,9 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("wireDepthPanels", javascript)
         self.assertIn("openDepthFocus", javascript)
         self.assertIn('fetchJson("/api/v1/replay"', javascript)
+        lesson_javascript = (ROOT / "ui" / "whale-lesson.js").read_text()
+        self.assertIn('fetchJson("/api/v1/whale/lesson"', lesson_javascript)
+        self.assertIn('id="whale-learning-lesson"', html)
         self.assertIn('"snapshot_busy"', javascript)
         self.assertIn("Backend beschäftigt", javascript)
         self.assertNotIn("/api/v1/actions/", javascript)
@@ -1111,6 +1115,8 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('class="truth-strip"', html)
         self.assertIn("data-depth-panel", html)
         self.assertIn('id="replay-scenario"', html)
+        self.assertIn('id="whale-lesson-summary"', html)
+        self.assertIn('data-focus-kind="whale-learning"', html)
         self.assertNotIn('data-route="diagnose"', html)
         self.assertNotIn('data-route="einstellungen"', html)
 
@@ -1223,7 +1229,7 @@ class AudioControlHTTPTests(unittest.TestCase):
         self.assertEqual(health["runtime_head"], "a" * 40)
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
         self.assertIn("object-src 'none'", headers["Content-Security-Policy"])
-        self.assertIn("media-src 'none'", headers["Content-Security-Policy"])
+        self.assertIn("media-src 'self'", headers["Content-Security-Policy"])
         self.assertEqual(headers["X-Frame-Options"], "DENY")
         self.assertEqual(headers["Cross-Origin-Resource-Policy"], "same-origin")
         self.assertNotIn("Python", headers["Server"])
@@ -1334,6 +1340,32 @@ class AudioControlHTTPTests(unittest.TestCase):
         self.assertEqual(json.loads(payload)["error"]["code"], "invalid_query")
         self.assertEqual(self.runner.calls, before)
 
+    def test_whale_lesson_endpoint_and_audio_are_read_only_and_bound(self):
+        before = list(self.runner.calls)
+        status, headers, payload = self.request("GET", "/api/v1/whale/lesson")
+        self.assertEqual(status, 200)
+        lesson = json.loads(payload)
+        self.assertFalse(lesson["authoritative"])
+        self.assertTrue(lesson["read_only"])
+        self.assertEqual(lesson["authority"], "educational-model")
+        self.assertEqual(len(lesson["variants"]), 5)
+        self.assertEqual(self.runner.calls, before)
+
+        reference = lesson["variants"][0]
+        status, audio_headers, audio = self.request("GET", reference["audio_url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(audio_headers["Content-Type"], "audio/wav")
+        self.assertEqual(hashlib.sha256(audio).hexdigest(), reference["audio_sha256"])
+        self.assertIn("media-src 'self'", audio_headers["Content-Security-Policy"])
+        self.assertEqual(self.runner.calls, before)
+
+        status, _headers, payload = self.request(
+            "GET", "/api/v1/whale/lesson?variant=morph"
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(payload)["error"]["code"], "invalid_query")
+        self.assertEqual(self.runner.calls, before)
+
 
 class AudioControlInMemoryHTTPTests(unittest.TestCase):
     def setUp(self):
@@ -1390,6 +1422,10 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         status, _headers, payload = self.request("GET", "/api/v1/replay")
         self.assertEqual(status, 200)
         self.assertFalse(json.loads(payload)["authoritative"])
+        self.assertEqual(self.runner.calls, before)
+        status, _headers, payload = self.request("GET", "/api/v1/whale/lesson")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["authority"], "educational-model")
         self.assertEqual(self.runner.calls, before)
         status, _headers, _payload = self.request("GET", "/../../README.md")
         self.assertEqual(status, 404)

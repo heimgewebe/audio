@@ -36,6 +36,14 @@ zeitliche und ganze Quellfamilien zurückhaltende Holdout-Vergleiche prüfen die
 reproduzierbare Spielphrase. Die Modi `realistic` (Aufnahmephrasen) und `ufo`
 bleiben als Vergleiche erhalten.
 
+## Buckelwal-Lernlektion
+
+Die read-only Audiozentrale enthält eine erste geführte Lektion
+`Vom reinen Ton zur Buckelwaleinheit`. Sie trennt echte Beobachtung,
+reproduzierbares Modell und musikalische 88-Tasten-Extrapolation. Hörproben,
+Merkmalskurven und ein lokaler A/B-Vergleich starten keine Liveengine und
+speichern kein Urteil. Reproduktion: `just whale-learning-check`.
+
 ## Bereiche
 
 - reproduzierbare Audio- und MIDI-Profile
@@ -97,6 +105,7 @@ Audioautorität.
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
 - [sfizz-Störfall](docs/incidents/2026-07-26-sfizz-stdin-eof-loop.md)
 - [Buckelwal Live Voice](docs/experiments/buckelwal-live-voice-v1.md)
+- [Buckelwal-Lernlektion v1](docs/experiments/buckelwal-learning-lesson-v1.md)
 - [Wissen über Buckelwalstimme und Buckelwalgesang](docs/knowledge/buckelwal-stimme-und-gesang.md)
 - [Organische Buckelwalstimme und A/B-Vergleich](docs/experiments/buckelwal-organic-v5.md)
 - [Buckelwal-Samplequellen und Lizenzen](assets/whale-sources/README.md)

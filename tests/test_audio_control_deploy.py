@@ -30,6 +30,18 @@ class AudioControlDeployTests(unittest.TestCase):
             "scripts/audio_telemetry_replay.py": b"def load_replay_contract(): return {}\n",
             "inventory/audiozentrale-telemetry-replay.v1.json": b"{}\n",
             "schemas/audiozentrale-telemetry-replay.v1.schema.json": b"{}\n",
+            "scripts/whale_learning_lesson.py": b"def load_lesson_contract(): return {}\n",
+            "inventory/buckelwal-learning-lesson.v1.json": b"{}\n",
+            "schemas/buckelwal-learning-lesson.v1.schema.json": b"{}\n",
+            "assets/whale-sources/processed/manifest.json": b"{}\n",
+            "assets/whale-sources/processed/humpback-song-cc0-01.wav": b"RIFF-source\n",
+            "assets/whale-sources/morph/manifest.json": b"{}\n",
+            "ui/whale-lesson.js": b'"use strict";\n',
+            "ui/whale-learning-reference.wav": b"RIFF-reference\n",
+            "ui/whale-learning-morph.wav": b"RIFF-morph\n",
+            "ui/whale-learning-envelope.wav": b"RIFF-envelope\n",
+            "ui/whale-learning-periodicity.wav": b"RIFF-periodicity\n",
+            "ui/whale-learning-articulation.wav": b"RIFF-articulation\n",
             "ui/index.html": b"<!doctype html><title>Audio</title>\n",
             "ui/app.js": b'"use strict";\n',
             "ui/styles.css": b"body { margin: 0; }\n",
@@ -72,6 +84,18 @@ class AudioControlDeployTests(unittest.TestCase):
             "scripts/audio_telemetry_replay.py",
             "inventory/audiozentrale-telemetry-replay.v1.json",
             "schemas/audiozentrale-telemetry-replay.v1.schema.json",
+            "scripts/whale_learning_lesson.py",
+            "inventory/buckelwal-learning-lesson.v1.json",
+            "schemas/buckelwal-learning-lesson.v1.schema.json",
+            "assets/whale-sources/processed/manifest.json",
+            "assets/whale-sources/processed/humpback-song-cc0-01.wav",
+            "assets/whale-sources/morph/manifest.json",
+            "ui/whale-lesson.js",
+            "ui/whale-learning-reference.wav",
+            "ui/whale-learning-morph.wav",
+            "ui/whale-learning-envelope.wav",
+            "ui/whale-learning-periodicity.wav",
+            "ui/whale-learning-articulation.wav",
         }
         self.assertTrue(expected <= set(MODULE.BASE_CRITICAL_RELEASE_FILES))
         commit = "9" * 40
@@ -271,6 +295,16 @@ class AudioControlDeployTests(unittest.TestCase):
                     (release / "ui" / "styles.css").read_bytes(),
                     "text/css; charset=utf-8",
                 ),
+                "/whale-lesson.js": (
+                    200,
+                    (release / "ui" / "whale-lesson.js").read_bytes(),
+                    "application/javascript; charset=utf-8",
+                ),
+                "/whale-learning-reference.wav": (
+                    200,
+                    (release / "ui" / "whale-learning-reference.wav").read_bytes(),
+                    "audio/wav",
+                ),
                 "/api/v1/health": (
                     200,
                     json.dumps(
@@ -291,7 +325,16 @@ class AudioControlDeployTests(unittest.TestCase):
                 report = MODULE.verify_service(
                     release, host="127.0.0.1", port=8765, attempts=1
                 )
-            self.assertEqual(set(report["static_sha256"]), {"/", "/app.js", "/styles.css"})
+            self.assertEqual(
+                set(report["static_sha256"]),
+                {
+                    "/",
+                    "/app.js",
+                    "/styles.css",
+                    "/whale-lesson.js",
+                    "/whale-learning-reference.wav",
+                },
+            )
 
             payloads["/app.js"] = (200, b"stale", "application/javascript")
             with (

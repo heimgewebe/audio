@@ -56,6 +56,18 @@ BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_telemetry_replay.py",
     "inventory/audiozentrale-telemetry-replay.v1.json",
     "schemas/audiozentrale-telemetry-replay.v1.schema.json",
+    "scripts/whale_learning_lesson.py",
+    "inventory/buckelwal-learning-lesson.v1.json",
+    "schemas/buckelwal-learning-lesson.v1.schema.json",
+    "assets/whale-sources/processed/manifest.json",
+    "assets/whale-sources/processed/humpback-song-cc0-01.wav",
+    "assets/whale-sources/morph/manifest.json",
+    "ui/whale-lesson.js",
+    "ui/whale-learning-reference.wav",
+    "ui/whale-learning-morph.wav",
+    "ui/whale-learning-envelope.wav",
+    "ui/whale-learning-periodicity.wav",
+    "ui/whale-learning-articulation.wav",
     "ui/index.html",
     "ui/app.js",
     "ui/styles.css",
@@ -64,6 +76,8 @@ STATIC_ENDPOINTS = (
     ("/", "ui/index.html", ("text/html",)),
     ("/app.js", "ui/app.js", ("application/javascript", "text/javascript")),
     ("/styles.css", "ui/styles.css", ("text/css",)),
+    ("/whale-lesson.js", "ui/whale-lesson.js", ("application/javascript", "text/javascript")),
+    ("/whale-learning-reference.wav", "ui/whale-learning-reference.wav", ("audio/wav",)),
 )
 DEFAULT_RELEASE_RETENTION = 3
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
