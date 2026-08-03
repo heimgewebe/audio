@@ -13,6 +13,7 @@ run/
 
 # Recordings, samples and generated audio
 *.wav
+!ui/whale-learning-*.wav
 *.flac
 *.aiff
 *.aif

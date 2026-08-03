@@ -2051,3 +2051,140 @@ body.dialog-open {
     transition: none;
   }
 }
+
+
+.lesson-summary {
+  display: grid;
+  gap: 4px;
+}
+.lesson-summary strong { font-size: 0.88rem; }
+.lesson-summary span,
+.lesson-stage-row span { color: var(--muted); font-size: 0.7rem; }
+.lesson-stage-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.lesson-stage-row {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+}
+.lesson-truth-grid,
+.lesson-variant-grid { display: grid; gap: 9px; }
+.lesson-truth-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+.lesson-truth-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+}
+.lesson-truth-card.observation { border-left-color: var(--mint); }
+.lesson-truth-card.model { border-left-color: var(--blue); }
+.lesson-truth-card.extrapolation { border-left-color: var(--amber); }
+.lesson-truth-card span { color: var(--muted); font-size: 0.67rem; }
+.lesson-provenance {
+  margin: 9px 0 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+}
+.lesson-provenance summary { cursor: pointer; font-size: 0.7rem; font-weight: 700; }
+.lesson-source-group { display: grid; gap: 4px; margin-top: 8px; }
+.lesson-source-group strong { font-size: 0.66rem; }
+.lesson-source-group span { color: var(--muted); font-size: 0.6rem; line-height: 1.45; }
+.lesson-variant-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0;
+}
+.lesson-variant-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+}
+.lesson-variant-card.observation {
+  grid-column: 1 / -1;
+  border-color: rgba(185, 230, 181, 0.34);
+}
+.lesson-variant-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.lesson-variant-heading h3 { margin: 0; font-size: 0.8rem; }
+.lesson-variant-card > p { color: var(--muted-bright); font-size: 0.68rem; }
+.lesson-variant-card .listen-for {
+  padding: 7px 8px;
+  border-left: 2px solid var(--amber);
+  color: var(--muted-bright);
+  background: rgba(196, 157, 82, 0.08);
+}
+.lesson-audio { width: 100%; min-height: 36px; margin: 4px 0; }
+.lesson-feature-chart svg {
+  display: block;
+  width: 100%;
+  height: 104px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.15);
+}
+.lesson-curve {
+  fill: none;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+.lesson-curve.envelope { stroke: var(--mint); }
+.lesson-curve.periodicity { stroke: var(--blue); }
+.lesson-curve.roughness { stroke: var(--amber); }
+.lesson-curve-legend,
+.lesson-metrics,
+.lesson-blind-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.lesson-curve-legend { margin-top: 6px; }
+.lesson-curve-legend span,
+.lesson-metrics span { color: var(--muted); font-size: 0.62rem; }
+.lesson-curve-legend span::before {
+  display: inline-block;
+  width: 8px;
+  height: 2px;
+  margin-right: 4px;
+  background: currentcolor;
+  content: "";
+  vertical-align: middle;
+}
+.lesson-curve-legend .envelope { color: var(--mint); }
+.lesson-curve-legend .periodicity { color: var(--blue); }
+.lesson-curve-legend .roughness { color: var(--amber); }
+.lesson-metrics { margin-top: 7px; }
+.lesson-blind {
+  margin-top: 13px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.13);
+}
+.lesson-blind h3 { margin: 3px 0 8px; font-size: 0.85rem; }
+.lesson-blind-status,
+.lesson-blind-result { color: var(--muted-bright); font-size: 0.68rem; }
+.lesson-blind-actions + .lesson-blind-actions { margin-top: 8px; }
+.lesson-blind-result { display: grid; gap: 3px; margin-top: 9px; }
+@media (max-width: 900px) {
+  .lesson-stage-list,
+  .lesson-truth-grid,
+  .lesson-variant-grid { grid-template-columns: 1fr; }
+  .lesson-variant-card.observation { grid-column: auto; }
+}

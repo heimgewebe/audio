@@ -35,6 +35,7 @@ WHALE_SCRIPT = ROOT / "scripts" / "whale_live.py"
 DOCTOR_SCRIPT = ROOT / "scripts" / "audio_doctor.py"
 PLANNER_SCRIPT = ROOT / "scripts" / "profile_planner.py"
 REPLAY_SCRIPT = ROOT / "scripts" / "audio_telemetry_replay.py"
+WHALE_LESSON_SCRIPT = ROOT / "scripts" / "whale_learning_lesson.py"
 _REPLAY_SPEC = importlib.util.spec_from_file_location(
     "audio_control_telemetry_replay", REPLAY_SCRIPT
 )
@@ -43,6 +44,14 @@ if _REPLAY_SPEC is None or _REPLAY_SPEC.loader is None:
 TELEMETRY_REPLAY = importlib.util.module_from_spec(_REPLAY_SPEC)
 sys.modules[_REPLAY_SPEC.name] = TELEMETRY_REPLAY
 _REPLAY_SPEC.loader.exec_module(TELEMETRY_REPLAY)
+_LESSON_SPEC = importlib.util.spec_from_file_location(
+    "audio_control_whale_learning_lesson", WHALE_LESSON_SCRIPT
+)
+if _LESSON_SPEC is None or _LESSON_SPEC.loader is None:
+    raise RuntimeError("Buckelwal-Lektionsmodul kann nicht geladen werden.")
+WHALE_LESSON = importlib.util.module_from_spec(_LESSON_SPEC)
+sys.modules[_LESSON_SPEC.name] = WHALE_LESSON
+_LESSON_SPEC.loader.exec_module(WHALE_LESSON)
 
 SPEC_BASE_REVISION = "81fab5c57a3609b8b931a2ee5251c4f576368298"
 API_VERSION = "v1"
@@ -66,8 +75,14 @@ MAX_RUNTIME_SECONDS = 21_600
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/whale-lesson.js": ("whale-lesson.js", "application/javascript; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+    "/whale-learning-reference.wav": ("whale-learning-reference.wav", "audio/wav"),
+    "/whale-learning-morph.wav": ("whale-learning-morph.wav", "audio/wav"),
+    "/whale-learning-envelope.wav": ("whale-learning-envelope.wav", "audio/wav"),
+    "/whale-learning-periodicity.wav": ("whale-learning-periodicity.wav", "audio/wav"),
+    "/whale-learning-articulation.wav": ("whale-learning-articulation.wav", "audio/wav"),
 }
 ALLOWED_WHALE_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
 ONSITE_WARNING_CODES = frozenset({"voice-source-not-motu"})
@@ -1076,6 +1091,7 @@ class AudioControl:
                 "refresh_state": True,
                 "profile_plan": True,
                 "telemetry_replay": True,
+                "whale_learning_lesson": True,
                 "whale_control": True,
                 "profile_apply": False,
                 "recording_control": False,
@@ -1413,7 +1429,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
             "form-action 'self'; img-src 'self' data:; "
             "script-src 'self'; style-src 'self'; connect-src 'self'; "
-            "object-src 'none'; media-src 'none'; worker-src 'none'",
+            "object-src 'none'; media-src 'self'; worker-src 'none'",
         )
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -1606,6 +1622,27 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, replay, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/whale/lesson":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Der Buckelwal-Lektionsendpunkt akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                lesson = WHALE_LESSON.load_lesson_contract()
+            except WHALE_LESSON.LessonError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "whale_lesson_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, lesson, head_only=head_only)
             return
         if parsed.path == f"/api/{API_VERSION}/snapshot":
             if parsed.query not in {"", "refresh=1"}:
@@ -2016,6 +2053,9 @@ def validate_repository_contract() -> dict[str, Any]:
             PROFILE_CATALOG,
             WHALE_PROFILE,
             ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md",
+            ROOT / "inventory" / "buckelwal-learning-lesson.v1.json",
+            ROOT / "schemas" / "buckelwal-learning-lesson.v1.schema.json",
+            WHALE_LESSON_SCRIPT,
         ]
         if not path.is_file()
     ]
@@ -2039,6 +2079,11 @@ def validate_repository_contract() -> dict[str, Any]:
         raise ControlError("UI ist nicht an die versionierte Zustands-API gebunden.")
     if "/api/v1/replay" not in javascript:
         raise ControlError("UI ist nicht an den versionierten Replay-Vertrag gebunden.")
+    lesson_javascript = read_static_file("whale-lesson.js").decode("utf-8")
+    if "/api/v1/whale/lesson" not in lesson_javascript:
+        raise ControlError("UI ist nicht an den Buckelwal-Lektionsvertrag gebunden.")
+    if 'id="whale-learning-lesson"' not in index:
+        raise ControlError("UI enthält keinen Buckelwal-Lektionsfokus.")
     if "/api/v1/actions/" in javascript:
         raise ControlError(
             "Read-only Produktoberfläche enthält eine wirkende Audioaktion."
@@ -2047,6 +2092,10 @@ def validate_repository_contract() -> dict[str, Any]:
         replay = TELEMETRY_REPLAY.load_replay_contract()
     except TELEMETRY_REPLAY.ReplayError as error:
         raise ControlError("Telemetry-Replay verletzt den Vertrag.") from error
+    try:
+        lesson = WHALE_LESSON.load_lesson_contract()
+    except WHALE_LESSON.LessonError as error:
+        raise ControlError("Buckelwal-Lektion verletzt den Vertrag.") from error
     profiles = read_profiles()
     whale = read_whale_contract()
     return {
@@ -2060,6 +2109,8 @@ def validate_repository_contract() -> dict[str, Any]:
         "replay_scenarios": [
             scenario["id"] for scenario in replay["catalog"]["scenarios"]
         ],
+        "whale_lesson_id": lesson["lesson_id"],
+        "whale_lesson_variants": [variant["id"] for variant in lesson["variants"]],
         "static_files": sorted({entry[0] for entry in STATIC_FILES.values()}),
     }
 

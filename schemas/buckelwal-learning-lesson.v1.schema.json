@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.local/schemas/buckelwal-learning-lesson.v1.schema.json",
+  "title": "Buckelwal learning lesson v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "lesson_id",
+    "title",
+    "question",
+    "read_only",
+    "authoritative",
+    "authority",
+    "source_revision_contract",
+    "truth_layers",
+    "reference_source",
+    "model_sources",
+    "steps",
+    "variants",
+    "blind_comparison",
+    "does_not_establish"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "buckelwal_learning_lesson"
+    },
+    "lesson_id": {
+      "const": "from-tone-to-whale-unit-v1"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "read_only": {
+      "const": true
+    },
+    "authoritative": {
+      "const": false
+    },
+    "authority": {
+      "const": "educational-model"
+    },
+    "source_revision_contract": {
+      "type": "string",
+      "minLength": 1
+    },
+    "truth_layers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observation",
+        "model",
+        "extrapolation"
+      ],
+      "properties": {
+        "observation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "extrapolation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reference_source": {
+      "type": "object"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object"
+      }
+    },
+    "variants": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object"
+      }
+    },
+    "blind_comparison": {
+      "type": "object"
+    },
+    "does_not_establish": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "model_sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "morph_manifest",
+        "source_manifest",
+        "sources"
+      ],
+      "properties": {
+        "morph_manifest": {
+          "type": "object"
+        },
+        "source_manifest": {
+          "type": "object"
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}
