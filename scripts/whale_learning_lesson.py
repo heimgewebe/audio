@@ -15,6 +15,7 @@ DEFAULT_MANIFEST = ROOT / "inventory" / "buckelwal-learning-lesson.v1.json"
 DEFAULT_UI_ROOT = ROOT / "ui"
 MAX_MANIFEST_BYTES = 512_000
 MAX_AUDIO_BYTES = 1_048_576
+MAX_SOURCE_BYTES = 16_777_216
 VARIANT_IDS = (
     "reference",
     "morph",
@@ -55,6 +56,39 @@ def _read_regular(path: pathlib.Path, *, label: str, maximum_bytes: int) -> byte
         return payload
     finally:
         os.close(descriptor)
+
+
+def _repository_binding_payload(
+    raw: Any, *, label: str, maximum_bytes: int = MAX_SOURCE_BYTES
+) -> tuple[pathlib.Path, bytes]:
+    if not isinstance(raw, dict):
+        raise LessonError(f"{label} ist keine Dateibindung.")
+    filename = raw.get("file")
+    expected_sha = raw.get("sha256")
+    if not isinstance(filename, str) or not filename:
+        raise LessonError(f"{label} hat keinen gültigen Pfad.")
+    relative = pathlib.PurePosixPath(filename)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        raise LessonError(f"{label} hat einen unsicheren Pfad.")
+    if (
+        not isinstance(expected_sha, str)
+        or len(expected_sha) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha)
+    ):
+        raise LessonError(f"{label} hat keinen gültigen SHA-256.")
+    path = ROOT.joinpath(*relative.parts)
+    try:
+        path.relative_to(ROOT)
+    except ValueError as error:
+        raise LessonError(f"{label} verlässt das Repository.") from error
+    payload = _read_regular(path, label=label, maximum_bytes=maximum_bytes)
+    if hashlib.sha256(payload).hexdigest() != expected_sha:
+        raise LessonError(f"{label} hat den falschen SHA-256.")
+    return path, payload
 
 
 def _checked_text(value: Any, *, label: str, maximum: int = 2000) -> str:
@@ -121,19 +155,38 @@ def load_lesson_contract(
         or not model_sources["sources"]
     ):
         raise LessonError("Buckelwal-Lektion bindet ihre Modellquellen nicht.")
-    for binding_name in ("morph_manifest", "source_manifest"):
-        binding = model_sources.get(binding_name)
-        if (
-            not isinstance(binding, dict)
-            or not isinstance(binding.get("file"), str)
-            or not isinstance(binding.get("sha256"), str)
-            or len(binding["sha256"]) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in binding["sha256"]
-            )
-        ):
-            raise LessonError("Buckelwal-Lektion hat ungültige Modellbindungen.")
+    _morph_path, morph_payload = _repository_binding_payload(
+        model_sources.get("morph_manifest"), label="Buckelwal-Morphmanifest"
+    )
+    _source_path, source_payload = _repository_binding_payload(
+        model_sources.get("source_manifest"), label="Buckelwal-Quellmanifest"
+    )
+    try:
+        morph_manifest = json.loads(morph_payload.decode("utf-8"))
+        source_manifest = json.loads(source_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise LessonError("Buckelwal-Modellquellen enthalten ungültiges JSON.") from error
+    if (
+        not isinstance(morph_manifest, dict)
+        or not isinstance(morph_manifest.get("anchors"), list)
+        or not isinstance(source_manifest, dict)
+        or not isinstance(source_manifest.get("clips"), list)
+        or not isinstance(source_manifest.get("sources"), list)
+    ):
+        raise LessonError("Buckelwal-Modellquellen haben die falsche Form.")
+    clips = {record.get("id"): record for record in source_manifest["clips"] if isinstance(record, dict)}
+    sources = {record.get("id"): record for record in source_manifest["sources"] if isinstance(record, dict)}
+    expected_source_ids: list[str] = []
+    for anchor_record in morph_manifest["anchors"]:
+        if not isinstance(anchor_record, dict):
+            raise LessonError("Buckelwal-Morphanker ist ungültig.")
+        clip = clips.get(anchor_record.get("clip_id"))
+        if not isinstance(clip, dict) or not isinstance(clip.get("source_id"), str):
+            raise LessonError("Buckelwal-Morphanker ist nicht auf eine Quelle gebunden.")
+        source_id = clip["source_id"]
+        if source_id not in expected_source_ids:
+            expected_source_ids.append(source_id)
+
     checked_model_sources: list[dict[str, str]] = []
     seen_model_source_ids: set[str] = set()
     for raw_source in model_sources["sources"]:
@@ -145,23 +198,36 @@ def load_lesson_contract(
         if source_id in seen_model_source_ids:
             raise LessonError("Buckelwal-Modellquelle ist doppelt eingetragen.")
         seen_model_source_ids.add(source_id)
-        checked_model_sources.append(
-            {
-                field: _checked_text(
-                    raw_source.get(field),
-                    label=f"Modellquelle {source_id}.{field}",
-                    maximum=2000,
-                )
-                for field in (
-                    "id",
-                    "title",
-                    "license",
-                    "license_url",
-                    "attribution",
-                    "source_page",
-                )
-            }
-        )
+        actual_source = sources.get(source_id)
+        if not isinstance(actual_source, dict):
+            raise LessonError("Buckelwal-Modellquelle fehlt im Quellmanifest.")
+        checked = {
+            field: _checked_text(
+                raw_source.get(field),
+                label=f"Modellquelle {source_id}.{field}",
+                maximum=2000,
+            )
+            for field in (
+                "id",
+                "title",
+                "license",
+                "license_url",
+                "attribution",
+                "source_page",
+            )
+        }
+        if any(checked[field] != actual_source.get(field) for field in checked):
+            raise LessonError("Buckelwal-Modellquellenmetadaten sind gedriftet.")
+        checked_model_sources.append(checked)
+    if [source["id"] for source in checked_model_sources] != expected_source_ids:
+        raise LessonError("Buckelwal-Modellquellen entsprechen nicht den Morphankern.")
+
+    reference_source = value.get("reference_source")
+    reference_path, _reference_payload = _repository_binding_payload(
+        reference_source, label="Buckelwal-Referenzquelle"
+    )
+    if reference_path.suffix.lower() != ".wav":
+        raise LessonError("Buckelwal-Referenzquelle ist keine WAV-Datei.")
 
     variants = value.get("variants")
     if not isinstance(variants, list) or len(variants) != len(VARIANT_IDS):

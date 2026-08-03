@@ -72,6 +72,40 @@ class WhaleLearningLessonTests(unittest.TestCase):
                     target_manifest, ui_root=ui_root
                 )
 
+    def test_model_and_reference_repository_bindings_fail_closed(self):
+        source = json.loads(
+            (ROOT / "inventory" / "buckelwal-learning-lesson.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            ui_root = root / "ui"
+            shutil.copytree(ROOT / "ui", ui_root)
+            manifest = root / "lesson.json"
+            source["model_sources"]["morph_manifest"]["sha256"] = "0" * 64
+            manifest.write_text(json.dumps(source), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.LessonError, "Morphmanifest.*SHA-256"):
+                MODULE.load_lesson_contract(manifest, ui_root=ui_root)
+            source = json.loads(
+                (ROOT / "inventory" / "buckelwal-learning-lesson.v1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            source["model_sources"]["sources"].reverse()
+            manifest.write_text(json.dumps(source), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.LessonError, "Morphankern"):
+                MODULE.load_lesson_contract(manifest, ui_root=ui_root)
+            source = json.loads(
+                (ROOT / "inventory" / "buckelwal-learning-lesson.v1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            source["reference_source"]["sha256"] = "0" * 64
+            manifest.write_text(json.dumps(source), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.LessonError, "Referenzquelle.*SHA-256"):
+                MODULE.load_lesson_contract(manifest, ui_root=ui_root)
+
     def test_unknown_variant_and_truth_collapse_fail_closed(self):
         source = json.loads(
             (
