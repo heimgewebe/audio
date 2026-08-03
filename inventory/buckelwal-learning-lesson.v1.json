@@ -462,7 +462,7 @@
       "audio_file": "whale-learning-envelope.wav",
       "audio_sha256": "ee9e47de7e0ad56683cf207f11f08a2c481d3a895774cd14091c2be9561eeeea",
       "channels": 1,
-      "description": "Nur die aus Aufnahmen abgeleitete Lautst\u00e4rkeentwicklung wird \u00fcber den Morph gelegt. Das ist ein Modellversuch, kein biologisches Stimmapparat.",
+      "description": "Nur die aus Aufnahmen abgeleitete Lautst\u00e4rkeentwicklung wird \u00fcber den Morph gelegt. Das ist ein Modellversuch, kein biologischer Stimmapparat.",
       "duration_seconds": 3.2,
       "enabled_components": [
         "source_envelope"

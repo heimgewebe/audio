@@ -9,6 +9,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts" / "whale_learning_lesson.py"
+BUILDER_PATH = ROOT / "scripts" / "build_whale_learning_lesson.py"
 SPEC = importlib.util.spec_from_file_location(
     "whale_learning_lesson_test", MODULE_PATH
 )
@@ -19,6 +20,18 @@ SPEC.loader.exec_module(MODULE)
 
 
 class WhaleLearningLessonTests(unittest.TestCase):
+    def test_builder_uses_one_pcm_quantization_and_streaming_rms(self):
+        source = BUILDER_PATH.read_text(encoding="utf-8")
+        quantization = (
+            "int(round(max(-1.0, min(1.0, value)) * 32767.0))"
+        )
+        self.assertEqual(source.count(quantization), 1)
+        self.assertIn("pcm = pcm16_samples(samples)", source)
+        self.assertIn("payload = wav_bytes(pcm)", source)
+        self.assertIn("feature_curves(samples, pcm)", source)
+        self.assertNotIn("values = list(samples)", source)
+        self.assertNotIn("local = samples[", source)
+
     def test_contract_binds_truth_layers_audio_and_features(self):
         lesson = MODULE.load_lesson_contract()
         self.assertFalse(lesson["authoritative"])
@@ -40,6 +53,11 @@ class WhaleLearningLessonTests(unittest.TestCase):
             "CC-BY-2.5",
             {source["license"] for source in lesson["model_sources"]["sources"]},
         )
+        envelope = next(
+            variant for variant in lesson["variants"] if variant["id"] == "envelope"
+        )
+        self.assertIn("kein biologischer Stimmapparat", envelope["description"])
+        self.assertNotIn("kein biologisches Stimmapparat", envelope["description"])
         for variant in lesson["variants"]:
             payload = (ROOT / "ui" / variant["audio_file"]).read_bytes()
             self.assertEqual(

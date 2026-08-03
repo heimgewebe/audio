@@ -106,17 +106,31 @@ function lessonFeatureChart(variant) {
   return wrapper;
 }
 
-function stopLessonAudio() {
-  if (state.lessonAudio) {
-    state.lessonAudio.pause();
-    state.lessonAudio.currentTime = 0;
-    state.lessonAudio = null;
+function stopLessonAudio(exceptAudio = null) {
+  const trackedAudio = state.lessonAudio;
+  if (trackedAudio && trackedAudio !== exceptAudio) {
+    trackedAudio.pause();
+    trackedAudio.currentTime = 0;
   }
+  if (trackedAudio !== exceptAudio) state.lessonAudio = null;
   const content = byId("dialog-content");
   for (const audio of content ? content.querySelectorAll("audio") : []) {
+    if (audio === exceptAudio || audio === trackedAudio) continue;
     audio.pause();
     audio.currentTime = 0;
   }
+}
+
+function trackLessonAudio(audio) {
+  audio.addEventListener("play", () => {
+    stopLessonAudio(audio);
+    state.lessonAudio = audio;
+  });
+  const release = () => {
+    if (state.lessonAudio === audio) state.lessonAudio = null;
+  };
+  audio.addEventListener("pause", release);
+  audio.addEventListener("ended", release);
 }
 
 function playLessonVariant(id, statusTarget = null) {
@@ -124,6 +138,7 @@ function playLessonVariant(id, statusTarget = null) {
   if (!variant) return;
   stopLessonAudio();
   const audio = new Audio(variant.audio_url);
+  trackLessonAudio(audio);
   state.lessonAudio = audio;
   if (statusTarget) statusTarget.textContent = `Spielt: ${variant.title}`;
   audio.addEventListener(
@@ -135,6 +150,7 @@ function playLessonVariant(id, statusTarget = null) {
     { once: true },
   );
   audio.play().catch(() => {
+    if (state.lessonAudio === audio) state.lessonAudio = null;
     if (statusTarget) {
       statusTarget.textContent = "Der Browser hat die Hörprobe blockiert.";
     }
@@ -252,6 +268,7 @@ function openWhaleLesson(trigger) {
       audio.preload = "none";
       audio.src = variant.audio_url;
       audio.setAttribute("aria-label", `Hörprobe: ${variant.title}`);
+      trackLessonAudio(audio);
       card.append(audio);
       appendText(card, "p", "listen-for", variant.listen_for);
       card.append(lessonFeatureChart(variant));
