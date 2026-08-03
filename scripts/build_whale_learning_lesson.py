@@ -62,13 +62,16 @@ def sha256(payload: bytes) -> str:
 
 
 def rms(samples: Iterable[float]) -> float:
-    values = list(samples)
-    return math.sqrt(sum(value * value for value in values) / max(1, len(values)))
+    total = 0.0
+    count = 0
+    for value in samples:
+        total += value * value
+        count += 1
+    return math.sqrt(total / max(1, count))
 
 
 def normalize(samples: list[float]) -> list[float]:
-    active = [value for value in samples if abs(value) >= 1.0e-5]
-    measured = rms(active)
+    measured = rms(value for value in samples if abs(value) >= 1.0e-5)
     gain = TARGET_RMS / measured if measured > 1.0e-12 else 1.0
     peak = max((abs(value) for value in samples), default=0.0)
     if peak * gain > PEAK_LIMIT:
@@ -87,22 +90,29 @@ def fade_edges(samples: list[float], seconds: float = 0.04) -> list[float]:
     return output
 
 
-def wav_bytes(samples: list[float]) -> bytes:
-    pcm = array.array(
+def pcm16_samples(samples: Iterable[float]) -> array.array:
+    return array.array(
         "h",
         (
             int(round(max(-1.0, min(1.0, value)) * 32767.0))
             for value in samples
         ),
     )
+
+
+def wav_bytes(pcm: array.array) -> bytes:
+    if pcm.typecode != "h":
+        raise ValueError("whale lesson PCM must use signed 16-bit samples")
+    little_endian_pcm = pcm
     if sys.byteorder != "little":
-        pcm.byteswap()
+        little_endian_pcm = array.array("h", pcm)
+        little_endian_pcm.byteswap()
     stream = io.BytesIO()
     with wave.open(stream, "wb") as handle:
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(SAMPLE_RATE)
-        handle.writeframes(pcm.tobytes())
+        handle.writeframes(little_endian_pcm.tobytes())
     return stream.getvalue()
 
 
@@ -202,11 +212,8 @@ def render_model(enabled: frozenset[str] | None) -> list[float]:
 
 def feature_curves(
     samples: list[float],
+    pcm: array.array,
 ) -> tuple[dict[str, list[float]], dict[str, object]]:
-    pcm = [
-        int(round(max(-1.0, min(1.0, value)) * 32767.0))
-        for value in samples
-    ]
     analysis = analyze_samples(
         pcm,
         source_nyquist_hz=SAMPLE_RATE / 2,
@@ -219,10 +226,9 @@ def feature_curves(
     envelopes: list[float] = []
     for index in range(48):
         center = round(index / 47 * (len(samples) - 1))
-        local = samples[
-            max(0, center - radius) : min(len(samples), center + radius)
-        ]
-        envelopes.append(rms(local))
+        start = max(0, center - radius)
+        stop = min(len(samples), center + radius)
+        envelopes.append(rms(samples[position] for position in range(start, stop)))
     peak = max(envelopes) or 1.0
     envelope = [round(min(1.0, value / peak), 8) for value in envelopes]
     summary = analysis["summary"]
@@ -291,7 +297,7 @@ def build() -> tuple[dict[str, bytes], bytes]:
             "description": (
                 "Nur die aus Aufnahmen abgeleitete Lautstärkeentwicklung wird "
                 "über den Morph gelegt. Das ist ein Modellversuch, kein "
-                "biologisches Stimmapparat."
+                "biologischer Stimmapparat."
             ),
             "listen_for": (
                 "Vergleiche Beginn, Entwicklung und Ausklang mit Stufe 1."
@@ -335,10 +341,11 @@ def build() -> tuple[dict[str, bytes], bytes]:
     audio_payloads: dict[str, bytes] = {}
     variants: list[dict[str, object]] = []
     for variant_id, samples in rendered.items():
-        payload = wav_bytes(samples)
+        pcm = pcm16_samples(samples)
+        payload = wav_bytes(pcm)
         filename = filename_by_id[variant_id]
         audio_payloads[filename] = payload
-        features, summary = feature_curves(samples)
+        features, summary = feature_curves(samples, pcm)
         variants.append(
             {
                 "id": variant_id,

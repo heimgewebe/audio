@@ -10,6 +10,7 @@
   --line: rgba(220, 235, 225, 0.11);
   --line-strong: rgba(220, 235, 225, 0.2);
   --mint: #b9e6b5;
+  --mint-border: rgba(185, 230, 181, 0.34);
   --mint-strong: #d7ffd1;
   --mint-ink: #101a12;
   --amber: #e1b968;
@@ -2118,7 +2119,7 @@ body.dialog-open {
 }
 .lesson-variant-card.observation {
   grid-column: 1 / -1;
-  border-color: rgba(185, 230, 181, 0.34);
+  border-color: var(--mint-border);
 }
 .lesson-variant-heading {
   display: flex;
