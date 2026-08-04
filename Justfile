@@ -2,6 +2,7 @@ check:
     bash tests/test-audio-safety.sh
     bash scripts/check-audio-safety .
     python3 scripts/audio_control.py check
+    python3 scripts/audio_live_telemetry.py check
     ./scripts/audio-product-model check
     ./scripts/audio-telemetry-replay check
     python3 scripts/build_whale_learning_lesson.py --check
@@ -11,6 +12,31 @@ check:
 
 product-model-check:
     ./scripts/audio-product-model check
+
+telemetry-live-check:
+    python3 scripts/audio_live_telemetry.py check
+
+telemetry-live-safety:
+    python3 scripts/audio_live_telemetry.py safety
+
+telemetry-live-show:
+    python3 scripts/audio_live_telemetry.py show
+
+# Bounded, deterministic proof of queue bounds, drop accounting and collector
+# isolation. Synthetic evidence only; it says nothing about real hardware.
+telemetry-soak-fast iterations="2000" report="/tmp/audio-telemetry-soak-fast.v1.json":
+    python3 scripts/audio_telemetry_soak.py --mode synthetic --iterations "{{iterations}}" --load-factor 4 --report "{{report}}"
+
+# Real one-hour bounded load run: 8 snapshot reads every 0.25 s = 32/s.
+telemetry-soak-1h report="/tmp/audio-telemetry-soak-1h.v1.json":
+    python3 scripts/audio_telemetry_soak.py --mode live --duration-seconds 3600 --sample-interval-seconds 0.25 --load-factor 8 --report "{{report}}"
+
+# Real eight-hour passive baseline soak with one snapshot per observation.
+telemetry-soak-8h report="/tmp/audio-telemetry-soak-8h.v1.json":
+    python3 scripts/audio_telemetry_soak.py --mode live --duration-seconds 28800 --sample-interval-seconds 30 --load-factor 1 --report "{{report}}"
+
+telemetry-soak-summary report="/tmp/audio-telemetry-soak-8h.v1.json":
+    python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print(json.dumps({k: r[k] for k in ('kind','status','mode','evidence_class','live_proof','live_proof_reason','duration_seconds','queue_bounds','memory','cpu','xruns','failed_checks')}, ensure_ascii=False, indent=2))" "{{report}}"
 
 telemetry-replay-check:
     ./scripts/audio-telemetry-replay check

@@ -98,6 +98,26 @@
             </div>
           </article>
 
+          <article
+            class="depth-panel telemetry-panel"
+            id="live-telemetry"
+            data-depth-panel
+            data-focus-title="Live-Telemetrie"
+            data-focus-summary="Passiv beobachtete Ströme mit eigener Sequenz, Frische und Fehlerlage; keine Geräte-, Routen- oder Linkwirkung."
+          >
+            <header class="depth-heading">
+              <div><p class="eyebrow">Passiv beobachtet · nicht wirkend</p><h2>Live-Telemetrie</h2></div>
+              <div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div>
+            </header>
+            <p class="telemetry-authority" id="telemetry-authority" role="status" aria-live="polite">Telemetrie wird gelesen.</p>
+            <div class="telemetry-grid" id="telemetry-grid"></div>
+            <div class="depth-detail" hidden>
+              <div class="section-heading compact"><h3>Kanäle und Grenzen</h3></div>
+              <dl class="service-list" id="telemetry-detail"></dl>
+              <p class="read-only-boundary">Die Telemetrie liest nur. Sie ändert keine Standardgeräte, Routen, Profile, Lautstärken oder Verbindungen und öffnet keinen Audiostrom.</p>
+            </div>
+          </article>
+
           <article class="depth-panel" data-depth-panel data-focus-title="Nächste Orte" data-focus-summary="Vier stabile Produktorte ersetzen die bisherige Aufgabenzerlegung.">
             <header class="depth-heading"><div><p class="eyebrow">Navigation</p><h2>Weiterarbeiten</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="task-grid" id="home-tasks"></div>

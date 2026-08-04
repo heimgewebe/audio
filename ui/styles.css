@@ -2189,3 +2189,88 @@ body.dialog-open {
   .lesson-variant-grid { grid-template-columns: 1fr; }
   .lesson-variant-card.observation { grid-column: auto; }
 }
+
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.telemetry-card {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+}
+
+.telemetry-card.is-live { border-left-color: var(--mint); }
+.telemetry-card.is-stale { border-left-color: var(--amber); }
+.telemetry-card.is-unavailable { border-left-color: var(--red); }
+
+.telemetry-card strong {
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.telemetry-card small {
+  color: var(--muted);
+  font-size: 0.63rem;
+  overflow-wrap: anywhere;
+}
+
+.telemetry-card .telemetry-error {
+  color: var(--red);
+}
+
+.telemetry-chip {
+  justify-self: start;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted-bright);
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.telemetry-chip[data-availability="live"] {
+  border-color: var(--mint-border);
+  color: var(--mint);
+}
+
+.telemetry-chip[data-availability="stale"] {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.telemetry-chip[data-availability="unavailable"] {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.telemetry-authority {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  background: var(--panel-soft);
+  font-size: 0.7rem;
+}
+
+@media (max-width: 1080px) {
+  .telemetry-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .telemetry-grid {
+    grid-template-columns: 1fr;
+  }
+}

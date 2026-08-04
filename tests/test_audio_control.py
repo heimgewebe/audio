@@ -44,6 +44,26 @@ class SurfaceParser(HTMLParser):
         )
 
 
+class StubTelemetryCollector(MODULE.LIVE_TELEMETRY.Collector):
+    """A harmless collector so telemetry lifecycle tests spawn no subprocess."""
+
+    name = "stub"
+    stream_id = "stub-stream"
+    label = "Stub"
+    interval_seconds = 0.05
+
+    def __init__(self):
+        self.calls = 0
+
+    def sample(self, context):
+        self.calls += 1
+        return {"tick": self.calls}
+
+
+def stub_telemetry_hub():
+    return MODULE.LIVE_TELEMETRY.TelemetryHub([StubTelemetryCollector()])
+
+
 class InMemorySocket:
     def __init__(self, request):
         self.input = io.BytesIO(request)
@@ -1182,6 +1202,165 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("? whale.service.voice_mode", sounds)
         self.assertIn(": null;", sounds)
 
+    def test_live_telemetry_is_bound_to_the_service_lifetime(self):
+        controller = MODULE.AudioControl(
+            runner=FakeRunner(),
+            action_token="test-token",
+            cache_seconds=0,
+            telemetry=stub_telemetry_hub(),
+        )
+        self.assertFalse(controller.telemetry.running)
+        started = controller.start_telemetry()
+        try:
+            self.assertEqual(started["state"], "running")
+            self.assertTrue(controller.telemetry.running)
+            self.assertEqual(
+                controller.telemetry.control.snapshot()["accepted_total"], 1
+            )
+        finally:
+            stopped = controller.stop_telemetry()
+        self.assertEqual(stopped["state"], "stopped")
+        self.assertEqual(stopped["timed_out"], 0)
+        self.assertFalse(controller.telemetry.running)
+        self.assertEqual(controller.stop_telemetry()["state"], "already-stopped")
+
+    def test_broken_telemetry_never_blocks_the_control_service(self):
+        controller = MODULE.AudioControl(
+            runner=FakeRunner(),
+            action_token="test-token",
+            cache_seconds=0,
+            telemetry=None,
+        )
+        self.assertIsNone(controller.telemetry)
+        self.assertEqual(controller.start_telemetry()["state"], "unavailable")
+        self.assertEqual(controller.stop_telemetry()["state"], "unavailable")
+        with self.assertRaises(MODULE.ControlError):
+            controller.telemetry_snapshot()
+        snapshot = controller.snapshot(refresh=True)
+        self.assertFalse(snapshot["capabilities"]["live_telemetry"])
+        self.assertEqual(snapshot["summary"]["runtime_state"], "healthy")
+
+        with mock.patch.object(
+            MODULE.LIVE_TELEMETRY,
+            "build_default_hub",
+            side_effect=RuntimeError("telemetry core is broken"),
+        ):
+            degraded = MODULE.AudioControl(runner=FakeRunner(), cache_seconds=0)
+        self.assertIsNone(degraded.telemetry)
+        self.assertEqual(degraded.start_telemetry()["state"], "unavailable")
+
+    def test_telemetry_snapshot_stays_passive_and_declares_its_boundary(self):
+        controller = self.controller()
+        telemetry = controller.telemetry_snapshot()
+        self.assertEqual(telemetry["kind"], "audio_live_telemetry_snapshot")
+        self.assertEqual(telemetry["authority"], "passive-observation")
+        self.assertTrue(telemetry["read_only"])
+        self.assertFalse(telemetry["authoritative"])
+        self.assertFalse(telemetry["running"])
+        self.assertEqual(
+            {stream["id"] for stream in telemetry["streams"]},
+            set(MODULE.LIVE_TELEMETRY.STREAM_IDS),
+        )
+        for key in (
+            "modifies_defaults",
+            "modifies_routes",
+            "modifies_profiles",
+            "modifies_volumes",
+            "modifies_links",
+        ):
+            with self.subTest(key=key):
+                self.assertFalse(telemetry["safety"][key])
+        self.assertTrue(telemetry["control_channel"]["lossless"])
+        self.assertFalse(telemetry["control_channel"]["shares_telemetry_queue"])
+        self.assertEqual(self.runner_calls_for_telemetry(controller), [])
+
+    @staticmethod
+    def runner_calls_for_telemetry(controller):
+        return [
+            call
+            for call in controller.runner.calls
+            if "pw-dump" in call[0] or "pw-top" in call[0]
+        ]
+
+    def test_serve_starts_and_stops_telemetry_with_the_service(self):
+        events = []
+
+        class RecordingServer:
+            def __init__(self, address, controller):
+                self.controller = controller
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exception):
+                return False
+
+            def serve_forever(self, poll_interval=0.25):
+                events.append(("serving", self.controller.telemetry.running))
+                raise KeyboardInterrupt
+
+        with (
+            mock.patch.object(MODULE, "validate_repository_contract", return_value={}),
+            mock.patch.object(MODULE, "AudioControlHTTPServer", RecordingServer),
+            mock.patch.object(MODULE, "notify_systemd_ready", return_value=False),
+            mock.patch.object(
+                MODULE.LIVE_TELEMETRY,
+                "build_default_hub",
+                side_effect=lambda **kwargs: stub_telemetry_hub(),
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as output,
+        ):
+            MODULE.serve(host="127.0.0.1", port=8765, cache_seconds=0)
+        self.assertEqual(events, [("serving", True)])
+        readiness = json.loads(output.getvalue())
+        self.assertEqual(readiness["live_telemetry"], "running")
+
+    def test_repository_contract_binds_the_passive_telemetry_boundary(self):
+        report = MODULE.validate_repository_contract()
+        self.assertEqual(
+            set(report["live_telemetry_streams"]),
+            set(MODULE.LIVE_TELEMETRY.STREAM_IDS),
+        )
+        self.assertEqual(report["live_telemetry_safety"], "passive-observation")
+
+    def test_telemetry_panel_and_polling_are_bound_without_touching_controls(self):
+        html = (ROOT / "ui" / "index.html").read_text()
+        self.assertIn('id="live-telemetry"', html)
+        self.assertIn('id="telemetry-grid"', html)
+        self.assertIn('id="telemetry-authority"', html)
+        self.assertIn('id="telemetry-detail"', html)
+
+        styles = (ROOT / "ui" / "styles.css").read_text()
+        self.assertIn(".telemetry-grid", styles)
+        self.assertIn(".telemetry-card.is-stale", styles)
+        self.assertIn('.telemetry-chip[data-availability="unavailable"]', styles)
+
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        self.assertIn('fetchJson("/api/v1/telemetry"', javascript)
+        self.assertIn("scheduleTelemetryPolling", javascript)
+        self.assertIn("TELEMETRY_POLL_MS", javascript)
+        loader_start = javascript.index("async function loadTelemetry()")
+        loader_end = javascript.index("function scheduleTelemetryPolling()", loader_start)
+        loader = javascript[loader_start:loader_end]
+        self.assertNotIn("showNotice", loader)
+        self.assertNotIn("setLoading", loader)
+        self.assertNotIn("refreshSnapshot", loader)
+        self.assertIn("state.telemetryError", loader)
+        renderer_start = javascript.index("function renderTelemetry()")
+        renderer_end = javascript.index("async function loadTelemetry()", renderer_start)
+        renderer = javascript[renderer_start:renderer_end]
+        self.assertIn("state.telemetryError ||", renderer)
+        self.assertIn("nicht lesbar", renderer)
+        self.assertIn("ausdrücklich als veraltet", renderer)
+        self.assertIn("TELEMETRY_AVAILABILITY_LABELS", javascript)
+        self.assertNotIn("innerHTML", javascript)
+        renderer_all_start = javascript.index("function renderAll()")
+        renderer_all_end = javascript.index("function renderTruth()", renderer_all_start)
+        self.assertNotIn(
+            "renderTelemetry",
+            javascript[renderer_all_start:renderer_all_end],
+        )
+
     def test_specification_is_bound_to_exact_base_revision(self):
         text = (ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md").read_text()
         self.assertIn(MODULE.SPEC_BASE_REVISION, text)
@@ -1345,6 +1524,78 @@ class AudioControlHTTPTests(unittest.TestCase):
         self.assertEqual(json.loads(payload)["error"]["code"], "invalid_query")
         self.assertEqual(self.runner.calls, before)
 
+    def test_telemetry_endpoint_is_read_only_bounded_and_query_free(self):
+        before = list(self.runner.calls)
+        status, headers, payload = self.request("GET", "/api/v1/telemetry")
+        self.assertEqual(status, 200)
+        telemetry = json.loads(payload)
+        self.assertEqual(telemetry["kind"], "audio_live_telemetry_snapshot")
+        self.assertEqual(telemetry["authority"], "passive-observation")
+        self.assertTrue(telemetry["read_only"])
+        self.assertFalse(telemetry["authoritative"])
+        self.assertEqual(
+            len(telemetry["streams"]), len(MODULE.LIVE_TELEMETRY.STREAM_IDS)
+        )
+        for stream in telemetry["streams"]:
+            with self.subTest(stream=stream["id"]):
+                self.assertIn(
+                    stream["availability"],
+                    {"starting", "live", "stale", "unavailable"},
+                )
+                self.assertLessEqual(stream["buffer_depth"], stream["buffer_capacity"])
+                self.assertGreaterEqual(stream["sequence"], 0)
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        # The endpoint only reads already collected state; it starts nothing.
+        self.assertEqual(self.runner.calls, before)
+
+        status, _headers, payload = self.request("GET", "/api/v1/telemetry?stream=xruns")
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(payload)["error"]["code"], "invalid_query")
+        self.assertEqual(self.runner.calls, before)
+
+    def test_telemetry_endpoint_reports_stale_and_unavailable_explicitly(self):
+        self.assertFalse(
+            json.loads(self.request("GET", "/api/v1/telemetry")[2])["running"]
+        )
+        broken = self.controller.telemetry
+        self.controller.telemetry = None
+        try:
+            status, _headers, payload = self.request("GET", "/api/v1/telemetry")
+        finally:
+            self.controller.telemetry = broken
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(payload)["error"]["code"], "telemetry_unavailable")
+
+        class ExplodingHub:
+            def snapshot(self):
+                raise RuntimeError("telemetry core exploded")
+
+        self.controller.telemetry = ExplodingHub()
+        try:
+            status, _headers, payload = self.request("GET", "/api/v1/telemetry")
+        finally:
+            self.controller.telemetry = broken
+        self.assertEqual(status, 503)
+        self.assertEqual(json.loads(payload)["error"]["code"], "telemetry_unavailable")
+        # A failing telemetry core must not disturb the ordinary state contract.
+        status, _headers, payload = self.request("GET", "/api/v1/snapshot")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["kind"], "audio_control_snapshot")
+
+    def test_telemetry_endpoint_rejects_write_methods(self):
+        status, _headers, _payload = self.request(
+            "POST",
+            "/api/v1/telemetry",
+            body="{}",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": f"http://127.0.0.1:{self.port}",
+                "X-Audio-Control-Token": "http-token",
+            },
+        )
+        self.assertEqual(status, 404)
+
     def test_whale_lesson_endpoint_and_audio_are_read_only_and_bound(self):
         before = list(self.runner.calls)
         status, headers, payload = self.request("GET", "/api/v1/whale/lesson")
@@ -1431,6 +1682,10 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         status, _headers, payload = self.request("GET", "/api/v1/whale/lesson")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(payload)["authority"], "educational-model")
+        self.assertEqual(self.runner.calls, before)
+        status, _headers, payload = self.request("GET", "/api/v1/telemetry")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["authority"], "passive-observation")
         self.assertEqual(self.runner.calls, before)
         status, _headers, _payload = self.request("GET", "/../../README.md")
         self.assertEqual(status, 404)

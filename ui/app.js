@@ -85,6 +85,29 @@ const WARNING_LABELS = {
 };
 
 const INTERACTION_GRACE_MS = 1200;
+const TELEMETRY_POLL_MS = 2000;
+
+const TELEMETRY_STREAM_LABELS = {
+  "audio-levels": "Pegel",
+  "midi-activity": "MIDI",
+  transport: "Transport",
+  "cpu-load": "CPU-Last",
+  xruns: "XRuns",
+  "device-graph": "Geräte/Graph",
+};
+
+const TELEMETRY_AVAILABILITY_LABELS = {
+  live: "live",
+  stale: "veraltet",
+  starting: "startet",
+  unavailable: "nicht verfügbar",
+};
+
+const TRANSPORT_STATE_LABELS = {
+  running: "läuft",
+  idle: "bereit",
+  unknown: "unbekannt",
+};
 
 const state = {
   snapshot: null,
@@ -98,6 +121,13 @@ const state = {
   lessonAudio: null,
   blindOrder: [],
   blindAnswered: false,
+  telemetry: null,
+  telemetryError: null,
+  telemetryTimer: null,
+  telemetryRequestSequence: 0,
+  telemetryPresentationSequence: 0,
+  telemetryPresentedRequest: 0,
+  telemetryUpdatedAt: null,
   route: "now",
   loading: false,
   autoRefresh: true,
@@ -351,10 +381,14 @@ function renderTruth() {
   const graph = doctor.graph || {};
   const presence = snapshot.presence || {};
   const summary = snapshot.summary || {};
+  const truth = snapshot.truth_stream || {};
   const observed = presence.observed_count ?? 0;
   const desired = presence.desired_count ?? 0;
   byId("truth-observed").textContent = doctor.status === "ok" ? `${observed}/${desired} Geräte` : "nicht lesbar";
-  byId("truth-observed-detail").textContent = doctor.status === "ok" ? "autoritativ zurückgelesen" : "kein positiver Zustand angenommen";
+  byId("truth-observed-detail").textContent =
+    doctor.status === "ok"
+      ? `Wahrheit Seq ${truth.sequence ?? "—"} · ${truth.freshness || "offen"} · ${truth.age_ms ?? "—"} ms`
+      : `kein positiver Zustand angenommen · Fehler ${truth.error_count ?? "—"}`;
   byId("truth-configured").textContent = graph.force_rate_hz ? `${graph.force_rate_hz} Hz` : "offen";
   byId("truth-configured-detail").textContent = graph.default_sink ? `Ziel: ${formatEndpoint(graph.default_sink)}` : "kein Ziel lesbar";
   const physicalCount = summary.physical_unknown_count || 0;
@@ -1043,6 +1077,134 @@ function resetReplay() {
   renderReplay();
 }
 
+function telemetryValueText(stream) {
+  const value = stream.value;
+  if (!value) return "keine Beobachtung";
+  switch (stream.id) {
+    case "audio-levels":
+      return `${value.peak_dbfs} / ${value.rms_dbfs} dBFS`;
+    case "midi-activity":
+      return `${value.client_count} Clients · ${value.port_count} Ports`;
+    case "transport":
+      return TRANSPORT_STATE_LABELS[value.state] || String(value.state);
+    case "cpu-load":
+      return value.service_cpu_percent === null || value.service_cpu_percent === undefined
+        ? `Last ${value.load_1m}`
+        : `Last ${value.load_1m} · Dienst ${value.service_cpu_percent} %`;
+    case "xruns":
+      return `${value.total} gesamt · Δ ${value.delta}`;
+    case "device-graph":
+      return `${value.node_count} Knoten · ${value.link_count} Links`;
+    default:
+      return "beobachtet";
+  }
+}
+
+function telemetryCard(stream) {
+  const availability = stream.availability || "unavailable";
+  const card = element("article", `telemetry-card is-${availability}`);
+  appendText(card, "p", "eyebrow", TELEMETRY_STREAM_LABELS[stream.id] || stream.id);
+  const chip = appendText(
+    card,
+    "span",
+    "telemetry-chip",
+    TELEMETRY_AVAILABILITY_LABELS[availability] || availability,
+  );
+  chip.setAttribute("data-availability", availability);
+  appendText(card, "strong", "", telemetryValueText(stream));
+  appendText(
+    card,
+    "small",
+    "",
+    `Seq ${stream.sequence} · Alter ${
+      stream.age_ms === null || stream.age_ms === undefined ? "offen" : `${stream.age_ms} ms`
+    } · verworfen ${stream.dropped_total}`,
+  );
+  if (stream.error) {
+    appendText(card, "small", "telemetry-error", stream.error);
+  }
+  return card;
+}
+
+function renderTelemetry() {
+  const grid = byId("telemetry-grid");
+  const detail = byId("telemetry-detail");
+  const authority = byId("telemetry-authority");
+  const telemetry = state.telemetry;
+  if (!telemetry) {
+    grid.replaceChildren();
+    detail.replaceChildren();
+    authority.textContent =
+      state.telemetryError ||
+      "Live-Telemetrie ist nicht lesbar. Die Bedienung bleibt davon unberührt.";
+    detailRow(
+      detail,
+      "Darstellung",
+      `Seq ${state.telemetryPresentationSequence} · Anfrage ${state.telemetryPresentedRequest}`,
+    );
+    detailRow(detail, "Fehler", state.telemetryError || "nicht verfügbar");
+    return;
+  }
+  const summary = telemetry.summary || {};
+  const streams = telemetry.streams || [];
+  authority.textContent = telemetry.running
+    ? `${summary.live_count}/${summary.stream_count} Ströme live · ${summary.stale_count} veraltet · ${summary.unavailable_count} nicht verfügbar · passiv beobachtet`
+    : "Telemetriesammler laufen nicht; Ströme werden ausdrücklich als veraltet gezeigt.";
+  grid.replaceChildren(...streams.map(telemetryCard));
+  const control = telemetry.control_channel || {};
+  detail.replaceChildren();
+  detailRow(detail, "Kommandokanal", `${control.depth}/${control.capacity} · verlustfrei`);
+  detailRow(detail, "Abgewiesene Kommandos", String(control.rejected_total));
+  detailRow(detail, "Verworfene Telemetrie", String(summary.dropped_total));
+  detailRow(detail, "Kollektor-Neustarts", String(summary.restart_total));
+  detailRow(
+    detail,
+    "Darstellung",
+    `Seq ${state.telemetryPresentationSequence} · Anfrage ${state.telemetryPresentedRequest}`,
+  );
+  detailRow(
+    detail,
+    "Darstellungsalter",
+    state.telemetryUpdatedAt === null
+      ? "offen"
+      : `${Math.max(0, Date.now() - state.telemetryUpdatedAt)} ms`,
+  );
+  detailRow(detail, "Laufzeit", `${telemetry.uptime_seconds} s`);
+  detailRow(detail, "Grenze", "passive-observation · keine Wirkung");
+}
+
+async function loadTelemetry() {
+  const requestId = ++state.telemetryRequestSequence;
+  try {
+    const telemetry = await fetchJson("/api/v1/telemetry", { timeoutMs: 4000 });
+    if (requestId !== state.telemetryRequestSequence) return;
+    if (telemetry.read_only !== true || telemetry.authority !== "passive-observation") {
+      throw new Error("Telemetrie-Autoritätsgrenze ist ungültig.");
+    }
+    state.telemetry = telemetry;
+    state.telemetryError = null;
+  } catch (error) {
+    if (requestId !== state.telemetryRequestSequence) return;
+    // A telemetry failure must never disturb the controls or the state view.
+    state.telemetry = null;
+    state.telemetryError =
+      error instanceof Error
+        ? `Live-Telemetrie nicht lesbar: ${error.message}`
+        : "Live-Telemetrie nicht lesbar.";
+  }
+  state.telemetryPresentedRequest = requestId;
+  state.telemetryPresentationSequence += 1;
+  state.telemetryUpdatedAt = Date.now();
+  renderTelemetry();
+}
+
+function scheduleTelemetryPolling() {
+  if (state.telemetryTimer) window.clearInterval(state.telemetryTimer);
+  state.telemetryTimer = window.setInterval(() => {
+    if (!document.hidden) loadTelemetry();
+  }, TELEMETRY_POLL_MS);
+}
+
 function renderSounds() {
   const target = byId("sound-library");
   const whale = state.snapshot.whale;
@@ -1599,6 +1761,8 @@ wireEvents();
 wireDepthPanels();
 applyRoute();
 scheduleAutoRefresh();
+scheduleTelemetryPolling();
 loadReplay();
 loadWhaleLesson();
+loadTelemetry();
 refreshSnapshot(true);
