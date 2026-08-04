@@ -1246,13 +1246,67 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(snapshot["summary"]["runtime_state"], "healthy")
 
         with mock.patch.object(
-            MODULE.LIVE_TELEMETRY,
+            MODULE.load_live_telemetry(),
             "build_default_hub",
             side_effect=RuntimeError("telemetry core is broken"),
         ):
             degraded = MODULE.AudioControl(runner=FakeRunner(), cache_seconds=0)
         self.assertIsNone(degraded.telemetry)
         self.assertEqual(degraded.start_telemetry()["state"], "unavailable")
+
+
+    def test_live_telemetry_import_failure_is_lazy_and_degrades_service_validation(self):
+        real_spec_from_file_location = importlib.util.spec_from_file_location
+
+        class FailingLoader:
+            def create_module(self, _spec):
+                return None
+
+            def exec_module(self, _module):
+                raise SystemExit("broken optional telemetry module")
+
+        def spec_factory(name, location, *args, **kwargs):
+            if name == "audio_control_live_telemetry":
+                return importlib.util.spec_from_loader(name, FailingLoader())
+            return real_spec_from_file_location(name, location, *args, **kwargs)
+
+        module_name = "audio_control_lazy_telemetry_failure_test"
+        fresh_spec = real_spec_from_file_location(
+            module_name, ROOT / "scripts" / "audio_control.py"
+        )
+        fresh = importlib.util.module_from_spec(fresh_spec)
+        assert fresh_spec and fresh_spec.loader
+        previous_modules = {
+            name: sys.modules.get(name)
+            for name in (
+                module_name,
+                "audio_control_telemetry_replay",
+                "audio_control_whale_learning_lesson",
+                "audio_control_live_telemetry",
+            )
+        }
+        sys.modules[module_name] = fresh
+        try:
+            with mock.patch.object(
+                importlib.util,
+                "spec_from_file_location",
+                side_effect=spec_factory,
+            ):
+                fresh_spec.loader.exec_module(fresh)
+                self.assertIsNone(fresh.AudioControl._build_telemetry())
+                degraded = fresh.validate_repository_contract(
+                    require_live_telemetry=False
+                )
+                self.assertEqual(degraded["live_telemetry_streams"], [])
+                self.assertEqual(degraded["live_telemetry_safety"], "unavailable")
+                with self.assertRaises(fresh.ControlError):
+                    fresh.validate_repository_contract()
+        finally:
+            for name, previous in previous_modules.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
 
     def test_telemetry_snapshot_stays_passive_and_declares_its_boundary(self):
         controller = self.controller()
@@ -1309,7 +1363,7 @@ class AudioControlTests(unittest.TestCase):
             mock.patch.object(MODULE, "AudioControlHTTPServer", RecordingServer),
             mock.patch.object(MODULE, "notify_systemd_ready", return_value=False),
             mock.patch.object(
-                MODULE.LIVE_TELEMETRY,
+                MODULE.load_live_telemetry(),
                 "build_default_hub",
                 side_effect=lambda **kwargs: stub_telemetry_hub(),
             ),
@@ -1344,8 +1398,18 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('fetchJson("/api/v1/telemetry"', javascript)
         self.assertIn("scheduleTelemetryPolling", javascript)
         self.assertIn("TELEMETRY_POLL_MS", javascript)
+        self.assertIn("telemetryInFlight", javascript)
+        self.assertIn("window.setTimeout(telemetryPollTick", javascript)
+        self.assertIn("await requestTelemetry()", javascript)
+        self.assertIn('document.addEventListener("visibilitychange"', javascript)
+        self.assertIn("Number.isFinite", javascript)
+        self.assertIn("unvollständige Beobachtung", javascript)
+        telemetry_scheduler_start = javascript.index("function requestTelemetry()")
+        telemetry_scheduler_end = javascript.index("function renderSounds()", telemetry_scheduler_start)
+        telemetry_scheduler = javascript[telemetry_scheduler_start:telemetry_scheduler_end]
+        self.assertNotIn("setInterval", telemetry_scheduler)
         loader_start = javascript.index("async function loadTelemetry()")
-        loader_end = javascript.index("function scheduleTelemetryPolling()", loader_start)
+        loader_end = javascript.index("function requestTelemetry()", loader_start)
         loader = javascript[loader_start:loader_end]
         self.assertNotIn("showNotice", loader)
         self.assertNotIn("setLoading", loader)
@@ -1850,6 +1914,9 @@ class TelemetryTruthSeparationTests(unittest.TestCase):
             "state.telemetryPresentedRequest = requestId",
             "Wahrheit Seq",
             "snapshot.truth_stream",
+            "window.setTimeout(telemetryPollTick",
+            "requestTelemetry().finally(() => scheduleTelemetryPolling())",
+            "unvollständige Beobachtung",
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, source)

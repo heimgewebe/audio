@@ -124,6 +124,7 @@ const state = {
   telemetry: null,
   telemetryError: null,
   telemetryTimer: null,
+  telemetryInFlight: null,
   telemetryRequestSequence: 0,
   telemetryPresentationSequence: 0,
   telemetryPresentedRequest: 0,
@@ -1077,28 +1078,57 @@ function resetReplay() {
   renderReplay();
 }
 
+function finiteTelemetryNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function telemetryValueText(stream) {
   const value = stream.value;
-  if (!value) return "keine Beobachtung";
+  if (!value || typeof value !== "object") return "keine Beobachtung";
   switch (stream.id) {
-    case "audio-levels":
-      return `${value.peak_dbfs} / ${value.rms_dbfs} dBFS`;
-    case "midi-activity":
-      return `${value.client_count} Clients · ${value.port_count} Ports`;
+    case "audio-levels": {
+      const peak = finiteTelemetryNumber(value.peak_dbfs);
+      const rms = finiteTelemetryNumber(value.rms_dbfs);
+      return peak === null || rms === null
+        ? "unvollständige Beobachtung"
+        : `${peak} / ${rms} dBFS`;
+    }
+    case "midi-activity": {
+      const clients = finiteTelemetryNumber(value.client_count);
+      const ports = finiteTelemetryNumber(value.port_count);
+      return clients === null || ports === null
+        ? "unvollständige Beobachtung"
+        : `${clients} Clients · ${ports} Ports`;
+    }
     case "transport":
-      return TRANSPORT_STATE_LABELS[value.state] || String(value.state);
-    case "cpu-load":
-      return value.service_cpu_percent === null || value.service_cpu_percent === undefined
-        ? `Last ${value.load_1m}`
-        : `Last ${value.load_1m} · Dienst ${value.service_cpu_percent} %`;
-    case "xruns":
-      return `${value.total} gesamt · Δ ${value.delta}`;
-    case "device-graph":
-      return `${value.node_count} Knoten · ${value.link_count} Links`;
+      return typeof value.state === "string" && value.state
+        ? TRANSPORT_STATE_LABELS[value.state] || value.state
+        : "unvollständige Beobachtung";
+    case "cpu-load": {
+      const load = finiteTelemetryNumber(value.load_1m);
+      const service = finiteTelemetryNumber(value.service_cpu_percent);
+      if (load === null) return "unvollständige Beobachtung";
+      return service === null ? `Last ${load}` : `Last ${load} · Dienst ${service} %`;
+    }
+    case "xruns": {
+      const total = finiteTelemetryNumber(value.total);
+      const delta = finiteTelemetryNumber(value.delta);
+      return total === null || delta === null
+        ? "unvollständige Beobachtung"
+        : `${total} gesamt · Δ ${delta}`;
+    }
+    case "device-graph": {
+      const nodes = finiteTelemetryNumber(value.node_count);
+      const links = finiteTelemetryNumber(value.link_count);
+      return nodes === null || links === null
+        ? "unvollständige Beobachtung"
+        : `${nodes} Knoten · ${links} Links`;
+    }
     default:
       return "beobachtet";
   }
 }
+
 
 function telemetryCard(stream) {
   const availability = stream.availability || "unavailable";
@@ -1198,12 +1228,33 @@ async function loadTelemetry() {
   renderTelemetry();
 }
 
-function scheduleTelemetryPolling() {
-  if (state.telemetryTimer) window.clearInterval(state.telemetryTimer);
-  state.telemetryTimer = window.setInterval(() => {
-    if (!document.hidden) loadTelemetry();
-  }, TELEMETRY_POLL_MS);
+function requestTelemetry() {
+  if (state.telemetryInFlight) return state.telemetryInFlight;
+  const request = loadTelemetry().finally(() => {
+    if (state.telemetryInFlight === request) state.telemetryInFlight = null;
+  });
+  state.telemetryInFlight = request;
+  return request;
 }
+
+function stopTelemetryPolling() {
+  if (!state.telemetryTimer) return;
+  window.clearTimeout(state.telemetryTimer);
+  state.telemetryTimer = null;
+}
+
+async function telemetryPollTick() {
+  state.telemetryTimer = null;
+  if (!document.hidden) await requestTelemetry();
+  scheduleTelemetryPolling();
+}
+
+function scheduleTelemetryPolling(delayMs = TELEMETRY_POLL_MS) {
+  stopTelemetryPolling();
+  if (document.hidden) return;
+  state.telemetryTimer = window.setTimeout(telemetryPollTick, delayMs);
+}
+
 
 function renderSounds() {
   const target = byId("sound-library");
@@ -1723,6 +1774,13 @@ function keepDialogFocus(event) {
 
 function wireEvents() {
   window.addEventListener("hashchange", applyRoute);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopTelemetryPolling();
+      return;
+    }
+    requestTelemetry().finally(() => scheduleTelemetryPolling());
+  });
   document.addEventListener("pointerdown", markTransientInteraction, {
     passive: true,
   });
@@ -1761,8 +1819,7 @@ wireEvents();
 wireDepthPanels();
 applyRoute();
 scheduleAutoRefresh();
-scheduleTelemetryPolling();
 loadReplay();
 loadWhaleLesson();
-loadTelemetry();
+requestTelemetry().finally(() => scheduleTelemetryPolling());
 refreshSnapshot(true);

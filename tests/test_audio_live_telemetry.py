@@ -331,6 +331,14 @@ class CollectorIsolationTests(unittest.TestCase):
         self.assertEqual(first["state"], "stopped")
         self.assertEqual(hub.stop()["state"], "already-stopped")
         hub.start(threads=False)
+        restarted = hub.snapshot()["streams"][0]
+        self.assertEqual(restarted["availability"], "starting")
+        self.assertIsNone(restarted["value"])
+        self.assertEqual(restarted["sequence"], 1)
+        self.assertEqual(restarted["published_total"], 1)
+        self.assertEqual(restarted["buffer_depth"], 1)
+        self.assertEqual(restarted["dropped_total"], 0)
+        self.assertEqual(len(hub.stream("counting").history()), 1)
         hub.pump()
         hub.stop()
         self.assertEqual(collector.calls, 2)
@@ -475,6 +483,8 @@ class RealCollectorTests(unittest.TestCase):
         self.assertEqual(value["event"], "baseline")
         self.assertEqual(value["event_sequence"], 0)
         self.assertEqual(value["observer_id"], MODULE.OBSERVER_ID)
+        self.assertEqual(value["hashed_object_count"], 4)
+        self.assertFalse(value["content_truncated"])
         self.assertFalse(value["modified"])
 
     def test_pipewire_graph_events_are_monotone_and_content_bound(self):
@@ -521,6 +531,34 @@ class RealCollectorTests(unittest.TestCase):
         collector.reset()
         self.assertEqual(collector._event_sequence, 0)
         self.assertIsNone(collector._previous_graph_sha256)
+
+    def test_pipewire_graph_digest_covers_objects_beyond_the_display_limit(self):
+        baseline = [
+            {
+                "id": index,
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "state": "idle",
+                    "props": {"node.name": f"node-{index}"},
+                },
+            }
+            for index in range(MODULE.MAX_OBSERVED_ITEMS + 1)
+        ]
+        changed = json.loads(json.dumps(baseline))
+        changed[-1]["info"]["props"]["node.name"] = "changed-beyond-display-limit"
+        outputs = iter([json.dumps(baseline), json.dumps(changed)])
+        collector = MODULE.PipeWireGraphCollector(
+            runner=lambda argv, **kwargs: next(outputs)
+        )
+        first = collector.sample(None)
+        second = collector.sample(None)
+        self.assertTrue(first["content_truncated"])
+        self.assertEqual(first["node_count"], MODULE.MAX_OBSERVED_ITEMS + 1)
+        self.assertEqual(first["observed_node_count"], MODULE.MAX_OBSERVED_ITEMS)
+        self.assertEqual(first["hashed_object_count"], MODULE.MAX_OBSERVED_ITEMS + 1)
+        self.assertNotEqual(first["graph_sha256"], second["graph_sha256"])
+        self.assertEqual(second["event"], "changed")
+        self.assertEqual(second["event_sequence"], 1)
 
     def test_malformed_or_missing_pipewire_output_becomes_a_stream_error(self):
         cases = {
@@ -586,11 +624,23 @@ class RealCollectorTests(unittest.TestCase):
         initial = collector.sample(None)
         self.assertEqual(initial["total"], 4)
         self.assertEqual(initial["delta"], 0)
+        self.assertEqual(initial["per_node"][0]["name"], "motu")
+        self.assertEqual(initial["per_node"][0]["id"], 40)
         second_sample = collector.sample(None)
         self.assertEqual(second_sample["total"], 10)
         self.assertEqual(second_sample["delta"], 6)
         with self.assertRaises(MODULE.TelemetryError):
             collector.sample(None)
+
+    def test_xrun_parser_uses_header_columns_and_preserves_names_with_spaces(self):
+        header = f"{'S':<3}{'ID':<5}{'ERR':<5}{'FORMAT':<18}NAME\n"
+        row = f"{'R':<3}{'40':<5}{'7':<5}{'S32LE 2 48000':<18}MOTU M2 Main Output\n"
+        total, per_node = MODULE.XrunCollector.parse(header + row)
+        self.assertEqual(total, 7)
+        self.assertEqual(
+            per_node,
+            [{"id": 40, "name": "MOTU M2 Main Output", "xruns": 7}],
+        )
 
     def test_xrun_counter_reset_never_produces_a_negative_delta(self):
         outputs = iter(
@@ -623,6 +673,11 @@ class RealCollectorTests(unittest.TestCase):
             later = MODULE.CollectorContext(None, 101.0, 1_700_000_001.0)
             second = collector.sample(later)
             self.assertEqual(second["service_cpu_percent"], 0.0)
+            stat.write_text("12 audio control S " + " ".join(fields) + "\n")
+            with self.assertRaises(MODULE.TelemetryError) as caught:
+                collector.sample(later)
+            self.assertIn("closing parenthesis", str(caught.exception))
+            stat.write_text("12 (audio control) S " + " ".join(fields) + "\n")
             loadavg.write_text("broken\n")
             with self.assertRaises(MODULE.TelemetryError):
                 collector.sample(later)
@@ -655,6 +710,28 @@ class RealCollectorTests(unittest.TestCase):
             clients.write_text("no clients here\n")
             with self.assertRaises(MODULE.TelemetryError):
                 collector.sample(None)
+
+    def test_midi_counts_full_population_while_bounding_observed_clients(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            clients = root / "clients"
+            population = MODULE.MAX_OBSERVED_ITEMS + 5
+            clients.write_text(
+                "".join(
+                    f'Client {index:3d} : "client-{index}" [Kernel]\n'
+                    f'  Port   0 : "port-{index}" (RWe-)\n'
+                    for index in range(population)
+                )
+            )
+            collector = MODULE.MidiActivityCollector(
+                clients_path=clients, asound_root=root / "asound"
+            )
+            value = collector.sample(None)
+            self.assertEqual(value["client_count"], population)
+            self.assertEqual(value["observed_client_count"], MODULE.MAX_OBSERVED_ITEMS)
+            self.assertEqual(len(value["clients"]), MODULE.MAX_OBSERVED_ITEMS)
+            self.assertEqual(value["port_count"], population)
+            self.assertTrue(value["truncated"])
 
     def test_level_stream_is_unavailable_without_a_configured_passive_source(self):
         collector = MODULE.LevelSourceCollector(source_path=None)
@@ -835,6 +912,10 @@ class SoakHarnessTests(unittest.TestCase):
         report = self.report(["--mode", "synthetic", "--iterations", "40"])
         self.assertFalse(report["xruns"]["live_counter"])
         self.assertEqual(report["xruns"]["authority"], "synthetic")
+        self.assertEqual(
+            report["xruns"]["delta"],
+            report["xruns"]["end_total"] - report["xruns"]["start_total"],
+        )
         self.assertIn("synthetic", report["live_proof_reason"])
 
     def test_live_mode_reports_unavailable_tools_without_claiming_proof(self):
@@ -1047,6 +1128,8 @@ class DocumentationTests(unittest.TestCase):
             "/api/v1/telemetry",
             "Rollback",
             "Grenzen",
+            "alle relevanten Graphobjekte",
+            "sequenziell",
         ):
             with self.subTest(needle=needle):
                 self.assertIn(needle, text)

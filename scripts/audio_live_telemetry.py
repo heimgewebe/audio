@@ -126,7 +126,9 @@ class ControlChannelFull(TelemetryError):
 
 
 def _clip(text: str, limit: int = MAX_ERROR_CHARACTERS) -> str:
-    compact = " ".join(str(text).split())
+    raw = str(text)
+    scan_limit = max(1024, limit * 4)
+    compact = " ".join(raw[:scan_limit].split())
     return compact[:limit]
 
 
@@ -250,7 +252,7 @@ def read_bounded_text(
             payload.extend(chunk)
         if len(payload) > maximum_bytes:
             raise TelemetryError(f"{label} exceeds its size bound")
-        return bytes(payload).decode("utf-8", errors="replace")
+        return payload.decode("utf-8", errors="replace")
     except OSError as error:
         raise TelemetryError(f"{label} cannot be read") from error
     finally:
@@ -367,6 +369,16 @@ class TelemetryStream:
         self._latest: dict[str, Any] | None = None
         self._updated_monotonic: float | None = None
 
+    def begin_lifecycle(self) -> None:
+        """Invalidate prior samples before a new collector lifecycle starts."""
+
+        with self._lock:
+            self._latest = None
+            self._updated_monotonic = None
+            self.consecutive_error_count = 0
+            self.last_error = None
+            self.last_error_at = None
+
     def publish(self, payload: Any, *, monotonic_now: float, wall_now: float) -> int:
         try:
             encoded = _encode_payload(payload)
@@ -415,7 +427,7 @@ class TelemetryStream:
             if latest is not None and self._updated_monotonic is not None:
                 age_ms = max(0, int(round((monotonic_now - self._updated_monotonic) * 1000)))
             if latest is None:
-                availability = "unavailable" if self.error_total else "starting"
+                availability = "unavailable" if self.last_error else "starting"
             elif not running:
                 availability = "stale"
             elif age_ms is not None and age_ms > self.stale_after_ms:
@@ -555,6 +567,7 @@ class TelemetryHub:
             self._started_monotonic = self.monotonic()
             for stream_id in self._order:
                 entry = self._entries[stream_id]
+                entry.stream.begin_lifecycle()
                 entry.collector.reset()
                 entry.running = True
                 if not threads:
@@ -794,8 +807,24 @@ class PipeWireGraphCollector(Collector):
             raise TelemetryError("pw-dump did not produce an object list")
         nodes: list[dict[str, Any]] = []
         links: list[dict[str, Any]] = []
+        object_digests: list[str] = []
+        node_count = 0
+        link_count = 0
         device_count = 0
         running_nodes = 0
+
+        def bind_object(identity: dict[str, Any]) -> None:
+            object_digests.append(
+                hashlib.sha256(
+                    json.dumps(
+                        identity,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+            )
+
         for item in objects:
             if not isinstance(item, dict):
                 continue
@@ -803,60 +832,44 @@ class PipeWireGraphCollector(Collector):
             info = item.get("info") if isinstance(item.get("info"), dict) else {}
             props = info.get("props") if isinstance(info.get("props"), dict) else {}
             if item_type == "PipeWire:Interface:Node":
+                node_count += 1
                 node_state = info.get("state")
                 if node_state == "running":
                     running_nodes += 1
+                node = {
+                    "id": item.get("id"),
+                    "name": _clip(str(props.get("node.name", "unbekannt")), 80),
+                    "media_class": _clip(str(props.get("media.class", "")), 40) or None,
+                    "state": node_state if isinstance(node_state, str) else None,
+                }
+                bind_object({"id": item.get("id"), "type": item_type, "info": info})
                 if len(nodes) < MAX_OBSERVED_ITEMS:
-                    nodes.append(
-                        {
-                            "id": item.get("id"),
-                            "name": _clip(str(props.get("node.name", "unbekannt")), 80),
-                            "media_class": _clip(str(props.get("media.class", "")), 40)
-                            or None,
-                            "state": node_state if isinstance(node_state, str) else None,
-                        }
-                    )
+                    nodes.append(node)
             elif item_type == "PipeWire:Interface:Link":
+                link_count += 1
+                link = {
+                    "id": item.get("id"),
+                    "output_node": info.get("output-node-id"),
+                    "input_node": info.get("input-node-id"),
+                    "state": info.get("state") if isinstance(info.get("state"), str) else None,
+                }
+                bind_object({"id": item.get("id"), "type": item_type, "info": info})
                 if len(links) < MAX_OBSERVED_ITEMS:
-                    links.append(
-                        {
-                            "id": item.get("id"),
-                            "output_node": info.get("output-node-id"),
-                            "input_node": info.get("input-node-id"),
-                            "state": info.get("state")
-                            if isinstance(info.get("state"), str)
-                            else None,
-                        }
-                    )
+                    links.append(link)
             elif item_type == "PipeWire:Interface:Device":
                 device_count += 1
-        if not nodes and not links and not device_count:
+                bind_object({"id": item.get("id"), "type": item_type, "info": info})
+        if not node_count and not link_count and not device_count:
             raise TelemetryError("pw-dump exposed no graph objects")
-        node_count = sum(
-            1
-            for item in objects
-            if isinstance(item, dict) and item.get("type") == "PipeWire:Interface:Node"
-        )
-        link_count = sum(
-            1
-            for item in objects
-            if isinstance(item, dict) and item.get("type") == "PipeWire:Interface:Link"
-        )
         graph_identity = {
             "node_count": node_count,
             "link_count": link_count,
             "device_count": device_count,
             "running_node_count": running_nodes,
-            "observed_nodes": nodes,
-            "observed_links": links,
+            "object_digests": sorted(object_digests),
         }
         graph_sha256 = hashlib.sha256(
-            json.dumps(
-                graph_identity,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
+            json.dumps(graph_identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         if self._previous_graph_sha256 is None:
             event = "baseline"
@@ -866,15 +879,20 @@ class PipeWireGraphCollector(Collector):
         else:
             event = "none"
         self._previous_graph_sha256 = graph_sha256
+        content_truncated = node_count > len(nodes) or link_count > len(links)
         return {
             "node_count": node_count,
             "link_count": link_count,
             "device_count": device_count,
             "running_node_count": running_nodes,
+            "observed_node_count": len(nodes),
+            "observed_link_count": len(links),
             "observed_nodes": nodes,
             "observed_links": links,
-            "truncated": len(nodes) >= MAX_OBSERVED_ITEMS
-            or len(links) >= MAX_OBSERVED_ITEMS,
+            "truncated": content_truncated,
+            "content_truncated": content_truncated,
+            "observed_item_limit": MAX_OBSERVED_ITEMS,
+            "hashed_object_count": len(object_digests),
             "event": event,
             "event_sequence": self._event_sequence,
             "graph_sha256": graph_sha256,
@@ -934,34 +952,68 @@ class XrunCollector(Collector):
 
     @staticmethod
     def parse(text: str) -> tuple[int, list[dict[str, Any]]]:
-        header_seen = False
-        error_column: int | None = None
+        header: dict[str, int | None] | None = None
         total = 0
         per_node: list[dict[str, Any]] = []
         for line in text.splitlines():
-            fields = line.split()
+            matches = list(re.finditer(r"\S+", line))
+            fields = [match.group(0) for match in matches]
             if not fields:
                 continue
-            if not header_seen:
-                if "ERR" in fields:
-                    header_seen = True
-                    error_column = fields.index("ERR")
+            if header is None:
+                if "ERR" not in fields or "NAME" not in fields:
+                    continue
+                error_index = fields.index("ERR")
+                name_index = fields.index("NAME")
+                if name_index <= error_index:
+                    raise TelemetryError("pw-top XRun header has an invalid column order")
+                header = {
+                    "error_index": error_index,
+                    "error_start": matches[error_index].start(),
+                    "error_end": matches[error_index + 1].start(),
+                    "name_start": matches[name_index].start(),
+                    "name_index": name_index,
+                    "format_index": fields.index("FORMAT") if "FORMAT" in fields else None,
+                    "id_index": fields.index("ID") if "ID" in fields else None,
+                }
                 continue
-            if error_column is None or len(fields) <= error_column:
-                continue
-            raw = fields[error_column]
+            error_start = int(header["error_start"])
+            error_end = int(header["error_end"])
+            raw = line[error_start:error_end].strip()
+            error_index = int(header["error_index"])
             if not raw.isdigit():
+                if len(fields) <= error_index or not fields[error_index].isdigit():
+                    continue
+                raw = fields[error_index]
+            name_start = int(header["name_start"])
+            while name_start > 0 and name_start <= len(line) and not line[name_start - 1].isspace():
+                name_start -= 1
+            name = line[name_start:].strip() if len(line) > name_start else ""
+            if not name:
+                name_index = int(header["name_index"])
+                format_index = header["format_index"]
+                if isinstance(format_index, int) and format_index < name_index:
+                    tail = fields[error_index + 1 :]
+                    if tail and tail[0] == "-":
+                        name_fields = tail[1:]
+                    elif len(tail) >= 4 and tail[1].isdigit() and tail[2].isdigit():
+                        name_fields = tail[3:]
+                    else:
+                        name_fields = tail[-1:]
+                else:
+                    name_fields = fields[name_index:]
+                name = " ".join(name_fields).strip()
+            if not name:
                 continue
+            node_id: int | None = None
+            id_index = header["id_index"]
+            if isinstance(id_index, int) and len(fields) > id_index and fields[id_index].isdigit():
+                node_id = int(fields[id_index])
             count = int(raw)
             total += count
             if len(per_node) < MAX_OBSERVED_ITEMS:
-                per_node.append(
-                    {
-                        "name": _clip(fields[-1], 80),
-                        "xruns": count,
-                    }
-                )
-        if not header_seen:
+                per_node.append({"id": node_id, "name": _clip(name, 80), "xruns": count})
+        if header is None:
             raise TelemetryError("pw-top produced no XRun column")
         return total, per_node
 
@@ -1043,7 +1095,9 @@ class CpuLoadCollector(Collector):
     def _process_cpu_seconds(self) -> float:
         text = read_bounded_text(self._self_stat_path, label="process stat")
         closing = text.rfind(")")
-        fields = text[closing + 1 :].split() if closing >= 0 else text.split()
+        if closing < 0:
+            raise TelemetryError("process stat is malformed (missing closing parenthesis)")
+        fields = text[closing + 1 :].split()
         # utime and stime are fields 14 and 15 of /proc/<pid>/stat (1-based).
         if len(fields) < 13:
             raise TelemetryError("process stat is malformed")
@@ -1087,11 +1141,13 @@ class MidiActivityCollector(Collector):
     def sample(self, context: CollectorContext) -> Any:
         text = read_bounded_text(self._clients_path, label="ALSA sequencer clients")
         clients: list[dict[str, Any]] = []
+        client_count = 0
         port_count = 0
         current: dict[str, Any] | None = None
         for line in text.splitlines():
             client_match = _SEQ_CLIENT_RE.match(line)
             if client_match:
+                client_count += 1
                 current = {
                     "id": int(client_match.group(1)),
                     "name": _clip(client_match.group(2), 80),
@@ -1103,7 +1159,7 @@ class MidiActivityCollector(Collector):
             if current is not None and _SEQ_PORT_RE.match(line):
                 port_count += 1
                 current["port_count"] += 1
-        if not clients:
+        if client_count == 0:
             raise TelemetryError("ALSA sequencer exposed no clients")
         total_bytes = self._rawmidi_bytes()
         delta = None
@@ -1112,9 +1168,11 @@ class MidiActivityCollector(Collector):
         if total_bytes is not None:
             self._previous_bytes = total_bytes
         return {
-            "client_count": len(clients),
+            "client_count": client_count,
+            "observed_client_count": len(clients),
             "port_count": port_count,
             "clients": clients,
+            "truncated": client_count > len(clients),
             "rawmidi_bytes_total": total_bytes,
             "rawmidi_bytes_delta": delta,
             "active": bool(delta),

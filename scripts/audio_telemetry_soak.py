@@ -512,6 +512,8 @@ def run_synthetic(
     commands_submitted = 0
     commands_rejected = 0
     performed = 0
+    first_xrun_total: int | None = None
+    last_xrun_total: int | None = None
     deadline = started + duration_seconds
     memory_every = max(1, (iterations or MAX_REPORT_SAMPLES) // MAX_REPORT_SAMPLES)
     while True:
@@ -521,6 +523,13 @@ def run_synthetic(
             break
         for _repeat in range(load_factor):
             hub.pump()
+        latest_xrun = hub.stream(TELEMETRY.STREAM_XRUNS).latest()
+        if latest_xrun is not None and isinstance(latest_xrun.get("value"), dict):
+            total = latest_xrun["value"].get("total")
+            if isinstance(total, int):
+                if first_xrun_total is None:
+                    first_xrun_total = total
+                last_xrun_total = total
         performed += 1
         # Commands and state transitions use the lossless channel only.
         try:
@@ -594,14 +603,17 @@ def run_synthetic(
             f"crashing collector failed {probe['crashing_stream_errors']} times",
         )
     )
-    xrun_stream = streams[TELEMETRY.STREAM_XRUNS]
-    xrun_value = xrun_stream["value"] or {}
     xruns = {
-        "available": bool(xrun_value),
+        "available": first_xrun_total is not None and last_xrun_total is not None,
         "authority": "synthetic",
         "live_counter": False,
-        "end_total": xrun_value.get("total"),
-        "delta": xrun_value.get("total"),
+        "start_total": first_xrun_total,
+        "end_total": last_xrun_total,
+        "delta": (
+            max(0, last_xrun_total - first_xrun_total)
+            if first_xrun_total is not None and last_xrun_total is not None
+            else None
+        ),
         "reason": "synthetic XRun generator; not evidence about real hardware",
     }
     memory = memory_projection(memory_samples, elapsed)
