@@ -118,7 +118,14 @@ Der Snapshotkopf enthält zusätzlich `safety` (die Grenze aus Abschnitt 1),
 `summary` (Zähler über alle Ströme) und `control_channel`. Der Graphsammler
 bildet aus Knoten, Links und Geräten einen stabilen SHA-256. Der erste gültige
 Stand heißt `baseline`, unveränderte Folgestände `none`; nur eine echte
-Inhaltsänderung erhöht `event_sequence` und liefert `changed`.
+Inhaltsänderung erhöht `event_sequence` und liefert `changed`. Für den Digest
+werden alle relevanten Graphobjekte berücksichtigt; nur die angezeigten
+Detaillisten werden auf je 32 Einträge gekürzt. Änderungen außerhalb dieses
+Ausschnitts bleiben dadurch als Graphereignis sichtbar. `midi-activity` zählt
+`client_count` und
+`port_count` über die gesamte gelesene Population. Nur die Detailliste
+`clients` ist auf 32 Einträge begrenzt; `observed_client_count` und
+`truncated: true` machen diesen Darstellungs-Ausschnitt ausdrücklich sichtbar.
 
 ## 3. Kommandos teilen keine verlustbehaftete Warteschlange
 
@@ -147,9 +154,16 @@ Der Control-Dienst nutzt diesen Kanal für `service-start` und `service-stop`.
   veralteten Strömen statt eines Fehlers.
 
 Die Sammler starten in `serve()` nach der Vertragsprüfung und werden im
-`finally`-Zweig deterministisch gestoppt. Ein Fehler beim Start der Telemetrie
-macht den Dienst nicht unbrauchbar: er läuft mit `live_telemetry: unavailable`
-weiter. Die bestehenden Endpunkte, Limits und Aktionsregeln bleiben unverändert.
+`finally`-Zweig deterministisch gestoppt. Das optionale Telemetriemodul wird
+erst beim Aufbau des Hubs geladen. Ein Syntax-, Import- oder Startfehler macht
+den Control-Dienst daher nicht unbrauchbar: er läuft mit
+`live_telemetry: unavailable` weiter. Der explizite Repositorycheck bleibt
+streng und weist ein defektes Modul ab. Bei jedem neuen Sammlerlebenszyklus
+wird die alte aktuelle Sampleprojektion invalidiert. Der begrenzte
+Historienpuffer sowie Sequenz- und Gesamtzähler bleiben erhalten; bis zum ersten
+neuen Sample steht der Strom wieder auf `starting` und liefert keinen alten
+Wert als live. Die bestehenden Endpunkte, Limits und Aktionsregeln bleiben
+unverändert.
 
 ## 5. UI
 
@@ -158,7 +172,11 @@ Beschriftung, Zustandschip (`live`, `veraltet`, `startet`, `nicht verfügbar`),
 Wert, Sequenz, Alter, Verlustzähler und Fehlertext. Der Zustand steht immer als
 Text da; Farbe ist nie die einzige Information.
 
-Die UI pollt alle zwei Sekunden getrennt vom Zustandssnapshot. Ein
+Die UI pollt alle zwei Sekunden getrennt vom Zustandssnapshot. Das Polling
+erfolgt sequenziell: Erst nach Abschluss oder Abbruch einer Anfrage wird der nächste
+Timer geplant; ein In-Flight-Promise verhindert auch bei Sichtbarkeitswechseln
+parallele Readbacks. Im verborgenen Tab läuft kein Telemetrie-Timer, beim
+Sichtbarwerden startet sofort ein Readback. Ein
 Telemetriefehler setzt nur den Panel-Text und berührt weder die globale
 Meldung, den Aktualisierungsknopf noch den Snapshotzyklus. Verspätete Antworten
 dürfen einen neueren Stand nicht überschreiben: jede Anfrage besitzt eine
@@ -263,8 +281,10 @@ Ehrlichkeitsregeln, die die Harness einhält:
   Strom ausdrücklich `unavailable` mit Begründung, statt Werte zu erfinden.
 - `transport` ist aus dem Graphen abgeleitet (`running_node_count > 0`), nicht
   aus einem globalen Transportobjekt; PipeWire hat keines.
-- XRun-Zähler stammen aus einem Batch-Snapshot von `pw-top`. Fehlt das Werkzeug
-  oder die Spalte, wird der Strom zum Fehler – nie zum Dienstausfall.
+- XRun-Zähler stammen aus einem Batch-Snapshot von `pw-top`. Der Parser bindet
+  `ERR`, `ID`, `FORMAT` und `NAME` an den beobachteten Header und erhält Namen
+  mit Leerzeichen. Fehlt das Werkzeug oder eine Pflichtspalte, wird der Strom
+  zum Fehler – nie zum Dienstausfall.
 - `pw-dump`-Ausgaben werden auf 2 MB und 6 s begrenzt; beobachtete Knoten und
   Links werden auf je 32 Einträge gekürzt (`truncated: true`). Der
   Telemetrie-Stopp wartet länger als dieses Subprozessbudget.

@@ -53,14 +53,51 @@ if _LESSON_SPEC is None or _LESSON_SPEC.loader is None:
 WHALE_LESSON = importlib.util.module_from_spec(_LESSON_SPEC)
 sys.modules[_LESSON_SPEC.name] = WHALE_LESSON
 _LESSON_SPEC.loader.exec_module(WHALE_LESSON)
-_LIVE_TELEMETRY_SPEC = importlib.util.spec_from_file_location(
-    "audio_control_live_telemetry", LIVE_TELEMETRY_SCRIPT
-)
-if _LIVE_TELEMETRY_SPEC is None or _LIVE_TELEMETRY_SPEC.loader is None:
-    raise RuntimeError("Live-Telemetriemodul kann nicht geladen werden.")
-LIVE_TELEMETRY = importlib.util.module_from_spec(_LIVE_TELEMETRY_SPEC)
-sys.modules[_LIVE_TELEMETRY_SPEC.name] = LIVE_TELEMETRY
-_LIVE_TELEMETRY_SPEC.loader.exec_module(LIVE_TELEMETRY)
+_LIVE_TELEMETRY_MODULE: Any | None = None
+_LIVE_TELEMETRY_IMPORT_ERROR: BaseException | None = None
+_LIVE_TELEMETRY_IMPORT_LOCK = threading.Lock()
+
+
+def load_live_telemetry() -> Any:
+    """Load optional live telemetry without making service import depend on it."""
+
+    global _LIVE_TELEMETRY_MODULE, _LIVE_TELEMETRY_IMPORT_ERROR
+    if _LIVE_TELEMETRY_MODULE is not None:
+        return _LIVE_TELEMETRY_MODULE
+    if _LIVE_TELEMETRY_IMPORT_ERROR is not None:
+        raise RuntimeError("Live-Telemetriemodul ist nicht verfügbar.") from _LIVE_TELEMETRY_IMPORT_ERROR
+    with _LIVE_TELEMETRY_IMPORT_LOCK:
+        if _LIVE_TELEMETRY_MODULE is not None:
+            return _LIVE_TELEMETRY_MODULE
+        if _LIVE_TELEMETRY_IMPORT_ERROR is not None:
+            raise RuntimeError("Live-Telemetriemodul ist nicht verfügbar.") from _LIVE_TELEMETRY_IMPORT_ERROR
+        spec = importlib.util.spec_from_file_location(
+            "audio_control_live_telemetry", LIVE_TELEMETRY_SCRIPT
+        )
+        if spec is None or spec.loader is None:
+            error = RuntimeError("Live-Telemetriemodul kann nicht geladen werden.")
+            _LIVE_TELEMETRY_IMPORT_ERROR = error
+            raise error
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException as error:
+            if isinstance(error, KeyboardInterrupt):
+                raise
+            sys.modules.pop(spec.name, None)
+            _LIVE_TELEMETRY_IMPORT_ERROR = error
+            raise RuntimeError("Live-Telemetriemodul ist nicht verfügbar.") from error
+        _LIVE_TELEMETRY_MODULE = module
+        return module
+
+
+class _LazyLiveTelemetry:
+    def __getattr__(self, name: str) -> Any:
+        return getattr(load_live_telemetry(), name)
+
+
+LIVE_TELEMETRY = _LazyLiveTelemetry()
 
 SPEC_BASE_REVISION = "81fab5c57a3609b8b931a2ee5251c4f576368298"
 API_VERSION = "v1"
@@ -942,7 +979,7 @@ class AudioControl:
         """A broken telemetry core must never keep the control service down."""
 
         try:
-            return LIVE_TELEMETRY.build_default_hub()
+            return load_live_telemetry().build_default_hub()
         except Exception:
             return None
 
@@ -2162,7 +2199,7 @@ def stop_managed_service(runner: CommandRunner) -> dict[str, Any]:
     raise ControlError("Der Control-Dienst bestätigte den Stop nicht.")
 
 
-def validate_repository_contract() -> dict[str, Any]:
+def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict[str, Any]:
     missing = [
         str(path.relative_to(ROOT))
         for path in [
@@ -2216,11 +2253,16 @@ def validate_repository_contract() -> dict[str, Any]:
         lesson = WHALE_LESSON.load_lesson_contract()
     except WHALE_LESSON.LessonError as error:
         raise ControlError("Buckelwal-Lektion verletzt den Vertrag.") from error
+    telemetry_contract: dict[str, Any] | None = None
     try:
-        telemetry_contract = LIVE_TELEMETRY.contract_report()
-    except LIVE_TELEMETRY.TelemetryError as error:
-        raise ControlError("Live-Telemetrie verletzt den Vertrag.") from error
-    if telemetry_contract["safety"]["mode"] != "passive-observation":
+        telemetry_contract = load_live_telemetry().contract_report()
+    except Exception as error:
+        if require_live_telemetry:
+            raise ControlError("Live-Telemetrie verletzt den Vertrag.") from error
+    if (
+        telemetry_contract is not None
+        and telemetry_contract["safety"]["mode"] != "passive-observation"
+    ):
         raise ControlError("Live-Telemetrie verlässt die passive Beobachtungsgrenze.")
     profiles = read_profiles()
     whale = read_whale_contract()
@@ -2237,8 +2279,12 @@ def validate_repository_contract() -> dict[str, Any]:
         ],
         "whale_lesson_id": lesson["lesson_id"],
         "whale_lesson_variants": [variant["id"] for variant in lesson["variants"]],
-        "live_telemetry_streams": telemetry_contract["streams"],
-        "live_telemetry_safety": telemetry_contract["safety"]["mode"],
+        "live_telemetry_streams": []
+        if telemetry_contract is None
+        else telemetry_contract["streams"],
+        "live_telemetry_safety": "unavailable"
+        if telemetry_contract is None
+        else telemetry_contract["safety"]["mode"],
         "static_files": sorted({entry[0] for entry in STATIC_FILES.values()}),
     }
 
@@ -2248,7 +2294,7 @@ def serve(*, host: str, port: int, cache_seconds: float) -> None:
         raise ControlError("Der Control-Dienst darf nur an Loopback gebunden werden.")
     if host != DEFAULT_HOST:
         raise ControlError("Version 1 unterstützt ausschließlich 127.0.0.1.")
-    validate_repository_contract()
+    validate_repository_contract(require_live_telemetry=False)
     controller = AudioControl(
         host=host,
         port=port,
