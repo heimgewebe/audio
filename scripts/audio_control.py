@@ -36,6 +36,7 @@ DOCTOR_SCRIPT = ROOT / "scripts" / "audio_doctor.py"
 PLANNER_SCRIPT = ROOT / "scripts" / "profile_planner.py"
 REPLAY_SCRIPT = ROOT / "scripts" / "audio_telemetry_replay.py"
 WHALE_LESSON_SCRIPT = ROOT / "scripts" / "whale_learning_lesson.py"
+LIVE_TELEMETRY_SCRIPT = ROOT / "scripts" / "audio_live_telemetry.py"
 _REPLAY_SPEC = importlib.util.spec_from_file_location(
     "audio_control_telemetry_replay", REPLAY_SCRIPT
 )
@@ -52,6 +53,14 @@ if _LESSON_SPEC is None or _LESSON_SPEC.loader is None:
 WHALE_LESSON = importlib.util.module_from_spec(_LESSON_SPEC)
 sys.modules[_LESSON_SPEC.name] = WHALE_LESSON
 _LESSON_SPEC.loader.exec_module(WHALE_LESSON)
+_LIVE_TELEMETRY_SPEC = importlib.util.spec_from_file_location(
+    "audio_control_live_telemetry", LIVE_TELEMETRY_SCRIPT
+)
+if _LIVE_TELEMETRY_SPEC is None or _LIVE_TELEMETRY_SPEC.loader is None:
+    raise RuntimeError("Live-Telemetriemodul kann nicht geladen werden.")
+LIVE_TELEMETRY = importlib.util.module_from_spec(_LIVE_TELEMETRY_SPEC)
+sys.modules[_LIVE_TELEMETRY_SPEC.name] = LIVE_TELEMETRY
+_LIVE_TELEMETRY_SPEC.loader.exec_module(LIVE_TELEMETRY)
 
 SPEC_BASE_REVISION = "81fab5c57a3609b8b931a2ee5251c4f576368298"
 API_VERSION = "v1"
@@ -98,6 +107,10 @@ PROFILE_AREAS = {
     "piano-software-live": "playing",
     "experimental": "sounds",
 }
+
+
+#: Sentinel so an explicit ``telemetry=None`` means "run without telemetry".
+BUILD_DEFAULT_TELEMETRY = object()
 
 
 class ControlError(RuntimeError):
@@ -903,6 +916,7 @@ class AudioControl:
         port: int = DEFAULT_PORT,
         cache_seconds: float = DEFAULT_CACHE_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        telemetry: Any = BUILD_DEFAULT_TELEMETRY,
     ) -> None:
         self.runner = runner or CommandRunner()
         self.action_token = action_token or secrets.token_urlsafe(32)
@@ -911,11 +925,59 @@ class AudioControl:
         self.cache_seconds = cache_seconds
         self.clock = clock
         self._cache_lock = threading.Lock()
+        self._truth_sequence = 0
         self._snapshot_lock = threading.Lock()
         self._action_lock = threading.Lock()
         self._plan_lock = threading.Lock()
         self._cached_at = 0.0
         self._cached_snapshot: dict[str, Any] | None = None
+        self.telemetry = (
+            self._build_telemetry()
+            if telemetry is BUILD_DEFAULT_TELEMETRY
+            else telemetry
+        )
+
+    @staticmethod
+    def _build_telemetry() -> Any | None:
+        """A broken telemetry core must never keep the control service down."""
+
+        try:
+            return LIVE_TELEMETRY.build_default_hub()
+        except Exception:
+            return None
+
+    def start_telemetry(self) -> dict[str, Any]:
+        if self.telemetry is None:
+            return {"state": "unavailable"}
+        try:
+            report = self.telemetry.start()
+            self.telemetry.submit_command("service-start", {"port": self.port})
+            return report
+        except Exception as error:
+            # Telemetry is passive and optional; the service keeps serving.
+            return {"state": "unavailable", "error": str(error)[:200]}
+
+    def stop_telemetry(self) -> dict[str, Any]:
+        if self.telemetry is None:
+            return {"state": "unavailable"}
+        try:
+            self.telemetry.submit_command("service-stop", {"port": self.port})
+        except Exception:
+            pass
+        try:
+            return self.telemetry.stop()
+        except Exception as error:
+            return {"state": "unavailable", "error": str(error)[:200]}
+
+    def telemetry_snapshot(self) -> dict[str, Any]:
+        if self.telemetry is None:
+            raise ControlError("Live-Telemetrie ist auf diesem System nicht verfügbar.")
+        try:
+            return self.telemetry.snapshot()
+        except Exception as error:
+            raise ControlError(
+                "Live-Telemetrie lieferte keinen lesbaren Zustand."
+            ) from error
 
     def _doctor(self) -> tuple[str, dict[str, Any], str | None]:
         try:
@@ -1091,6 +1153,7 @@ class AudioControl:
                 "refresh_state": True,
                 "profile_plan": True,
                 "telemetry_replay": True,
+                "live_telemetry": self.telemetry is not None,
                 "whale_learning_lesson": True,
                 "whale_control": True,
                 "profile_apply": False,
@@ -1099,11 +1162,41 @@ class AudioControl:
             },
         }
 
+    def _truth_projection(
+        self, snapshot: dict[str, Any], cached_at: float
+    ) -> dict[str, Any]:
+        age_ms = max(0, int((self.clock() - cached_at) * 1000))
+        projected = dict(snapshot)
+        truth = dict(snapshot.get("truth_stream") or {})
+        truth["age_ms"] = age_ms
+        truth["freshness"] = "fresh" if age_ms == 0 else "cached"
+        projected["truth_stream"] = truth
+        return projected
+
     def _cache_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        now = self.clock()
+        errors = [
+            str(section.get("error"))
+            for section_name in ("doctor", "whale")
+            if isinstance((section := snapshot.get(section_name)), dict)
+            and section.get("error")
+        ]
         with self._cache_lock:
-            self._cached_snapshot = snapshot
-            self._cached_at = self.clock()
-        return snapshot
+            self._truth_sequence += 1
+            stored = dict(snapshot)
+            stored["truth_stream"] = {
+                "sequence": self._truth_sequence,
+                "generated_at": snapshot.get("generated_at"),
+                "freshness": "fresh",
+                "age_ms": 0,
+                "cache_seconds": self.cache_seconds,
+                "error": " · ".join(errors) if errors else None,
+                "error_count": len(errors),
+                "authoritative_for": "slow-system-truth-only",
+            }
+            self._cached_snapshot = stored
+            self._cached_at = now
+        return self._truth_projection(stored, now)
 
     def snapshot(self, *, refresh: bool = False) -> dict[str, Any]:
         if not self._snapshot_lock.acquire(blocking=False):
@@ -1117,7 +1210,9 @@ class AudioControl:
                     and self._cached_snapshot is not None
                     and self.clock() - self._cached_at < self.cache_seconds
                 ):
-                    return self._cached_snapshot
+                    return self._truth_projection(
+                        self._cached_snapshot, self._cached_at
+                    )
             return self._cache_snapshot(self._build_snapshot())
         finally:
             self._snapshot_lock.release()
@@ -1602,6 +1697,27 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 head_only=head_only,
             )
             return
+        if parsed.path == f"/api/{API_VERSION}/telemetry":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Der Telemetrieendpunkt akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                telemetry = self.server.controller.telemetry_snapshot()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "telemetry_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, telemetry, head_only=head_only)
+            return
         if parsed.path == f"/api/{API_VERSION}/replay":
             if parsed.query:
                 self._send_error_json(
@@ -2079,6 +2195,10 @@ def validate_repository_contract() -> dict[str, Any]:
         raise ControlError("UI ist nicht an die versionierte Zustands-API gebunden.")
     if "/api/v1/replay" not in javascript:
         raise ControlError("UI ist nicht an den versionierten Replay-Vertrag gebunden.")
+    if "/api/v1/telemetry" not in javascript:
+        raise ControlError("UI ist nicht an den Live-Telemetrievertrag gebunden.")
+    if 'id="live-telemetry"' not in index:
+        raise ControlError("UI enthält kein Live-Telemetriepanel.")
     lesson_javascript = read_static_file("whale-lesson.js").decode("utf-8")
     if "/api/v1/whale/lesson" not in lesson_javascript:
         raise ControlError("UI ist nicht an den Buckelwal-Lektionsvertrag gebunden.")
@@ -2096,6 +2216,12 @@ def validate_repository_contract() -> dict[str, Any]:
         lesson = WHALE_LESSON.load_lesson_contract()
     except WHALE_LESSON.LessonError as error:
         raise ControlError("Buckelwal-Lektion verletzt den Vertrag.") from error
+    try:
+        telemetry_contract = LIVE_TELEMETRY.contract_report()
+    except LIVE_TELEMETRY.TelemetryError as error:
+        raise ControlError("Live-Telemetrie verletzt den Vertrag.") from error
+    if telemetry_contract["safety"]["mode"] != "passive-observation":
+        raise ControlError("Live-Telemetrie verlässt die passive Beobachtungsgrenze.")
     profiles = read_profiles()
     whale = read_whale_contract()
     return {
@@ -2111,6 +2237,8 @@ def validate_repository_contract() -> dict[str, Any]:
         ],
         "whale_lesson_id": lesson["lesson_id"],
         "whale_lesson_variants": [variant["id"] for variant in lesson["variants"]],
+        "live_telemetry_streams": telemetry_contract["streams"],
+        "live_telemetry_safety": telemetry_contract["safety"]["mode"],
         "static_files": sorted({entry[0] for entry in STATIC_FILES.values()}),
     }
 
@@ -2127,6 +2255,7 @@ def serve(*, host: str, port: int, cache_seconds: float) -> None:
         cache_seconds=cache_seconds,
     )
     with AudioControlHTTPServer((host, port), controller) as server:
+        telemetry_state = controller.start_telemetry()
         notify_systemd_ready(f"Audiozentrale bereit auf {host}:{port}")
         print(
             json.dumps(
@@ -2136,6 +2265,7 @@ def serve(*, host: str, port: int, cache_seconds: float) -> None:
                     "api_version": API_VERSION,
                     "authority": "local-backend",
                     "readiness": "socket-bound-and-contract-validated",
+                    "live_telemetry": telemetry_state.get("state", "unavailable"),
                 },
                 ensure_ascii=False,
             ),
@@ -2145,6 +2275,8 @@ def serve(*, host: str, port: int, cache_seconds: float) -> None:
             server.serve_forever(poll_interval=0.25)
         except KeyboardInterrupt:
             pass
+        finally:
+            controller.stop_telemetry()
 
 
 def build_parser() -> argparse.ArgumentParser:
