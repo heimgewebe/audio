@@ -399,6 +399,16 @@ class SafetyBoundaryTests(unittest.TestCase):
         self.assertEqual(safety["mode"], "passive-observation")
         self.assertTrue(safety["identifies_nodes_and_links"])
         self.assertTrue(safety["reversible"])
+        self.assertEqual(safety["observer_id"], MODULE.OBSERVER_ID)
+        self.assertEqual(safety["owned_nodes"], [])
+        self.assertEqual(safety["owned_links"], [])
+        self.assertEqual(safety["rollback"]["scope"], "observer-owned-resources-only")
+        self.assertTrue(safety["rollback"]["requires_identity_match"])
+        self.assertGreater(
+            safety["stop_timeout_seconds"],
+            safety["maximum_passive_command_seconds"]
+            + MODULE.PROCESS_KILL_GRACE_SECONDS,
+        )
         for key in (
             "modifies_defaults",
             "modifies_routes",
@@ -462,7 +472,55 @@ class RealCollectorTests(unittest.TestCase):
         self.assertEqual(value["device_count"], 1)
         self.assertEqual(value["running_node_count"], 1)
         self.assertEqual(value["observed_nodes"][0]["name"], "motu")
+        self.assertEqual(value["event"], "baseline")
+        self.assertEqual(value["event_sequence"], 0)
+        self.assertEqual(value["observer_id"], MODULE.OBSERVER_ID)
         self.assertFalse(value["modified"])
+
+    def test_pipewire_graph_events_are_monotone_and_content_bound(self):
+        baseline = json.dumps(
+            [
+                {
+                    "id": 1,
+                    "type": "PipeWire:Interface:Node",
+                    "info": {"state": "running", "props": {"node.name": "motu"}},
+                }
+            ]
+        )
+        changed = json.dumps(
+            [
+                {
+                    "id": 1,
+                    "type": "PipeWire:Interface:Node",
+                    "info": {"state": "running", "props": {"node.name": "motu"}},
+                },
+                {
+                    "id": 2,
+                    "type": "PipeWire:Interface:Node",
+                    "info": {"state": "idle", "props": {"node.name": "roland"}},
+                },
+            ]
+        )
+        outputs = iter([baseline, baseline, changed])
+        collector = MODULE.PipeWireGraphCollector(
+            runner=lambda argv, **kwargs: next(outputs)
+        )
+        first = collector.sample(None)
+        second = collector.sample(None)
+        third = collector.sample(None)
+        self.assertEqual(
+            [first["event"], second["event"], third["event"]],
+            ["baseline", "none", "changed"],
+        )
+        self.assertEqual(
+            [first["event_sequence"], second["event_sequence"], third["event_sequence"]],
+            [0, 0, 1],
+        )
+        self.assertEqual(first["graph_sha256"], second["graph_sha256"])
+        self.assertNotEqual(second["graph_sha256"], third["graph_sha256"])
+        collector.reset()
+        self.assertEqual(collector._event_sequence, 0)
+        self.assertIsNone(collector._previous_graph_sha256)
 
     def test_malformed_or_missing_pipewire_output_becomes_a_stream_error(self):
         cases = {
@@ -735,6 +793,7 @@ class SoakHarnessTests(unittest.TestCase):
             "malformed-payload-rejected",
             "shutdown-deterministic",
             "threaded-collector-isolation",
+            "memory-growth-bounded",
         ):
             with self.subTest(check=identifier):
                 self.assertEqual(by_id[identifier]["status"], "pass")
@@ -847,12 +906,82 @@ class SoakHarnessTests(unittest.TestCase):
         self.assertGreaterEqual(xruns["start_total"], 1)
         self.assertGreater(xruns["end_total"], xruns["start_total"])
         self.assertEqual(xruns["delta"], xruns["end_total"] - xruns["start_total"])
-        self.assertTrue(report["live_proof"])
+        self.assertFalse(report["live_proof"])
+        self.assertIn("blocks clean evidence", report["live_proof_reason"])
         self.assertEqual(report["load_factor"], 3)
         self.assertEqual(report["snapshot_reads"], report["observations"] * 3)
         by_id = {item["id"]: item for item in report["checks"]}
         self.assertEqual(by_id["snapshot-load-exercised"]["status"], "pass")
+        self.assertEqual(by_id["xrun-delta"]["status"], "fail")
+        self.assertEqual(report["status"], "fail")
+
+    def test_live_mode_accepts_a_readable_zero_xrun_delta(self):
+        def runner(argv, **kwargs):
+            return "S ID ERR NAME\nR 1 7 motu\n"
+
+        def xrun_hub(**kwargs):
+            collector = MODULE.XrunCollector(runner=runner)
+            collector.interval_seconds = 0.05
+            return MODULE.TelemetryHub([collector], **kwargs)
+
+        original = SOAK.TELEMETRY.build_default_hub
+        SOAK.TELEMETRY.build_default_hub = xrun_hub
+        try:
+            report = self.report(
+                [
+                    "--mode",
+                    "live",
+                    "--duration-seconds",
+                    "0.4",
+                    "--sample-interval-seconds",
+                    "0.05",
+                    "--load-factor",
+                    "2",
+                ]
+            )
+        finally:
+            SOAK.TELEMETRY.build_default_hub = original
+        self.assertEqual(report["xruns"]["delta"], 0)
+        self.assertTrue(report["live_proof"])
         self.assertEqual(report["status"], "pass")
+        by_id = {item["id"]: item for item in report["checks"]}
+        self.assertEqual(by_id["xrun-delta"]["status"], "pass")
+        self.assertEqual(by_id["snapshot-load-exercised"]["status"], "pass")
+
+    def test_memory_growth_and_child_cpu_are_bounded_explicitly(self):
+        passed = SOAK.memory_growth_check(
+            {"available": True, "growth_kib": 1024, "growth_per_hour_kib": None}
+        )
+        failed = SOAK.memory_growth_check(
+            {
+                "available": True,
+                "growth_kib": SOAK.MAX_SHORT_RUN_MEMORY_GROWTH_KIB + 1,
+                "growth_per_hour_kib": None,
+            }
+        )
+        hourly_failed = SOAK.memory_growth_check(
+            {
+                "available": True,
+                "growth_kib": 1,
+                "growth_per_hour_kib": SOAK.MAX_HOURLY_MEMORY_GROWTH_KIB + 1,
+            }
+        )
+        self.assertEqual(passed["status"], "pass")
+        self.assertEqual(failed["status"], "fail")
+        self.assertEqual(hourly_failed["status"], "fail")
+
+        class Times:
+            user = 1.0
+            system = 2.0
+            children_user = 3.0
+            children_system = 4.0
+
+        original = SOAK.os.times
+        SOAK.os.times = lambda: Times()
+        try:
+            self.assertEqual(SOAK.process_cpu_seconds(), 10.0)
+        finally:
+            SOAK.os.times = original
 
     def test_report_arguments_are_bounded(self):
         parser = SOAK.build_parser()
@@ -897,6 +1026,13 @@ class SoakHarnessTests(unittest.TestCase):
             self.assertEqual(written["safety"]["mode"], "passive-observation")
             with self.assertRaises(SOAK.SoakError):
                 SOAK.write_report(written, pathlib.Path(directory) / "absent" / "x.json")
+            target = pathlib.Path(directory) / "target.json"
+            target.write_text("preserve")
+            link = pathlib.Path(directory) / "report-link.json"
+            link.symlink_to(target)
+            with self.assertRaises(SOAK.SoakError):
+                SOAK.write_report(written, link)
+            self.assertEqual(target.read_text(), "preserve")
 
 
 class DocumentationTests(unittest.TestCase):
@@ -935,6 +1071,7 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("--sample-interval-seconds 0.25 --load-factor 8", text)
         self.assertIn("--sample-interval-seconds 30 --load-factor 1", text)
         self.assertIn("python3 scripts/audio_live_telemetry.py check", text)
+        self.assertIn("r.get(k)", text)
 
 
 if __name__ == "__main__":

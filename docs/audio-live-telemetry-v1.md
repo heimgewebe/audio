@@ -45,7 +45,13 @@ Programme entstehen. `assert_passive_argv()` weist alles andere ab, auch wenn
 ein verbotenes Verb in einem sonst erlaubten Vektor auftaucht.
 
 Die Beobachtung ist vollständig reversibel: sie hinterlässt keinen Zustand.
-Das Beenden der Telemetrie ist ein reiner Threadstopp.
+Der Beobachter trägt die feste Identität `audio-control-telemetry-v1`;
+`owned_nodes` und `owned_links` sind in v1 leer. Ein späterer, separat
+hostfreigegebener Beobachtungsknoten dürfte nur unter dieser Identität angelegt
+und ausschließlich identitätsgebunden zurückgenommen werden. Ohne eigene
+Ressourcen ist Rollback ein No-op. Das Beenden der Telemetrie ist ein reiner
+Threadstopp. Sein Zeitbudget liegt oberhalb des längsten passiven
+Subprozess-Timeouts einschließlich Kill-Grace.
 
 ## 2. Ströme und Schema
 
@@ -54,7 +60,7 @@ eigenem begrenztem Puffer:
 
 | Strom-ID | Inhalt | Quelle | Intervall | Stale ab |
 | --- | --- | --- | --- | --- |
-| `device-graph` | Knoten-, Link- und Gerätezahl, beobachtete Knoten und Links | `pw-dump` | 2 s | 8000 ms |
+| `device-graph` | Knoten-, Link- und Gerätezahl, Inhaltsdigest sowie `baseline`/`none`/`changed`-Ereignis | `pw-dump` | 2 s | 8000 ms |
 | `audio-levels` | Peak und RMS in dBFS | externe Pegelquelle | 1 s | 3000 ms |
 | `midi-activity` | Sequencer-Clients, Ports, Rawmidi-Bytes und Delta | `/proc/asound` | 1 s | 6000 ms |
 | `transport` | `running`, `idle` oder `unknown` | abgeleitet aus `device-graph` | 1 s | 6000 ms |
@@ -109,7 +115,10 @@ Bedeutung der Felder:
   JSON-Vertrag verletzt haben.
 
 Der Snapshotkopf enthält zusätzlich `safety` (die Grenze aus Abschnitt 1),
-`summary` (Zähler über alle Ströme) und `control_channel`.
+`summary` (Zähler über alle Ströme) und `control_channel`. Der Graphsammler
+bildet aus Knoten, Links und Geräten einen stabilen SHA-256. Der erste gültige
+Stand heißt `baseline`, unveränderte Folgestände `none`; nur eine echte
+Inhaltsänderung erhöht `event_sequence` und liefert `changed`.
 
 ## 3. Kommandos teilen keine verlustbehaftete Warteschlange
 
@@ -151,7 +160,20 @@ Text da; Farbe ist nie die einzige Information.
 
 Die UI pollt alle zwei Sekunden getrennt vom Zustandssnapshot. Ein
 Telemetriefehler setzt nur den Panel-Text und berührt weder die globale
-Meldung, den Aktualisierungsknopf noch den Snapshotzyklus.
+Meldung, den Aktualisierungsknopf noch den Snapshotzyklus. Verspätete Antworten
+dürfen einen neueren Stand nicht überschreiben: jede Anfrage besitzt eine
+monotone Request-ID, nur die jüngste Antwort wird präsentiert.
+
+Die drei Ebenen sind ausdrücklich getrennt:
+
+- `/api/v1/snapshot` liefert `truth_stream.sequence`, Cache-Alter, Frische und
+  Teilfehler der langsamen Systemwahrheit. Cache-Readbacks behalten die Sequenz
+  und erhöhen nur das Alter; ein echter Refresh erhöht die Sequenz.
+- `/api/v1/telemetry` liefert die unabhängigen Sequenzen, Frische- und
+  Fehlerzustände jedes Telemetriestroms.
+- Die UI führt zusätzlich `telemetryPresentationSequence` und die angenommene
+  Request-ID. Diese Darstellungssequenz erteilt weder Audio- noch
+  Systemwahrheitsautorität.
 
 ## 6. Belegläufe
 
@@ -203,7 +225,7 @@ just telemetry-soak-summary /tmp/audio-telemetry-soak-8h.v1.json
 | Feld | Bedeutung |
 | --- | --- |
 | `evidence_class` | `synthetic-accelerated` = beschleunigte Simulation, `live-observed` = echte passive Beobachtung. |
-| `live_proof` | Nur `true`, wenn im Lauf mindestens ein Strom tatsächlich `live` war. |
+| `live_proof` | Nur `true`, wenn die Laufzeit vollständig war, mindestens ein Strom `live` war, kein Sicherheitscheck fehlschlug und der globale XRun-Delta exakt null blieb. |
 | `live_proof_reason` | Klartext, warum ein Lauf etwas beweist oder eben nicht. |
 | `queue_bounds.max_buffer_depth` | Muss `<= stream_capacity` sein. |
 | `queue_bounds.dropped_total` | Erwartete, gezählte Telemetrieverluste unter Last. |
@@ -213,7 +235,7 @@ just telemetry-soak-summary /tmp/audio-telemetry-soak-8h.v1.json
 | `memory.retention` | Harte interne Stichprobengrenze und Kompaktierungsmethode der Harness. |
 | `memory.growth_per_hour_kib` | Nur bei Läufen ab 60 s gesetzt, sonst `null`. |
 | `memory.trend` | `flat`, `rising` oder `not-extrapolated`. |
-| `cpu.process_cpu_percent` | Eigener CPU-Anteil über die Laufzeit. |
+| `cpu.process_cpu_percent` | CPU-Anteil des Harness einschließlich beendeter Kindprozesse über die Laufzeit. |
 | `xruns.available` | `false`, wenn kein echter Zähler lesbar war. |
 | `xruns.delta` | XRun-Zuwachs über den Lauf; `null`, wenn nicht messbar. |
 | `checks[]` | `pass`, `fail` oder `skipped`, jeweils mit Begründung. |
@@ -225,8 +247,11 @@ Ehrlichkeitsregeln, die die Harness einhält:
   XRun-Zahlen als `authority: synthetic`.
 - Ein Livelauf ohne lesbaren XRun-Zähler setzt `xruns.available: false`,
   `delta: null` und markiert `xrun-delta` als `skipped` statt eine Null zu
-  behaupten.
-- Läufe unter 60 s extrapolieren keinen Stundentrend.
+  behaupten. Ein positiver globaler Delta wird der Anwendung nicht automatisch
+  zugerechnet, blockiert aber einen sauberen Beleg.
+- Läufe unter 60 s extrapolieren keinen Stundentrend. Kurze Läufe begrenzen den
+  absoluten RSS-Zuwachs auf 32 MiB; längere Läufe den beobachteten Trend auf
+  64 MiB pro Stunde.
 - Befehle und Zieldefinitionen sind kein Laufbeleg. Ohne erzeugten Bericht ist
   weder die Einstundenlast noch der Achtstunden-Soak ausgeführt oder bestanden.
 
@@ -241,7 +266,8 @@ Ehrlichkeitsregeln, die die Harness einhält:
 - XRun-Zähler stammen aus einem Batch-Snapshot von `pw-top`. Fehlt das Werkzeug
   oder die Spalte, wird der Strom zum Fehler – nie zum Dienstausfall.
 - `pw-dump`-Ausgaben werden auf 2 MB und 6 s begrenzt; beobachtete Knoten und
-  Links werden auf je 32 Einträge gekürzt (`truncated: true`).
+  Links werden auf je 32 Einträge gekürzt (`truncated: true`). Der
+  Telemetrie-Stopp wartet länger als dieses Subprozessbudget.
 - Die Telemetrie liest den *beobachteten* Zustand. Sie ist keine physische
   Wahrheit über Kabel, Phantomspeisung oder Reglerstellungen.
 - Der Speicherbedarf des Kerns ist hart begrenzt: 6 Ströme × 32 Samples ×
@@ -249,7 +275,12 @@ Ehrlichkeitsregeln, die die Harness einhält:
   Speicher und verdichtet sie periodisch unter Erhalt der ersten und neuesten
   Messung; im Bericht erscheinen höchstens 64.
 - Die Harness startet keinen dauerhaften Dienst. Ein Achtstundenlauf ist ein
-  Vordergrundprozess und endet mit seinem Zeitlimit.
+  Vordergrundprozess und endet mit seinem Zeitlimit. Reportdateien werden mit
+  `O_NOFOLLOW` geöffnet; Symlink-Ziele werden nicht überschrieben.
+- Die vorhandenen Befehle definieren Belegläufe, führen sie aber nicht aus. Für
+  T021 liegen repositoryseitige Kurztests vor; der echte Achtstunden-Soak und
+  die echte Einstunden-Lastprobe bleiben bis zu ihren erzeugten Berichten
+  ausdrücklich unbewiesen.
 
 ## 9. Rollback
 

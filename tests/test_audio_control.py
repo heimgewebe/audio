@@ -603,7 +603,12 @@ class AudioControlTests(unittest.TestCase):
         controller = self.controller(runner)
         first = controller.snapshot()
         second = controller.snapshot()
-        self.assertIs(first, second)
+        self.assertIsNot(first, second)
+        self.assertEqual(first["generated_at"], second["generated_at"])
+        self.assertEqual(
+            first["truth_stream"]["sequence"],
+            second["truth_stream"]["sequence"],
+        )
         self.assertEqual(runner.doctor_calls, 1)
         controller.snapshot(refresh=True)
         self.assertEqual(runner.doctor_calls, 2)
@@ -1804,6 +1809,51 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
                     "audio_control_error",
                 )
         self.assertFalse(self.runner.whale_active)
+
+
+class TelemetryTruthSeparationTests(unittest.TestCase):
+    def test_slow_truth_sequence_and_cache_freshness_are_independent(self):
+        now = [100.0]
+        runner = FakeRunner()
+        controller = MODULE.AudioControl(
+            runner=runner,
+            telemetry=None,
+            cache_seconds=5.0,
+            clock=lambda: now[0],
+        )
+        first = controller.snapshot()
+        self.assertEqual(first["truth_stream"]["sequence"], 1)
+        self.assertEqual(first["truth_stream"]["freshness"], "fresh")
+        self.assertEqual(first["truth_stream"]["age_ms"], 0)
+
+        now[0] += 1.25
+        cached = controller.snapshot()
+        self.assertEqual(cached["truth_stream"]["sequence"], 1)
+        self.assertEqual(cached["truth_stream"]["freshness"], "cached")
+        self.assertEqual(cached["truth_stream"]["age_ms"], 1250)
+        self.assertEqual(cached["generated_at"], first["generated_at"])
+
+        refreshed = controller.snapshot(refresh=True)
+        self.assertEqual(refreshed["truth_stream"]["sequence"], 2)
+        self.assertEqual(refreshed["truth_stream"]["freshness"], "fresh")
+        self.assertEqual(refreshed["truth_stream"]["age_ms"], 0)
+        self.assertEqual(runner.doctor_calls, 2)
+
+    def test_ui_rejects_out_of_order_telemetry_and_tracks_presentation(self):
+        source = (ROOT / "ui" / "app.js").read_text()
+        for needle in (
+            "telemetryRequestSequence: 0",
+            "telemetryPresentationSequence: 0",
+            "const requestId = ++state.telemetryRequestSequence",
+            "requestId !== state.telemetryRequestSequence",
+            "state.telemetryPresentationSequence += 1",
+            "state.telemetryPresentedRequest = requestId",
+            "Wahrheit Seq",
+            "snapshot.truth_stream",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, source)
+
 
 
 if __name__ == "__main__":

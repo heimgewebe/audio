@@ -36,7 +36,7 @@ telemetry-soak-8h report="/tmp/audio-telemetry-soak-8h.v1.json":
     python3 scripts/audio_telemetry_soak.py --mode live --duration-seconds 28800 --sample-interval-seconds 30 --load-factor 1 --report "{{report}}"
 
 telemetry-soak-summary report="/tmp/audio-telemetry-soak-8h.v1.json":
-    python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print(json.dumps({k: r[k] for k in ('kind','status','mode','evidence_class','live_proof','live_proof_reason','duration_seconds','queue_bounds','memory','cpu','xruns','failed_checks')}, ensure_ascii=False, indent=2))" "{{report}}"
+    python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print(json.dumps({k: r.get(k) for k in ('kind','status','mode','evidence_class','live_proof','live_proof_reason','duration_seconds','load_factor','snapshot_reads','snapshot_reads_per_second','queue_bounds','memory','cpu','xruns','failed_checks')}, ensure_ascii=False, indent=2))" "{{report}}"
 
 telemetry-replay-check:
     ./scripts/audio-telemetry-replay check
