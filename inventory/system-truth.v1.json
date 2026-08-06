@@ -12,6 +12,7 @@
     "inventory/physical-facts.v1.json",
     "inventory/physical-verification.v1.json",
     "inventory/laboratory-gates.v1.json",
+    "inventory/audio-architecture-decisions.v1.json",
     "profiles/audio-profiles.v1.json",
     "profiles/reference-levels.v1.json",
     "private physical state digest",
@@ -54,6 +55,7 @@
     "Qobuz proof requires matching current-track fingerprint and rate context",
     "required_remeasurements contains only laboratory catalog IDs while non-catalog work is separated as required_followups",
     "process fingerprint and service-limit changes are material drift",
-    "drift identifies catalog-exact remeasurement gates but never applies a profile"
+    "drift identifies catalog-exact remeasurement gates but never applies a profile",
+    "accepted phase-2 architecture decisions bind profile runtime roles but never grant apply authority"
   ]
 }

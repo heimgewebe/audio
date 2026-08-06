@@ -64,6 +64,7 @@ CONTRACT_PATHS: dict[str, pathlib.Path] = {
     "physical_fact_catalog": ROOT / "inventory/physical-facts.v1.json",
     "physical_template": ROOT / "inventory/physical-verification.v1.json",
     "laboratory_gates": ROOT / "inventory/laboratory-gates.v1.json",
+    "architecture_decisions": ROOT / "inventory/audio-architecture-decisions.v1.json",
     "system_truth_contract": ROOT / "inventory/system-truth.v1.json",
     "audio_profiles": ROOT / "profiles/audio-profiles.v1.json",
     "reference_levels": ROOT / "profiles/reference-levels.v1.json",

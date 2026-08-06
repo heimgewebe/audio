@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "kind": "audio_architecture_decisions",
+  "id": "audio-architecture-phase2-v1",
+  "status": "accepted",
+  "decided_at": "2026-08-06",
+  "task_id": "AUDIO-CONTROL-PLANE-V1-T002",
+  "evidence_cutoff": "2026-08-06T12:37:17.811989Z",
+  "host_observation": {
+    "read_only": true,
+    "pipewire": {
+      "active": true,
+      "rate_hz": 48000,
+      "quantum_frames": 1024,
+      "pulse_compatibility_active": true,
+      "wireplumber_active": true
+    },
+    "mopidy": {
+      "active": true,
+      "version": "3.4.2",
+      "qobuz_enabled_with_service_config_vector": true,
+      "output": "pulsesink",
+      "qobuz_extension_distribution_version": "0.1.1",
+      "qobuz_extension_module_version": "0.1.0",
+      "version_metadata_consistent": false
+    },
+    "ardour": {
+      "native_version": "6.9.0",
+      "flatpak_application_id": "org.ardour.Ardour",
+      "flatpak_version": "9.7.0",
+      "flatpak_pipewire_socket_visible": true,
+      "flatpak_home_visible": true,
+      "flatpak_devices_visible": true,
+      "declared_flatpak_vst3_path": "/app/extensions/Plugins/vst3",
+      "user_plugin_discovery": "not-proven"
+    },
+    "plugins": {
+      "system_lv2_bundle_count": 27,
+      "user_lv2_entry_count": 3,
+      "user_vst3_entry_count": 2,
+      "jalv_available": false,
+      "yabridgectl_available": false,
+      "host_local_plugin_discovery": "not-proven"
+    },
+    "easyeffects": {
+      "flatpak_version": "8.2.7",
+      "native_executable_available": false,
+      "user_service_active": false,
+      "process_activity": "not-established"
+    }
+  },
+  "evidence": {
+    "belegt": [
+      "PipeWire, PipeWire-Pulse und WirePlumber sind aktiv; der beobachtete Graph läuft mit 48 kHz und 1024 Frames.",
+      "Mopidy 3.4.2 lädt mit der exakten Dienst-Konfigurationsfolge Qobuz aktiv und gibt über pulsesink in den Mischpfad aus; Distribution 0.1.1 und Modulversion 0.1.0 widersprechen sich.",
+      "Ardour ist doppelt installiert: nativ 6.9.0 und als Flatpak 9.7.0; das Flatpak besitzt Home-, PipeWire-, Pulse- und Gerätezugriff, aber ein erfolgreicher Scan hostlokaler Plugins ist nicht belegt.",
+      "Der breiteste lokale Pluginbestand ist LV2; nutzerlokal sind zusätzlich zwei VST3-Einträge vorhanden. Eine Windows-Plugin-Bridge ist nicht installiert.",
+      "EasyEffects 8.2.7 ist als Flatpak vorhanden; ein nativer Benutzerdienst ist nicht aktiv, die Aktivität eines Flatpak-Prozesses wurde damit nicht bestimmt."
+    ],
+    "plausibel": [
+      "Flatpak-Ardour reduziert gegenüber der veralteten nativen Version das Versionsrisiko; seine Eignung bleibt von einem echten Plugin-Scan und Session-Wiederöffnungsbeleg abhängig.",
+      "Ein stabiler gemeinsamer 48-kHz-Graph minimiert Zustandswechsel für Aufnahme, Desktop, Softwareinstrumente und Produktion.",
+      "Mopidy ist als Qobuz- und Komfortadapter nützlich, sollte aber nicht die allgemeine Audioarchitektur oder einen Exklusivitätsanspruch definieren."
+    ],
+    "spekulativ": [
+      "Ein direkter exklusiver ALSA-Pfad könnte bei einzelnen Qobuz-Titeln einen relevanten Vorteil liefern.",
+      "128 oder 512 Frames könnten auf der realen MOTU-/Roland-Kette stabil genug für Live-Spiel oder Aufnahme sein.",
+      "EasyEffects könnte für Sprache oder Alltagshören subjektiv nützlich sein."
+    ]
+  },
+  "decisions": {
+    "pipewire_alsa": {
+      "graph_core": "pipewire",
+      "pulse_compatibility": "retained",
+      "exclusive_alsa": "conditional-experiment-only",
+      "exclusive_alsa_requirements": [
+        "fresh qobuz-rate-proof for the selected track",
+        "exclusive ownership of the target device",
+        "parallel mixing proven absent",
+        "bounded stop and rollback to the PipeWire profile"
+      ],
+      "global_pipewire_stop": "forbidden"
+    },
+    "rate_policy": {
+      "mixed_graph_rate_hz": 48000,
+      "roland_digital_audio_rate_hz": 44100,
+      "roland_resampling": "single-stage-44100-to-48000",
+      "additional_intentional_resampling": "forbidden",
+      "qobuz_without_track_proof": "48000-fallback",
+      "qobuz_track_native": "allowed-only-with-current-proof-and-exclusive-route"
+    },
+    "quantum_policy": {
+      "desktop_mixed_frames": 1024,
+      "reference_listening_frames": 1024,
+      "voice_recording_candidate_frames": 512,
+      "piano_digital_recording_candidate_frames": 512,
+      "piano_software_live_candidate_frames": 128,
+      "candidate_authority": "laboratory-gated",
+      "required_metrics": [
+        "round-trip latency",
+        "CPU",
+        "XRuns",
+        "recovery"
+      ],
+      "accepted_defaults": {
+        "desktop-mixed": 1024,
+        "reference-listening": 1024
+      },
+      "unverified_candidates": {
+        "voice-recording": 512,
+        "piano-digital-recording": 512,
+        "piano-software-live": 128
+      },
+      "acceptance_requirements": [
+        "graph-bound round-trip latency measurement where applicable",
+        "CPU within the profile resource contract",
+        "zero XRuns during the profile gate window",
+        "recovery to 1024 frames without a stale override"
+      ]
+    },
+    "qobuz_mopidy": {
+      "mopidy_role": "provider-and-comfort-adapter",
+      "current_transport": "pulsesink-to-pipewire-pulse",
+      "current_qobuz_extension": "enabled",
+      "general_audio_core": false,
+      "exclusive_or_bitperfect_claim": false,
+      "exclusive_profile_requires": "qobuz-rate-proof"
+    },
+    "ardour": {
+      "canonical_runtime": {
+        "distribution": "flatpak",
+        "application_id": "org.ardour.Ardour",
+        "observed_version": "9.7.0",
+        "plugin_discovery": "requires-scan-proof",
+        "session_reopen": "requires-proof"
+      },
+      "native_runtime": {
+        "observed_version": "6.9.0",
+        "status": "installed-noncanonical",
+        "removal_authority": false
+      },
+      "session_assets": "user-home-project-root-with-versioned-template-manifest",
+      "duplicate_runtime_policy": "only-flatpak-defines-the-production-contract"
+    },
+    "plugins": {
+      "production_host": "ardour-embedded",
+      "live_and_experimental_host": "managed-systemd-user-host",
+      "format_priority": [
+        "lv2",
+        "vst3-user-local"
+      ],
+      "windows_plugin_bridge": "forbidden-until-separately-decided",
+      "standalone_sfizz_jack": "forbidden",
+      "asset_roots": [
+        "flatpak-packaged-plugin-extension",
+        "scan-proven-user-plugin-root",
+        "external-hash-bound-sample-root"
+      ],
+      "user_plugin_visibility": "requires-scan-proof"
+    },
+    "easyeffects": {
+      "distribution": "flatpak",
+      "role": "optional-profile-edge-processor",
+      "default_state": "inactive",
+      "automatic_activation": false,
+      "bypass_profiles": [
+        "reference-listening",
+        "qobuz-exclusive",
+        "production"
+      ],
+      "eligible_profiles_after_listening_test": [
+        "desktop-mixed",
+        "voice-recording"
+      ],
+      "legacy_plan_disposition": "imported-as-design-input-not-runtime-authority"
+    }
+  },
+  "profile_bindings": {
+    "desktop-mixed": {
+      "graph_core": "pipewire",
+      "rate_hz": 48000,
+      "quantum_frames": 1024,
+      "easyeffects": "off-by-default"
+    },
+    "reference-listening": {
+      "graph_core": "pipewire",
+      "rate_policy": "fixed-48000-fallback-until-track-native-proof",
+      "quantum_frames": 1024,
+      "easyeffects": "bypass"
+    },
+    "voice-recording": {
+      "graph_core": "pipewire",
+      "rate_hz": 48000,
+      "quantum_candidate_frames": 512,
+      "easyeffects": "optional-after-listening-and-recording-proof"
+    },
+    "piano-digital-recording": {
+      "graph_core": "pipewire",
+      "rate_hz": 48000,
+      "source_rate_hz": 44100,
+      "resampling": "single-stage"
+    },
+    "piano-software-live": {
+      "graph_core": "pipewire",
+      "quantum_candidate_frames": 128,
+      "plugin_runtime": "managed-systemd-user-host"
+    },
+    "qobuz-exclusive": {
+      "provider_adapter": "mopidy-qobuz-hires",
+      "fallback_transport": "pipewire-pulse",
+      "exclusive_transport": "conditional-alsa-experiment",
+      "easyeffects": "bypass"
+    },
+    "experimental": {
+      "graph_core": "pipewire",
+      "plugin_runtime": "managed-systemd-user-host",
+      "plugin_format_priority": [
+        "lv2",
+        "vst3-user-local"
+      ]
+    },
+    "production": {
+      "session_runtime": "flatpak:org.ardour.Ardour",
+      "plugin_host": "ardour-embedded",
+      "plugin_format_priority": [
+        "lv2",
+        "vst3-user-local"
+      ],
+      "easyeffects": "bypass",
+      "plugin_discovery": "requires-scan-proof"
+    }
+  },
+  "refresh_before_effect": [
+    "fresh audio-truth report with device, graph, rate, quantum and defaults",
+    "exact Mopidy service config vector and Qobuz extension state",
+    "current Ardour Flatpak version, permissions, plugin scan and session reopen",
+    "current plugin inventory and managed-host limits",
+    "current EasyEffects installation, activity and selected profile",
+    "all profile-specific physical and laboratory gates"
+  ],
+  "does_not_establish": [
+    "physical device readiness",
+    "bit-perfect Qobuz playback",
+    "stable low-latency quantum",
+    "subjective EasyEffects benefit",
+    "permission to remove native Ardour",
+    "permission to apply or activate an audio profile",
+    "Flatpak discovery of host-local LV2 or VST3 plugins",
+    "absence of an EasyEffects Flatpak process"
+  ],
+  "evidence_repository_revision": "230052d6f10760632a90a63dd94ab602f5de3415"
+}
