@@ -40,6 +40,7 @@ MAX_BACKEND_HEADER_BYTES = 32_768
 MAX_RESPONSE_BYTES = 1_048_576
 MAX_CONCURRENT_REQUESTS = 8
 MAX_CONDITIONAL_HEADER_BYTES = 4096
+MAX_RANGE_HEADER_BYTES = 128
 ACCEPTANCE_STATE_PATH = (
     pathlib.Path.home() / ".local" / "state" / "audio-remote-bridge-v1" / "acceptance.json"
 )
@@ -74,6 +75,9 @@ STATIC_ROUTES = frozenset(
         "/whale-learning-articulation.wav",
     }
 )
+AUDIO_STATIC_ROUTES = frozenset(
+    route for route in STATIC_ROUTES if route.endswith(".wav")
+)
 FIXED_API_ROUTES = frozenset(
     {
         "/api/v1/health",
@@ -100,6 +104,8 @@ FORWARDED_RESPONSE_HEADERS = frozenset(
         "content-type",
         "cache-control",
         "etag",
+        "accept-ranges",
+        "content-range",
         "content-security-policy",
         "referrer-policy",
         "x-content-type-options",
@@ -383,7 +389,11 @@ def validate_request_target(raw_target: str) -> tuple[str, bool]:
     raise RouteDenied("route is not allowlisted")
 
 
-def backend_request_headers(headers: Any) -> dict[str, str]:
+def backend_request_headers(
+    headers: Any,
+    *,
+    allow_range: bool = False,
+) -> dict[str, str]:
     forwarded: dict[str, str] = {
         "Host": f"{BACKEND_HOST}:{BACKEND_PORT}",
         "Connection": "close",
@@ -398,6 +408,21 @@ def backend_request_headers(headers: Any) -> dict[str, str]:
         if any(character in value for character in "\r\n\0"):
             raise RequestRejected("conditional header contains control characters")
         forwarded["If-None-Match"] = value
+
+    range_values = (
+        headers.get_all("Range", [])
+        if headers is not None and allow_range
+        else []
+    )
+    if len(range_values) > 1:
+        raise RequestRejected("duplicate range header is forbidden")
+    if range_values:
+        range_value = range_values[0]
+        if len(range_value.encode("latin-1", errors="replace")) > MAX_RANGE_HEADER_BYTES:
+            raise RequestRejected("range header is too large")
+        if any(character in range_value for character in "\r\n\0"):
+            raise RequestRejected("range header contains control characters")
+        forwarded["Range"] = range_value
     return forwarded
 
 
@@ -409,7 +434,10 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
     )
     try:
         connection.putrequest("GET", target, skip_host=True, skip_accept_encoding=True)
-        for name, value in backend_request_headers(incoming_headers).items():
+        for name, value in backend_request_headers(
+            incoming_headers,
+            allow_range=target in AUDIO_STATIC_ROUTES,
+        ).items():
             connection.putheader(name, value)
         connection.endheaders()
         response = connection.getresponse()

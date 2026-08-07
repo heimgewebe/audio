@@ -74,7 +74,7 @@
         },
         "snapshot_queries": {"const": ["", "refresh=1"]},
         "profile_plan_pattern": {"const": "/api/v1/profiles/{profile_id}/plan"},
-        "request_header_forward": {"const": ["If-None-Match"]},
+        "request_header_forward": {"const": ["If-None-Match", "Range"]},
         "backend_headers_synthesized": {"const": ["Host", "Connection"]},
         "response_header_forward": {
           "type": "array",
