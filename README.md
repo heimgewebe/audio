@@ -110,10 +110,12 @@ gleichherkünftige `/api/`-Anfragen strikt network-only behandelt: kein Cache,
 kein Rückfall, kein Replay, keine Queue, kein Background Sync.
 
 Zwei Laufzeitmodi sind ausdrücklich getrennt. `remote-audiozentrale` (Vorgabe)
-behandelt das Heim-PC-Backend als autoritativ, setzt aber eine **separat zu
-belegende, authentifizierte und gesicherte Fern-Oberfläche** voraus; der
-heutige Loopback-Control-Dienst ist ausdrücklich **kein Ferntransport**.
-`local-device` kennt nur Browserfähigkeiten, stellt keine einzige
+behandelt das Heim-PC-Backend als autoritativ, darf es aber nur über den
+[separaten sicheren Read-only-Bridge](docs/ipad-remote-bridge-v1.md) erreichen.
+Der Audio-Control-Dienst selbst bleibt auf Loopback und ist ausdrücklich
+**kein Ferntransport**. Der Bridge besitzt keine Audio- oder Gerätewirkung und
+veröffentlicht keine lokalen Aktionsnachweise. `local-device` kennt nur
+Browserfähigkeiten, stellt keine einzige
 Backendanfrage und hat keine native Autorität über MOTU, ALSA, PipeWire oder
 Roland. Fähigkeiten werden fail-closed und ohne Kennungsauswertung erkannt;
 `getUserMedia` und `requestMIDIAccess` werden nie automatisch aufgerufen.
@@ -139,6 +141,7 @@ Fernstrecke noch lokale Audio- oder MIDI-Hardware sind belegt.
 - [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)
 - [Spezifikation der lokalen Audiozentrale](docs/plans/local-audio-control-ui-v1.md)
 - [iPad- und PWA-Fläche v1](docs/ipad-pwa-v1.md)
+- [Sicherer iPad-Remote-Bridge v1](docs/ipad-remote-bridge-v1.md)
 - [Deployment der Audiozentrale](docs/control-deployment.md)
 - [Profiltransition und Recovery](docs/profile-transition-workflow.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)

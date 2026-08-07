@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.local/schemas/audiozentrale-remote-bridge.v1.schema.json",
+  "title": "Audiozentrale remote bridge v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "id",
+    "status",
+    "schema_binding",
+    "bridge",
+    "tailscale_serve",
+    "runtime_acceptance"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "audiozentrale_remote_bridge_contract"},
+    "id": {"const": "audiozentrale-remote-bridge-v1"},
+    "status": {"const": "specified-not-runtime-verified"},
+    "schema_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"const": "schemas/audiozentrale-remote-bridge.v1.schema.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "bridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "listen_host",
+        "listen_port",
+        "backend_host",
+        "backend_port",
+        "methods",
+        "static_routes",
+        "fixed_api_routes",
+        "snapshot_queries",
+        "profile_plan_pattern",
+        "request_header_forward",
+        "backend_headers_synthesized",
+        "response_header_forward",
+        "bridge_response_header",
+        "json_scrubbing",
+        "effect_authority",
+        "backend_remote_exposure"
+      ],
+      "properties": {
+        "listen_host": {"const": "127.0.0.1"},
+        "listen_port": {"const": 8766},
+        "backend_host": {"const": "127.0.0.1"},
+        "backend_port": {"const": 8765},
+        "methods": {
+          "const": ["GET", "HEAD"]
+        },
+        "static_routes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^/"}
+        },
+        "fixed_api_routes": {
+          "const": [
+            "/api/v1/health",
+            "/api/v1/telemetry",
+            "/api/v1/replay",
+            "/api/v1/whale/lesson"
+          ]
+        },
+        "snapshot_queries": {"const": ["", "refresh=1"]},
+        "profile_plan_pattern": {"const": "/api/v1/profiles/{profile_id}/plan"},
+        "request_header_forward": {"const": ["If-None-Match"]},
+        "backend_headers_synthesized": {"const": ["Host", "Connection"]},
+        "response_header_forward": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "bridge_response_header": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "value"],
+          "properties": {
+            "name": {"const": "X-Audio-Remote-Bridge"},
+            "value": {"const": "read-only-v1"}
+          }
+        },
+        "json_scrubbing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "policy", "must_remove", "invalid_json"],
+          "properties": {
+            "enabled": {"const": true},
+            "policy": {"const": "recursive-key-name"},
+            "must_remove": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "invalid_json": {"const": "fail-closed"}
+          }
+        },
+        "effect_authority": {"const": false},
+        "backend_remote_exposure": {"const": false}
+      }
+    },
+    "tailscale_serve": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "https_port",
+        "target",
+        "tailnet_only",
+        "public_exposure",
+        "preserve_other_config",
+        "forbidden_operations"
+      ],
+      "properties": {
+        "tool": {"const": "tailscale serve"},
+        "https_port": {"const": 9443},
+        "target": {"const": "http://127.0.0.1:8766"},
+        "tailnet_only": {"const": true},
+        "public_exposure": {"const": false},
+        "preserve_other_config": {"const": true},
+        "forbidden_operations": {"const": ["funnel", "reset", "clear"]}
+      }
+    },
+    "runtime_acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bridge_service_verified",
+        "tailscale_serve_verified",
+        "ipad_https_reachability_verified",
+        "ipad_safari_verified",
+        "pwa_installation_verified"
+      ],
+      "properties": {
+        "bridge_service_verified": {"const": false},
+        "tailscale_serve_verified": {"const": false},
+        "ipad_https_reachability_verified": {"const": false},
+        "ipad_safari_verified": {"const": false},
+        "pwa_installation_verified": {"const": false}
+      }
+    }
+  }
+}

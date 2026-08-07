@@ -42,6 +42,10 @@ RUNTIME_FILES = {
         pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-control-ui-v1.service",
         0o600,
     ),
+    "systemd/user/audio-remote-bridge-v1.service": (
+        pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-remote-bridge-v1.service",
+        0o600,
+    ),
     "systemd/user/audio-control-deploy.service": (
         pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-control-deploy.service",
         0o600,
@@ -61,9 +65,22 @@ PWA_CRITICAL_RELEASE_FILES = (
     "ui/icon-512.png",
 )
 PWA_RELEASE_SENTINEL = "tests/test_audio_ipad_pwa.py"
+REMOTE_BRIDGE_CRITICAL_RELEASE_FILES = (
+    "scripts/audio_remote_bridge.py",
+    "scripts/audio_remote_bridge_tailscale.py",
+    "inventory/audiozentrale-remote-bridge.v1.json",
+    "schemas/audiozentrale-remote-bridge.v1.schema.json",
+    "systemd/user/audio-remote-bridge-v1.service",
+)
+REMOTE_BRIDGE_RELEASE_SENTINEL = "tests/test_audio_remote_bridge.py"
 
 BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
+    "scripts/audio_remote_bridge.py",
+    "scripts/audio_remote_bridge_tailscale.py",
+    "inventory/audiozentrale-remote-bridge.v1.json",
+    "schemas/audiozentrale-remote-bridge.v1.schema.json",
+    "systemd/user/audio-remote-bridge-v1.service",
     "inventory/audiozentrale-ipad-pwa.v1.json",
     "schemas/audiozentrale-ipad-pwa.v1.schema.json",
     "scripts/audio_telemetry_replay.py",
@@ -584,6 +601,11 @@ def extract_commit(repository: pathlib.Path, commit: str, destination: pathlib.P
 def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
     required = [
         release / "scripts" / "audio_control.py",
+        release / "scripts" / "audio_remote_bridge.py",
+        release / "scripts" / "audio_remote_bridge_tailscale.py",
+        release / "inventory" / "audiozentrale-remote-bridge.v1.json",
+        release / "schemas" / "audiozentrale-remote-bridge.v1.schema.json",
+        release / "systemd" / "user" / "audio-remote-bridge-v1.service",
         release / "ui" / "index.html",
         release / "ui" / "app.js",
         release / "ui" / "styles.css",
@@ -596,6 +618,7 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         release / "schemas" / "audiozentrale-ipad-pwa.v1.schema.json",
         release / "tests" / "test_audio_control.py",
         release / "tests" / "test_audio_ipad_pwa.py",
+        release / "tests" / "test_audio_remote_bridge.py",
     ]
     missing = [str(path.relative_to(release)) for path in required if not path.is_file()]
     if missing:
@@ -613,6 +636,16 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         ),
         run_command(
             [sys.executable, "-m", "unittest", "tests/test_audio_ipad_pwa.py"],
+            cwd=release,
+            timeout=180,
+        ),
+        run_command(
+            [sys.executable, "scripts/audio_remote_bridge.py", "check"],
+            cwd=release,
+            timeout=30,
+        ),
+        run_command(
+            [sys.executable, "-m", "unittest", "tests/test_audio_remote_bridge.py"],
             cwd=release,
             timeout=180,
         ),
@@ -649,6 +682,9 @@ def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
     if not (release / PWA_RELEASE_SENTINEL).is_file():
         pwa_paths = set(PWA_CRITICAL_RELEASE_FILES)
         paths = [relative for relative in paths if relative not in pwa_paths]
+    if not (release / REMOTE_BRIDGE_RELEASE_SENTINEL).is_file():
+        remote_bridge_paths = set(REMOTE_BRIDGE_CRITICAL_RELEASE_FILES)
+        paths = [relative for relative in paths if relative not in remote_bridge_paths]
     paths.extend(relative for relative in RUNTIME_FILES if (release / relative).exists())
     return tuple(dict.fromkeys(paths))
 

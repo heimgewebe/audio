@@ -27,6 +27,11 @@ class AudioControlDeployTests(unittest.TestCase):
     ) -> None:
         files = {
             "scripts/audio_control.py": b"print('control')\n",
+            "scripts/audio_remote_bridge.py": b"print('bridge')\n",
+            "scripts/audio_remote_bridge_tailscale.py": b"print('tailscale')\n",
+            "inventory/audiozentrale-remote-bridge.v1.json": b"{}\n",
+            "schemas/audiozentrale-remote-bridge.v1.schema.json": b"{}\n",
+            "systemd/user/audio-remote-bridge-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "inventory/audiozentrale-ipad-pwa.v1.json": b"{}\n",
             "schemas/audiozentrale-ipad-pwa.v1.schema.json": b"{}\n",
             "scripts/audio_telemetry_replay.py": b"def load_replay_contract(): return {}\n",
@@ -54,6 +59,7 @@ class AudioControlDeployTests(unittest.TestCase):
             "ui/icon-512.png": b"PNG-512\n",
             "tests/test_audio_control.py": b"import unittest\n",
             "tests/test_audio_ipad_pwa.py": b"import unittest\n",
+            "tests/test_audio_remote_bridge.py": b"import unittest\n",
         }
         for relative, payload in files.items():
             target = release / relative
@@ -141,6 +147,72 @@ class AudioControlDeployTests(unittest.TestCase):
                         MODULE.DeployError, "Kritische Releasedatei"
                     ):
                         MODULE.release_hashes(release)
+
+    def test_remote_bridge_runtime_files_are_release_critical(self):
+        expected = set(MODULE.REMOTE_BRIDGE_CRITICAL_RELEASE_FILES)
+        self.assertTrue(expected <= set(MODULE.BASE_CRITICAL_RELEASE_FILES))
+        self.assertIn(
+            "systemd/user/audio-remote-bridge-v1.service", MODULE.RUNTIME_FILES
+        )
+        commit = "7" * 40
+        for missing in sorted(expected):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
+
+    def test_pre_remote_bridge_marker_upgrade_remains_supported(self):
+        commit = "5" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            deploy_root = pathlib.Path(directory)
+            release = deploy_root / "releases" / commit
+            self.write_release(release, commit)
+            for relative in MODULE.REMOTE_BRIDGE_CRITICAL_RELEASE_FILES:
+                (release / relative).unlink()
+            (release / MODULE.REMOTE_BRIDGE_RELEASE_SENTINEL).unlink()
+
+            marker_path = release / ".audio-control-release.json"
+            legacy = {
+                "schema_version": 1,
+                "kind": "audio_control_release",
+                "commit": commit,
+                "created_at_unix": 1,
+                "index_sha256": MODULE.sha256_path(release / "ui" / "index.html"),
+                "app_sha256": MODULE.sha256_path(release / "ui" / "app.js"),
+                "styles_sha256": MODULE.sha256_path(release / "ui" / "styles.css"),
+            }
+            marker_path.write_text(json.dumps(legacy), encoding="utf-8")
+            MODULE.switch_current(deploy_root, commit)
+            expected_payloads = {
+                relative: (release / relative).read_bytes()
+                for relative in MODULE.critical_release_paths(release)
+            }
+            self.assertTrue(
+                set(MODULE.REMOTE_BRIDGE_CRITICAL_RELEASE_FILES).isdisjoint(
+                    expected_payloads
+                )
+            )
+
+            def git_readback(argv, **_kwargs):
+                command = tuple(argv)
+                if command[-1] == "--show-object-format":
+                    return MODULE.CommandResult(command, 0, "sha1\n", "", 0.1)
+                relative = command[-1].split(":", 1)[1]
+                oid = MODULE.git_blob_oid(expected_payloads[relative], "sha1")
+                return MODULE.CommandResult(command, 0, oid + "\n", "", 0.1)
+
+            with mock.patch.object(MODULE, "run_command", side_effect=git_readback):
+                receipt = MODULE.upgrade_current_release_marker(
+                    pathlib.Path(directory) / "repository.git", deploy_root
+                )
+            self.assertTrue(receipt["changed"])
+            upgraded = MODULE.verify_release_marker(release, expected_commit=commit)
+            self.assertEqual(set(upgraded["critical_sha256"]), set(expected_payloads))
 
     def test_pre_pwa_legacy_release_marker_upgrade_remains_supported(self):
         commit = "6" * 40
@@ -1039,7 +1111,8 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertIn("%h/.config/systemd/user", deploy)
         self.assertNotIn("%h/.config/audio-control-ui", deploy)
         self.assertIn("%h/.local/state/audio-control-deploy", deploy)
-        self.assertEqual(len(MODULE.RUNTIME_FILES), 4)
+        self.assertEqual(len(MODULE.RUNTIME_FILES), 5)
+        self.assertIn("systemd/user/audio-remote-bridge-v1.service", MODULE.RUNTIME_FILES)
         self.assertEqual(MODULE.DEFAULT_RELEASE_RETENTION, 3)
         self.assertIn("OnUnitActiveSec=60s", timer)
         self.assertIn("Persistent=true", timer)

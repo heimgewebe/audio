@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "kind": "audiozentrale_remote_bridge_contract",
+  "id": "audiozentrale-remote-bridge-v1",
+  "status": "specified-not-runtime-verified",
+  "schema_binding": {
+    "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
+    "sha256": "2be1cdd607a20b5d18d957c3707543ffdf5027184370ee94a9f8b0e77ac79245"
+  },
+  "bridge": {
+    "listen_host": "127.0.0.1",
+    "listen_port": 8766,
+    "backend_host": "127.0.0.1",
+    "backend_port": 8765,
+    "methods": ["GET", "HEAD"],
+    "static_routes": [
+      "/",
+      "/index.html",
+      "/app.js",
+      "/whale-lesson.js",
+      "/sw.js",
+      "/styles.css",
+      "/manifest.webmanifest",
+      "/icon-180.png",
+      "/icon-192.png",
+      "/icon-512.png",
+      "/whale-learning-reference.wav",
+      "/whale-learning-morph.wav",
+      "/whale-learning-envelope.wav",
+      "/whale-learning-periodicity.wav",
+      "/whale-learning-articulation.wav"
+    ],
+    "fixed_api_routes": [
+      "/api/v1/health",
+      "/api/v1/telemetry",
+      "/api/v1/replay",
+      "/api/v1/whale/lesson"
+    ],
+    "snapshot_queries": ["", "refresh=1"],
+    "profile_plan_pattern": "/api/v1/profiles/{profile_id}/plan",
+    "request_header_forward": ["If-None-Match"],
+    "backend_headers_synthesized": ["Host", "Connection"],
+    "response_header_forward": [
+      "Content-Type",
+      "Cache-Control",
+      "ETag",
+      "Content-Security-Policy",
+      "Referrer-Policy",
+      "X-Content-Type-Options",
+      "X-Frame-Options",
+      "Cross-Origin-Opener-Policy",
+      "Cross-Origin-Resource-Policy",
+      "Permissions-Policy"
+    ],
+    "bridge_response_header": {
+      "name": "X-Audio-Remote-Bridge",
+      "value": "read-only-v1"
+    },
+    "json_scrubbing": {
+      "enabled": true,
+      "policy": "recursive-key-name",
+      "must_remove": ["action_token"],
+      "invalid_json": "fail-closed"
+    },
+    "effect_authority": false,
+    "backend_remote_exposure": false
+  },
+  "tailscale_serve": {
+    "tool": "tailscale serve",
+    "https_port": 9443,
+    "target": "http://127.0.0.1:8766",
+    "tailnet_only": true,
+    "public_exposure": false,
+    "preserve_other_config": true,
+    "forbidden_operations": ["funnel", "reset", "clear"]
+  },
+  "runtime_acceptance": {
+    "bridge_service_verified": false,
+    "tailscale_serve_verified": false,
+    "ipad_https_reachability_verified": false,
+    "ipad_safari_verified": false,
+    "pwa_installation_verified": false
+  }
+}

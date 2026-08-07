@@ -117,9 +117,9 @@ const RUNTIME_MODES = {
   [REMOTE_MODE]: {
     label: "Fern-Audiozentrale",
     authority:
-      "Das Heim-PC-Backend ist autoritativ. Eine authentifizierte, gesicherte " +
-      "Fernstrecke ist noch nicht belegt; der lokale Control-Dienst ist kein " +
-      "Ferntransport.",
+      "Das Heim-PC-Backend ist autoritativ. Fernzugriff ist ausschließlich über " +
+      "einen separat verifizierten sicheren Read-only-Bridge zulässig; der lokale " +
+      "Control-Dienst bleibt Loopback-only und ist niemals der Ferntransport.",
     backend: true,
   },
   [LOCAL_MODE]: {
@@ -144,6 +144,7 @@ const state = {
   capabilities: null,
   serviceWorkerState: "nicht geprüft",
   appShellReloadPending: false,
+  remoteBridgeProjection: null,
   replay: null,
   replayScenarioId: "normal",
   replayFrameIndex: 0,
@@ -427,7 +428,9 @@ function renderRuntimeMode() {
   detailRow(
     install,
     "Ferntransport",
-    "nicht belegt · der lokale Control-Dienst ist kein Ferntransport",
+    state.remoteBridgeProjection === true
+      ? "Read-only-Bridge in aktueller Antwort erkannt · keine Audiowirkung"
+      : "nicht in aktueller Antwort belegt · Control bleibt Loopback-only",
   );
   detailRow(
     install,
@@ -587,6 +590,8 @@ async function fetchJson(url, options = {}) {
     }
     throw new Error("Der lokale Control-Dienst ist nicht erreichbar.");
   }
+  state.remoteBridgeProjection =
+    response.headers.get("X-Audio-Remote-Bridge") === "read-only-v1";
   let payload;
   try {
     payload = await response.json();
