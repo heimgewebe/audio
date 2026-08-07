@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.example/schemas/media-provider-catalog.v1.schema.json",
+  "title": "Media Provider Catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "core_contract",
+    "providers",
+    "import_contract",
+    "track_format_proof_contract",
+    "write_contract",
+    "live_effects",
+    "decision_binding"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "media_provider_catalog"},
+    "core_contract": {"const": "provider-neutral-v1"},
+    "providers": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9-]{0,31}$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "adapter",
+          "adapter_role",
+          "general_audio_core",
+          "fallback_transport",
+          "exclusive_or_bitperfect_claim",
+          "exclusive_profile_requires",
+          "provider_ref",
+          "write_authority"
+        ],
+        "properties": {
+          "adapter": {"type": "string", "minLength": 1},
+          "adapter_role": {"type": "string", "minLength": 1},
+          "general_audio_core": {"type": "boolean"},
+          "fallback_transport": {"type": "string", "minLength": 1},
+          "exclusive_or_bitperfect_claim": {"type": "boolean"},
+          "exclusive_profile_requires": {"type": "string", "minLength": 1},
+          "provider_ref": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "prefix"],
+            "properties": {
+              "kind": {"const": "track"},
+              "prefix": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}:track:$"}
+            }
+          },
+          "write_authority": {"const": "simulation-only-t005"}
+        }
+      }
+    },
+    "import_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["formats", "operations", "dry_run_supported", "duplicates", "errors"],
+      "properties": {
+        "formats": {"const": ["text", "json", "provider-refs"]},
+        "operations": {"const": ["add", "replace"]},
+        "dry_run_supported": {"const": true},
+        "duplicates": {"const": "reported-and-first-occurrence-retained"},
+        "errors": {"const": "reported-and-write-plan-blocked"}
+      }
+    },
+    "track_format_proof_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_fields", "resampling_values", "parallel_mixing_values"],
+      "properties": {
+        "required_fields": {"type": "array", "minItems": 9, "uniqueItems": true, "items": {"type": "string"}},
+        "resampling_values": {"const": ["none", "single-stage", "unknown"]},
+        "parallel_mixing_values": {"const": ["absent", "present", "unknown"]}
+      }
+    },
+    "write_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_fields", "preimage_fields", "requires_full_readback", "requires_content_digest", "idempotent_replay", "rollback"],
+      "properties": {
+        "target_fields": {"const": ["provider", "account", "playlist_id"]},
+        "preimage_fields": {"const": ["provider", "account", "playlist_id", "revision", "tracks", "content_sha256"]},
+        "requires_full_readback": {"const": true},
+        "requires_content_digest": {"const": true},
+        "idempotent_replay": {"const": true},
+        "rollback": {"const": "full-content-preimage"}
+      }
+    },
+    "live_effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_account_mutation", "playlist_mutation", "playback_route_mutation", "production_provider_implementation"],
+      "properties": {
+        "provider_account_mutation": {"const": false},
+        "playlist_mutation": {"const": false},
+        "playback_route_mutation": {"const": false},
+        "production_provider_implementation": {"const": false}
+      }
+    },
+    "decision_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "document", "qobuz_mopidy_role", "general_audio_core", "exclusive_or_bitperfect_claim"],
+      "properties": {
+        "task_id": {"const": "AUDIO-CONTROL-PLANE-V1-T002"},
+        "document": {"const": "inventory/audio-architecture-decisions.v1.json"},
+        "qobuz_mopidy_role": {"const": "provider-and-comfort-adapter"},
+        "general_audio_core": {"const": false},
+        "exclusive_or_bitperfect_claim": {"const": false}
+      }
+    }
+  }
+}

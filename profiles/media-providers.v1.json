@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "kind": "media_provider_catalog",
+  "core_contract": "provider-neutral-v1",
+  "providers": {
+    "qobuz": {
+      "adapter": "mopidy-qobuz-hires",
+      "adapter_role": "provider-and-comfort-adapter",
+      "general_audio_core": false,
+      "fallback_transport": "pipewire-pulse",
+      "exclusive_or_bitperfect_claim": false,
+      "exclusive_profile_requires": "qobuz-rate-proof",
+      "provider_ref": {
+        "kind": "track",
+        "prefix": "qobuz:track:"
+      },
+      "write_authority": "simulation-only-t005"
+    }
+  },
+  "import_contract": {
+    "formats": [
+      "text",
+      "json",
+      "provider-refs"
+    ],
+    "operations": [
+      "add",
+      "replace"
+    ],
+    "dry_run_supported": true,
+    "duplicates": "reported-and-first-occurrence-retained",
+    "errors": "reported-and-write-plan-blocked"
+  },
+  "track_format_proof_contract": {
+    "required_fields": [
+      "track_identity",
+      "track_identity_sha256",
+      "container",
+      "codec",
+      "track_rate_hz",
+      "graph_rate_hz",
+      "endpoint_rate_hz",
+      "resampling",
+      "parallel_mixing"
+    ],
+    "resampling_values": [
+      "none",
+      "single-stage",
+      "unknown"
+    ],
+    "parallel_mixing_values": [
+      "absent",
+      "present",
+      "unknown"
+    ]
+  },
+  "write_contract": {
+    "target_fields": [
+      "provider",
+      "account",
+      "playlist_id"
+    ],
+    "preimage_fields": [
+      "provider",
+      "account",
+      "playlist_id",
+      "revision",
+      "tracks",
+      "content_sha256"
+    ],
+    "requires_full_readback": true,
+    "requires_content_digest": true,
+    "idempotent_replay": true,
+    "rollback": "full-content-preimage"
+  },
+  "live_effects": {
+    "provider_account_mutation": false,
+    "playlist_mutation": false,
+    "playback_route_mutation": false,
+    "production_provider_implementation": false
+  },
+  "decision_binding": {
+    "task_id": "AUDIO-CONTROL-PLANE-V1-T002",
+    "document": "inventory/audio-architecture-decisions.v1.json",
+    "qobuz_mopidy_role": "provider-and-comfort-adapter",
+    "general_audio_core": false,
+    "exclusive_or_bitperfect_claim": false
+  }
+}
