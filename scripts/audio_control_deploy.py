@@ -29,6 +29,7 @@ DEFAULT_STATE_ROOT = pathlib.Path.home() / ".local" / "state" / "audio-control-d
 DEFAULT_REMOTE = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_UNIT = "audio-control-ui-v1.service"
+REMOTE_BRIDGE_UNIT = "audio-remote-bridge-v1.service"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 UI_RUNTIME_ENV = DEFAULT_STATE_ROOT / "runtime.env"
@@ -1004,6 +1005,124 @@ def stop_service(unit: str) -> None:
     service_command("stop", unit, check=False)
 
 
+def release_supports_remote_bridge(release: pathlib.Path) -> bool:
+    sentinel = release / REMOTE_BRIDGE_RELEASE_SENTINEL
+    return sentinel.is_file() and not sentinel.is_symlink()
+
+
+def read_service_activity(unit: str) -> dict[str, Any]:
+    result = run_command(
+        [
+            "systemctl",
+            "--user",
+            "show",
+            unit,
+            "--no-pager",
+            "--property=LoadState",
+            "--property=ActiveState",
+        ],
+        timeout=15,
+        check=False,
+    )
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    load_state = values.get("LoadState", "")
+    if load_state == "not-found":
+        return {
+            "unit": unit,
+            "active": False,
+            "active_state": "not-found",
+            "load_state": load_state,
+            "readback": result.receipt(),
+        }
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "kein Detail"
+        raise DeployError(f"Dienstzustand von {unit} ist nicht lesbar: {detail}")
+    if load_state != "loaded":
+        raise DeployError(f"Dienst {unit} ist nicht geladen: {load_state!r}.")
+    active_state = values.get("ActiveState", "")
+    if active_state not in {"active", "inactive", "failed"}:
+        raise DeployError(
+            f"Dienst {unit} befindet sich in einem nicht stabilen Zustand: {active_state!r}"
+        )
+    return {
+        "unit": unit,
+        "active": active_state == "active",
+        "active_state": active_state,
+        "load_state": load_state,
+        "readback": result.receipt(),
+    }
+
+
+def verify_remote_bridge(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8766,
+    attempts: int = 40,
+) -> dict[str, Any]:
+    last_error = "noch keine Antwort"
+    for _attempt in range(attempts):
+        connection = http.client.HTTPConnection(host, port, timeout=3)
+        try:
+            connection.request(
+                "GET",
+                "/bridge/v1/health",
+                headers={"Host": f"{host}:{port}"},
+            )
+            response = connection.getresponse()
+            body = response.read(MAX_STATIC_BYTES + 1)
+            if len(body) > MAX_STATIC_BYTES:
+                last_error = "Bridge-Healthantwort ist zu groß"
+                continue
+            marker = response.getheader("X-Audio-Remote-Bridge", "")
+            if response.status != 200:
+                last_error = f"Bridge-Healthstatus {response.status}"
+                continue
+            if marker != "read-only-v1":
+                last_error = f"Bridge-Marker ist {marker!r}"
+                continue
+            payload = json.loads(body.decode("utf-8"))
+            if not isinstance(payload, dict):
+                last_error = "Bridge-Healthantwort hat falsche Form"
+                continue
+            if payload.get("kind") != "audio_remote_bridge_health":
+                last_error = "Bridge-Healthantwort hat falsche Identität"
+                continue
+            if payload.get("status") != "serving" or payload.get("projection") != "read-only":
+                last_error = "Bridge meldet keinen read-only Serving-Zustand"
+                continue
+            if payload.get("effect_authority") is not False:
+                last_error = "Bridge meldet unerwartete Effekt-Autorität"
+                continue
+            backend = payload.get("backend")
+            if not isinstance(backend, dict) or backend.get("remote_exposure") is not False:
+                last_error = "Bridge meldet unerwartete Backend-Exposition"
+                continue
+            return {
+                "url": f"http://{host}:{port}/bridge/v1/health",
+                "marker": marker,
+                "health": payload,
+            }
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            last_error = str(error)
+        finally:
+            connection.close()
+        time.sleep(0.25)
+    raise DeployError(f"Remote-Bridge ist nicht gesund: {last_error}")
+
+
+def restart_remote_bridge() -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    restart = service_command("restart", REMOTE_BRIDGE_UNIT)
+    activity = read_service_activity(REMOTE_BRIDGE_UNIT)
+    if not activity["active"]:
+        raise DeployError("Remote-Bridge ist nach Restart nicht aktiv.")
+    health = verify_remote_bridge()
+    return [restart.receipt()], activity, health
+
+
 def fetch_bytes(host: str, port: int, path: str) -> tuple[int, bytes, str]:
     connection = http.client.HTTPConnection(host, port, timeout=3)
     try:
@@ -1199,9 +1318,26 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             )
         marker_upgrade = upgrade_current_release_marker(repository, deploy_root)
         previous = read_current_commit(deploy_root)
+        bridge_before: dict[str, Any] = {
+            "unit": REMOTE_BRIDGE_UNIT,
+            "supported": False,
+            "active": False,
+            "active_state": "not-applicable",
+        }
+        if previous is not None:
+            previous_release = deploy_root / "releases" / previous
+            if release_supports_remote_bridge(previous_release):
+                bridge_before = {
+                    "supported": True,
+                    **read_service_activity(REMOTE_BRIDGE_UNIT),
+                }
         release, validation_receipts, created = prepare_release(
             repository, deploy_root, commit
         )
+        if bridge_before["active"] and not release_supports_remote_bridge(release):
+            raise DeployError(
+                "Aktiver Remote-Bridge blockiert den Wechsel auf einen Release ohne Bridgevertrag."
+            )
         changed = previous != commit
         if changed:
             switch_current(deploy_root, commit)
@@ -1212,6 +1348,11 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         runtime_environment_backup: dict[str, Any] | None = None
         service_receipts: list[dict[str, Any]] = []
         service_activation_attempted = False
+        bridge_activation_receipts: list[dict[str, Any]] = []
+        bridge_activity_after: dict[str, Any] | None = None
+        bridge_health: dict[str, Any] | None = None
+        bridge_activation_attempted = False
+        bridge_restart_required = False
         runtime_unit_changed = False
         timer_updated = False
         retention: dict[str, Any] = {"keep": DEFAULT_RELEASE_RETENTION, "removed": [], "warnings": []}
@@ -1229,6 +1370,12 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             )
             ui_unit_updated = (
                 "systemd/user/audio-control-ui-v1.service" in updated_sources
+            )
+            bridge_unit_updated = (
+                "systemd/user/audio-remote-bridge-v1.service" in updated_sources
+            )
+            bridge_restart_required = bool(bridge_before["active"]) and (
+                changed or bridge_unit_updated
             )
             timer_updated = "systemd/user/audio-control-deploy.timer" in updated_sources
             restart_required = (
@@ -1274,6 +1421,13 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                         timeout=30,
                     ).receipt()
                 )
+            if bridge_restart_required:
+                bridge_activation_attempted = True
+                (
+                    bridge_activation_receipts,
+                    bridge_activity_after,
+                    bridge_health,
+                ) = restart_remote_bridge()
             retention = prune_releases(deploy_root, current_commit=commit)
         except Exception:
             restore_runtime_environment(runtime_environment_backup)
@@ -1307,6 +1461,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             elif runtime_environment_backup is not None or service_activation_attempted:
                 with contextlib.suppress(Exception):
                     activate_service(args.unit)
+            if bridge_before["active"] and bridge_activation_attempted:
+                with contextlib.suppress(Exception):
+                    activate_service(REMOTE_BRIDGE_UNIT)
             raise
         deployed_at = int(time.time())
         receipt = {
@@ -1328,6 +1485,13 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "runtime_environment": runtime_environment,
             "runtime_activation": runtime_activation,
             "service_commands": service_receipts,
+            "remote_bridge": {
+                "before": bridge_before,
+                "restart_required": bridge_restart_required,
+                "activation": bridge_activation_receipts,
+                "after": bridge_activity_after,
+                "health": bridge_health,
+            },
             "release_retention": retention,
             "service": service,
         }
