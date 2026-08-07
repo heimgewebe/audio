@@ -69,6 +69,7 @@ PWA_RELEASE_SENTINEL = "tests/test_audio_ipad_pwa.py"
 REMOTE_BRIDGE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_remote_bridge.py",
     "scripts/audio_remote_bridge_tailscale.py",
+    "scripts/audio_remote_bridge_ipad_probe.py",
     "inventory/audiozentrale-remote-bridge.v1.json",
     "schemas/audiozentrale-remote-bridge.v1.schema.json",
     "systemd/user/audio-remote-bridge-v1.service",
@@ -79,6 +80,7 @@ BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
     "scripts/audio_remote_bridge.py",
     "scripts/audio_remote_bridge_tailscale.py",
+    "scripts/audio_remote_bridge_ipad_probe.py",
     "inventory/audiozentrale-remote-bridge.v1.json",
     "schemas/audiozentrale-remote-bridge.v1.schema.json",
     "systemd/user/audio-remote-bridge-v1.service",

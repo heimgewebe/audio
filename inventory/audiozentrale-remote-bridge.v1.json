@@ -2,10 +2,10 @@
   "schema_version": 1,
   "kind": "audiozentrale_remote_bridge_contract",
   "id": "audiozentrale-remote-bridge-v1",
-  "status": "specified-not-runtime-verified",
+  "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "2be1cdd607a20b5d18d957c3707543ffdf5027184370ee94a9f8b0e77ac79245"
+    "sha256": "d55dbadd13a80d7ff2c5db89351344a819e28a93b17eac239170fca8fc4a4398"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -80,5 +80,12 @@
     "ipad_https_reachability_verified": false,
     "ipad_safari_verified": false,
     "pwa_installation_verified": false
+  },
+  "runtime_acceptance_state": {
+    "path": "~/.local/state/audio-remote-bridge-v1/acceptance.json",
+    "mode": "0600",
+    "max_ttl_seconds": 604800,
+    "fail_closed": true,
+    "binds_bridge_sha256": true
   }
 }

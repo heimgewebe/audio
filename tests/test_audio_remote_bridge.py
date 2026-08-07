@@ -8,6 +8,7 @@ import importlib.util
 import json
 import pathlib
 import sys
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +54,13 @@ class ContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIs(value, False)
 
+        state_contract = contract["runtime_acceptance_state"]
+        self.assertEqual(state_contract["path"], "~/.local/state/audio-remote-bridge-v1/acceptance.json")
+        self.assertEqual(state_contract["mode"], "0600")
+        self.assertEqual(state_contract["max_ttl_seconds"], MODULE.ACCEPTANCE_MAX_TTL_SECONDS)
+        self.assertIs(state_contract["fail_closed"], True)
+        self.assertIs(state_contract["binds_bridge_sha256"], True)
+
     def test_user_service_keeps_supported_hardening_only(self):
         unit = (ROOT / "systemd" / "user" / "audio-remote-bridge-v1.service").read_text(encoding="utf-8")
         for unsupported in (
@@ -85,6 +93,83 @@ class ContractTests(unittest.TestCase):
             MODULE.FORWARDED_RESPONSE_HEADERS,
         )
         self.assertIn("action_token", contract["bridge"]["json_scrubbing"]["must_remove"])
+        self.assertEqual(set(contract["runtime_acceptance"]), set(MODULE.ACCEPTANCE_KEYS))
+
+
+class RuntimeAcceptanceTests(unittest.TestCase):
+    def write_state(self, path: pathlib.Path, *, now: int, values: dict[str, bool] | None = None, expires_offset: int = 3600) -> None:
+        acceptance = MODULE.runtime_acceptance_defaults() if values is None else dict(values)
+        payload = {
+            "schema_version": 1,
+            "kind": "audio_remote_bridge_runtime_acceptance",
+            "contract_id": MODULE.CONTRACT_ID,
+            "bridge_sha256": MODULE.BRIDGE_RUNTIME_SHA256,
+            "recorded_at_unix": now,
+            "expires_at_unix": now + expires_offset,
+            "runtime_acceptance": acceptance,
+            "evidence": {"source": "test", "evidence_sha256": "a" * 64},
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        path.chmod(0o600)
+
+    def test_missing_state_is_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            values, evidence = MODULE.load_runtime_acceptance(pathlib.Path(directory) / "missing.json", now_unix=1000)
+        self.assertEqual(values, MODULE.runtime_acceptance_defaults())
+        self.assertEqual(evidence, {"state": "unverified"})
+
+    def test_valid_state_can_bind_only_proven_runtime_gates(self):
+        now = 10_000
+        values = MODULE.runtime_acceptance_defaults()
+        values.update({
+            "bridge_service_verified": True,
+            "tailscale_serve_verified": True,
+            "ipad_https_reachability_verified": True,
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "acceptance.json"
+            self.write_state(path, now=now, values=values)
+            observed, evidence = MODULE.load_runtime_acceptance(path, now_unix=now + 1)
+        self.assertEqual(observed, values)
+        self.assertEqual(evidence["state"], "verified")
+        self.assertEqual(evidence["source"], "test")
+        self.assertEqual(evidence["evidence_sha256"], "a" * 64)
+        self.assertEqual(evidence["bridge_sha256"], MODULE.BRIDGE_RUNTIME_SHA256)
+
+    def test_expired_insecure_or_logically_impossible_state_fails_closed(self):
+        now = 20_000
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            expired = root / "expired.json"
+            self.write_state(expired, now=now - 100, expires_offset=50)
+            values, evidence = MODULE.load_runtime_acceptance(expired, now_unix=now)
+            self.assertEqual(values, MODULE.runtime_acceptance_defaults())
+            self.assertEqual(evidence["state"], "expired")
+
+            insecure = root / "insecure.json"
+            self.write_state(insecure, now=now)
+            insecure.chmod(0o644)
+            values, evidence = MODULE.load_runtime_acceptance(insecure, now_unix=now)
+            self.assertEqual(values, MODULE.runtime_acceptance_defaults())
+            self.assertEqual(evidence["state"], "invalid")
+
+            impossible = root / "impossible.json"
+            bad = MODULE.runtime_acceptance_defaults()
+            bad["ipad_https_reachability_verified"] = True
+            self.write_state(impossible, now=now, values=bad)
+            values, evidence = MODULE.load_runtime_acceptance(impossible, now_unix=now)
+            self.assertEqual(values, MODULE.runtime_acceptance_defaults())
+            self.assertEqual(evidence["state"], "invalid")
+
+            stale_bridge = root / "stale-bridge.json"
+            self.write_state(stale_bridge, now=now)
+            payload = json.loads(stale_bridge.read_text(encoding="utf-8"))
+            payload["bridge_sha256"] = "b" * 64
+            stale_bridge.write_text(json.dumps(payload), encoding="utf-8")
+            stale_bridge.chmod(0o600)
+            values, evidence = MODULE.load_runtime_acceptance(stale_bridge, now_unix=now)
+            self.assertEqual(values, MODULE.runtime_acceptance_defaults())
+            self.assertEqual(evidence["state"], "invalid")
 
 
 class TargetValidationTests(unittest.TestCase):
@@ -176,6 +261,13 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
 
 class BridgeHTTPTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.acceptance_directory = tempfile.TemporaryDirectory()
+        self.acceptance_path_patch = mock.patch.object(
+            MODULE,
+            "ACCEPTANCE_STATE_PATH",
+            pathlib.Path(self.acceptance_directory.name) / "missing-acceptance.json",
+        )
+        self.acceptance_path_patch.start()
         FakeBackendHandler.records = []
         FakeBackendHandler.routes = {
             "/api/v1/snapshot": (
@@ -240,6 +332,8 @@ class BridgeHTTPTests(unittest.TestCase):
         self.backend.shutdown()
         self.backend_thread.join(timeout=2)
         self.backend.server_close()
+        self.acceptance_path_patch.stop()
+        self.acceptance_directory.cleanup()
 
     def request(self, method: str, path: str, *, headers: dict[str, str] | None = None, body: bytes | None = None):
         connection = http.client.HTTPConnection("127.0.0.1", self.bridge.server_port, timeout=3)
@@ -334,7 +428,10 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(health["projection"], "read-only")
         self.assertIs(health["effect_authority"], False)
         self.assertIs(health["backend"]["remote_exposure"], False)
+        self.assertEqual(health["runtime_sha256"], MODULE.BRIDGE_RUNTIME_SHA256)
+        self.assertEqual(set(health["runtime_acceptance"]), set(MODULE.ACCEPTANCE_KEYS))
         self.assertEqual(set(health["runtime_acceptance"].values()), {False})
+        self.assertEqual(health["runtime_acceptance_evidence"]["state"], "unverified")
 
 
 class FakeServeRunner:
