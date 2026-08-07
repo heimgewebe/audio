@@ -424,6 +424,20 @@ class AudioControlDeployTests(unittest.TestCase):
         )
         service.assert_called_once_with("stop", "audio-control-ui-v1.service")
 
+    def test_missing_remote_bridge_unit_is_inactive_not_a_deploy_blocker(self):
+        result = MODULE.CommandResult(
+            ("systemctl", "--user", "show", MODULE.REMOTE_BRIDGE_UNIT),
+            4,
+            "LoadState=not-found\nActiveState=inactive\n",
+            "Unit could not be found",
+            0.1,
+        )
+        with mock.patch.object(MODULE, "run_command", return_value=result):
+            activity = MODULE.read_service_activity(MODULE.REMOTE_BRIDGE_UNIT)
+        self.assertFalse(activity["active"])
+        self.assertEqual(activity["active_state"], "not-found")
+        self.assertEqual(activity["load_state"], "not-found")
+
     def test_service_readback_binds_html_javascript_css_and_health(self):
         commit = "c" * 40
         with tempfile.TemporaryDirectory() as directory:
@@ -779,6 +793,182 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertFalse(report["changed"])
             self.assertEqual(report["runtime_updates"], [update])
             activate.assert_called_once_with(args.unit)
+
+    def test_changed_release_restarts_only_previously_active_remote_bridge(self):
+        old_commit = "a" * 40
+        new_commit = "b" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            old_release = args.deploy_root / "releases" / old_commit
+            old_sentinel = old_release / MODULE.REMOTE_BRIDGE_RELEASE_SENTINEL
+            old_sentinel.parent.mkdir(parents=True)
+            old_sentinel.write_text("bridge\n", encoding="utf-8")
+            release = args.deploy_root / "releases" / new_commit
+            sentinel = release / MODULE.REMOTE_BRIDGE_RELEASE_SENTINEL
+            sentinel.parent.mkdir(parents=True)
+            sentinel.write_text("bridge\n", encoding="utf-8")
+            switched = []
+            activity = {
+                "unit": MODULE.REMOTE_BRIDGE_UNIT,
+                "active": True,
+                "active_state": "active",
+                "readback": {},
+            }
+            bridge_after = {**activity}
+            bridge_health = {"marker": "read-only-v1"}
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(MODULE, "prepare_deployment_repository", return_value=(root / "repository.git", [])),
+                mock.patch.object(MODULE, "resolve_target", return_value=(new_commit, [])),
+                mock.patch.object(MODULE, "read_current_commit", return_value=old_commit),
+                mock.patch.object(MODULE, "read_service_activity", return_value=activity) as read_activity,
+                mock.patch.object(MODULE, "prepare_release", return_value=(release, [], True)),
+                mock.patch.object(MODULE, "switch_current", side_effect=lambda _root, commit: switched.append(commit)),
+                mock.patch.object(MODULE, "reconcile_runtime_environment", return_value=({"changed": False, "host": "127.0.0.1", "port": 8765}, None)),
+                mock.patch.object(MODULE, "install_release_runtime", return_value=([], [])),
+                mock.patch.object(MODULE, "activate_service", return_value=[] ) as activate,
+                mock.patch.object(MODULE, "verify_service", return_value={"url": "http://127.0.0.1:8765/"}),
+                mock.patch.object(MODULE, "restart_remote_bridge", return_value=([{"restart": True}], bridge_after, bridge_health)) as restart_bridge,
+                mock.patch.object(MODULE, "prune_releases", return_value={"keep": 3, "removed": [], "warnings": []}),
+            ):
+                report = MODULE.sync(args)
+            self.assertEqual(switched, [new_commit])
+            read_activity.assert_called_once_with(MODULE.REMOTE_BRIDGE_UNIT)
+            activate.assert_called_once_with(args.unit)
+            restart_bridge.assert_called_once_with()
+            self.assertTrue(report["remote_bridge"]["before"]["active"])
+            self.assertTrue(report["remote_bridge"]["restart_required"])
+            self.assertEqual(report["remote_bridge"]["health"], bridge_health)
+
+    def test_changed_release_never_starts_previously_inactive_remote_bridge(self):
+        old_commit = "c" * 40
+        new_commit = "d" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            for commit in (old_commit, new_commit):
+                sentinel = args.deploy_root / "releases" / commit / MODULE.REMOTE_BRIDGE_RELEASE_SENTINEL
+                sentinel.parent.mkdir(parents=True)
+                sentinel.write_text("bridge\n", encoding="utf-8")
+            release = args.deploy_root / "releases" / new_commit
+            activity = {
+                "unit": MODULE.REMOTE_BRIDGE_UNIT,
+                "active": False,
+                "active_state": "inactive",
+                "readback": {},
+            }
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(MODULE, "prepare_deployment_repository", return_value=(root / "repository.git", [])),
+                mock.patch.object(MODULE, "resolve_target", return_value=(new_commit, [])),
+                mock.patch.object(MODULE, "read_current_commit", return_value=old_commit),
+                mock.patch.object(MODULE, "read_service_activity", return_value=activity),
+                mock.patch.object(MODULE, "prepare_release", return_value=(release, [], True)),
+                mock.patch.object(MODULE, "switch_current"),
+                mock.patch.object(MODULE, "reconcile_runtime_environment", return_value=({"changed": False, "host": "127.0.0.1", "port": 8765}, None)),
+                mock.patch.object(MODULE, "install_release_runtime", return_value=([], [])),
+                mock.patch.object(MODULE, "activate_service", return_value=[]),
+                mock.patch.object(MODULE, "verify_service", return_value={"url": "http://127.0.0.1:8765/"}),
+                mock.patch.object(MODULE, "restart_remote_bridge") as restart_bridge,
+                mock.patch.object(MODULE, "prune_releases", return_value={"keep": 3, "removed": [], "warnings": []}),
+            ):
+                report = MODULE.sync(args)
+            restart_bridge.assert_not_called()
+            self.assertFalse(report["remote_bridge"]["before"]["active"])
+            self.assertFalse(report["remote_bridge"]["restart_required"])
+            self.assertEqual(report["remote_bridge"]["activation"], [])
+
+    def test_bridge_unit_drift_restarts_only_an_active_bridge(self):
+        commit = "5" * 40
+        update = {
+            "source": "systemd/user/audio-remote-bridge-v1.service",
+            "destination": "/tmp/audio-remote-bridge-v1.service",
+            "sha256": "8" * 64,
+            "mode": "0o600",
+        }
+        backup = {"path": update["destination"], "payload": b"old-unit", "mode": 0o600}
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            release = args.deploy_root / "releases" / commit
+            sentinel = release / MODULE.REMOTE_BRIDGE_RELEASE_SENTINEL
+            sentinel.parent.mkdir(parents=True)
+            sentinel.write_text("bridge\n", encoding="utf-8")
+            activity = {"unit": MODULE.REMOTE_BRIDGE_UNIT, "active": True, "active_state": "active", "readback": {}}
+            daemon_reload = MODULE.CommandResult(("systemctl", "--user", "daemon-reload"), 0, "", "", 0.1)
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(MODULE, "prepare_deployment_repository", return_value=(root / "repository.git", [])),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(MODULE, "read_current_commit", return_value=commit),
+                mock.patch.object(MODULE, "read_service_activity", return_value=activity),
+                mock.patch.object(MODULE, "prepare_release", return_value=(release, [], False)),
+                mock.patch.object(MODULE, "reconcile_runtime_environment", return_value=({"changed": False, "host": "127.0.0.1", "port": 8765}, None)),
+                mock.patch.object(MODULE, "install_release_runtime", return_value=([update], [backup])),
+                mock.patch.object(MODULE, "run_command", return_value=daemon_reload) as run,
+                mock.patch.object(MODULE, "activate_service") as activate,
+                mock.patch.object(MODULE, "verify_service", return_value={"url": "http://127.0.0.1:8765/"}),
+                mock.patch.object(MODULE, "restart_remote_bridge", return_value=([{"restart": True}], activity, {"marker": "read-only-v1"})) as restart_bridge,
+                mock.patch.object(MODULE, "prune_releases", return_value={"keep": 3, "removed": [], "warnings": []}),
+            ):
+                report = MODULE.sync(args)
+            activate.assert_not_called()
+            run.assert_called_once_with(["systemctl", "--user", "daemon-reload"], timeout=30)
+            restart_bridge.assert_called_once_with()
+            self.assertFalse(report["changed"])
+            self.assertTrue(report["remote_bridge"]["restart_required"])
+
+    def test_failed_bridge_restart_rolls_release_and_active_bridge_back(self):
+        old_commit = "7" * 40
+        new_commit = "8" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            for commit in (old_commit, new_commit):
+                sentinel = args.deploy_root / "releases" / commit / MODULE.REMOTE_BRIDGE_RELEASE_SENTINEL
+                sentinel.parent.mkdir(parents=True)
+                sentinel.write_text("bridge\n", encoding="utf-8")
+            release = args.deploy_root / "releases" / new_commit
+            switched = []
+            activity = {"unit": MODULE.REMOTE_BRIDGE_UNIT, "active": True, "active_state": "active", "readback": {}}
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(MODULE, "prepare_deployment_repository", return_value=(root / "repository.git", [])),
+                mock.patch.object(MODULE, "resolve_target", return_value=(new_commit, [])),
+                mock.patch.object(MODULE, "read_current_commit", return_value=old_commit),
+                mock.patch.object(MODULE, "read_service_activity", return_value=activity),
+                mock.patch.object(MODULE, "prepare_release", return_value=(release, [], True)),
+                mock.patch.object(MODULE, "switch_current", side_effect=lambda _root, commit: switched.append(commit)),
+                mock.patch.object(MODULE, "reconcile_runtime_environment", return_value=({"changed": False, "host": "127.0.0.1", "port": 8765}, None)),
+                mock.patch.object(MODULE, "install_release_runtime", return_value=([], [])),
+                mock.patch.object(MODULE, "activate_service", return_value=[]) as activate,
+                mock.patch.object(MODULE, "verify_service", return_value={"url": "http://127.0.0.1:8765/"}),
+                mock.patch.object(MODULE, "restart_remote_bridge", side_effect=MODULE.DeployError("bridge restart failed")),
+                self.assertRaisesRegex(MODULE.DeployError, "bridge restart failed"),
+            ):
+                MODULE.sync(args)
+            self.assertEqual(switched, [new_commit, old_commit])
+            self.assertEqual(
+                [call.args[0] for call in activate.call_args_list],
+                [args.unit, args.unit, MODULE.REMOTE_BRIDGE_UNIT],
+            )
 
     def test_changed_release_rolls_pointer_back_after_failed_readback(self):
         old_commit = "e" * 40
