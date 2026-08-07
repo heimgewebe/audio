@@ -53,6 +53,28 @@ class ContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIs(value, False)
 
+    def test_user_service_keeps_supported_hardening_only(self):
+        unit = (ROOT / "systemd" / "user" / "audio-remote-bridge-v1.service").read_text(encoding="utf-8")
+        for unsupported in (
+            "PrivateDevices=yes",
+            "ProtectKernelModules=yes",
+            "ProtectClock=yes",
+        ):
+            with self.subTest(unsupported=unsupported):
+                self.assertNotIn(unsupported, unit)
+        for required in (
+            "NoNewPrivileges=yes",
+            "PrivateTmp=yes",
+            "ProtectSystem=strict",
+            "ProtectHome=read-only",
+            "ProtectControlGroups=yes",
+            "ProtectKernelTunables=yes",
+            "RestrictNamespaces=yes",
+            "RestrictAddressFamilies=AF_UNIX AF_INET",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, unit)
+
     def test_contract_matches_runtime_allowlist(self):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
         self.assertEqual(set(contract["bridge"]["static_routes"]), MODULE.STATIC_ROUTES)
