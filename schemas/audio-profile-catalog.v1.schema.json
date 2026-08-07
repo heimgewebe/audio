@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.org/audio/schemas/audio-profile-catalog.v1.schema.json",
+  "title": "Audio profile transition contract catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "manager",
+    "effect_scope",
+    "canonical_profile_catalog",
+    "aliases",
+    "profiles"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "audio_profile_transition_contract_catalog"},
+    "manager": {"const": "audio-profile-manager-v1"},
+    "effect_scope": {"const": "repository-and-simulation-only"},
+    "canonical_profile_catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"const": "profiles/audio-profiles.v1.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "aliases": {
+      "type": "object",
+      "maxProperties": 0
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/profile"}
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {"type": "string", "minLength": 1},
+    "uniqueStrings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/nonEmptyString"},
+      "uniqueItems": true
+    },
+    "rate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "hz"],
+      "properties": {
+        "policy": {"$ref": "#/$defs/nonEmptyString"},
+        "hz": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "quantum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "frames"],
+      "properties": {
+        "policy": {"$ref": "#/$defs/nonEmptyString"},
+        "frames": {"type": "integer", "minimum": 1}
+      }
+    },
+    "channels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "layout"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 1},
+        "layout": {"$ref": "#/$defs/nonEmptyString"}
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["xrun_max", "latency_ms_max", "peak_dbfs_max"],
+      "properties": {
+        "xrun_max": {"type": ["integer", "null"], "minimum": 0},
+        "latency_ms_max": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "peak_dbfs_max": {"type": ["number", "null"], "maximum": 0}
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "stop"],
+      "properties": {
+        "start": {"$ref": "#/$defs/uniqueStrings"},
+        "stop": {"$ref": "#/$defs/uniqueStrings"}
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "devices",
+        "source",
+        "sink",
+        "midi",
+        "monitoring",
+        "rate",
+        "quantum",
+        "resampling",
+        "dsp",
+        "channels",
+        "limits",
+        "lifecycle",
+        "readback",
+        "rollback",
+        "managed_routes",
+        "protects_recording"
+      ],
+      "properties": {
+        "devices": {"$ref": "#/$defs/uniqueStrings"},
+        "source": {"$ref": "#/$defs/nonEmptyString"},
+        "sink": {"$ref": "#/$defs/nonEmptyString"},
+        "midi": {"$ref": "#/$defs/nonEmptyString"},
+        "monitoring": {"$ref": "#/$defs/nonEmptyString"},
+        "rate": {"$ref": "#/$defs/rate"},
+        "quantum": {"$ref": "#/$defs/quantum"},
+        "resampling": {"$ref": "#/$defs/nonEmptyString"},
+        "dsp": {"$ref": "#/$defs/nonEmptyString"},
+        "channels": {"$ref": "#/$defs/channels"},
+        "limits": {"$ref": "#/$defs/limits"},
+        "lifecycle": {"$ref": "#/$defs/lifecycle"},
+        "readback": {"$ref": "#/$defs/uniqueStrings"},
+        "rollback": {"$ref": "#/$defs/uniqueStrings"},
+        "managed_routes": {"$ref": "#/$defs/uniqueStrings"},
+        "protects_recording": {"const": true}
+      }
+    }
+  }
+}
