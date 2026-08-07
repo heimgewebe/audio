@@ -150,6 +150,34 @@ class ProfileManagerTests(unittest.TestCase):
                             )
         self.assertEqual(pair_count, len(self.profile_ids) ** 2)
 
+    def test_abandoning_every_directed_plan_before_apply_has_no_effect(self):
+        pair_count = 0
+        for source in self.profile_ids:
+            for target in self.profile_ids:
+                pair_count += 1
+                snapshot = MODULE.simulation_snapshot(source, self.catalogs)
+                snapshot["foreign_processes"] = ["foreign-player"]
+                snapshot["foreign_routes"] = ["foreign-route"]
+                with self.subTest(source=source, target=target):
+                    with tempfile.TemporaryDirectory() as directory:
+                        state_path = self.write_state(directory, snapshot)
+                        before_bytes = state_path.read_bytes()
+                        plan = MODULE.build_plan(
+                            source, target, MODULE.read_json(state_path), self.catalogs
+                        )
+                        diff = MODULE.public_diff(plan)
+                        self.assertTrue(plan["read_only"])
+                        self.assertTrue(diff["read_only"])
+                        # Cancellation before apply is plan abandonment. There is
+                        # deliberately no cancellation mutation to execute.
+                        del plan, diff
+                        self.assertEqual(state_path.read_bytes(), before_bytes)
+                        self.assertEqual(
+                            MODULE.normalize_snapshot(MODULE.read_json(state_path)),
+                            MODULE.normalize_snapshot(snapshot),
+                        )
+        self.assertEqual(pair_count, len(self.profile_ids) ** 2)
+
     def test_active_or_unknown_recording_blocks_every_material_transition(self):
         for recording_state in ("active", "unknown"):
             snapshot = MODULE.simulation_snapshot(

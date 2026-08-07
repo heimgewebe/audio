@@ -67,6 +67,16 @@ Operationen und Readback.
 Ein zweiter Aufruf desselben Plans gegen den bereits erreichten Zielzustand ist
 idempotent und führt keine weitere Operation aus.
 
+### Abbruch vor Apply
+
+Ein noch nicht angewendeter Plan wird durch Verwerfen abgebrochen. Das ist
+bewusst keine eigene mutierende Operation: `doctor`, `plan` und `diff` sind
+rein, und ohne Aufruf von `apply-simulated` bleibt selbst die angegebene
+Simulationsdatei bytegenau unverändert. Die Offline-Tests prüfen diesen
+Abbruchpfad für jedes gerichtete Profilpaar. Nach einem Apply ist dagegen der
+hashgebundene Rollback der einzige Rückweg; ein bloßes Verwerfen des alten
+Plans behauptet keine Rücknahme.
+
 ## Rollback
 
 `rollback-simulated` verlangt den exakten Apply-Beleg und dessen SHA-256. Es
