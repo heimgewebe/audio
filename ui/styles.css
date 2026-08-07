@@ -2274,3 +2274,244 @@ body.dialog-open {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* iPad- und PWA-Fläche v1: sichere Bereiche, Berührungsziele, Betriebsmodus. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+.app-shell {
+  min-height: 100svh;
+}
+
+.sidebar {
+  padding-top: calc(12px + var(--safe-top));
+  padding-bottom: calc(12px + var(--safe-bottom));
+  padding-left: calc(10px + var(--safe-left));
+}
+
+main {
+  padding-right: calc(20px + var(--safe-right));
+  padding-bottom: calc(30px + var(--safe-bottom));
+}
+
+.topbar {
+  padding-top: calc(10px + var(--safe-top));
+}
+
+.dialog {
+  padding-bottom: calc(17px + var(--safe-bottom));
+}
+
+@media (max-width: 900px) {
+  .sidebar {
+    padding: calc(7px + var(--safe-top)) calc(10px + var(--safe-right)) 7px
+      calc(10px + var(--safe-left));
+  }
+
+  main {
+    padding-right: calc(12px + var(--safe-right));
+    padding-left: calc(12px + var(--safe-left));
+    padding-bottom: calc(24px + var(--safe-bottom));
+  }
+
+  /* Die Kopfleiste absorbiert den oberen Rand bereits im Seitenstreifen. */
+  .topbar {
+    padding-top: 8px;
+  }
+}
+
+.notice.info {
+  border-color: rgba(131, 184, 196, 0.35);
+  color: #d8eef4;
+  background: rgba(28, 62, 72, 0.24);
+}
+
+.local-device-boundary {
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+
+.local-device-boundary h2 {
+  margin: 2px 0 8px;
+  font-size: 1.02rem;
+}
+
+.local-device-boundary p {
+  margin: 0 0 8px;
+  color: var(--muted-bright);
+  font-size: 0.78rem;
+}
+
+.local-device-boundary p:last-child {
+  margin-bottom: 0;
+}
+
+.local-device-boundary a.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+/*
+ * Ohne Backend gibt es keine gelesene Systemwahrheit. Backendgebundene
+ * Flächen werden deshalb ausgeblendet statt veraltet weitergezeigt.
+ */
+html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
+  display: none;
+}
+
+.runtime-mode-choice {
+  display: grid;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  gap: 6px;
+}
+
+.runtime-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+  cursor: pointer;
+}
+
+.runtime-mode-option:has(input:checked) {
+  border-color: var(--mint-border);
+  background: var(--panel-strong);
+}
+
+.runtime-mode-option input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+  accent-color: var(--mint);
+}
+
+.runtime-mode-option strong,
+.runtime-mode-option small {
+  display: block;
+}
+
+.runtime-mode-option strong {
+  font-size: 0.78rem;
+}
+
+.runtime-mode-option small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.capability-list {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.capability-card {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+}
+
+.capability-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.capability-card strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.8rem;
+}
+
+.capability-card small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.capability-card[data-capability-state="present"] strong {
+  color: var(--mint-strong);
+}
+
+.capability-card[data-capability-state="absent"] strong,
+.capability-card[data-capability-state="unknown"] strong {
+  color: var(--amber);
+}
+
+/*
+ * Berührungsbedienung: Auf groben Zeigern bleibt jedes Bedienelement
+ * mindestens 44 px hoch und breit.
+ */
+@media (pointer: coarse) {
+  button,
+  select,
+  .primary-nav a,
+  .runtime-mode-option {
+    min-height: 44px;
+  }
+
+  button,
+  select {
+    min-width: 44px;
+  }
+
+  .brand {
+    min-height: 48px;
+  }
+
+  .setting-row {
+    min-height: 56px;
+  }
+
+  .icon-button,
+  .dialog-close {
+    width: 44px;
+    height: 44px;
+  }
+
+  input[role="switch"] {
+    width: 64px;
+    height: 44px;
+    border-radius: 22px;
+  }
+
+  input[role="switch"]::after {
+    top: 5px;
+    left: 5px;
+    width: 32px;
+    height: 32px;
+  }
+
+  input[role="switch"]:checked::after {
+    transform: translateX(20px);
+  }
+
+  .runtime-mode-option input[type="radio"] {
+    width: 24px;
+    height: 24px;
+  }
+
+  /* iPadOS zoomt bei Fokus, wenn ein Steuerelement kleiner als 16 px schreibt. */
+  select {
+    font-size: 16px;
+  }
+}

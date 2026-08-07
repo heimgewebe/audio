@@ -100,6 +100,28 @@ Modulation von Aufnahme, Ausgabe, Masterpegel oder Sicherheitsfunktionen werden
 fail-closed abgewiesen. Der Vertrag ist noch read-only und erweitert keine
 Audioautorität.
 
+## iPad und PWA v1
+
+Die [iPad- und PWA-Fläche v1](docs/ipad-pwa-v1.md) macht die bestehende
+kanonische Oberfläche installierbar — ohne zweite App, ohne Framework, ohne
+neue Abhängigkeit. Sie ergänzt Manifest, Apple-Metadaten, 180/192/512-Symbole,
+sichere Bereiche, 44-px-Berührungsziele und einen App-Shell-Service-Worker, der
+gleichherkünftige `/api/`-Anfragen strikt network-only behandelt: kein Cache,
+kein Rückfall, kein Replay, keine Queue, kein Background Sync.
+
+Zwei Laufzeitmodi sind ausdrücklich getrennt. `remote-audiozentrale` (Vorgabe)
+behandelt das Heim-PC-Backend als autoritativ, setzt aber eine **separat zu
+belegende, authentifizierte und gesicherte Fern-Oberfläche** voraus; der
+heutige Loopback-Control-Dienst ist ausdrücklich **kein Ferntransport**.
+`local-device` kennt nur Browserfähigkeiten, stellt keine einzige
+Backendanfrage und hat keine native Autorität über MOTU, ALSA, PipeWire oder
+Roland. Fähigkeiten werden fail-closed und ohne Kennungsauswertung erkannt;
+`getUserMedia` und `requestMIDIAccess` werden nie automatisch aufgerufen.
+
+Der Vertrag `inventory/audiozentrale-ipad-pwa.v1.json` hält alle
+`physical_acceptance`-Felder auf `false`: weder iPad-Installation noch
+Fernstrecke noch lokale Audio- oder MIDI-Hardware sind belegt.
+
 ## Dokumente
 
 - [Repository-Entscheidung](docs/decisions/0001-new-audio-repository.md)
@@ -116,6 +138,7 @@ Audioautorität.
 - [Audiozentrale-Produkt- und Zustandsmodell](docs/audiozentrale-product-model.md)
 - [Plan der durchgehend spielbaren Buckelwalstimme](docs/plans/buckelwal-continuous-voice-v1.md)
 - [Spezifikation der lokalen Audiozentrale](docs/plans/local-audio-control-ui-v1.md)
+- [iPad- und PWA-Fläche v1](docs/ipad-pwa-v1.md)
 - [Deployment der Audiozentrale](docs/control-deployment.md)
 - [Profiltransition und Recovery](docs/profile-transition-workflow.md)
 - [Audio-Sicherheitsregeln](policy/audio-safety.md)

@@ -27,6 +27,8 @@ class AudioControlDeployTests(unittest.TestCase):
     ) -> None:
         files = {
             "scripts/audio_control.py": b"print('control')\n",
+            "inventory/audiozentrale-ipad-pwa.v1.json": b"{}\n",
+            "schemas/audiozentrale-ipad-pwa.v1.schema.json": b"{}\n",
             "scripts/audio_telemetry_replay.py": b"def load_replay_contract(): return {}\n",
             "inventory/audiozentrale-telemetry-replay.v1.json": b"{}\n",
             "schemas/audiozentrale-telemetry-replay.v1.schema.json": b"{}\n",
@@ -45,6 +47,13 @@ class AudioControlDeployTests(unittest.TestCase):
             "ui/index.html": b"<!doctype html><title>Audio</title>\n",
             "ui/app.js": b'"use strict";\n',
             "ui/styles.css": b"body { margin: 0; }\n",
+            "ui/sw.js": b'"use strict";\n',
+            "ui/manifest.webmanifest": b'{"name":"Audiozentrale"}\n',
+            "ui/icon-180.png": b"PNG-180\n",
+            "ui/icon-192.png": b"PNG-192\n",
+            "ui/icon-512.png": b"PNG-512\n",
+            "tests/test_audio_control.py": b"import unittest\n",
+            "tests/test_audio_ipad_pwa.py": b"import unittest\n",
         }
         for relative, payload in files.items():
             target = release / relative
@@ -109,6 +118,75 @@ class AudioControlDeployTests(unittest.TestCase):
                         MODULE.DeployError, "Kritische Releasedatei"
                     ):
                         MODULE.release_hashes(release)
+
+    def test_ipad_pwa_runtime_files_are_release_critical(self):
+        expected = {
+            "inventory/audiozentrale-ipad-pwa.v1.json",
+            "schemas/audiozentrale-ipad-pwa.v1.schema.json",
+            "ui/sw.js",
+            "ui/manifest.webmanifest",
+            "ui/icon-180.png",
+            "ui/icon-192.png",
+            "ui/icon-512.png",
+        }
+        self.assertTrue(expected <= set(MODULE.BASE_CRITICAL_RELEASE_FILES))
+        commit = "8" * 40
+        for missing in sorted(expected):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
+
+    def test_pre_pwa_legacy_release_marker_upgrade_remains_supported(self):
+        commit = "6" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            deploy_root = pathlib.Path(directory)
+            release = deploy_root / "releases" / commit
+            self.write_release(release, commit)
+            for relative in MODULE.PWA_CRITICAL_RELEASE_FILES:
+                (release / relative).unlink()
+            (release / MODULE.PWA_RELEASE_SENTINEL).unlink()
+
+            marker_path = release / ".audio-control-release.json"
+            legacy = {
+                "schema_version": 1,
+                "kind": "audio_control_release",
+                "commit": commit,
+                "created_at_unix": 1,
+                "index_sha256": MODULE.sha256_path(release / "ui" / "index.html"),
+                "app_sha256": MODULE.sha256_path(release / "ui" / "app.js"),
+                "styles_sha256": MODULE.sha256_path(release / "ui" / "styles.css"),
+            }
+            marker_path.write_text(json.dumps(legacy), encoding="utf-8")
+            MODULE.switch_current(deploy_root, commit)
+            expected_payloads = {
+                relative: (release / relative).read_bytes()
+                for relative in MODULE.critical_release_paths(release)
+            }
+            self.assertTrue(
+                set(MODULE.PWA_CRITICAL_RELEASE_FILES).isdisjoint(expected_payloads)
+            )
+
+            def git_readback(argv, **_kwargs):
+                command = tuple(argv)
+                if command[-1] == "--show-object-format":
+                    return MODULE.CommandResult(command, 0, "sha1\n", "", 0.1)
+                relative = command[-1].split(":", 1)[1]
+                oid = MODULE.git_blob_oid(expected_payloads[relative], "sha1")
+                return MODULE.CommandResult(command, 0, oid + "\n", "", 0.1)
+
+            with mock.patch.object(MODULE, "run_command", side_effect=git_readback):
+                receipt = MODULE.upgrade_current_release_marker(
+                    pathlib.Path(directory) / "repository.git", deploy_root
+                )
+            self.assertTrue(receipt["changed"])
+            upgraded = MODULE.verify_release_marker(release, expected_commit=commit)
+            self.assertEqual(set(upgraded["critical_sha256"]), set(expected_payloads))
 
     def test_member_names_are_fail_closed(self):
         self.assertEqual(
@@ -295,6 +373,19 @@ class AudioControlDeployTests(unittest.TestCase):
                     (release / "ui" / "styles.css").read_bytes(),
                     "text/css; charset=utf-8",
                 ),
+                "/sw.js": (
+                    200,
+                    (release / "ui" / "sw.js").read_bytes(),
+                    "application/javascript; charset=utf-8",
+                ),
+                "/manifest.webmanifest": (
+                    200,
+                    (release / "ui" / "manifest.webmanifest").read_bytes(),
+                    "application/manifest+json",
+                ),
+                "/icon-180.png": (200, (release / "ui" / "icon-180.png").read_bytes(), "image/png"),
+                "/icon-192.png": (200, (release / "ui" / "icon-192.png").read_bytes(), "image/png"),
+                "/icon-512.png": (200, (release / "ui" / "icon-512.png").read_bytes(), "image/png"),
                 "/whale-lesson.js": (
                     200,
                     (release / "ui" / "whale-lesson.js").read_bytes(),
@@ -331,6 +422,11 @@ class AudioControlDeployTests(unittest.TestCase):
                     "/",
                     "/app.js",
                     "/styles.css",
+                    "/sw.js",
+                    "/manifest.webmanifest",
+                    "/icon-180.png",
+                    "/icon-192.png",
+                    "/icon-512.png",
                     "/whale-lesson.js",
                     "/whale-learning-reference.wav",
                 },
@@ -376,6 +472,33 @@ class AudioControlDeployTests(unittest.TestCase):
                 MODULE.verify_service(
                     release, host="127.0.0.1", port=8765, attempts=1
                 )
+
+    def test_validate_release_requires_and_checks_the_pwa_surface(self):
+        commit = "7" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            self.write_release(release, commit)
+
+            def successful(argv, **_kwargs):
+                command = tuple(str(item) for item in argv)
+                return MODULE.CommandResult(command, 0, "", "", 0.01)
+
+            with (
+                mock.patch.object(MODULE, "run_command", side_effect=successful) as run,
+                mock.patch.object(MODULE.shutil, "which", return_value="/usr/bin/node"),
+            ):
+                MODULE.validate_release(release)
+
+            commands = [tuple(call.args[0]) for call in run.call_args_list]
+            self.assertIn(
+                (sys.executable, "-m", "unittest", "tests/test_audio_ipad_pwa.py"),
+                commands,
+            )
+            self.assertIn(("/usr/bin/node", "--check", "ui/sw.js"), commands)
+
+            (release / "ui" / "manifest.webmanifest").unlink()
+            with self.assertRaisesRegex(MODULE.DeployError, "Release ist unvollständig"):
+                MODULE.validate_release(release)
 
     def test_target_fetch_uses_private_bare_repository_and_redacts_remote(self):
         commit = "9" * 40

@@ -123,7 +123,12 @@ STATIC_FILES = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/whale-lesson.js": ("whale-lesson.js", "application/javascript; charset=utf-8"),
     "/app.js": ("app.js", "application/javascript; charset=utf-8"),
+    "/sw.js": ("sw.js", "application/javascript; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/icon-180.png": ("icon-180.png", "image/png"),
+    "/icon-192.png": ("icon-192.png", "image/png"),
+    "/icon-512.png": ("icon-512.png", "image/png"),
     "/whale-learning-reference.wav": ("whale-learning-reference.wav", "audio/wav"),
     "/whale-learning-morph.wav": ("whale-learning-morph.wav", "audio/wav"),
     "/whale-learning-envelope.wav": ("whale-learning-envelope.wav", "audio/wav"),
@@ -1558,10 +1563,13 @@ class AudioControlHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", cache_control)
         self.send_header(
             "Content-Security-Policy",
+            # worker-src 'self' erlaubt ausschließlich den gleichherkünftigen
+            # App-Shell-Service-Worker. Alle übrigen Direktiven bleiben eng.
             "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
             "form-action 'self'; img-src 'self' data:; "
             "script-src 'self'; style-src 'self'; connect-src 'self'; "
-            "object-src 'none'; media-src 'self'; worker-src 'none'",
+            "object-src 'none'; media-src 'self'; worker-src 'self'; "
+            "manifest-src 'self'",
         )
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")

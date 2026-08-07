@@ -109,8 +109,41 @@ const TRANSPORT_STATE_LABELS = {
   unknown: "unbekannt",
 };
 
+const RUNTIME_MODE_STORAGE_KEY = "audio-ui-runtime-mode";
+const REMOTE_MODE = "remote-audiozentrale";
+const LOCAL_MODE = "local-device";
+const DEFAULT_RUNTIME_MODE = REMOTE_MODE;
+const RUNTIME_MODES = {
+  [REMOTE_MODE]: {
+    label: "Fern-Audiozentrale",
+    authority:
+      "Das Heim-PC-Backend ist autoritativ. Eine authentifizierte, gesicherte " +
+      "Fernstrecke ist noch nicht belegt; der lokale Control-Dienst ist kein " +
+      "Ferntransport.",
+    backend: true,
+  },
+  [LOCAL_MODE]: {
+    label: "Lokales Gerät",
+    authority:
+      "Nur Browserfähigkeiten. Kein Heim-PC-Backend, keine Backendabfragen und " +
+      "keine native Autorität über MOTU, ALSA, PipeWire oder Roland.",
+    backend: false,
+  },
+};
+const LOCAL_MODE_API_BLOCK_MESSAGE =
+  "Im Modus „Lokales Gerät“ sind Backendanfragen gesperrt.";
+const CAPABILITY_STATE_LABELS = {
+  present: "Schnittstelle vorhanden",
+  absent: "Schnittstelle fehlt",
+  unknown: "nicht ermittelbar",
+};
+
 const state = {
   snapshot: null,
+  runtimeMode: DEFAULT_RUNTIME_MODE,
+  capabilities: null,
+  serviceWorkerState: "nicht geprüft",
+  appShellReloadPending: false,
   replay: null,
   replayScenarioId: "normal",
   replayFrameIndex: 0,
@@ -235,7 +268,304 @@ function profilesByArea(area) {
   return profilesFor(area);
 }
 
+/*
+ * Laufzeitmodus, Fähigkeitserkennung und Backendsperre.
+ *
+ * "remote-audiozentrale" behandelt das Heim-PC-Backend als autoritativ,
+ * "local-device" kennt ausschließlich Browserfähigkeiten und darf keine
+ * einzige Backendanfrage auslösen.
+ */
+
+function runtimeModeDefinition(mode) {
+  return Object.hasOwn(RUNTIME_MODES, mode)
+    ? RUNTIME_MODES[mode]
+    : RUNTIME_MODES[DEFAULT_RUNTIME_MODE];
+}
+
+function backendAllowed() {
+  return runtimeModeDefinition(state.runtimeMode).backend === true;
+}
+
+function sameOriginApiTarget(input) {
+  let candidate = null;
+  if (typeof input === "string") candidate = input;
+  else if (input instanceof URL) candidate = input.href;
+  else if (input && typeof input.url === "string") candidate = input.url;
+  if (candidate === null) return true;
+  let target;
+  try {
+    target = new URL(candidate, window.location.href);
+  } catch (_error) {
+    // Fail closed: Ein unlesbares Ziel gilt als backendverdächtig.
+    return true;
+  }
+  if (target.origin !== window.location.origin) return false;
+  return target.pathname === "/api" || target.pathname.startsWith("/api/");
+}
+
+function installBackendFetchGuard() {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = function guardedFetch(input, init) {
+    if (!backendAllowed() && sameOriginApiTarget(input)) {
+      return Promise.reject(new Error(LOCAL_MODE_API_BLOCK_MESSAGE));
+    }
+    return nativeFetch(input, init);
+  };
+}
+
+function capabilityState(probe) {
+  try {
+    return probe() ? "present" : "absent";
+  } catch (_error) {
+    // Fail closed: Eine fehlgeschlagene Erkennung gilt niemals als vorhanden.
+    return "unknown";
+  }
+}
+
+function permissionsPolicyState(feature) {
+  const policy = document.featurePolicy || document.permissionsPolicy || null;
+  if (!policy || typeof policy.allowsFeature !== "function") {
+    return "nicht exponiert";
+  }
+  try {
+    return policy.allowsFeature(feature) ? "erlaubt" : "verweigert";
+  } catch (_error) {
+    return "nicht exponiert";
+  }
+}
+
+/*
+ * Reine Schnittstellenerkennung ohne Kennungsauswertung. Es wird nichts
+ * geöffnet, nichts angefragt und nichts gestartet.
+ */
+function detectCapabilities() {
+  return {
+    secureContext: capabilityState(() => window.isSecureContext === true),
+    standalone: capabilityState(
+      () => window.matchMedia("(display-mode: standalone)").matches,
+    ),
+    webAudio: capabilityState(() => typeof window.AudioContext === "function"),
+    mediaCapture: capabilityState(
+      () => typeof navigator.mediaDevices?.getUserMedia === "function",
+    ),
+    webMidi: capabilityState(
+      () => typeof navigator.requestMIDIAccess === "function",
+    ),
+    serviceWorker: capabilityState(() => "serviceWorker" in navigator),
+    microphonePolicy: permissionsPolicyState("microphone"),
+    midiPolicy: permissionsPolicyState("midi"),
+  };
+}
+
+function capabilityRows(capabilities) {
+  return [
+    {
+      id: "secure-context",
+      label: "Sicherer Kontext",
+      state: capabilities.secureContext,
+      proof: "Transportbedingung, kein Geräte- oder Hardwarebeleg.",
+    },
+    {
+      id: "service-worker",
+      label: "Service Worker",
+      state: capabilities.serviceWorker,
+      proof: `Registrierung: ${state.serviceWorkerState}. Cacht nur die statische App-Shell.`,
+    },
+    {
+      id: "web-audio",
+      label: "Web Audio",
+      state: capabilities.webAudio,
+      proof: "Kein AudioContext geöffnet; Ausgabegerät und Route bleiben unbelegt.",
+    },
+    {
+      id: "media-capture",
+      label: "Mikrofonaufnahme",
+      state: capabilities.mediaCapture,
+      proof: `Permissions-Policy Mikrofon: ${capabilities.microphonePolicy}. Keine Anfrage gestellt, keine Aufnahme belegt.`,
+    },
+    {
+      id: "web-midi",
+      label: "Web MIDI",
+      state: capabilities.webMidi,
+      proof: `Permissions-Policy MIDI: ${capabilities.midiPolicy}. Kein Zugriff angefordert; Roland bleibt unbelegt.`,
+    },
+  ];
+}
+
+function renderRuntimeMode() {
+  const definition = runtimeModeDefinition(state.runtimeMode);
+  const capabilities = state.capabilities || detectCapabilities();
+  document.documentElement.dataset.runtimeMode = state.runtimeMode;
+  byId("local-device-boundary").hidden = backendAllowed();
+  byId("runtime-mode-remote").checked = state.runtimeMode === REMOTE_MODE;
+  byId("runtime-mode-local").checked = state.runtimeMode === LOCAL_MODE;
+  byId("runtime-mode-authority").textContent =
+    `${definition.label}: ${definition.authority}`;
+
+  const list = byId("capability-list");
+  list.replaceChildren(
+    ...capabilityRows(capabilities).map((row) => {
+      const card = element("article", "capability-card");
+      card.dataset.capability = row.id;
+      card.dataset.capabilityState = row.state;
+      appendText(card, "span", "", row.label);
+      appendText(card, "strong", "", CAPABILITY_STATE_LABELS[row.state]);
+      appendText(card, "small", "", row.proof);
+      return card;
+    }),
+  );
+
+  const install = byId("pwa-install-state");
+  install.replaceChildren();
+  detailRow(
+    install,
+    "Anzeige",
+    capabilities.standalone === "present" ? "standalone" : "Browserfenster",
+  );
+  detailRow(install, "Service Worker", state.serviceWorkerState);
+  detailRow(install, "Backendabfragen", backendAllowed() ? "erlaubt" : "gesperrt");
+  detailRow(
+    install,
+    "Ferntransport",
+    "nicht belegt · der lokale Control-Dienst ist kein Ferntransport",
+  );
+  detailRow(
+    install,
+    "Physisch belegt",
+    "nein · iPad-Installation, Audio- und MIDI-Hardware sind unbelegt",
+  );
+  syncRemoteControls();
+}
+
+function syncRemoteControls() {
+  const blocked = !backendAllowed();
+  byId("refresh-button").disabled = blocked || state.loading;
+  byId("diagnostic-refresh").disabled = blocked || state.loading;
+  byId("auto-refresh-toggle").disabled = blocked;
+}
+
+function renderLocalDeviceAuthority() {
+  const light = byId("authority-light");
+  light.classList.remove("is-ready", "is-busy");
+  byId("authority-label").textContent = "Lokales Gerät · kein Backend";
+  const mobileLight = byId("mobile-authority-light");
+  mobileLight.classList.remove("is-ready", "is-busy");
+  byId("mobile-authority-label").textContent = "gerät";
+  byId("mobile-authority").setAttribute(
+    "aria-label",
+    "Lokales Gerät ohne Backend- und Hardwareautorität",
+  );
+  byId("updated-at").textContent = "Kein Backendstand";
+  byId("mobile-updated-at").textContent = "kein Stand";
+  const truth = [
+    ["truth-observed", "nicht gelesen", "kein Backend-Readback"],
+    ["truth-configured", "nicht gelesen", "kein Sollzustand ohne Backend"],
+    ["truth-physical", "nicht gelesen", "keine Vor-Ort-Belege"],
+    ["truth-executable", "read-only", "keine Audiowirkung"],
+  ];
+  for (const [id, value, detail] of truth) {
+    byId(id).textContent = value;
+    byId(`${id}-detail`).textContent = detail;
+  }
+  showNotice(
+    "Modus „Lokales Gerät“: keine Backend-, Telemetrie- oder Geräteabfragen. " +
+      "Angezeigte Systemwahrheit stammt nicht von diesem Gerät.",
+    "info",
+  );
+}
+
+function stopRemoteActivity() {
+  if (state.timer) {
+    window.clearInterval(state.timer);
+    state.timer = null;
+  }
+  stopTelemetryPolling();
+  stopReplay();
+  // Laufende Antworten dürfen keine späte Backendwahrheit mehr einblenden.
+  state.telemetryRequestSequence += 1;
+  state.telemetry = null;
+  state.telemetryError = "Im Modus „Lokales Gerät“ wird keine Telemetrie gelesen.";
+  state.snapshot = null;
+  // Kein gelesener Zustand darf als Kennzahl stehen bleiben.
+  byId("diagnostic-badge").hidden = true;
+  byId("diagnostic-badge").textContent = "0";
+  renderTelemetry();
+}
+
+function applyRuntimeMode({ persist = false } = {}) {
+  if (persist) savePreference(RUNTIME_MODE_STORAGE_KEY, state.runtimeMode);
+  if (backendAllowed()) {
+    clearNotice();
+    scheduleAutoRefresh();
+    loadReplay();
+    loadWhaleLesson();
+    requestTelemetry().finally(() => scheduleTelemetryPolling());
+    refreshSnapshot(true);
+  } else {
+    stopRemoteActivity();
+    renderLocalDeviceAuthority();
+  }
+  renderRuntimeMode();
+}
+
+function loadRuntimeMode() {
+  try {
+    const stored = window.localStorage.getItem(RUNTIME_MODE_STORAGE_KEY);
+    if (typeof stored === "string" && Object.hasOwn(RUNTIME_MODES, stored)) {
+      return stored;
+    }
+  } catch (_error) {
+    // Ohne lokalen Speicher gilt der Vorgabemodus.
+  }
+  return DEFAULT_RUNTIME_MODE;
+}
+
+/*
+ * Registrierung ausschließlich in sicheren Kontexten. Ein Fehlschlag bleibt
+ * folgenlos; die Ansicht funktioniert ohne Service Worker vollständig.
+ */
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    state.serviceWorkerState = "nicht unterstützt";
+    return;
+  }
+  if (window.isSecureContext !== true) {
+    state.serviceWorkerState = "übersprungen · kein sicherer Kontext";
+    return;
+  }
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  state.serviceWorkerState = "wird registriert";
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController) {
+      state.serviceWorkerState = "aktiv";
+      renderRuntimeMode();
+      return;
+    }
+    // Kein automatischer Reload: eine neue App-Shell wird angekündigt, nicht erzwungen.
+    state.appShellReloadPending = true;
+    state.serviceWorkerState = "neue App-Shell aktiv · Neuladen empfohlen";
+    showNotice(
+      "Eine neue App-Shell ist aktiv. Bitte die Ansicht neu laden.",
+      "info",
+    );
+    renderRuntimeMode();
+  });
+  navigator.serviceWorker
+    .register("/sw.js", { scope: "/" })
+    .then(() => {
+      state.serviceWorkerState = "registriert";
+      renderRuntimeMode();
+    })
+    .catch(() => {
+      state.serviceWorkerState = "Registrierung fehlgeschlagen";
+      renderRuntimeMode();
+    });
+}
+
 async function fetchJson(url, options = {}) {
+  if (!backendAllowed() && sameOriginApiTarget(url)) {
+    throw new Error(LOCAL_MODE_API_BLOCK_MESSAGE);
+  }
   const { timeoutMs = 12000, ...fetchOptions } = options;
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -297,6 +627,7 @@ function showNotice(message, tone = "error") {
   const notice = byId("global-notice");
   notice.textContent = message;
   notice.classList.toggle("success", tone === "success");
+  notice.classList.toggle("info", tone === "info");
   notice.hidden = false;
 }
 
@@ -305,19 +636,19 @@ function clearNotice() {
   notice.hidden = true;
   notice.textContent = "";
   notice.classList.remove("success");
+  notice.classList.remove("info");
 }
 
 function setLoading(loading) {
   state.loading = loading;
   const button = byId("refresh-button");
-  button.disabled = loading;
   button.classList.toggle("is-loading", loading);
-  byId("diagnostic-refresh").disabled = loading;
+  syncRemoteControls();
   if (state.snapshot) renderWhale();
 }
 
 async function refreshSnapshot(force = false) {
-  if (state.loading) return;
+  if (state.loading || !backendAllowed()) return;
   setLoading(true);
   try {
     const suffix = force ? "?refresh=1" : "";
@@ -357,6 +688,7 @@ function renderAuthority(status = "ready") {
 function renderAll() {
   if (!state.snapshot) return;
   renderAuthority("ready");
+  renderRuntimeMode();
   byId("updated-at").textContent = formatTimestamp(state.snapshot.generated_at);
   byId("mobile-updated-at").textContent = formatTimestamp(
     state.snapshot.generated_at,
@@ -811,6 +1143,7 @@ function profileCard(profile) {
 }
 
 async function openProfilePlan(profile, trigger) {
+  if (!backendAllowed()) return;
   const requestId = ++state.dialogRequest;
   state.lastDialogTrigger = trigger;
   const backdrop = byId("dialog-backdrop");
@@ -948,6 +1281,7 @@ function renderLibrary() {
 }
 
 async function loadReplay() {
+  if (!backendAllowed()) return;
   try {
     const replay = await fetchJson("/api/v1/replay", { timeoutMs: 12000 });
     if (replay.authoritative !== false || replay.authority !== "synthetic-replay") {
@@ -1229,6 +1563,7 @@ async function loadTelemetry() {
 }
 
 function requestTelemetry() {
+  if (!backendAllowed()) return Promise.resolve();
   if (state.telemetryInFlight) return state.telemetryInFlight;
   const request = loadTelemetry().finally(() => {
     if (state.telemetryInFlight === request) state.telemetryInFlight = null;
@@ -1245,13 +1580,14 @@ function stopTelemetryPolling() {
 
 async function telemetryPollTick() {
   state.telemetryTimer = null;
+  if (!backendAllowed()) return;
   if (!document.hidden) await requestTelemetry();
   scheduleTelemetryPolling();
 }
 
 function scheduleTelemetryPolling(delayMs = TELEMETRY_POLL_MS) {
   stopTelemetryPolling();
-  if (document.hidden) return;
+  if (document.hidden || !backendAllowed()) return;
   state.telemetryTimer = window.setTimeout(telemetryPollTick, delayMs);
 }
 
@@ -1746,6 +2082,7 @@ function autoRefreshBlocked() {
 }
 
 function autoRefreshTick() {
+  if (!backendAllowed()) return;
   if (state.autoRefresh && !document.hidden && !autoRefreshBlocked()) {
     refreshSnapshot(false);
   }
@@ -1753,6 +2090,8 @@ function autoRefreshTick() {
 
 function scheduleAutoRefresh() {
   if (state.timer) window.clearInterval(state.timer);
+  state.timer = null;
+  if (!backendAllowed()) return;
   state.timer = window.setInterval(autoRefreshTick, 8000);
 }
 
@@ -1775,7 +2114,7 @@ function keepDialogFocus(event) {
 function wireEvents() {
   window.addEventListener("hashchange", applyRoute);
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
+    if (document.hidden || !backendAllowed()) {
       stopTelemetryPolling();
       return;
     }
@@ -1812,14 +2151,24 @@ function wireEvents() {
     state.autoRefresh = event.target.checked;
     savePreference("audio-ui-auto-refresh", event.target.checked);
   });
+  for (const input of document.querySelectorAll("input[name='runtime-mode']")) {
+    input.addEventListener("change", (event) => {
+      const next = event.target.value;
+      if (!event.target.checked) return;
+      if (!Object.hasOwn(RUNTIME_MODES, next) || next === state.runtimeMode) return;
+      state.runtimeMode = next;
+      state.capabilities = detectCapabilities();
+      applyRuntimeMode({ persist: true });
+    });
+  }
 }
 
+installBackendFetchGuard();
+state.runtimeMode = loadRuntimeMode();
+state.capabilities = detectCapabilities();
 loadPreferences();
 wireEvents();
 wireDepthPanels();
 applyRoute();
-scheduleAutoRefresh();
-loadReplay();
-loadWhaleLesson();
-requestTelemetry().finally(() => scheduleTelemetryPolling());
-refreshSnapshot(true);
+registerServiceWorker();
+applyRuntimeMode();

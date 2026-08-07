@@ -1,0 +1,583 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.local/schemas/audiozentrale-ipad-pwa.v1.schema.json",
+  "title": "Audiozentrale iPad and PWA Contract v1",
+  "description": "Strict contract for the installable iPad/PWA surface of the canonical Audiozentrale frontend. It records runtime modes, feature-detection policy, the service-worker network-only /api/ rule and the physical acceptance state, which is unproven by construction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "contract_id",
+    "status",
+    "schema_binding",
+    "surface",
+    "install_metadata",
+    "runtime_modes",
+    "feature_detection",
+    "service_worker",
+    "transport",
+    "physical_acceptance",
+    "does_not_establish"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "audiozentrale_ipad_pwa_contract"
+    },
+    "contract_id": {
+      "const": "audiozentrale-ipad-pwa-v1"
+    },
+    "status": {
+      "const": "specified-not-physically-verified"
+    },
+    "schema_binding": {
+      "$ref": "#/$defs/schema_binding"
+    },
+    "surface": {
+      "$ref": "#/$defs/surface"
+    },
+    "install_metadata": {
+      "$ref": "#/$defs/install_metadata"
+    },
+    "runtime_modes": {
+      "$ref": "#/$defs/runtime_modes"
+    },
+    "feature_detection": {
+      "$ref": "#/$defs/feature_detection"
+    },
+    "service_worker": {
+      "$ref": "#/$defs/service_worker"
+    },
+    "transport": {
+      "$ref": "#/$defs/transport"
+    },
+    "physical_acceptance": {
+      "$ref": "#/$defs/physical_acceptance"
+    },
+    "does_not_establish": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "string",
+        "minLength": 12
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "repository_path": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
+    "absolute_path": {
+      "type": "string",
+      "pattern": "^/[A-Za-z0-9._/-]*$"
+    },
+    "colour": {
+      "type": "string",
+      "pattern": "^#[0-9a-f]{6}$"
+    },
+    "schema_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "const": "schemas/audiozentrale-ipad-pwa.v1.schema.json"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_frontend",
+        "added_assets",
+        "frontend_framework_dependencies",
+        "second_application_created"
+      ],
+      "properties": {
+        "canonical_frontend": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/repository_path"
+          }
+        },
+        "added_assets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/repository_path"
+          }
+        },
+        "frontend_framework_dependencies": {
+          "type": "array",
+          "maxItems": 0,
+          "items": {
+            "type": "string"
+          }
+        },
+        "second_application_created": {
+          "const": false
+        }
+      }
+    },
+    "icon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "route", "pixel_size", "mime_type", "sha256"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repository_path"
+        },
+        "route": {
+          "$ref": "#/$defs/absolute_path"
+        },
+        "pixel_size": {
+          "type": "integer",
+          "enum": [180, 192, 512]
+        },
+        "mime_type": {
+          "const": "image/png"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "install_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_path",
+        "manifest_route",
+        "manifest_mime_type",
+        "start_url",
+        "scope",
+        "display",
+        "orientation",
+        "theme_color",
+        "background_color",
+        "viewport_fit",
+        "apple_mobile_web_app_capable",
+        "apple_mobile_web_app_status_bar_style",
+        "apple_touch_icon_route",
+        "icons"
+      ],
+      "properties": {
+        "manifest_path": {
+          "const": "ui/manifest.webmanifest"
+        },
+        "manifest_route": {
+          "const": "/manifest.webmanifest"
+        },
+        "manifest_mime_type": {
+          "const": "application/manifest+json"
+        },
+        "start_url": {
+          "const": "/"
+        },
+        "scope": {
+          "const": "/"
+        },
+        "display": {
+          "const": "standalone"
+        },
+        "orientation": {
+          "const": "any"
+        },
+        "theme_color": {
+          "$ref": "#/$defs/colour"
+        },
+        "background_color": {
+          "$ref": "#/$defs/colour"
+        },
+        "viewport_fit": {
+          "const": "cover"
+        },
+        "apple_mobile_web_app_capable": {
+          "const": true
+        },
+        "apple_mobile_web_app_status_bar_style": {
+          "const": "black-translucent"
+        },
+        "apple_touch_icon_route": {
+          "const": "/icon-180.png"
+        },
+        "icons": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/icon"
+          }
+        }
+      }
+    },
+    "runtime_mode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "backend_requests_allowed",
+        "backend_authority",
+        "native_hardware_authority",
+        "requires",
+        "boundary"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 3
+        },
+        "backend_requests_allowed": {
+          "type": "boolean"
+        },
+        "backend_authority": {
+          "type": "string",
+          "enum": ["none", "heim-pc-backend"]
+        },
+        "native_hardware_authority": {
+          "const": false
+        },
+        "requires": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 4
+          }
+        },
+        "boundary": {
+          "type": "string",
+          "minLength": 20
+        }
+      }
+    },
+    "runtime_modes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "persistence", "storage_key", "modes"],
+      "properties": {
+        "default": {
+          "const": "remote-audiozentrale"
+        },
+        "persistence": {
+          "const": "browser-local-storage"
+        },
+        "storage_key": {
+          "const": "audio-ui-runtime-mode"
+        },
+        "modes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["local-device", "remote-audiozentrale"],
+          "properties": {
+            "local-device": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/runtime_mode"
+                },
+                {
+                  "properties": {
+                    "id": {
+                      "const": "local-device"
+                    },
+                    "backend_requests_allowed": {
+                      "const": false
+                    },
+                    "backend_authority": {
+                      "const": "none"
+                    }
+                  }
+                }
+              ]
+            },
+            "remote-audiozentrale": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/runtime_mode"
+                },
+                {
+                  "properties": {
+                    "id": {
+                      "const": "remote-audiozentrale"
+                    },
+                    "backend_requests_allowed": {
+                      "const": true
+                    },
+                    "backend_authority": {
+                      "const": "heim-pc-backend"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "detects", "invoked_automatically", "proves"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "detects": {
+          "type": "string",
+          "minLength": 8
+        },
+        "invoked_automatically": {
+          "const": false
+        },
+        "proves": {
+          "const": "api-presence-only"
+        }
+      }
+    },
+    "feature_detection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "user_agent_sniffing",
+        "automatic_permission_requests",
+        "fail_closed",
+        "distinguishes_api_presence_from_proof",
+        "permissions_policy_read",
+        "probes"
+      ],
+      "properties": {
+        "method": {
+          "const": "api-presence-only"
+        },
+        "user_agent_sniffing": {
+          "const": false
+        },
+        "automatic_permission_requests": {
+          "const": false
+        },
+        "fail_closed": {
+          "const": true
+        },
+        "distinguishes_api_presence_from_proof": {
+          "const": true
+        },
+        "permissions_policy_read": {
+          "const": "where-exposed-only"
+        },
+        "probes": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/probe"
+          }
+        }
+      }
+    },
+    "service_worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "route",
+        "scope",
+        "cache_prefix",
+        "cache_name",
+        "registration",
+        "app_shell_strategy",
+        "app_shell_routes",
+        "api_rule",
+        "never_cached",
+        "absent_capabilities"
+      ],
+      "properties": {
+        "path": {
+          "const": "ui/sw.js"
+        },
+        "route": {
+          "const": "/sw.js"
+        },
+        "scope": {
+          "const": "/"
+        },
+        "cache_prefix": {
+          "const": "audiozentrale-app-shell-"
+        },
+        "cache_name": {
+          "const": "audiozentrale-app-shell-v1"
+        },
+        "registration": {
+          "const": "secure-contexts-only"
+        },
+        "app_shell_strategy": {
+          "const": "network-first-cache-fallback-static-only"
+        },
+        "app_shell_routes": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/absolute_path"
+          }
+        },
+        "api_rule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path_prefix",
+            "behaviour",
+            "cache_read",
+            "cache_write",
+            "cache_fallback",
+            "replay",
+            "queue",
+            "background_sync",
+            "stale_state"
+          ],
+          "properties": {
+            "path_prefix": {
+              "const": "/api/"
+            },
+            "behaviour": {
+              "const": "network-only"
+            },
+            "cache_read": {
+              "const": false
+            },
+            "cache_write": {
+              "const": false
+            },
+            "cache_fallback": {
+              "const": false
+            },
+            "replay": {
+              "const": false
+            },
+            "queue": {
+              "const": false
+            },
+            "background_sync": {
+              "const": false
+            },
+            "stale_state": {
+              "const": false
+            }
+          }
+        },
+        "never_cached": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 4
+          }
+        },
+        "absent_capabilities": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 4
+          }
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "loopback_control_service_is_remote_transport",
+        "loopback_boundary_preserved",
+        "microphone_permissions_policy",
+        "api_cache_control",
+        "remote_mode_requires",
+        "remote_bridge_proven"
+      ],
+      "properties": {
+        "loopback_control_service_is_remote_transport": {
+          "const": false
+        },
+        "loopback_boundary_preserved": {
+          "const": true
+        },
+        "microphone_permissions_policy": {
+          "const": "denied"
+        },
+        "api_cache_control": {
+          "const": "no-store"
+        },
+        "remote_mode_requires": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 8
+          }
+        },
+        "remote_bridge_proven": {
+          "const": false
+        }
+      }
+    },
+    "physical_acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ipad_installation_verified",
+        "ipad_standalone_launch_verified",
+        "offline_app_shell_verified",
+        "remote_bridge_verified",
+        "local_audio_hardware_verified",
+        "local_midi_hardware_verified"
+      ],
+      "properties": {
+        "ipad_installation_verified": {
+          "const": false
+        },
+        "ipad_standalone_launch_verified": {
+          "const": false
+        },
+        "offline_app_shell_verified": {
+          "const": false
+        },
+        "remote_bridge_verified": {
+          "const": false
+        },
+        "local_audio_hardware_verified": {
+          "const": false
+        },
+        "local_midi_hardware_verified": {
+          "const": false
+        }
+      }
+    }
+  }
+}
