@@ -10,12 +10,17 @@ never gains audio, device, profile-transition or other effect authority.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import ipaddress
 import json
+import os
+import pathlib
 import re
 import socket
+import stat
 import threading
+import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +40,20 @@ MAX_BACKEND_HEADER_BYTES = 32_768
 MAX_RESPONSE_BYTES = 1_048_576
 MAX_CONCURRENT_REQUESTS = 8
 MAX_CONDITIONAL_HEADER_BYTES = 4096
+ACCEPTANCE_STATE_PATH = (
+    pathlib.Path.home() / ".local" / "state" / "audio-remote-bridge-v1" / "acceptance.json"
+)
+ACCEPTANCE_STATE_MAX_BYTES = 32_768
+ACCEPTANCE_MAX_TTL_SECONDS = 7 * 24 * 60 * 60
+ACCEPTANCE_KEYS = (
+    "bridge_service_verified",
+    "tailscale_serve_verified",
+    "ipad_https_reachability_verified",
+    "ipad_safari_verified",
+    "pwa_installation_verified",
+)
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+BRIDGE_RUNTIME_SHA256 = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
 
 STATIC_ROUTES = frozenset(
     {
@@ -90,6 +109,127 @@ FORWARDED_RESPONSE_HEADERS = frozenset(
         "permissions-policy",
     }
 )
+
+
+def runtime_acceptance_defaults() -> dict[str, bool]:
+    return {name: False for name in ACCEPTANCE_KEYS}
+
+
+def _acceptance_evidence(state: str, **extra: Any) -> dict[str, Any]:
+    return {"state": state, **extra}
+
+
+def load_runtime_acceptance(
+    path: pathlib.Path | None = None,
+    *,
+    now_unix: int | None = None,
+) -> tuple[dict[str, bool], dict[str, Any]]:
+    target = path if path is not None else ACCEPTANCE_STATE_PATH
+    defaults = runtime_acceptance_defaults()
+    now = int(time.time()) if now_unix is None else now_unix
+    try:
+        metadata = target.lstat()
+    except FileNotFoundError:
+        return defaults, _acceptance_evidence("unverified")
+    except OSError:
+        return defaults, _acceptance_evidence("invalid")
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return defaults, _acceptance_evidence("invalid")
+    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+        return defaults, _acceptance_evidence("invalid")
+    if metadata.st_size <= 0 or metadata.st_size > ACCEPTANCE_STATE_MAX_BYTES:
+        return defaults, _acceptance_evidence("invalid")
+    try:
+        raw = target.read_bytes()
+    except OSError:
+        return defaults, _acceptance_evidence("invalid")
+    state_sha256 = hashlib.sha256(raw).hexdigest()
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    required = {
+        "schema_version",
+        "kind",
+        "contract_id",
+        "bridge_sha256",
+        "recorded_at_unix",
+        "expires_at_unix",
+        "runtime_acceptance",
+        "evidence",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    if payload.get("schema_version") != 1 or payload.get("kind") != "audio_remote_bridge_runtime_acceptance":
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    if payload.get("contract_id") != CONTRACT_ID:
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    bridge_sha256 = payload.get("bridge_sha256")
+    if (
+        not isinstance(bridge_sha256, str)
+        or not SHA256_RE.fullmatch(bridge_sha256)
+        or bridge_sha256 != BRIDGE_RUNTIME_SHA256
+    ):
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    recorded = payload.get("recorded_at_unix")
+    expires = payload.get("expires_at_unix")
+    if (
+        not isinstance(recorded, int)
+        or isinstance(recorded, bool)
+        or not isinstance(expires, int)
+        or isinstance(expires, bool)
+        or recorded > now + 60
+        or expires <= recorded
+        or expires - recorded > ACCEPTANCE_MAX_TTL_SECONDS
+    ):
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    if expires <= now:
+        return defaults, _acceptance_evidence(
+            "expired",
+            recorded_at_unix=recorded,
+            expires_at_unix=expires,
+            state_sha256=state_sha256,
+        )
+    values = payload.get("runtime_acceptance")
+    if not isinstance(values, dict) or set(values) != set(ACCEPTANCE_KEYS):
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    if any(not isinstance(values[name], bool) for name in ACCEPTANCE_KEYS):
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    if values["tailscale_serve_verified"] and not values["bridge_service_verified"]:
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    if values["ipad_https_reachability_verified"] and not (
+        values["bridge_service_verified"] and values["tailscale_serve_verified"]
+    ):
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    if values["ipad_safari_verified"] and not values["ipad_https_reachability_verified"]:
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    if values["pwa_installation_verified"] and not values["ipad_safari_verified"]:
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, dict):
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    source = evidence.get("source")
+    evidence_sha256 = evidence.get("evidence_sha256")
+    if (
+        not isinstance(source, str)
+        or not source.strip()
+        or len(source) > 128
+        or not isinstance(evidence_sha256, str)
+        or not SHA256_RE.fullmatch(evidence_sha256)
+    ):
+        return defaults, _acceptance_evidence("invalid", state_sha256=state_sha256)
+    return (
+        {name: values[name] for name in ACCEPTANCE_KEYS},
+        _acceptance_evidence(
+            "verified",
+            source=source,
+            evidence_sha256=evidence_sha256,
+            bridge_sha256=bridge_sha256,
+            state_sha256=state_sha256,
+            recorded_at_unix=recorded,
+            expires_at_unix=expires,
+        ),
+    )
 
 
 class BridgeError(RuntimeError):
@@ -484,6 +624,7 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _bridge_health(self, *, head_only: bool) -> None:
+        runtime_acceptance, runtime_acceptance_evidence = load_runtime_acceptance()
         payload = (
             json.dumps(
                 {
@@ -499,12 +640,9 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
                         "authority": "local-loopback-only",
                         "remote_exposure": False,
                     },
-                    "runtime_acceptance": {
-                        "bridge_service_verified": False,
-                        "tailnet_https_verified": False,
-                        "ipad_https_reachability_verified": False,
-                        "pwa_installation_verified": False,
-                    },
+                    "runtime_sha256": BRIDGE_RUNTIME_SHA256,
+                    "runtime_acceptance": runtime_acceptance,
+                    "runtime_acceptance_evidence": runtime_acceptance_evidence,
                 },
                 sort_keys=True,
                 separators=(",", ":"),

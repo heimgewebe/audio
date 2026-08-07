@@ -29,6 +29,7 @@ class AudioControlDeployTests(unittest.TestCase):
             "scripts/audio_control.py": b"print('control')\n",
             "scripts/audio_remote_bridge.py": b"print('bridge')\n",
             "scripts/audio_remote_bridge_tailscale.py": b"print('tailscale')\n",
+            "scripts/audio_remote_bridge_ipad_probe.py": b"print('ipad probe')\n",
             "inventory/audiozentrale-remote-bridge.v1.json": b"{}\n",
             "schemas/audiozentrale-remote-bridge.v1.schema.json": b"{}\n",
             "systemd/user/audio-remote-bridge-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
