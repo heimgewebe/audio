@@ -1,0 +1,37 @@
+[Unit]
+Description=Audiozentrale read-only Tailnet bridge
+After=audio-control-ui-v1.service network.target
+Wants=audio-control-ui-v1.service
+ConditionPathExists=%h/.local/share/audio-control-ui/current/scripts/audio_remote_bridge.py
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/audio-control-ui/current
+ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_remote_bridge.py serve --host 127.0.0.1 --port 8766 --backend-host 127.0.0.1 --backend-port 8765
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=10s
+TimeoutStopSec=10s
+KillMode=mixed
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectClock=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+UMask=0077
+MemoryMax=100663296
+CPUQuota=25%
+TasksMax=24
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=60
+
+[Install]
+WantedBy=default.target

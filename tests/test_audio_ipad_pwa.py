@@ -256,9 +256,14 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('aria-describedby="runtime-mode-local-description"', self.html)
         self.assertIn("<legend class=\"sr-only\">Laufzeitmodus wählen</legend>", self.html)
 
-    def test_remote_mode_records_that_loopback_is_no_remote_transport(self):
+    def test_remote_mode_requires_separate_read_only_bridge(self):
         self.assertIn("kein Ferntransport", self.html)
-        self.assertIn("Ferntransport", self.app)
+        self.assertIn("Read-only-Bridge", self.html)
+        self.assertIn("Read-only-Bridge", self.app)
+        self.assertIn("Loopback-only", self.app)
+        self.assertIn('response.headers.get("X-Audio-Remote-Bridge")', self.app)
+        self.assertIn('=== "read-only-v1"', self.app)
+        self.assertIn("keine Audiowirkung", self.app)
 
     def test_local_mode_denies_native_hardware_authority_in_the_surface(self):
         for token in ("MOTU", "ALSA", "PipeWire", "Roland"):

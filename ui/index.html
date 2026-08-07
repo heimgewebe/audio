@@ -243,7 +243,7 @@
               <legend class="sr-only">Laufzeitmodus wählen</legend>
               <label class="runtime-mode-option" for="runtime-mode-remote">
                 <input id="runtime-mode-remote" type="radio" name="runtime-mode" value="remote-audiozentrale" aria-describedby="runtime-mode-remote-description" checked>
-                <span><strong>Fern-Audiozentrale</strong><small id="runtime-mode-remote-description">Das Heim-PC-Backend ist autoritativ. Eine authentifizierte, gesicherte Fernstrecke ist noch nicht belegt; der lokale Control-Dienst ist ausdrücklich kein Ferntransport.</small></span>
+                <span><strong>Fern-Audiozentrale</strong><small id="runtime-mode-remote-description">Das Heim-PC-Backend ist autoritativ. Fernzugriff ist nur über einen separat verifizierten sicheren Read-only-Bridge zulässig; der lokale Control-Dienst bleibt Loopback-only und ist ausdrücklich kein Ferntransport.</small></span>
               </label>
               <label class="runtime-mode-option" for="runtime-mode-local">
                 <input id="runtime-mode-local" type="radio" name="runtime-mode" value="local-device" aria-describedby="runtime-mode-local-description">
