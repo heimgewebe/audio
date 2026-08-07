@@ -2,12 +2,22 @@
 <html lang="de">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#0d1414">
     <meta name="audio-control-deployment-contract" content="revision-bound-v1">
     <meta name="audiozentrale-product-surface" content="four-places-read-only-v1">
+    <meta name="audiozentrale-ipad-pwa-contract" content="audiozentrale-ipad-pwa-v1">
+    <meta name="application-name" content="Audiozentrale">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Audiozentrale">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="data:,">
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
     <meta
       name="description"
       content="Read-only Audiozentrale für Jetzt, Setups, Bibliothek und System."
@@ -77,6 +87,14 @@
         </section>
 
         <div class="notice" id="global-notice" role="status" aria-live="polite" hidden></div>
+
+        <section class="local-device-boundary" id="local-device-boundary" aria-labelledby="local-device-boundary-title" hidden>
+          <p class="eyebrow">Lokales Gerät</p>
+          <h2 id="local-device-boundary-title">Ohne Heim-PC-Backend gibt es keine Systemwahrheit</h2>
+          <p>Dieser Modus liest weder Zustand noch Telemetrie, Profile, Replay oder Deployment. Alle backendgebundenen Flächen sind deshalb ausgeblendet statt veraltet dargestellt.</p>
+          <p class="read-only-boundary">Keine native Autorität über MOTU, ALSA, PipeWire oder Roland. Es werden keine Berechtigungen angefragt und keine Geräte geöffnet.</p>
+          <p><a class="secondary-button" href="#system">Betriebsmodus öffnen</a></p>
+        </section>
 
         <section class="view is-active" id="view-now" data-view="now">
           <article class="depth-panel" data-depth-panel data-focus-title="Aktiver Systemzustand" data-focus-summary="Autoritativer aktueller Readback ohne Audioaktion.">
@@ -217,6 +235,29 @@
             <header class="depth-heading"><div><p class="eyebrow">Doctor</p><h2>Diagnose</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="metric-grid" id="diagnostic-metrics"></div>
             <div class="depth-detail diagnostic-layout" hidden><div><div class="section-heading compact"><h3>Hinweise</h3></div><div class="warning-list" id="warning-list"></div></div><div><div class="section-heading compact"><h3>Werkzeuge</h3></div><div class="command-list" id="command-health"></div></div></div>
+          </article>
+
+          <article class="depth-panel runtime-mode-panel" data-depth-panel data-focus-title="Betriebsmodus" data-focus-summary="Zwei getrennte Laufzeitmodi mit unterschiedlicher Autorität; die Wahl bleibt lokal im Browser und steuert kein Gerät.">
+            <header class="depth-heading"><div><p class="eyebrow">iPad und PWA</p><h2>Betriebsmodus</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <fieldset class="runtime-mode-choice" id="runtime-mode-choice">
+              <legend class="sr-only">Laufzeitmodus wählen</legend>
+              <label class="runtime-mode-option" for="runtime-mode-remote">
+                <input id="runtime-mode-remote" type="radio" name="runtime-mode" value="remote-audiozentrale" aria-describedby="runtime-mode-remote-description" checked>
+                <span><strong>Fern-Audiozentrale</strong><small id="runtime-mode-remote-description">Das Heim-PC-Backend ist autoritativ. Eine authentifizierte, gesicherte Fernstrecke ist noch nicht belegt; der lokale Control-Dienst ist ausdrücklich kein Ferntransport.</small></span>
+              </label>
+              <label class="runtime-mode-option" for="runtime-mode-local">
+                <input id="runtime-mode-local" type="radio" name="runtime-mode" value="local-device" aria-describedby="runtime-mode-local-description">
+                <span><strong>Lokales Gerät</strong><small id="runtime-mode-local-description">Nur Browserfähigkeiten. Kein Heim-PC-Backend, keine Backendabfragen und keine native Hardware-Autorität.</small></span>
+              </label>
+            </fieldset>
+            <p class="callout" id="runtime-mode-authority" role="status" aria-live="polite">Betriebsmodus wird gelesen.</p>
+            <div class="depth-detail" hidden>
+              <div class="section-heading compact"><h3>Browserfähigkeiten</h3></div>
+              <div class="capability-list" id="capability-list"></div>
+              <p class="read-only-boundary" id="capability-boundary">Erkennung liest ausschließlich Schnittstellen. Es werden keine Berechtigungen angefragt, keine Aufnahme gestartet und kein Gerät geöffnet.</p>
+              <p class="read-only-boundary" id="native-authority-boundary">Dieser Modus hat keine native Autorität über MOTU, ALSA, PipeWire oder Roland.</p>
+              <dl class="service-list" id="pwa-install-state"></dl>
+            </div>
           </article>
 
           <article class="depth-panel" data-depth-panel data-focus-title="Lokale Konfiguration" data-focus-summary="Browserpräferenzen und Dienstidentität; keine physische Hardwaresteuerung.">

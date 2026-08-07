@@ -51,8 +51,21 @@ RUNTIME_FILES = {
         0o600,
     ),
 }
+PWA_CRITICAL_RELEASE_FILES = (
+    "inventory/audiozentrale-ipad-pwa.v1.json",
+    "schemas/audiozentrale-ipad-pwa.v1.schema.json",
+    "ui/sw.js",
+    "ui/manifest.webmanifest",
+    "ui/icon-180.png",
+    "ui/icon-192.png",
+    "ui/icon-512.png",
+)
+PWA_RELEASE_SENTINEL = "tests/test_audio_ipad_pwa.py"
+
 BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
+    "inventory/audiozentrale-ipad-pwa.v1.json",
+    "schemas/audiozentrale-ipad-pwa.v1.schema.json",
     "scripts/audio_telemetry_replay.py",
     "inventory/audiozentrale-telemetry-replay.v1.json",
     "schemas/audiozentrale-telemetry-replay.v1.schema.json",
@@ -71,11 +84,21 @@ BASE_CRITICAL_RELEASE_FILES = (
     "ui/index.html",
     "ui/app.js",
     "ui/styles.css",
+    "ui/sw.js",
+    "ui/manifest.webmanifest",
+    "ui/icon-180.png",
+    "ui/icon-192.png",
+    "ui/icon-512.png",
 )
 STATIC_ENDPOINTS = (
     ("/", "ui/index.html", ("text/html",)),
     ("/app.js", "ui/app.js", ("application/javascript", "text/javascript")),
     ("/styles.css", "ui/styles.css", ("text/css",)),
+    ("/sw.js", "ui/sw.js", ("application/javascript", "text/javascript")),
+    ("/manifest.webmanifest", "ui/manifest.webmanifest", ("application/manifest+json",)),
+    ("/icon-180.png", "ui/icon-180.png", ("image/png",)),
+    ("/icon-192.png", "ui/icon-192.png", ("image/png",)),
+    ("/icon-512.png", "ui/icon-512.png", ("image/png",)),
     ("/whale-lesson.js", "ui/whale-lesson.js", ("application/javascript", "text/javascript")),
     ("/whale-learning-reference.wav", "ui/whale-learning-reference.wav", ("audio/wav",)),
 )
@@ -564,7 +587,15 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         release / "ui" / "index.html",
         release / "ui" / "app.js",
         release / "ui" / "styles.css",
+        release / "ui" / "sw.js",
+        release / "ui" / "manifest.webmanifest",
+        release / "ui" / "icon-180.png",
+        release / "ui" / "icon-192.png",
+        release / "ui" / "icon-512.png",
+        release / "inventory" / "audiozentrale-ipad-pwa.v1.json",
+        release / "schemas" / "audiozentrale-ipad-pwa.v1.schema.json",
         release / "tests" / "test_audio_control.py",
+        release / "tests" / "test_audio_ipad_pwa.py",
     ]
     missing = [str(path.relative_to(release)) for path in required if not path.is_file()]
     if missing:
@@ -581,6 +612,11 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
             timeout=180,
         ),
         run_command(
+            [sys.executable, "-m", "unittest", "tests/test_audio_ipad_pwa.py"],
+            cwd=release,
+            timeout=180,
+        ),
+        run_command(
             [sys.executable, "-m", "compileall", "-q", "scripts", "tests"],
             cwd=release,
             timeout=120,
@@ -589,6 +625,7 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
     node = shutil.which("node")
     if node:
         checks.append(run_command([node, "--check", "ui/app.js"], cwd=release, timeout=30))
+        checks.append(run_command([node, "--check", "ui/sw.js"], cwd=release, timeout=30))
     return [check.receipt() for check in checks]
 
 
@@ -607,6 +644,11 @@ def release_marker(release: pathlib.Path) -> dict[str, Any]:
 
 def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
     paths = list(BASE_CRITICAL_RELEASE_FILES)
+    # Pre-PWA releases predate the sentinel and must remain marker-upgradeable.
+    # Once the sentinel exists, every PWA critical file is mandatory.
+    if not (release / PWA_RELEASE_SENTINEL).is_file():
+        pwa_paths = set(PWA_CRITICAL_RELEASE_FILES)
+        paths = [relative for relative in paths if relative not in pwa_paths]
     paths.extend(relative for relative in RUNTIME_FILES if (release / relative).exists())
     return tuple(dict.fromkeys(paths))
 
