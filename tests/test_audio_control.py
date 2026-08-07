@@ -1682,7 +1682,59 @@ class AudioControlHTTPTests(unittest.TestCase):
         self.assertEqual(audio_headers["Content-Type"], "audio/wav")
         self.assertEqual(hashlib.sha256(audio).hexdigest(), reference["audio_sha256"])
         self.assertIn("media-src 'self'", audio_headers["Content-Security-Policy"])
+        self.assertEqual(audio_headers["Accept-Ranges"], "bytes")
         self.assertEqual(self.runner.calls, before)
+
+        status, range_headers, partial = self.request(
+            "GET",
+            reference["audio_url"],
+            headers={"Range": "bytes=0-1023"},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(partial, audio[:1024])
+        self.assertEqual(range_headers["Accept-Ranges"], "bytes")
+        self.assertEqual(
+            range_headers["Content-Range"],
+            f"bytes 0-1023/{len(audio)}",
+        )
+        self.assertEqual(int(range_headers["Content-Length"]), 1024)
+
+        status, suffix_headers, suffix = self.request(
+            "GET",
+            reference["audio_url"],
+            headers={"Range": "bytes=-32"},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(suffix, audio[-32:])
+        self.assertEqual(
+            suffix_headers["Content-Range"],
+            f"bytes {len(audio) - 32}-{len(audio) - 1}/{len(audio)}",
+        )
+
+        status, head_headers, head_payload = self.request(
+            "HEAD",
+            reference["audio_url"],
+            headers={"Range": "bytes=0-31"},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(head_payload, b"")
+        self.assertEqual(int(head_headers["Content-Length"]), 32)
+        self.assertEqual(
+            head_headers["Content-Range"],
+            f"bytes 0-31/{len(audio)}",
+        )
+
+        status, invalid_headers, invalid_payload = self.request(
+            "GET",
+            reference["audio_url"],
+            headers={"Range": f"bytes={len(audio)}-"},
+        )
+        self.assertEqual(status, 416)
+        self.assertEqual(invalid_payload, b"")
+        self.assertEqual(
+            invalid_headers["Content-Range"],
+            f"bytes */{len(audio)}",
+        )
 
         status, _headers, payload = self.request(
             "GET", "/api/v1/whale/lesson?variant=morph"

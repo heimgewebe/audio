@@ -92,6 +92,10 @@ class ContractTests(unittest.TestCase):
             {name.lower() for name in contract["bridge"]["response_header_forward"]},
             MODULE.FORWARDED_RESPONSE_HEADERS,
         )
+        self.assertEqual(
+            {name.lower() for name in contract["bridge"]["request_header_forward"]},
+            {"if-none-match", "range"},
+        )
         self.assertIn("action_token", contract["bridge"]["json_scrubbing"]["must_remove"])
         self.assertEqual(set(contract["runtime_acceptance"]), set(MODULE.ACCEPTANCE_KEYS))
 
@@ -314,6 +318,17 @@ class BridgeHTTPTests(unittest.TestCase):
                 ],
                 b'"use strict";\n',
             ),
+            "/whale-learning-reference.wav": (
+                206,
+                [
+                    ("Content-Type", "audio/wav"),
+                    ("Cache-Control", "no-cache"),
+                    ("Accept-Ranges", "bytes"),
+                    ("Content-Range", "bytes 0-3/16"),
+                    ("Set-Cookie", "drop=1"),
+                ],
+                b"RIFF",
+            ),
         }
         self.backend = ThreadingHTTPServer(("127.0.0.1", 0), FakeBackendHandler)
         self.backend_thread = threading.Thread(target=self.backend.serve_forever, daemon=True)
@@ -352,6 +367,7 @@ class BridgeHTTPTests(unittest.TestCase):
                 "If-None-Match": '"abc"',
                 "Authorization": "drop-this",
                 "Cookie": "drop-this-too",
+                "Range": "bytes=0-3",
                 "X-Unrelated": "drop",
             },
         )
@@ -374,6 +390,7 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(backend_headers["if-none-match"], '"abc"')
         self.assertNotIn("authorization", backend_headers)
         self.assertNotIn("cookie", backend_headers)
+        self.assertNotIn("range", backend_headers)
         self.assertNotIn("x-unrelated", backend_headers)
 
     def test_head_uses_the_scrubbed_representation_without_a_body(self):
@@ -392,6 +409,28 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(headers["ETag"], '"abc"')
         self.assertEqual(headers["Cache-Control"], "no-cache")
         self.assertNotIn("Set-Cookie", headers)
+
+    def test_audio_range_is_forwarded_and_partial_headers_survive(self):
+        status, headers, payload = self.request(
+            "GET",
+            "/whale-learning-reference.wav",
+            headers={
+                "Range": "bytes=0-3",
+                "Authorization": "drop-this",
+            },
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(payload, b"RIFF")
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertEqual(headers["Content-Range"], "bytes 0-3/16")
+        self.assertEqual(int(headers["Content-Length"]), 4)
+        self.assertNotIn("Set-Cookie", headers)
+
+        record = FakeBackendHandler.records[-1]
+        backend_headers = record["headers"]
+        self.assertEqual(record["path"], "/whale-learning-reference.wav")
+        self.assertEqual(backend_headers["range"], "bytes=0-3")
+        self.assertNotIn("authorization", backend_headers)
 
     def test_invalid_backend_json_is_not_forwarded(self):
         status, headers, payload = self.request("GET", "/api/v1/replay")

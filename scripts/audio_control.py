@@ -113,6 +113,7 @@ MAX_DEPLOY_RECEIPT_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 4096
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
+MAX_RANGE_HEADER_BYTES = 128
 MAX_STATIC_BYTES = 1_048_576
 MAX_SUBPROCESS_OUTPUT_BYTES = 1_048_576
 MAX_CONCURRENT_REQUESTS = 12
@@ -493,6 +494,44 @@ def read_static_file(filename: str) -> bytes:
         return body
     finally:
         os.close(descriptor)
+
+
+def parse_single_byte_range(value: str, total_length: int) -> tuple[int, int]:
+    """Parse one RFC 9110-style bytes range for a bounded static payload."""
+
+    if (
+        total_length <= 0
+        or len(value.encode("latin-1", errors="replace")) > MAX_RANGE_HEADER_BYTES
+        or any(character in value for character in "\r\n\0")
+        or not value.startswith("bytes=")
+    ):
+        raise ValueError("invalid byte range")
+    specification = value[6:]
+    if "," in specification or specification.count("-") != 1:
+        raise ValueError("multiple or malformed byte ranges are not supported")
+    start_text, end_text = specification.split("-", 1)
+
+    def decimal(text: str) -> int:
+        if not text or not text.isascii() or not text.isdigit():
+            raise ValueError("invalid byte range number")
+        return int(text, 10)
+
+    if not start_text:
+        suffix_length = decimal(end_text)
+        if suffix_length <= 0:
+            raise ValueError("empty suffix range")
+        start = max(0, total_length - suffix_length)
+        return start, total_length - 1
+
+    start = decimal(start_text)
+    if start >= total_length:
+        raise ValueError("range starts beyond payload")
+    if not end_text:
+        return start, total_length - 1
+    end = decimal(end_text)
+    if end < start:
+        raise ValueError("range end precedes start")
+    return start, min(end, total_length - 1)
 
 
 def bounded_port(value: str) -> int:
@@ -1556,6 +1595,8 @@ class AudioControlHandler(BaseHTTPRequestHandler):
         content_length: int,
         cache_control: str = "no-store",
         etag: str | None = None,
+        accept_ranges: str | None = None,
+        content_range: str | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -1584,6 +1625,10 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
         if etag:
             self.send_header("ETag", etag)
+        if accept_ranges:
+            self.send_header("Accept-Ranges", accept_ranges)
+        if content_range:
+            self.send_header("Content-Range", content_range)
         self.end_headers()
 
     def _send_json(
@@ -1675,6 +1720,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             )
             return
         etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+        is_audio = entry[1] == "audio/wav"
         if self.headers.get("If-None-Match") == etag:
             self._send_headers(
                 HTTPStatus.NOT_MODIFIED,
@@ -1682,14 +1728,48 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 content_length=0,
                 cache_control="no-cache",
                 etag=etag,
+                accept_ranges="bytes" if is_audio else None,
             )
             return
+
+        range_values = self.headers.get_all("Range", []) if is_audio else []
+        if range_values:
+            try:
+                if len(range_values) != 1:
+                    raise ValueError("duplicate byte range")
+                start, end = parse_single_byte_range(range_values[0], len(body))
+            except ValueError:
+                self._send_headers(
+                    HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+                    content_type=entry[1],
+                    content_length=0,
+                    cache_control="no-cache",
+                    etag=etag,
+                    accept_ranges="bytes",
+                    content_range=f"bytes */{len(body)}",
+                )
+                return
+            partial = body[start : end + 1]
+            self._send_headers(
+                HTTPStatus.PARTIAL_CONTENT,
+                content_type=entry[1],
+                content_length=len(partial),
+                cache_control="no-cache",
+                etag=etag,
+                accept_ranges="bytes",
+                content_range=f"bytes {start}-{end}/{len(body)}",
+            )
+            if not head_only:
+                self.wfile.write(partial)
+            return
+
         self._send_headers(
             HTTPStatus.OK,
             content_type=entry[1],
             content_length=len(body),
             cache_control="no-cache",
             etag=etag,
+            accept_ranges="bytes" if is_audio else None,
         )
         if not head_only:
             self.wfile.write(body)

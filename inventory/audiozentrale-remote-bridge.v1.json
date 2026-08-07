@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "d55dbadd13a80d7ff2c5db89351344a819e28a93b17eac239170fca8fc4a4398"
+    "sha256": "e363d934c145bbd75fcc36e52f0cae0ad494824dc18e27011eabd62a5a3b5877"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -38,12 +38,14 @@
     ],
     "snapshot_queries": ["", "refresh=1"],
     "profile_plan_pattern": "/api/v1/profiles/{profile_id}/plan",
-    "request_header_forward": ["If-None-Match"],
+    "request_header_forward": ["If-None-Match", "Range"],
     "backend_headers_synthesized": ["Host", "Connection"],
     "response_header_forward": [
       "Content-Type",
       "Cache-Control",
       "ETag",
+      "Accept-Ranges",
+      "Content-Range",
       "Content-Security-Policy",
       "Referrer-Policy",
       "X-Content-Type-Options",
