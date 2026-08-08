@@ -767,9 +767,18 @@ function renderTruth() {
       : "Replay lokal; wirkende Audioaktionen nicht autorisiert";
 }
 
+function directLoopbackControlOrigin() {
+  return Boolean(
+    window.location.protocol === "http:" &&
+      (window.location.hostname === "127.0.0.1" ||
+        window.location.hostname === "localhost"),
+  );
+}
+
 function recordingActionsAllowed() {
   return Boolean(
-    backendAllowed() &&
+    directLoopbackControlOrigin() &&
+      backendAllowed() &&
       state.remoteBridgeProjection !== true &&
       state.snapshot?.capabilities?.recording_control === true &&
       state.snapshot?.recording?.actionable === true &&

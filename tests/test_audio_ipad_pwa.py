@@ -272,6 +272,56 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn("keine native Autorität", self.html)
 
 
+class RecordingMutationBoundaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = read("app.js")
+
+    def test_recording_actions_require_direct_http_loopback_origin(self):
+        helper = self.app.split("function directLoopbackControlOrigin() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn('window.location.protocol === "http:"', helper)
+        self.assertIn('window.location.hostname === "127.0.0.1"', helper)
+        self.assertIn('window.location.hostname === "localhost"', helper)
+        for broadened in ("https:", "::1", "endsWith", "isSecureContext"):
+            with self.subTest(token=broadened):
+                self.assertNotIn(broadened, helper)
+
+        gate = self.app.split("function recordingActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("directLoopbackControlOrigin() &&", gate)
+        self.assertIn("backendAllowed() &&", gate)
+        self.assertIn("state.remoteBridgeProjection !== true", gate)
+        self.assertIn("recording_control === true", gate)
+        self.assertIn("recording?.actionable === true", gate)
+        self.assertIn("action_token.length >= 16", gate)
+
+    def test_read_only_bridge_observation_stays_sticky_for_page_lifetime(self):
+        fetch_block = self.app.split("async function fetchJson(url, options = {}) {", 1)[1].split(
+            "\nfunction showNotice", 1
+        )[0]
+        self.assertIn('response.headers.get("X-Audio-Remote-Bridge") === "read-only-v1"', fetch_block)
+        self.assertIn("state.remoteBridgeProjection = true;", fetch_block)
+        self.assertIn("else if (state.remoteBridgeProjection === null)", fetch_block)
+        self.assertIn("state.remoteBridgeProjection = false;", fetch_block)
+        self.assertLess(
+            fetch_block.index("state.remoteBridgeProjection = true;"),
+            fetch_block.index("state.remoteBridgeProjection = false;"),
+        )
+
+    def test_recording_post_rechecks_the_central_mutation_gate(self):
+        post = self.app.split("async function postRecordingAction(payload) {", 1)[1].split(
+            "\nasync function runRecordingAction", 1
+        )[0]
+        self.assertIn("if (!recordingActionsAllowed())", post)
+        self.assertIn('return fetchJson("/api/v1/actions/recording"', post)
+        self.assertLess(
+            post.index("if (!recordingActionsAllowed())"),
+            post.index('return fetchJson("/api/v1/actions/recording"'),
+        )
+
+
 class FeatureDetectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = read("app.js")
