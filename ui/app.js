@@ -145,6 +145,12 @@ const state = {
   serviceWorkerState: "nicht geprüft",
   appShellReloadPending: false,
   remoteBridgeProjection: null,
+  recordingLibrary: null,
+  recordingLibraryError: null,
+  recordingPlan: null,
+  recordingPlanInput: null,
+  recordingDraft: { name: "voice-take.wav", maximumSeconds: 600 },
+  recordingActionPending: false,
   replay: null,
   replayScenarioId: "normal",
   replayFrameIndex: 0,
@@ -442,8 +448,10 @@ function renderRuntimeMode() {
 
 function syncRemoteControls() {
   const blocked = !backendAllowed();
-  byId("refresh-button").disabled = blocked || state.loading;
-  byId("diagnostic-refresh").disabled = blocked || state.loading;
+  byId("refresh-button").disabled =
+    blocked || state.loading || state.recordingActionPending;
+  byId("diagnostic-refresh").disabled =
+    blocked || state.loading || state.recordingActionPending;
   byId("auto-refresh-toggle").disabled = blocked;
 }
 
@@ -489,6 +497,16 @@ function stopRemoteActivity() {
   state.telemetry = null;
   state.telemetryError = "Im Modus „Lokales Gerät“ wird keine Telemetrie gelesen.";
   state.snapshot = null;
+  state.recordingLibrary = null;
+  state.recordingLibraryError = null;
+  state.recordingPlan = null;
+  state.recordingPlanInput = null;
+  state.recordingActionPending = false;
+  for (const audio of document.querySelectorAll("audio.recording-player")) {
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+  }
   // Kein gelesener Zustand darf als Kennzahl stehen bleiben.
   byId("diagnostic-badge").hidden = true;
   byId("diagnostic-badge").textContent = "0";
@@ -590,8 +608,13 @@ async function fetchJson(url, options = {}) {
     }
     throw new Error("Der lokale Control-Dienst ist nicht erreichbar.");
   }
-  state.remoteBridgeProjection =
-    response.headers.get("X-Audio-Remote-Bridge") === "read-only-v1";
+  if (response.headers.get("X-Audio-Remote-Bridge") === "read-only-v1") {
+    // Fail closed for the page lifetime: a read-only bridge must never become
+    // writable because a later endpoint forgot to repeat the projection header.
+    state.remoteBridgeProjection = true;
+  } else if (state.remoteBridgeProjection === null) {
+    state.remoteBridgeProjection = false;
+  }
   let payload;
   try {
     payload = await response.json();
@@ -653,7 +676,7 @@ function setLoading(loading) {
 }
 
 async function refreshSnapshot(force = false) {
-  if (state.loading || !backendAllowed()) return;
+  if (state.loading || state.recordingActionPending || !backendAllowed()) return;
   setLoading(true);
   try {
     const suffix = force ? "?refresh=1" : "";
@@ -662,6 +685,7 @@ async function refreshSnapshot(force = false) {
     });
     state.snapshot = snapshot;
     clearNotice();
+    await loadRecordingLibrary({ render: false });
     renderAll();
   } catch (error) {
     showNotice(error instanceof Error ? error.message : "Zustand konnte nicht gelesen werden.");
@@ -732,8 +756,283 @@ function renderTruth() {
   const physicalCount = summary.physical_unknown_count || 0;
   byId("truth-physical").textContent = physicalCount ? `${physicalCount} offen` : "belegt";
   byId("truth-physical-detail").textContent = physicalCount ? "Vor-Ort-Nachweise fehlen" : "keine offenen Nachweise";
-  byId("truth-executable").textContent = "read-only";
-  byId("truth-executable-detail").textContent = "Replay lokal; Audioaktionen gesperrt";
+  const recordingWritable = recordingActionsAllowed();
+  byId("truth-executable").textContent = recordingWritable
+    ? "Voice-Recorder"
+    : "read-only";
+  byId("truth-executable-detail").textContent = recordingWritable
+    ? "Nur Plan/Start/Stop/Recovery für den gebundenen Voice-Recorder; Walaktionen bleiben gesperrt"
+    : state.remoteBridgeProjection === true
+      ? "Read-only-Bridge erkannt; keine Audiowirkung"
+      : "Replay lokal; wirkende Audioaktionen nicht autorisiert";
+}
+
+function recordingActionsAllowed() {
+  return Boolean(
+    backendAllowed() &&
+      state.remoteBridgeProjection !== true &&
+      state.snapshot?.capabilities?.recording_control === true &&
+      state.snapshot?.recording?.actionable === true &&
+      typeof state.snapshot?.service?.action_token === "string" &&
+      state.snapshot.service.action_token.length >= 16
+  );
+}
+
+function recordingStatusLabel(value) {
+  return (
+    {
+      idle: "bereit · keine aktive Aufnahme",
+      running: "Aufnahme läuft",
+      completed: "Take finalisiert",
+      "failed-preserved": "fehlgeschlagen · Teilaufnahme erhalten",
+      "recovery-required": "Recovery erforderlich",
+      "identity-mismatch": "Prozessidentität unklar · Recovery erforderlich",
+      unavailable: "nicht lesbar",
+    }[value] || value || "unbekannt"
+  );
+}
+
+function recordingPlanMatchesDraft() {
+  const plan = state.recordingPlan;
+  const input = state.recordingPlanInput;
+  return Boolean(
+    plan?.ready === true &&
+      typeof plan.plan_sha256 === "string" &&
+      input?.name === state.recordingDraft.name &&
+      input?.maximumSeconds === state.recordingDraft.maximumSeconds
+  );
+}
+
+async function postRecordingAction(payload) {
+  if (!recordingActionsAllowed()) {
+    throw new Error(
+      state.remoteBridgeProjection === true
+        ? "Die aktuelle Verbindung ist ausdrücklich read-only."
+        : "Der lokale Voice-Recorder ist nicht für Aktionen freigeschaltet.",
+    );
+  }
+  return fetchJson("/api/v1/actions/recording", {
+    method: "POST",
+    timeoutMs: 55000,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Audio-Control-Token": state.snapshot.service.action_token,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+async function runRecordingAction(payload) {
+  if (state.recordingActionPending) return;
+  state.recordingActionPending = true;
+  syncRemoteControls();
+  renderActiveLanes();
+  try {
+    const result = await postRecordingAction(payload);
+    if (result.operation === "plan") {
+      state.recordingPlan = result.plan;
+      state.recordingPlanInput = {
+        name: state.recordingDraft.name,
+        maximumSeconds: state.recordingDraft.maximumSeconds,
+      };
+      const blockers = result.plan?.readiness?.blockers || [];
+      showNotice(
+        result.plan?.ready
+          ? "Voice-Plan ist vollständig gebunden und startbereit."
+          : `Voice-Plan bleibt blockiert (${blockers.length} Gate${blockers.length === 1 ? "" : "s"}).`,
+        result.plan?.ready ? "success" : "info",
+      );
+    } else {
+      if (result.snapshot?.kind !== "audio_control_snapshot") {
+        throw new Error("Recorderaktion lieferte keinen autoritativen Readback.");
+      }
+      state.snapshot = result.snapshot;
+      state.recordingPlan = null;
+      state.recordingPlanInput = null;
+      await loadRecordingLibrary({ render: false });
+      showNotice(
+        {
+          start: "Aufnahme läuft; der Start wurde durch Recorder-Readback bestätigt.",
+          stop: "Take wurde gestoppt und Recorder-Readback bestätigt.",
+          recover: "Recovery wurde ausgeführt und Recorder-Readback bestätigt.",
+        }[result.operation] || "Recorderaktion bestätigt.",
+        "success",
+      );
+    }
+  } catch (error) {
+    showNotice(
+      error instanceof Error ? error.message : "Recorderaktion wurde abgewiesen.",
+    );
+  } finally {
+    state.recordingActionPending = false;
+    syncRemoteControls();
+    if (state.snapshot) renderAll();
+  }
+}
+
+function renderRecordingControls(card, recording) {
+  const contract = recording.contract || {};
+  const source = contract.source || {};
+  const monitoring = contract.monitoring || {};
+  const levels = contract.levels || {};
+  const session = recording.session || null;
+  const controls = element("section", "recording-controls");
+  controls.setAttribute("aria-label", "Voice-Aufnahme");
+  appendText(controls, "p", "eyebrow", "Voice-Recorder");
+  appendText(
+    controls,
+    "strong",
+    "",
+    recordingStatusLabel(recording.status),
+  );
+
+  const facts = element("dl", "truth-list recording-truth");
+  detailRow(
+    facts,
+    "Quelle",
+    `${source.interface || "MOTU M2"} + ${source.microphone || "RØDE NT1-A"} · ${source.sample_rate_hz || 48000} Hz`,
+  );
+  detailRow(
+    facts,
+    "Monitoring",
+    monitoring.mode === "hardware-direct"
+      ? "MOTU Hardware-Direct · Software-Loopback aus · Latenz minimal erwartet, nicht softwaregemessen"
+      : "Monitoring nicht gebunden",
+  );
+  detailRow(
+    facts,
+    "Pegelziel",
+    Array.isArray(levels.typical_average_dbfs_range) && Array.isArray(levels.peak_dbfs_range)
+      ? `Ø ${levels.typical_average_dbfs_range.join("…")} dBFS · Peaks ${levels.peak_dbfs_range.join("…")} dBFS · Referenzziel, kein Live-Messwert`
+      : "Referenzpegel nicht lesbar",
+  );
+  if (session) {
+    const physical = session.physical || {};
+    detailRow(
+      facts,
+      "Vor-Ort-Gates",
+      `RØDE ${physical.rode_nt1a_connected === true ? "✓" : "offen"} · Eingang ${physical.rode_nt1a_motu_input || "offen"} · 48 V ${physical.motu_phantom_48v || "offen"} · Gain ${physical.motu_input_gain_reference ? "✓" : "offen"} · Pegel-Gate ${session.laboratory?.voice_level_measurement ? "✓" : "offen"}`,
+    );
+    detailRow(facts, "Plan", shortRevision(session.plan_sha256));
+  }
+  controls.append(facts);
+
+  const writable = recordingActionsAllowed();
+  const active = session?.active === true;
+  const draft = element("div", "recording-draft");
+  const nameLabel = element("label", "recording-field");
+  appendText(nameLabel, "span", "", "Take-Name");
+  const nameInput = element("input", "recording-input");
+  nameInput.type = "text";
+  nameInput.autocomplete = "off";
+  nameInput.spellcheck = false;
+  nameInput.maxLength = 128;
+  nameInput.value = state.recordingDraft.name;
+  nameInput.disabled = !writable || active || state.recordingActionPending;
+  nameLabel.append(nameInput);
+  const durationLabel = element("label", "recording-field");
+  appendText(durationLabel, "span", "", "Maximale Dauer (Sekunden)");
+  const durationInput = element("input", "recording-input");
+  durationInput.type = "number";
+  durationInput.min = String(contract.capture?.minimum_duration_seconds || 1);
+  durationInput.max = String(contract.capture?.maximum_duration_seconds || 14400);
+  durationInput.step = "1";
+  durationInput.value = String(state.recordingDraft.maximumSeconds);
+  durationInput.disabled = !writable || active || state.recordingActionPending;
+  durationLabel.append(durationInput);
+  draft.append(nameLabel, durationLabel);
+  controls.append(draft);
+
+  const actionRow = element("div", "recording-actions");
+  const planButton = element("button", "secondary-button", "Plan prüfen");
+  const startButton = element("button", "primary-button", "Aufnahme starten");
+  const stopButton = element("button", "secondary-button", "Stop");
+  const recoverButton = element("button", "secondary-button", "Recovery");
+  for (const button of [planButton, startButton, stopButton, recoverButton]) button.type = "button";
+  planButton.disabled = !writable || active || state.recordingActionPending;
+  startButton.disabled =
+    !writable || active || state.recordingActionPending || !recordingPlanMatchesDraft();
+  stopButton.disabled = !writable || !active || state.recordingActionPending;
+  recoverButton.disabled =
+    !writable ||
+    state.recordingActionPending ||
+    !(session?.recovery_required === true || session?.cleanup_required === true);
+
+  const invalidatePlan = () => {
+    const parsedDuration = Number.parseInt(durationInput.value, 10);
+    state.recordingDraft = {
+      name: nameInput.value,
+      maximumSeconds: Number.isInteger(parsedDuration) ? parsedDuration : 0,
+    };
+    state.recordingPlan = null;
+    state.recordingPlanInput = null;
+    startButton.disabled = true;
+  };
+  nameInput.addEventListener("input", invalidatePlan);
+  durationInput.addEventListener("input", invalidatePlan);
+  planButton.addEventListener("click", () => {
+    invalidatePlan();
+    runRecordingAction({
+      operation: "plan",
+      name: state.recordingDraft.name,
+      maximum_seconds: state.recordingDraft.maximumSeconds,
+    });
+  });
+  startButton.addEventListener("click", () => {
+    if (!recordingPlanMatchesDraft()) return;
+    runRecordingAction({
+      operation: "start",
+      name: state.recordingDraft.name,
+      maximum_seconds: state.recordingDraft.maximumSeconds,
+      expected_plan_sha256: state.recordingPlan.plan_sha256,
+    });
+  });
+  stopButton.addEventListener("click", () =>
+    runRecordingAction({ operation: "stop", session_id: session?.session_id }),
+  );
+  recoverButton.addEventListener("click", () =>
+    runRecordingAction({ operation: "recover", session_id: session?.session_id }),
+  );
+  actionRow.append(planButton, startButton, stopButton, recoverButton);
+  controls.append(actionRow);
+
+  if (state.recordingPlan) {
+    const plan = state.recordingPlan;
+    appendText(
+      controls,
+      "p",
+      plan.ready ? "recording-plan ready" : "recording-plan",
+      plan.ready
+        ? `Plan ${shortRevision(plan.plan_sha256)} · Quelle gebunden · alle Start-Gates erfüllt`
+        : `Plan blockiert: ${(plan.readiness?.blockers || []).join(" · ") || "unbekanntes Gate"}`,
+    );
+  }
+  if (!writable) {
+    appendText(
+      controls,
+      "p",
+      "read-only-boundary",
+      state.remoteBridgeProjection === true
+        ? "Diese Verbindung ist eine verifizierte Read-only-Bridge. Recorderaktionen bleiben lokal gesperrt."
+        : "Recorderaktionen sind nur am autoritativen lokalen Backend mit Aktionstoken möglich.",
+    );
+  }
+  card.append(controls);
+}
+
+async function loadRecordingLibrary({ render = true } = {}) {
+  if (!backendAllowed()) return;
+  try {
+    state.recordingLibrary = await fetchJson("/api/v1/recordings", {
+      timeoutMs: 15000,
+    });
+    state.recordingLibraryError = null;
+  } catch (error) {
+    state.recordingLibrary = null;
+    state.recordingLibraryError =
+      error instanceof Error ? error.message : "Recorderbibliothek ist nicht lesbar.";
+  }
+  if (render && state.snapshot) renderLibrary();
 }
 
 function renderActiveLanes() {
@@ -762,9 +1061,16 @@ function renderActiveLanes() {
       name: "Aufnehmen",
       path: "MOTU M2 → unveränderlicher Take",
       observed: snapshot.presence?.observed?.motu_m2 ? "MOTU beobachtet" : "MOTU nicht beobachtet",
-      configured: recording.status || "geplant",
-      physical: snapshot.presence?.observed?.rode_nt1a ? "RØDE beobachtet" : "Mikrofon offen",
-      executable: "Recorder folgt in T022",
+      configured: recordingStatusLabel(recording.status),
+      physical: recording.session?.physical?.rode_nt1a_connected === true
+        ? "RØDE + Voice-Gates im Recorderplan belegt"
+        : "Mikrofon-/48-V-/Gain-/Pegel-Gates im Plan zu belegen",
+      executable: recordingActionsAllowed()
+        ? "Voice Plan/Start/Stop/Recovery"
+        : state.remoteBridgeProjection === true
+          ? "Read-only-Bridge"
+          : "fail-closed",
+      kind: "recording",
     },
   ];
   byId("now-signal-lanes").replaceChildren(
@@ -778,6 +1084,7 @@ function renderActiveLanes() {
       detailRow(list, "Physisch offen", lane.physical);
       detailRow(list, "Ausführbar", lane.executable);
       card.append(list);
+      if (lane.kind === "recording") renderRecordingControls(card, recording);
       return card;
     }),
   );
@@ -1081,7 +1388,12 @@ function renderProfiles() {
   const boundary = byId("recording-boundary");
   boundary.replaceChildren();
   appendText(boundary, "strong", "", "Aufnahmepfad");
-  appendText(boundary, "p", "", recording.detail);
+  appendText(
+    boundary,
+    "p",
+    "",
+    `${recording.detail} Aktuell: ${recordingStatusLabel(recording.status)}.`,
+  );
 
   const listening = profilesFor("listening");
   const listeningStat = byId("listen-intro-stat");
@@ -1256,33 +1568,105 @@ function closeDialog() {
 
 function renderLibrary() {
   const recording = state.snapshot.recording || {};
+  const library = state.recordingLibrary;
   const target = byId("library-takes");
-  const cards = [
-    {
-      label: "Takes",
-      value: "0 produktive Takes",
-      detail: recording.detail || "Recorder folgt in T022.",
-    },
-    {
-      label: "Unveränderlichkeit",
-      value: "gebunden",
-      detail: "Ein späterer Schnitt oder Loop erzeugt ein neues Objekt.",
-    },
-    {
-      label: "Klangzustände",
-      value: `${state.snapshot.whale?.contract?.modes?.length || 0} Walmodi`,
-      detail: "Konfigurationen sind sichtbar, aber nicht aus dieser Ansicht anwendbar.",
-    },
-  ];
-  target.replaceChildren(
-    ...cards.map((item) => {
-      const card = element("article", "metric-card");
-      appendText(card, "p", "eyebrow", item.label);
-      appendText(card, "strong", "", item.value);
-      appendText(card, "span", "", item.detail);
-      return card;
-    }),
+  const items = Array.isArray(library?.items) ? library.items : [];
+  const cards = [];
+
+  const summary = element("article", "metric-card");
+  appendText(summary, "p", "eyebrow", "Takes");
+  appendText(
+    summary,
+    "strong",
+    "",
+    library ? `${items.length} Voice-Take${items.length === 1 ? "" : "s"}` : "nicht lesbar",
   );
+  appendText(
+    summary,
+    "span",
+    "",
+    state.recordingLibraryError ||
+      "Metadaten sind receipt-gebunden; Audiodaten werden erst beim Abspielen erneut vollständig verifiziert.",
+  );
+  cards.push(summary);
+
+  const immutable = element("article", "metric-card");
+  appendText(immutable, "p", "eyebrow", "Unveränderlichkeit");
+  appendText(immutable, "strong", "", "no-replace + SHA-256");
+  appendText(
+    immutable,
+    "span",
+    "",
+    "Stop finalisiert ohne Überschreiben. Geräteverlust bleibt explizit recoverbar statt still verworfen zu werden.",
+  );
+  cards.push(immutable);
+
+  for (const item of items) {
+    const card = element("article", "profile-card recording-take");
+    const top = element("div", "card-topline");
+    appendText(top, "span", "card-glyph", "●").setAttribute("aria-hidden", "true");
+    appendText(
+      top,
+      "span",
+      `status-pill ${item.status === "completed" ? "ready" : item.recovery_required ? "laboratory" : ""}`,
+      recordingStatusLabel(item.status),
+    );
+    card.append(top);
+    appendText(card, "h3", "", item.name || `Take ${shortRevision(item.session_id)}`);
+    const meta = element("dl", "truth-list");
+    detailRow(meta, "Erstellt", formatDateTime(item.created_at));
+    detailRow(meta, "Session", shortRevision(item.session_id));
+    detailRow(meta, "Plan", shortRevision(item.plan_sha256));
+    detailRow(
+      meta,
+      "Quelle",
+      item.source?.bound
+        ? `gebunden · ${item.source.sample_rate_hz || 48000} Hz · ${item.source.channels || 2} Kanäle`
+        : "nicht gebunden",
+    );
+    if (item.result?.artifact) {
+      const artifact = item.result.artifact;
+      detailRow(meta, "Dauer", `${Number(artifact.duration_seconds).toFixed(2)} s`);
+      detailRow(meta, "Take-SHA", shortRevision(artifact.sha256));
+    }
+    card.append(meta);
+    if (item.status === "completed" && typeof item.audio_url === "string") {
+      const audio = element("audio", "recording-player");
+      audio.controls = true;
+      audio.preload = "none";
+      audio.src = item.audio_url;
+      audio.setAttribute(
+        "aria-label",
+        `Verifizierten Take ${item.name || shortRevision(item.session_id)} abspielen`,
+      );
+      card.append(audio);
+      appendText(
+        card,
+        "small",
+        "",
+        "Wiedergabe: Backend hasht den aktuell geöffneten finalen Take erneut; keine Browser-Mikrofonaufnahme.",
+      );
+    }
+    if (item.recovery_required === true || item.cleanup_required === true) {
+      const recover = element("button", "secondary-button", "Recovery");
+      recover.type = "button";
+      recover.disabled = !recordingActionsAllowed() || state.recordingActionPending;
+      recover.addEventListener("click", () =>
+        runRecordingAction({ operation: "recover", session_id: item.session_id }),
+      );
+      card.append(recover);
+    }
+    cards.push(card);
+  }
+
+  if (!library && !state.recordingLibraryError) {
+    const pending = element("article", "metric-card");
+    appendText(pending, "p", "eyebrow", "Recorderbibliothek");
+    appendText(pending, "strong", "", recordingStatusLabel(recording.status));
+    appendText(pending, "span", "", "Bibliothek wird beim nächsten Backend-Readback geladen.");
+    cards.push(pending);
+  }
+  target.replaceChildren(...cards);
 }
 
 async function loadReplay() {
