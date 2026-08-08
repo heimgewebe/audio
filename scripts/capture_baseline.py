@@ -19,6 +19,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -327,10 +328,19 @@ def pipewire_projection(hostname: str, username: str) -> list[dict[str, Any]]:
 def write_json(path: Path, payload: dict[str, Any], mode: int) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_bytes(encoded)
-    os.chmod(temporary, mode)
-    os.replace(temporary, path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return sha256_bytes(encoded)
 
 

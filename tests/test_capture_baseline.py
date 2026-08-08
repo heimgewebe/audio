@@ -75,6 +75,21 @@ class CaptureBaselineTests(unittest.TestCase):
             self.assertEqual(len(digest), 64)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_write_json_does_not_follow_predictable_temporary_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "receipt.json"
+            victim = root / "victim.txt"
+            victim.write_text("keep-me", encoding="utf-8")
+            legacy_temporary = path.with_suffix(path.suffix + ".tmp")
+            legacy_temporary.symlink_to(victim)
+
+            MODULE.write_json(path, {"ok": True}, 0o600)
+
+            self.assertEqual(victim.read_text(encoding="utf-8"), "keep-me")
+            self.assertTrue(legacy_temporary.is_symlink())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()
