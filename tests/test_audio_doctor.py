@@ -1,6 +1,8 @@
 import importlib.util
+import os
 import pathlib
 import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -135,6 +137,47 @@ class AudioDoctorTests(unittest.TestCase):
                 MODULE.os.environ.pop("USER", None)
             else:
                 MODULE.os.environ["USER"] = original
+
+    def test_atomic_output_is_private_and_preserves_existing_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            output = root / "doctor.json"
+            MODULE.atomic_write_output(output, '{"ok": true}\n')
+            self.assertEqual(output.read_text(encoding="utf-8"), '{"ok": true}\n')
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+            os.chmod(output, 0o640)
+            MODULE.atomic_write_output(output, '{"ok": false}\n')
+            self.assertEqual(output.read_text(encoding="utf-8"), '{"ok": false}\n')
+            self.assertEqual(output.stat().st_mode & 0o777, 0o640)
+
+    def test_atomic_output_refuses_symlink_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            victim = root / "victim.json"
+            victim.write_text("keep", encoding="utf-8")
+            output = root / "doctor.json"
+            output.symlink_to(victim)
+
+            with self.assertRaisesRegex(OSError, "not a regular file"):
+                MODULE.atomic_write_output(output, '{"ok": true}\n')
+
+            self.assertEqual(victim.read_text(encoding="utf-8"), "keep")
+            self.assertTrue(output.is_symlink())
+
+    def test_atomic_output_refuses_symlink_anywhere_in_parent_chain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            real = root / "real"
+            nested = real / "nested"
+            nested.mkdir(parents=True)
+            linked = root / "linked"
+            linked.symlink_to(real, target_is_directory=True)
+
+            with self.assertRaises(OSError):
+                MODULE.atomic_write_output(linked / "nested" / "doctor.json", '{}\n')
+
+            self.assertFalse((nested / "doctor.json").exists())
 
     def test_physical_unknowns_come_from_contract(self):
         unknowns = MODULE.physical_unknowns()

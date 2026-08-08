@@ -9,6 +9,8 @@ import json
 import os
 import pathlib
 import re
+import secrets
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -357,6 +359,86 @@ def build_report(
     }
 
 
+def absolute_without_resolution(path: pathlib.Path) -> pathlib.Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        expanded = pathlib.Path.cwd() / expanded
+    if any(part in {"", ".", ".."} for part in expanded.parts[1:]):
+        raise OSError(f"unsafe output path component: {path}")
+    return expanded
+
+
+def open_directory_chain(
+    path: pathlib.Path, *, create: bool = False
+) -> tuple[pathlib.Path, int]:
+    absolute = absolute_without_resolution(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    descriptor = os.open("/", flags)
+    try:
+        for component in absolute.parts[1:]:
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(component, 0o700, dir_fd=descriptor)
+                child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return absolute, descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def atomic_write_output(path: pathlib.Path, payload: str) -> None:
+    absolute = absolute_without_resolution(path)
+    encoded = payload.encode("utf-8")
+    _, parent_fd = open_directory_chain(absolute.parent, create=True)
+    temporary_name = f".{absolute.name}.{secrets.token_hex(12)}.tmp"
+    descriptor = -1
+    try:
+        mode = 0o600
+        try:
+            existing = os.stat(absolute.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if not stat.S_ISREG(existing.st_mode):
+                raise OSError(f"output path is not a regular file: {path}")
+            mode = stat.S_IMODE(existing.st_mode)
+
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            mode,
+            dir_fd=parent_fd,
+        )
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(
+            temporary_name,
+            absolute.name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.fsync(parent_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        os.close(parent_fd)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=pathlib.Path)
@@ -370,8 +452,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     encoded = redact(encoded)
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(encoded)
+        atomic_write_output(args.output, encoded)
     else:
         sys.stdout.write(encoded)
     return 0
