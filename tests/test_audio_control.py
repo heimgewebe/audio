@@ -170,6 +170,35 @@ class FakeRunner:
                     "proposed_changes": [],
                 },
             )
+        if script == "recording_product.py":
+            operation = argv[2]
+            if operation == "probe":
+                return self.result(
+                    argv,
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_recording_product_probe",
+                        "status": "idle",
+                        "active_session_id": None,
+                        "session": None,
+                        "read_only": True,
+                    },
+                )
+            if operation == "library":
+                return self.result(
+                    argv,
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_recording_product_library",
+                        "items": [],
+                        "count": 0,
+                        "skipped_invalid": 0,
+                        "truncated": False,
+                        "read_only": True,
+                    },
+                )
+        if script == "audio-record" and argv[2] == "init":
+            return self.result(argv, {"schema_version": 1, "status": "ready"})
         if script == "whale_live.py":
             operation = argv[2]
             if operation == "status":
@@ -237,6 +266,9 @@ class SequenceSystemdRunner:
                     "AUDIO_CONTROL_MANAGED_BY=audio-control-ui-v1\n"
                 )
             return MODULE.CommandResult(tuple(argv), 0, stdout, "")
+        script = pathlib.Path(argv[1]).name if len(argv) > 1 else ""
+        if script == "audio-record" and argv[2] == "init":
+            return MODULE.CommandResult(tuple(argv), 0, "{}", "")
         if argv[0] == "systemd-run":
             return MODULE.CommandResult(tuple(argv), 0, "", "")
         raise AssertionError(f"unexpected command: {argv!r}")
@@ -428,9 +460,12 @@ class AudioControlTests(unittest.TestCase):
             MODULE.SPEC_BASE_REVISION,
         )
         self.assertFalse(snapshot["capabilities"]["profile_apply"])
-        self.assertFalse(snapshot["capabilities"]["recording_control"])
+        self.assertTrue(snapshot["capabilities"]["recording_control"])
         self.assertFalse(snapshot["capabilities"]["dauersong_control"])
-        self.assertEqual(snapshot["recording"]["status"], "planned-not-executable")
+        self.assertEqual(snapshot["recording"]["status"], "idle")
+        self.assertEqual(snapshot["recording"]["contract"]["profile"], "voice-recording")
+        self.assertEqual(snapshot["recording"]["contract"]["source"]["kind"], "motu-voice")
+        self.assertEqual(snapshot["recording"]["contract"]["monitoring"]["mode"], "hardware-direct")
         self.assertEqual(snapshot["dauersong"]["status"], "planned-not-executable")
         self.assertEqual(len(snapshot["profiles"]), 10)
         self.assertFalse(snapshot["summary"]["active_whale"])
@@ -892,6 +927,10 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("NoNewPrivileges=yes", command)
         self.assertIn("ProtectSystem=strict", command)
         self.assertIn("ProtectHome=read-only", command)
+        self.assertIn(
+            f"ReadWritePaths={MODULE.RECORDING_OUTPUT_ROOT} {MODULE.RECORDING_STATE_ROOT}",
+            command,
+        )
         self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET", command)
         self.assertNotIn("ProtectKernelModules=yes", command)
         self.assertIn("--service-type", command)
@@ -1130,7 +1169,9 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('id="whale-learning-lesson"', html)
         self.assertIn('"snapshot_busy"', javascript)
         self.assertIn("Backend beschäftigt", javascript)
-        self.assertNotIn("/api/v1/actions/", javascript)
+        self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 1)
+        self.assertNotIn("/api/v1/actions/whale", javascript)
 
     def test_static_surface_prioritizes_compact_functional_controls(self):
         html = (ROOT / "ui" / "index.html").read_text()
@@ -1182,7 +1223,9 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn("state.actionPending", policy)
         self.assertNotIn("runWhaleAction", javascript)
         self.assertNotIn("WHALE_ACTION_TIMEOUT_MS", javascript)
-        self.assertNotIn("/api/v1/actions/", javascript)
+        self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 1)
+        self.assertNotIn("/api/v1/actions/whale", javascript)
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
 

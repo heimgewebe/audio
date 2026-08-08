@@ -2515,3 +2515,82 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
     font-size: 16px;
   }
 }
+
+
+/* Voice recorder product controls: T022. */
+.recording-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.recording-truth {
+  margin: 0;
+}
+
+.recording-draft {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(140px, 0.6fr);
+  gap: 8px;
+}
+
+.recording-field {
+  display: grid;
+  gap: 5px;
+  color: var(--muted-bright);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.recording-input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  background: var(--panel-soft);
+}
+
+.recording-input:disabled {
+  color: var(--muted);
+  opacity: 0.72;
+}
+
+.recording-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.recording-plan {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(225, 185, 104, 0.28);
+  border-radius: var(--radius-sm);
+  color: var(--amber);
+  background: rgba(225, 185, 104, 0.06);
+}
+
+.recording-plan.ready {
+  border-color: var(--mint-border);
+  color: var(--mint-strong);
+  background: rgba(185, 230, 181, 0.05);
+}
+
+.recording-take {
+  align-content: start;
+}
+
+.recording-player {
+  width: 100%;
+  margin-top: 10px;
+}
+
+@media (max-width: 680px) {
+  .recording-draft {
+    grid-template-columns: 1fr;
+  }
+}

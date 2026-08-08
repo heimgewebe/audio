@@ -12,6 +12,7 @@ import ipaddress
 import json
 import os
 import pathlib
+import re
 import secrets
 import selectors
 import signal
@@ -37,6 +38,10 @@ PLANNER_SCRIPT = ROOT / "scripts" / "profile_planner.py"
 REPLAY_SCRIPT = ROOT / "scripts" / "audio_telemetry_replay.py"
 WHALE_LESSON_SCRIPT = ROOT / "scripts" / "whale_learning_lesson.py"
 LIVE_TELEMETRY_SCRIPT = ROOT / "scripts" / "audio_live_telemetry.py"
+RECORDING_SCRIPT = ROOT / "scripts" / "audio-record"
+RECORDING_PRODUCT_SCRIPT = ROOT / "scripts" / "recording_product.py"
+RECORDING_CATALOG = ROOT / "profiles" / "recording-sessions.v1.json"
+REFERENCE_LEVELS = ROOT / "profiles" / "reference-levels.v1.json"
 _REPLAY_SPEC = importlib.util.spec_from_file_location(
     "audio_control_telemetry_replay", REPLAY_SCRIPT
 )
@@ -109,6 +114,17 @@ DEFAULT_CACHE_SECONDS = 4.0
 RELEASE_MARKER = ROOT / ".audio-control-release.json"
 DEPLOY_STATE_ROOT = pathlib.Path.home() / ".local" / "state" / "audio-control-deploy"
 DEPLOY_LATEST = DEPLOY_STATE_ROOT / "latest.json"
+RECORDING_OUTPUT_ROOT = pathlib.Path(
+    os.environ.get("AUDIO_RECORDING_ROOT", str(pathlib.Path.home() / "Music" / "Audio-Aufnahmen"))
+).expanduser()
+RECORDING_STATE_ROOT = (
+    pathlib.Path(
+        os.environ.get("XDG_STATE_HOME", str(pathlib.Path.home() / ".local" / "state"))
+    ).expanduser()
+    / "audio"
+    / "recordings-v1"
+)
+RECORDING_SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
 MAX_DEPLOY_RECEIPT_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 4096
 MAX_REQUEST_LINE_BYTES = 2048
@@ -406,6 +422,283 @@ def validate_profile_plan(
     planned_blocker = report.get("planned_blocker")
     if planned_blocker is not None and not isinstance(planned_blocker, str):
         raise ControlError("Profilplan-Feld planned_blocker ist ungültig.")
+
+
+def read_voice_recording_contract() -> dict[str, Any]:
+    catalog = load_json_object(RECORDING_CATALOG)
+    if (
+        catalog.get("schema_version") != 1
+        or catalog.get("kind") != "audio_recording_session_catalog"
+    ):
+        raise ControlError("Recorderkatalog enthält einen fremden Vertrag.")
+    sessions = require_mapping(catalog.get("sessions"), label="Recorderkatalog sessions")
+    voice = require_mapping(sessions.get("voice-recording"), label="Recorderprofil Stimme")
+    capture = require_mapping(voice.get("capture"), label="Recorderprofil capture")
+    source = require_mapping(voice.get("source"), label="Recorderprofil source")
+    monitoring = require_mapping(voice.get("monitoring"), label="Recorderprofil monitoring")
+    physical = require_mapping(
+        voice.get("required_physical_facts"), label="Recorderprofil physical"
+    )
+    laboratory = require_list(
+        voice.get("required_laboratory_gates"), label="Recorderprofil laboratory"
+    )
+    expected_physical = {
+        "rode_nt1a_connected": True,
+        "rode_nt1a_motu_input": ["input-1", "input-2"],
+        "motu_phantom_48v": "on",
+        "motu_input_gain_reference": "non-empty-string",
+    }
+    if (
+        voice.get("profile") != "voice-recording"
+        or physical != expected_physical
+        or laboratory != ["voice-level-measurement"]
+        or source.get("kind") != "motu-voice"
+        or source.get("vendor_id") != "07fd"
+        or source.get("product_id") != "0008"
+        or source.get("required_sample_rate_hz") != 48_000
+        or source.get("required_channels") != 2
+        or source.get("requires_unmuted") is not True
+        or source.get("requires_unity_volume") is not True
+        or monitoring.get("mode") != "hardware-direct"
+        or monitoring.get("endpoint") != "motu-m2"
+        or monitoring.get("software_loopback") is not False
+        or monitoring.get("level_claim") != "physical-reference-required"
+        or capture.get("sample_rate_hz") != 48_000
+        or capture.get("sample_format") != "s32le"
+        or capture.get("channels") != 2
+        or capture.get("container") != "wav"
+    ):
+        raise ControlError("Recorderprofil verletzt den Voice-Vertrag.")
+    levels = load_json_object(REFERENCE_LEVELS)
+    recording_levels = require_mapping(
+        levels.get("recording"), label="Referenzpegel recording"
+    )
+    typical = recording_levels.get("voice_typical_average_dbfs_range")
+    peak = recording_levels.get("voice_peak_dbfs_range")
+    clipping = recording_levels.get("clipping_limit_dbfs")
+    if (
+        not isinstance(typical, list)
+        or len(typical) != 2
+        or not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in typical)
+        or not isinstance(peak, list)
+        or len(peak) != 2
+        or not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in peak)
+        or not isinstance(clipping, (int, float))
+        or isinstance(clipping, bool)
+    ):
+        raise ControlError("Referenzpegel für Sprachaufnahme sind unvollständig.")
+    return {
+        "session_type": "voice-recording",
+        "profile": "voice-recording",
+        "source": {
+            "kind": "motu-voice",
+            "interface": "MOTU M2",
+            "microphone": "RØDE NT1-A",
+            "sample_rate_hz": capture["sample_rate_hz"],
+            "sample_format": capture["sample_format"],
+            "channels": capture["channels"],
+        },
+        "monitoring": {
+            "mode": monitoring["mode"],
+            "endpoint": monitoring["endpoint"],
+            "software_loopback": False,
+            "latency_expectation": "hardware-direct-minimal-not-software-measured",
+            "level_claim": monitoring["level_claim"],
+        },
+        "required_physical_facts": expected_physical,
+        "required_laboratory_gates": list(laboratory),
+        "capture": {
+            "container": capture["container"],
+            "sample_rate_hz": capture["sample_rate_hz"],
+            "sample_format": capture["sample_format"],
+            "channels": capture["channels"],
+            "minimum_duration_seconds": capture["minimum_duration_seconds"],
+            "maximum_duration_seconds": capture["maximum_duration_seconds"],
+            "overwrite": False,
+        },
+        "levels": {
+            "typical_average_dbfs_range": typical,
+            "peak_dbfs_range": peak,
+            "clipping_limit_dbfs": clipping,
+            "authority": "reference-targets-not-live-measurement",
+        },
+    }
+
+
+def _valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _validate_recording_session_id(value: Any) -> str:
+    if not isinstance(value, str) or RECORDING_SESSION_ID_RE.fullmatch(value) is None:
+        raise ControlError("Ungültige Recorder-Sitzungs-ID.")
+    return value
+
+
+def _validate_recording_name(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 128
+        or value in {".", ".."}
+        or pathlib.PurePath(value).name != value
+        or "/" in value
+        or chr(92) in value
+        or not value.lower().endswith(".wav")
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ControlError("Take-Name muss ein einzelner sicherer WAV-Dateiname sein.")
+    return value
+
+
+def _validate_recording_duration(value: Any) -> int:
+    maximum = read_voice_recording_contract()["capture"]["maximum_duration_seconds"]
+    minimum = read_voice_recording_contract()["capture"]["minimum_duration_seconds"]
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ControlError(
+            f"Aufnahmedauer muss zwischen {minimum} und {maximum} Sekunden liegen."
+        )
+    return value
+
+
+def _reject_recording_private_paths(value: Any) -> None:
+    if isinstance(value, dict):
+        forbidden = {"path", "root", "state_root", "partial", "final", "process"}
+        if forbidden.intersection(value):
+            raise ControlError("Recorderprojektion enthält private Zustandsfelder.")
+        for nested in value.values():
+            _reject_recording_private_paths(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _reject_recording_private_paths(nested)
+
+
+def validate_recording_product_probe(report: dict[str, Any]) -> None:
+    if (
+        report.get("schema_version") != 1
+        or report.get("kind") != "audio_recording_product_probe"
+        or report.get("read_only") is not True
+        or not isinstance(report.get("status"), str)
+    ):
+        raise ControlError("Recorderprojektion lieferte einen fremden Zustandsvertrag.")
+    active_id = report.get("active_session_id")
+    if active_id is not None:
+        _validate_recording_session_id(active_id)
+    session = report.get("session")
+    if session is not None:
+        if not isinstance(session, dict):
+            raise ControlError("Recorderprojektion enthält keine gültige Sitzung.")
+        _validate_recording_session_id(session.get("session_id"))
+        if session.get("session_type") != "voice-recording" or not _valid_sha256(
+            session.get("plan_sha256")
+        ):
+            raise ControlError("Recorderprojektion ist nicht an Voice und Plan gebunden.")
+    _reject_recording_private_paths(report)
+
+
+def validate_recording_library(report: dict[str, Any]) -> None:
+    if (
+        report.get("schema_version") != 1
+        or report.get("kind") != "audio_recording_product_library"
+        or report.get("read_only") is not True
+        or not isinstance(report.get("items"), list)
+        or isinstance(report.get("count"), bool)
+        or not isinstance(report.get("count"), int)
+        or report.get("count") != len(report["items"])
+    ):
+        raise ControlError("Recorderbibliothek lieferte einen fremden Vertrag.")
+    for item in report["items"]:
+        if not isinstance(item, dict):
+            raise ControlError("Recorderbibliothek enthält einen ungültigen Take.")
+        _validate_recording_session_id(item.get("session_id"))
+        if item.get("session_type") != "voice-recording" or not _valid_sha256(
+            item.get("plan_sha256")
+        ):
+            raise ControlError("Recorderbibliothek enthält einen ungebundenen Take.")
+    _reject_recording_private_paths(report)
+
+
+def project_recording_plan(report: dict[str, Any]) -> dict[str, Any]:
+    if (
+        report.get("schema_version") != 1
+        or report.get("kind") != "audio_recording_plan"
+        or not isinstance(report.get("ready"), bool)
+        or not _valid_sha256(report.get("plan_sha256"))
+    ):
+        raise ControlError("Recorderplan lieferte einen fremden Vertrag.")
+    identity = require_mapping(report.get("identity"), label="Recorderplan identity")
+    if identity.get("session_type") != "voice-recording" or identity.get("profile") != "voice-recording":
+        raise ControlError("Recorderplan ist nicht an das Voice-Setup gebunden.")
+    output = require_mapping(identity.get("output"), label="Recorderplan output")
+    capture = require_mapping(identity.get("capture"), label="Recorderplan capture")
+    physical = require_mapping(identity.get("physical"), label="Recorderplan physical")
+    facts = require_mapping(physical.get("facts", {}), label="Recorderplan physical.facts")
+    laboratory = require_mapping(identity.get("laboratory"), label="Recorderplan laboratory")
+    resolved = require_list(laboratory.get("resolved", []), label="Recorderplan laboratory.resolved")
+    source = require_mapping(identity.get("source"), label="Recorderplan source")
+    source_identity = source.get("identity")
+    if source_identity is not None and not isinstance(source_identity, dict):
+        raise ControlError("Recorderplan enthält keine gültige Quellenbindung.")
+    readiness = require_mapping(report.get("readiness"), label="Recorderplan readiness")
+    blockers = require_list(readiness.get("blockers"), label="Recorderplan blockers")
+    if not all(isinstance(item, str) and item for item in blockers):
+        raise ControlError("Recorderplan enthält ungültige Blocker.")
+    return {
+        "schema_version": 1,
+        "kind": "audio_control_recording_plan",
+        "ready": report["ready"],
+        "plan_sha256": report["plan_sha256"],
+        "output": {"name": output.get("name"), "mode": output.get("mode"), "overwrite": output.get("overwrite")},
+        "capture": {
+            "sample_rate_hz": capture.get("sample_rate_hz"),
+            "sample_format": capture.get("sample_format"),
+            "channels": capture.get("channels"),
+            "container": capture.get("container"),
+            "maximum_duration_seconds": capture.get("maximum_duration_seconds"),
+            "maximum_file_bytes": capture.get("maximum_file_bytes"),
+        },
+        "physical": {
+            "rode_nt1a_connected": facts.get("rode_nt1a_connected"),
+            "rode_nt1a_motu_input": facts.get("rode_nt1a_motu_input"),
+            "motu_phantom_48v": facts.get("motu_phantom_48v"),
+            "motu_input_gain_reference": bool(facts.get("motu_input_gain_reference")),
+        },
+        "laboratory": {"voice_level_measurement": "voice-level-measurement" in resolved},
+        "source": {
+            "bound": isinstance(source_identity, dict),
+            "identity_sha256": source.get("identity_sha256"),
+            "sample_rate_hz": (source_identity or {}).get("sample_rate_hz"),
+            "sample_format": (source_identity or {}).get("sample_format"),
+            "channels": (source_identity or {}).get("channels"),
+        },
+        "monitoring": identity.get("monitoring"),
+        "readiness": {
+            "blockers": blockers,
+            "free_bytes": readiness.get("free_bytes"),
+            "required_file_bytes": readiness.get("required_file_bytes"),
+            "required_free_bytes": readiness.get("required_free_bytes"),
+        },
+        "authority": "backend-plan-hash-and-source-binding",
+    }
+
+
+def validate_recording_media_binding(report: dict[str, Any], session_id: str) -> None:
+    if (
+        report.get("schema_version") != 1
+        or report.get("kind") != "audio_recording_product_media_binding"
+        or report.get("session_id") != session_id
+        or report.get("verified_current") is not True
+        or not isinstance(report.get("path"), str)
+        or not _valid_sha256(report.get("sha256"))
+        or isinstance(report.get("bytes"), bool)
+        or not isinstance(report.get("bytes"), int)
+        or report.get("bytes") <= 44
+        or report.get("mode") != "0600"
+        or isinstance(report.get("device"), bool)
+        or not isinstance(report.get("device"), int)
+        or isinstance(report.get("inode"), bool)
+        or not isinstance(report.get("inode"), int)
+    ):
+        raise ControlError("Take ist nicht als aktuelles unveränderliches Medium gebunden.")
 
 
 def is_loopback_host(value: str) -> bool:
@@ -1106,11 +1399,281 @@ class AudioControl:
         except ControlError as error:
             return "unavailable", {}, str(error)
 
+    def _recording_probe(self) -> tuple[str, dict[str, Any], str | None]:
+        try:
+            result = self.runner.run(
+                [
+                    sys.executable,
+                    str(RECORDING_PRODUCT_SCRIPT),
+                    "probe",
+                    "--state-root",
+                    str(RECORDING_STATE_ROOT),
+                ],
+                timeout=8,
+            )
+            report = parse_json_output(result, label="Recorderzustand")
+            if result.returncode != 0:
+                return (
+                    "unavailable",
+                    {},
+                    safe_error_message(
+                        report, "Recorderzustand ist nicht sicher lesbar."
+                    ),
+                )
+            validate_recording_product_probe(report)
+            return "ok", report, None
+        except ControlError as error:
+            return "unavailable", {}, str(error)
+
+    def recording_library(self, *, limit: int = 24) -> dict[str, Any]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 64:
+            raise ControlError("Bibliothekslimit ist ungültig.")
+        result = self.runner.run(
+            [
+                sys.executable,
+                str(RECORDING_PRODUCT_SCRIPT),
+                "library",
+                "--state-root",
+                str(RECORDING_STATE_ROOT),
+                "--limit",
+                str(limit),
+            ],
+            timeout=10,
+        )
+        report = parse_json_output(result, label="Recorderbibliothek")
+        if result.returncode != 0:
+            raise ControlError(
+                safe_error_message(report, "Recorderbibliothek ist nicht sicher lesbar.")
+            )
+        validate_recording_library(report)
+        projected = json.loads(json.dumps(report))
+        for item in projected["items"]:
+            if item.get("status") == "completed":
+                item["audio_url"] = (
+                    f"/api/{API_VERSION}/recordings/{item['session_id']}/audio"
+                )
+        return projected
+
+    def recording_plan(self, *, name: Any, maximum_seconds: Any) -> dict[str, Any]:
+        safe_name = _validate_recording_name(name)
+        duration = _validate_recording_duration(maximum_seconds)
+        if not self._plan_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere Audio- oder Recorderplanung läuft bereits.")
+        try:
+            result = self.runner.run(
+                [
+                    sys.executable,
+                    str(RECORDING_SCRIPT),
+                    "plan",
+                    safe_name,
+                    "--session-type",
+                    "voice-recording",
+                    "--maximum-seconds",
+                    str(duration),
+                    "--root",
+                    str(RECORDING_OUTPUT_ROOT),
+                    "--state-root",
+                    str(RECORDING_STATE_ROOT),
+                ],
+                timeout=30,
+            )
+            report = parse_json_output(result, label="Recorderplan")
+            if result.returncode != 0:
+                raise ControlError(
+                    safe_error_message(report, "Recorderplan konnte nicht erstellt werden.")
+                )
+            projected = project_recording_plan(report)
+            projected["contract"] = read_voice_recording_contract()
+            return projected
+        finally:
+            self._plan_lock.release()
+
+    def verified_recording_media(self, session_id: Any) -> dict[str, Any]:
+        safe_id = _validate_recording_session_id(session_id)
+        result = self.runner.run(
+            [
+                sys.executable,
+                str(RECORDING_PRODUCT_SCRIPT),
+                "media",
+                "--state-root",
+                str(RECORDING_STATE_ROOT),
+                "--session-id",
+                safe_id,
+            ],
+            timeout=30,
+        )
+        report = parse_json_output(result, label="Take-Readback")
+        if result.returncode != 0:
+            raise ControlError(
+                safe_error_message(report, "Take ist nicht sicher abspielbar.")
+            )
+        validate_recording_media_binding(report, safe_id)
+        return report
+
+    def perform_recording_action(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ControlError("Recorderaktion muss ein JSON-Objekt sein.")
+        operation = payload.get("operation")
+        if operation not in {"plan", "start", "stop", "recover"}:
+            raise ControlError("Unbekannte Recorderaktion.")
+        if operation == "plan":
+            if set(payload) != {"operation", "name", "maximum_seconds"}:
+                raise ControlError("Recorderplan enthält unbekannte oder fehlende Felder.")
+            plan = self.recording_plan(
+                name=payload["name"], maximum_seconds=payload["maximum_seconds"]
+            )
+            return {
+                "schema_version": 1,
+                "kind": "audio_control_recording_action_result",
+                "operation": "plan",
+                "plan": plan,
+            }
+
+        session_id: str | None = None
+        if operation == "start":
+            if set(payload) != {
+                "operation",
+                "name",
+                "maximum_seconds",
+                "expected_plan_sha256",
+            }:
+                raise ControlError("Recorderstart enthält unbekannte oder fehlende Felder.")
+            name = _validate_recording_name(payload["name"])
+            duration = _validate_recording_duration(payload["maximum_seconds"])
+            expected_plan_sha256 = payload["expected_plan_sha256"]
+            if not _valid_sha256(expected_plan_sha256):
+                raise ControlError("Recorderstart benötigt einen gültigen Plan-Hash.")
+            command = [
+                sys.executable,
+                str(RECORDING_SCRIPT),
+                "start",
+                name,
+                "--session-type",
+                "voice-recording",
+                "--maximum-seconds",
+                str(duration),
+                "--root",
+                str(RECORDING_OUTPUT_ROOT),
+                "--state-root",
+                str(RECORDING_STATE_ROOT),
+                "--expected-plan-sha256",
+                expected_plan_sha256,
+            ]
+        else:
+            allowed = {"operation", "session_id"}
+            if set(payload) - allowed or "operation" not in payload:
+                raise ControlError("Recorderabschluss enthält unbekannte Felder.")
+            raw_session_id = payload.get("session_id")
+            if raw_session_id is not None:
+                session_id = _validate_recording_session_id(raw_session_id)
+            command = [
+                sys.executable,
+                str(RECORDING_SCRIPT),
+                operation,
+                "--state-root",
+                str(RECORDING_STATE_ROOT),
+            ]
+            if session_id is not None:
+                command.extend(["--session-id", session_id])
+
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere Audioaktion läuft bereits.")
+        try:
+            if not self._snapshot_lock.acquire(blocking=False):
+                raise ActionBusy(
+                    "Eine Zustandsabfrage verhindert den sicheren Recorder-Readback."
+                )
+            try:
+                self.invalidate()
+                try:
+                    result = self.runner.run(command, timeout=45)
+                    report = parse_json_output(result, label="Recorderaktion")
+                    if result.returncode != 0:
+                        raise ControlError(
+                            safe_error_message(report, "Recorderaktion wurde blockiert.")
+                        )
+                except Exception:
+                    try:
+                        self._readback_after_mutation()
+                    except Exception:
+                        pass
+                    raise
+                if operation == "start":
+                    session_id = _validate_recording_session_id(report.get("session_id"))
+                    if (
+                        report.get("kind") != "audio_recording_start_receipt"
+                        or report.get("status") != "running"
+                        or report.get("session_type") != "voice-recording"
+                        or report.get("plan_sha256") != expected_plan_sha256
+                    ):
+                        raise ControlError("Recorderstart lieferte keinen gebundenen Startbeleg.")
+                else:
+                    reported_session_id = _validate_recording_session_id(
+                        report.get("session_id")
+                    )
+                    if (
+                        report.get("schema_version") != 1
+                        or report.get("kind") != "audio_recording_status"
+                        or report.get("session_type") != "voice-recording"
+                        or report.get("status")
+                        not in {
+                            "running",
+                            "completed",
+                            "failed-preserved",
+                            "recovery-required",
+                            "identity-mismatch",
+                        }
+                    ):
+                        raise ControlError(
+                            "Recorderabschluss lieferte keinen gebundenen Statusbeleg."
+                        )
+                    if session_id is not None and reported_session_id != session_id:
+                        raise ControlError(
+                            "Recorderabschluss bezog sich auf eine andere Sitzung."
+                        )
+                    session_id = reported_session_id
+                snapshot = self._readback_after_mutation()
+                recording = snapshot.get("recording", {})
+                session = recording.get("session")
+                if operation == "start":
+                    if (
+                        recording.get("status") != "running"
+                        or not isinstance(session, dict)
+                        or session.get("session_id") != session_id
+                        or session.get("plan_sha256") != expected_plan_sha256
+                        or session.get("active") is not True
+                    ):
+                        raise ControlError(
+                            "Recorderstart wurde nicht durch aktuellen Recorderzustand bestätigt."
+                        )
+                elif (
+                    isinstance(session, dict)
+                    and session.get("session_id") == session_id
+                    and session.get("active") is True
+                ):
+                    raise ControlError(
+                        "Recorderabschluss wurde nicht durch aktuellen Recorderzustand bestätigt."
+                    )
+                return {
+                    "schema_version": 1,
+                    "kind": "audio_control_recording_action_result",
+                    "operation": operation,
+                    "session_id": session_id,
+                    "snapshot": snapshot,
+                }
+            finally:
+                self._snapshot_lock.release()
+        finally:
+            self._action_lock.release()
+
+
     def _build_snapshot(self) -> dict[str, Any]:
         profiles = read_profiles()
         whale_contract = read_whale_contract()
         doctor_status, doctor, doctor_error = self._doctor()
         whale_status, whale, whale_error = self._whale_status()
+        recording_status, recording_probe, recording_error = self._recording_probe()
+        recording_contract = read_voice_recording_contract()
         warnings = doctor.get("warnings", [])
         if not isinstance(warnings, list):
             warnings = []
@@ -1187,6 +1750,14 @@ class AudioControl:
                 "onsite_warning_count": len(onsite_high_warnings),
                 "physical_unknown_count": len(physical_unknowns),
                 "active_whale": bool(whale.get("active")),
+                "active_recording": bool(
+                    isinstance(recording_probe.get("session"), dict)
+                    and recording_probe["session"].get("active") is True
+                ),
+                "recording_recovery_required": bool(
+                    isinstance(recording_probe.get("session"), dict)
+                    and recording_probe["session"].get("recovery_required") is True
+                ),
                 "onsite_required": onsite_required,
                 "profile_state_counts": profile_state_counts,
             },
@@ -1222,13 +1793,22 @@ class AudioControl:
                 ),
             },
             "recording": {
-                "status": "planned-not-executable",
-                "actionable": False,
-                "detail": (
-                    "Die UI bietet read-only Profilpläne. Aufnahme wird erst "
-                    "nach atomarem Recorderzustand, Quellenbindung, "
-                    "Dateifinalisierung und Speichergrenze freigeschaltet."
+                "status": (
+                    recording_probe.get("status", "unavailable")
+                    if recording_status == "ok"
+                    else "unavailable"
                 ),
+                "actionable": recording_status == "ok",
+                "error": recording_error,
+                "detail": (
+                    "Hardened Voice-Recorder mit Plan-Hash, MOTU-Quellenbindung, "
+                    "RØDE-/48-V-/Pegel-Gates, Recovery und unveränderlichen Takes."
+                ),
+                "authority": "recorder-plan-hash-and-current-readback",
+                "contract": recording_contract,
+                "session": recording_probe.get("session"),
+                "active_session_id": recording_probe.get("active_session_id"),
+                "actions": ["plan", "start", "stop", "recover"],
             },
             "capabilities": {
                 "refresh_state": True,
@@ -1238,7 +1818,7 @@ class AudioControl:
                 "whale_learning_lesson": True,
                 "whale_control": True,
                 "profile_apply": False,
-                "recording_control": False,
+                "recording_control": recording_status == "ok",
                 "dauersong_control": False,
             },
         }
@@ -1258,7 +1838,7 @@ class AudioControl:
         now = self.clock()
         errors = [
             str(section.get("error"))
-            for section_name in ("doctor", "whale")
+            for section_name in ("doctor", "whale", "recording")
             if isinstance((section := snapshot.get(section_name)), dict)
             and section.get("error")
         ]
@@ -1578,13 +2158,21 @@ class AudioControlHandler(BaseHTTPRequestHandler):
         )
 
     def log_message(self, format_string: str, *args: object) -> None:
+        # Request lines and free-form error messages can contain user-controlled
+        # text.  Keep access logs content-free: method + response metadata only.
+        del format_string
+        status = "-"
+        size = "-"
+        if len(args) >= 2 and isinstance(args[1], (str, int)):
+            status = str(args[1])
+        if len(args) >= 3 and isinstance(args[2], (str, int)):
+            size = str(args[2])
+        method = self.command if isinstance(self.command, str) else "-"
+        if method not in {"GET", "HEAD", "POST", "OPTIONS"}:
+            method = "-"
         sys.stderr.write(
-            "%s - - [%s] %s\n"
-            % (
-                self.client_address[0],
-                self.log_date_time_string(),
-                format_string % args,
-            )
+            f"{self.client_address[0]} - - [{self.log_date_time_string()}] "
+            f"{method} status={status} bytes={size}\n"
         )
 
     def _send_headers(
@@ -1774,6 +2362,118 @@ class AudioControlHandler(BaseHTTPRequestHandler):
         if not head_only:
             self.wfile.write(body)
 
+    def _serve_recording_audio(self, session_id: str, *, head_only: bool) -> None:
+        try:
+            binding = self.server.controller.verified_recording_media(session_id)
+        except ControlError as error:
+            self._send_error_json(
+                HTTPStatus.CONFLICT,
+                "recording_media_unavailable",
+                str(error),
+                head_only=head_only,
+            )
+            return
+        descriptor: int | None = None
+        response_started = False
+        try:
+            descriptor = os.open(
+                binding["path"],
+                os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+            )
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_dev != binding["device"]
+                or metadata.st_ino != binding["inode"]
+                or metadata.st_size != binding["bytes"]
+            ):
+                raise ControlError("Take änderte sich zwischen Verifikation und Öffnen.")
+            digest = hashlib.sha256()
+            observed_bytes = 0
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                observed_bytes += len(chunk)
+                digest.update(chunk)
+            if observed_bytes != binding["bytes"] or digest.hexdigest() != binding["sha256"]:
+                raise ControlError("Take-Inhalt änderte sich nach dem Recorder-Readback.")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            etag = f'"{binding["sha256"]}"'
+            if self.headers.get("If-None-Match") == etag:
+                self._send_headers(
+                    HTTPStatus.NOT_MODIFIED,
+                    content_type="audio/wav",
+                    content_length=0,
+                    cache_control="no-cache",
+                    etag=etag,
+                    accept_ranges="bytes",
+                )
+                return
+            start = 0
+            end = binding["bytes"] - 1
+            status = HTTPStatus.OK
+            range_values = self.headers.get_all("Range", [])
+            if range_values:
+                try:
+                    if len(range_values) != 1:
+                        raise ValueError("duplicate byte range")
+                    start, end = parse_single_byte_range(
+                        range_values[0], binding["bytes"]
+                    )
+                except ValueError:
+                    self._send_headers(
+                        HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+                        content_type="audio/wav",
+                        content_length=0,
+                        cache_control="no-cache",
+                        etag=etag,
+                        accept_ranges="bytes",
+                        content_range=f"bytes */{binding['bytes']}",
+                    )
+                    return
+                status = HTTPStatus.PARTIAL_CONTENT
+            length = end - start + 1
+            response_started = True
+            self._send_headers(
+                status,
+                content_type="audio/wav",
+                content_length=length,
+                cache_control="no-cache",
+                etag=etag,
+                accept_ranges="bytes",
+                content_range=(
+                    f"bytes {start}-{end}/{binding['bytes']}"
+                    if status == HTTPStatus.PARTIAL_CONTENT
+                    else None
+                ),
+            )
+            if head_only:
+                return
+            os.lseek(descriptor, start, os.SEEK_SET)
+            remaining = length
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    raise ConnectionError("Take endete während der Ausgabe unerwartet.")
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+        except (ControlError, OSError) as error:
+            if not response_started and not self.wfile.closed:
+                self._send_error_json(
+                    HTTPStatus.CONFLICT,
+                    "recording_media_changed",
+                    str(error),
+                    head_only=head_only,
+                )
+            else:
+                self.close_connection = True
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
     def _get(self, *, head_only: bool = False) -> None:
         if self._reject_nonlocal_host():
             return
@@ -1885,6 +2585,53 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(HTTPStatus.OK, lesson, head_only=head_only)
             return
+        if parsed.path == f"/api/{API_VERSION}/recordings":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Die Recorderbibliothek akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                library = self.server.controller.recording_library()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "recording_library_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, library, head_only=head_only)
+            return
+        recording_prefix = f"/api/{API_VERSION}/recordings/"
+        recording_suffix = "/audio"
+        if parsed.path.startswith(recording_prefix) and parsed.path.endswith(recording_suffix):
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Take-Wiedergabe akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            session_id = parsed.path[
+                len(recording_prefix) : -len(recording_suffix)
+            ]
+            try:
+                _validate_recording_session_id(session_id)
+            except ControlError:
+                self._send_error_json(
+                    HTTPStatus.NOT_FOUND,
+                    "unknown_recording",
+                    "Unbekannter Take.",
+                    head_only=head_only,
+                )
+                return
+            self._serve_recording_audio(session_id, head_only=head_only)
+            return
         if parsed.path == f"/api/{API_VERSION}/snapshot":
             if parsed.query not in {"", "refresh=1"}:
                 self._send_error_json(
@@ -1984,7 +2731,10 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             parsed.scheme
             or parsed.netloc
             or parsed.fragment
-            or parsed.path != f"/api/{API_VERSION}/actions/whale"
+            or parsed.path not in {
+                f"/api/{API_VERSION}/actions/whale",
+                f"/api/{API_VERSION}/actions/recording",
+            }
             or parsed.query
         ):
             self.close_connection = True
@@ -2080,7 +2830,10 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             )
             return
         try:
-            result = self.server.controller.perform_whale_action(payload)
+            if parsed.path == f"/api/{API_VERSION}/actions/recording":
+                result = self.server.controller.perform_recording_action(payload)
+            else:
+                result = self.server.controller.perform_whale_action(payload)
         except ActionBusy as error:
             self._send_error_json(
                 HTTPStatus.CONFLICT,
@@ -2169,6 +2922,20 @@ def start_managed_service(
     status = systemd_status(runner)
     if status.get("active_state") in {"active", "activating", "reloading"}:
         raise ControlError(f"{UNIT_NAME} läuft bereits.")
+    recorder_init = runner.run(
+        [
+            sys.executable,
+            str(RECORDING_SCRIPT),
+            "init",
+            "--root",
+            str(RECORDING_OUTPUT_ROOT),
+            "--state-root",
+            str(RECORDING_STATE_ROOT),
+        ],
+        timeout=10,
+    )
+    if recorder_init.returncode != 0:
+        raise ControlError("Private Recorderverzeichnisse konnten nicht vorbereitet werden.")
     command = [
         "systemd-run",
         "--user",
@@ -2204,6 +2971,8 @@ def start_managed_service(
         "ProtectSystem=strict",
         "--property",
         "ProtectHome=read-only",
+        "--property",
+        f"ReadWritePaths={RECORDING_OUTPUT_ROOT} {RECORDING_STATE_ROOT}",
         "--property",
         "ProtectControlGroups=yes",
         "--property",
@@ -2297,6 +3066,10 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
             ROOT / "inventory" / "buckelwal-learning-lesson.v1.json",
             ROOT / "schemas" / "buckelwal-learning-lesson.v1.schema.json",
             WHALE_LESSON_SCRIPT,
+            RECORDING_SCRIPT,
+            RECORDING_PRODUCT_SCRIPT,
+            RECORDING_CATALOG,
+            REFERENCE_LEVELS,
         ]
         if not path.is_file()
     ]
@@ -2329,10 +3102,17 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
         raise ControlError("UI ist nicht an den Buckelwal-Lektionsvertrag gebunden.")
     if 'id="whale-learning-lesson"' not in index:
         raise ControlError("UI enthält keinen Buckelwal-Lektionsfokus.")
-    if "/api/v1/actions/" in javascript:
+    action_endpoints = set(
+        re.findall(r"/api/v1/actions/[a-z0-9_-]+", javascript)
+    )
+    if "/api/v1/actions/recording" not in action_endpoints:
+        raise ControlError("UI ist nicht an die typisierte Recorderaktion gebunden.")
+    if action_endpoints - {"/api/v1/actions/recording"}:
         raise ControlError(
-            "Read-only Produktoberfläche enthält eine wirkende Audioaktion."
+            "Produktoberfläche enthält eine nicht freigegebene Audioaktion."
         )
+    if "/api/v1/recordings" not in javascript:
+        raise ControlError("UI ist nicht an die Recorderbibliothek gebunden.")
     try:
         replay = TELEMETRY_REPLAY.load_replay_contract()
     except TELEMETRY_REPLAY.ReplayError as error:
@@ -2354,6 +3134,7 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
         raise ControlError("Live-Telemetrie verlässt die passive Beobachtungsgrenze.")
     profiles = read_profiles()
     whale = read_whale_contract()
+    recording = read_voice_recording_contract()
     return {
         "status": "ok",
         "kind": "audio_control_contract_check",
@@ -2362,6 +3143,9 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
         "profile_count": len(profiles),
         "whale_modes": [mode["id"] for mode in whale["modes"]],
         "whale_keyboard_keys": whale["keyboard"]["key_count"],
+        "recording_profile": recording["profile"],
+        "recording_source": recording["source"]["kind"],
+        "recording_monitoring": recording["monitoring"]["mode"],
         "replay_scenarios": [
             scenario["id"] for scenario in replay["catalog"]["scenarios"]
         ],
