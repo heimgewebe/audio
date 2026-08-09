@@ -425,6 +425,109 @@ class AudioControlDeployTests(unittest.TestCase):
         )
         service.assert_called_once_with("stop", "audio-control-ui-v1.service")
 
+    @staticmethod
+    def scoped_remote_bridge_health() -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "kind": "audio_remote_bridge_health",
+            "status": "serving",
+            "projection": "read-only-plus-whale-actions",
+            "effect_authority": True,
+            "effect_scope": ["whale:start", "whale:mode", "whale:stop"],
+            "effect_exclusions": [
+                "recording",
+                "profiles",
+                "routing",
+                "devices",
+                "system",
+            ],
+            "allowed_methods": ["GET", "HEAD", "POST"],
+            "remote_action": {
+                "session_route": "/bridge/v1/session",
+                "action_route": "/bridge/v1/actions/whale",
+                "session_ttl_seconds": 900,
+                "token_header": "X-Audio-Bridge-Session",
+                "backend_token_exposed": False,
+                "tailscale_identity_required": True,
+                "session_identity_bound": True,
+            },
+            "backend": {
+                "host": "127.0.0.1",
+                "port": 8765,
+                "remote_exposure": False,
+            },
+        }
+
+    def test_remote_bridge_verifier_accepts_only_scoped_whale_health(self):
+        payload = self.scoped_remote_bridge_health()
+        body = json.dumps(payload).encode("utf-8")
+
+        class Response:
+            status = 200
+
+            def read(self, _limit):
+                return body
+
+            def getheader(self, name, default=""):
+                return "read-only-v1" if name == "X-Audio-Remote-Bridge" else default
+
+        class Connection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def request(self, *_args, **_kwargs):
+                pass
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", Connection):
+            report = MODULE.verify_remote_bridge(attempts=1)
+        self.assertEqual(report["marker"], "read-only-v1")
+        self.assertEqual(report["health"], payload)
+
+        cases = {
+            "legacy-read-only": {
+                **payload,
+                "projection": "read-only",
+                "effect_authority": False,
+            },
+            "scope-expanded": {
+                **payload,
+                "effect_scope": [*payload["effect_scope"], "recording:start"],
+            },
+            "exclusions-weakened": {
+                **payload,
+                "effect_exclusions": ["profiles", "routing", "devices", "system"],
+            },
+            "backend-token-exposed": {
+                **payload,
+                "remote_action": {
+                    **payload["remote_action"],
+                    "backend_token_exposed": True,
+                },
+            },
+            "identity-unbound": {
+                **payload,
+                "remote_action": {
+                    **payload["remote_action"],
+                    "session_identity_bound": False,
+                },
+            },
+            "backend-exposed": {
+                **payload,
+                "backend": {**payload["backend"], "remote_exposure": True},
+            },
+        }
+        for name, candidate in cases.items():
+            with self.subTest(name=name):
+                self.assertIsNotNone(
+                    MODULE.remote_bridge_health_error("read-only-v1", candidate)
+                )
+
     def test_missing_remote_bridge_unit_is_inactive_not_a_deploy_blocker(self):
         result = MODULE.CommandResult(
             ("systemctl", "--user", "show", MODULE.REMOTE_BRIDGE_UNIT),

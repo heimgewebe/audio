@@ -47,6 +47,9 @@
         "response_header_forward",
         "bridge_response_header",
         "json_scrubbing",
+        "effect_scope",
+        "effect_exclusions",
+        "remote_action",
         "effect_authority",
         "backend_remote_exposure"
       ],
@@ -56,7 +59,7 @@
         "backend_host": {"const": "127.0.0.1"},
         "backend_port": {"const": 8765},
         "methods": {
-          "const": ["GET", "HEAD"]
+          "const": ["GET", "HEAD", "POST"]
         },
         "static_routes": {
           "type": "array",
@@ -107,7 +110,53 @@
             "invalid_json": {"const": "fail-closed"}
           }
         },
-        "effect_authority": {"const": false},
+        "effect_scope": {
+          "const": ["whale:start", "whale:mode", "whale:stop"]
+        },
+        "effect_exclusions": {
+          "const": ["recording", "profiles", "routing", "devices", "system"]
+        },
+        "remote_action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_route",
+            "session_method",
+            "action_route",
+            "tailnet_host",
+            "session_header",
+            "session_ttl_seconds",
+            "session_capacity",
+            "max_body_bytes",
+            "operations",
+            "modes",
+            "tailscale_identity_required",
+            "session_identity_bound",
+            "backend_action_token_exposed",
+            "action_response_marker",
+            "effects_header",
+            "effects_value"
+          ],
+          "properties": {
+            "session_route": {"const": "/bridge/v1/session"},
+            "session_method": {"const": "POST"},
+            "action_route": {"const": "/bridge/v1/actions/whale"},
+            "tailnet_host": {"const": "heim-pc.tail6dbb90.ts.net:9443"},
+            "session_header": {"const": "X-Audio-Bridge-Session"},
+            "session_ttl_seconds": {"const": 900},
+            "session_capacity": {"const": 8},
+            "max_body_bytes": {"const": 512},
+            "operations": {"const": ["start", "mode", "stop"]},
+            "modes": {"const": ["morph", "organic", "realistic", "ufo"]},
+            "tailscale_identity_required": {"const": true},
+            "session_identity_bound": {"const": true},
+            "backend_action_token_exposed": {"const": false},
+            "action_response_marker": {"const": "whale-action-v1"},
+            "effects_header": {"const": "X-Audio-Remote-Effects"},
+            "effects_value": {"const": "whale-v1"}
+          }
+        },
+        "effect_authority": {"const": true},
         "backend_remote_exposure": {"const": false}
       }
     },

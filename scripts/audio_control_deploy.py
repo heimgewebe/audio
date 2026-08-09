@@ -1059,6 +1059,56 @@ def read_service_activity(unit: str) -> dict[str, Any]:
     }
 
 
+REMOTE_BRIDGE_EFFECT_SCOPE = ["whale:start", "whale:mode", "whale:stop"]
+REMOTE_BRIDGE_EFFECT_EXCLUSIONS = [
+    "recording",
+    "profiles",
+    "routing",
+    "devices",
+    "system",
+]
+
+
+def remote_bridge_health_error(marker: str, payload: Any) -> str | None:
+    if marker != "read-only-v1":
+        return f"Bridge-Marker ist {marker!r}"
+    if not isinstance(payload, dict):
+        return "Bridge-Healthantwort hat falsche Form"
+    if payload.get("kind") != "audio_remote_bridge_health":
+        return "Bridge-Healthantwort hat falsche Identität"
+    if payload.get("status") != "serving":
+        return "Bridge meldet keinen Serving-Zustand"
+    if payload.get("projection") != "read-only-plus-whale-actions":
+        return "Bridge meldet nicht die scoped-whale Projektion"
+    if payload.get("effect_authority") is not True:
+        return "Bridge meldet keine scoped Wal-Effekt-Autorität"
+    if payload.get("effect_scope") != REMOTE_BRIDGE_EFFECT_SCOPE:
+        return "Bridge meldet einen falschen Wal-Effektumfang"
+    if payload.get("effect_exclusions") != REMOTE_BRIDGE_EFFECT_EXCLUSIONS:
+        return "Bridge meldet falsche Remote-Effektausschlüsse"
+    if payload.get("allowed_methods") != ["GET", "HEAD", "POST"]:
+        return "Bridge meldet einen falschen Methodenvertrag"
+    remote_action = payload.get("remote_action")
+    if not isinstance(remote_action, dict):
+        return "Bridge meldet keinen Remote-Walaktionsvertrag"
+    expected_remote_action = {
+        "session_route": "/bridge/v1/session",
+        "action_route": "/bridge/v1/actions/whale",
+        "session_ttl_seconds": 900,
+        "token_header": "X-Audio-Bridge-Session",
+        "backend_token_exposed": False,
+        "tailscale_identity_required": True,
+        "session_identity_bound": True,
+    }
+    for key, expected in expected_remote_action.items():
+        if remote_action.get(key) != expected:
+            return f"Bridge meldet einen falschen Remote-Walaktionswert: {key}"
+    backend = payload.get("backend")
+    if not isinstance(backend, dict) or backend.get("remote_exposure") is not False:
+        return "Bridge meldet unerwartete Backend-Exposition"
+    return None
+
+
 def verify_remote_bridge(
     *,
     host: str = "127.0.0.1",
@@ -1083,25 +1133,10 @@ def verify_remote_bridge(
             if response.status != 200:
                 last_error = f"Bridge-Healthstatus {response.status}"
                 continue
-            if marker != "read-only-v1":
-                last_error = f"Bridge-Marker ist {marker!r}"
-                continue
             payload = json.loads(body.decode("utf-8"))
-            if not isinstance(payload, dict):
-                last_error = "Bridge-Healthantwort hat falsche Form"
-                continue
-            if payload.get("kind") != "audio_remote_bridge_health":
-                last_error = "Bridge-Healthantwort hat falsche Identität"
-                continue
-            if payload.get("status") != "serving" or payload.get("projection") != "read-only":
-                last_error = "Bridge meldet keinen read-only Serving-Zustand"
-                continue
-            if payload.get("effect_authority") is not False:
-                last_error = "Bridge meldet unerwartete Effekt-Autorität"
-                continue
-            backend = payload.get("backend")
-            if not isinstance(backend, dict) or backend.get("remote_exposure") is not False:
-                last_error = "Bridge meldet unerwartete Backend-Exposition"
+            contract_error = remote_bridge_health_error(marker, payload)
+            if contract_error is not None:
+                last_error = contract_error
                 continue
             return {
                 "url": f"http://{host}:{port}/bridge/v1/health",

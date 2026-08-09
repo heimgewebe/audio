@@ -154,6 +154,10 @@ const state = {
   serviceWorkerState: "nicht geprüft",
   appShellReloadPending: false,
   remoteBridgeProjection: null,
+  remoteWhaleActionObserved: false,
+  remoteWhaleSessionToken: null,
+  remoteWhaleSessionExpiresAt: 0,
+  remoteWhaleSessionError: null,
   recordingLibrary: null,
   recordingLibraryError: null,
   recordingPlan: null,
@@ -318,7 +322,11 @@ function sameOriginApiTarget(input) {
     return true;
   }
   if (target.origin !== window.location.origin) return false;
-  return target.pathname === "/api" || target.pathname.startsWith("/api/");
+  return (
+    target.pathname === "/api" ||
+    target.pathname.startsWith("/api/") ||
+    target.pathname.startsWith("/bridge/v1/")
+  );
 }
 
 function installBackendFetchGuard() {
@@ -446,7 +454,9 @@ function renderRuntimeMode() {
     install,
     "Ferntransport",
     state.remoteBridgeProjection === true
-      ? "Read-only-Bridge in aktueller Antwort erkannt · keine Audiowirkung"
+      ? remoteWhaleSessionFresh()
+        ? "Private Bridge · Buckelwal steuerbar; sonst read-only"
+        : "Private Bridge · read-only; Wal-Fernsession nicht belegt"
       : "nicht in aktueller Antwort belegt · Control bleibt Loopback-only",
   );
   detailRow(
@@ -514,6 +524,10 @@ function stopRemoteActivity() {
   state.recordingPlanInput = null;
   state.recordingActionPending = false;
   state.whaleActionPending = false;
+  state.remoteWhaleActionObserved = false;
+  state.remoteWhaleSessionToken = null;
+  state.remoteWhaleSessionExpiresAt = 0;
+  state.remoteWhaleSessionError = null;
   state.whaleModeDraft = null;
   for (const audio of document.querySelectorAll("audio.recording-player")) {
     audio.pause();
@@ -621,12 +635,16 @@ async function fetchJson(url, options = {}) {
     }
     throw new Error("Der lokale Control-Dienst ist nicht erreichbar.");
   }
-  if (response.headers.get("X-Audio-Remote-Bridge") === "read-only-v1") {
-    // Fail closed for the page lifetime: a read-only bridge must never become
-    // writable because a later endpoint forgot to repeat the projection header.
+  const bridgeMarker = response.headers.get("X-Audio-Remote-Bridge");
+  if (bridgeMarker === "read-only-v1" || bridgeMarker === "whale-action-v1") {
+    // Fail closed for the page lifetime: once a remote projection was observed,
+    // later responses may not silently turn the page into local authority.
     state.remoteBridgeProjection = true;
   } else if (state.remoteBridgeProjection === null) {
     state.remoteBridgeProjection = false;
+  }
+  if (response.headers.get("X-Audio-Remote-Effects") === "whale-v1") {
+    state.remoteWhaleActionObserved = true;
   }
   let payload;
   try {
@@ -698,6 +716,9 @@ async function refreshSnapshot(force = false) {
     });
     state.snapshot = snapshot;
     clearNotice();
+    if (state.remoteBridgeProjection === true) {
+      await ensureRemoteWhaleSession();
+    }
     await loadRecordingLibrary({ render: false });
     renderAll();
   } catch (error) {
@@ -776,7 +797,9 @@ function renderTruth() {
   if (whaleWritable) executable.push("Walstimme");
   byId("truth-executable").textContent = executable.length ? executable.join(" + ") : "read-only";
   byId("truth-executable-detail").textContent = executable.length
-    ? "Wirkende Aktionen nur über den lokalen Loopback-Dienst mit frischem Aktionstoken"
+    ? remoteWhaleActionsAllowed()
+      ? "Walstimme über private, eng begrenzte Tailnet-Bridge; Recorder bleibt lokal"
+      : "Wirkende Aktionen nur über den lokalen Loopback-Dienst mit frischem Aktionstoken"
     : state.remoteBridgeProjection === true
       ? "Read-only-Bridge erkannt; keine Audiowirkung"
       : "Replay lokal; wirkende Audioaktionen nicht autorisiert";
@@ -803,7 +826,7 @@ function recordingActionsAllowed() {
   );
 }
 
-function whaleActionsAllowed() {
+function localWhaleActionsAllowed() {
   return Boolean(
     directLoopbackControlOrigin() &&
       backendAllowed() &&
@@ -812,6 +835,95 @@ function whaleActionsAllowed() {
       state.snapshot?.whale?.status === "ok" &&
       typeof state.snapshot?.service?.action_token === "string" &&
       state.snapshot.service.action_token.length >= 16
+  );
+}
+
+function remoteWhaleSessionFresh() {
+  return Boolean(
+    state.remoteBridgeProjection === true &&
+      state.remoteWhaleActionObserved === true &&
+      typeof state.remoteWhaleSessionToken === "string" &&
+      state.remoteWhaleSessionToken.length >= 32 &&
+      Number.isInteger(state.remoteWhaleSessionExpiresAt) &&
+      state.remoteWhaleSessionExpiresAt > Math.floor(Date.now() / 1000) + 30
+  );
+}
+
+function remoteWhaleActionsAllowed() {
+  return Boolean(
+    backendAllowed() &&
+      state.snapshot?.capabilities?.whale_control === true &&
+      state.snapshot?.whale?.status === "ok" &&
+      remoteWhaleSessionFresh()
+  );
+}
+
+function whaleActionsAllowed() {
+  return localWhaleActionsAllowed() || remoteWhaleActionsAllowed();
+}
+
+async function ensureRemoteWhaleSession({ force = false } = {}) {
+  if (state.remoteBridgeProjection !== true || !backendAllowed()) return false;
+  if (!force && remoteWhaleSessionFresh()) return true;
+  state.remoteWhaleSessionToken = null;
+  state.remoteWhaleSessionExpiresAt = 0;
+  try {
+    const session = await fetchJson("/bridge/v1/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      timeoutMs: 6000,
+    });
+    if (
+      session?.kind !== "audio_remote_bridge_session" ||
+      !Array.isArray(session.effect_scope) ||
+      !session.effect_scope.includes("whale") ||
+      typeof session.session_token !== "string" ||
+      session.session_token.length < 32 ||
+      !Number.isInteger(session.expires_at_unix)
+    ) {
+      throw new Error("Die Wal-Fernsession ist unvollständig.");
+    }
+    state.remoteWhaleSessionToken = session.session_token;
+    state.remoteWhaleSessionExpiresAt = session.expires_at_unix;
+    state.remoteWhaleSessionError = null;
+    return remoteWhaleSessionFresh();
+  } catch (error) {
+    state.remoteWhaleSessionToken = null;
+    state.remoteWhaleSessionExpiresAt = 0;
+    state.remoteWhaleSessionError =
+      error instanceof Error ? error.message : "Wal-Fernsession ist nicht verfügbar.";
+    return false;
+  }
+}
+
+async function postWhaleAction(payload) {
+  if (localWhaleActionsAllowed()) {
+    return fetchJson("/api/v1/actions/whale", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Audio-Control-Token": state.snapshot.service.action_token,
+      },
+      body: JSON.stringify(payload),
+      timeoutMs: 70000,
+    });
+  }
+  if (remoteWhaleActionsAllowed()) {
+    return fetchJson("/bridge/v1/actions/whale", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Audio-Bridge-Session": state.remoteWhaleSessionToken,
+      },
+      body: JSON.stringify(payload),
+      timeoutMs: 70000,
+    });
+  }
+  throw new Error(
+    state.remoteBridgeProjection === true
+      ? state.remoteWhaleSessionError || "Walsteuerung ist auf dieser Fernverbindung nicht autorisiert."
+      : "Walsteuerung ist nur über eine autorisierte lokale oder private Fernverbindung möglich.",
   );
 }
 
@@ -1538,10 +1650,12 @@ function renderWhale() {
     "",
     writable
       ? active
-        ? `${displayMode(currentMode)} · lokal steuerbar`
-        : "Walstimme direkt am Heim-PC steuerbar"
+        ? `${displayMode(currentMode)} · ${remoteWhaleActionsAllowed() ? "vom iPad steuerbar" : "lokal steuerbar"}`
+        : remoteWhaleActionsAllowed()
+          ? "Walstimme über private iPad-Bridge steuerbar"
+          : "Walstimme direkt am Heim-PC steuerbar"
       : state.remoteBridgeProjection === true
-        ? "Fernansicht read-only · keine Audiowirkung"
+        ? "Fernansicht read-only · Wal-Fernsession nicht belegt"
         : "Wirkende Steuerung nur über den lokalen Heim-PC",
   );
 
@@ -1600,7 +1714,7 @@ function renderWhale() {
   main.append(actions);
 
   if (!writable) appendText(main, "p", "read-only-boundary", state.remoteBridgeProjection === true
-    ? "Die Fern-Audiozentrale bleibt absichtlich read-only. Start, Stop und Moduswechsel wirken nur am lokalen Loopback-Dienst des Heim-PC."
+    ? state.remoteWhaleSessionError || "Die Fern-Audiozentrale bleibt außerhalb der eng begrenzten Wal-Session read-only."
     : "Start, Stop und Moduswechsel werden erst freigeschaltet, wenn die lokale Backend-Autorität samt Aktionstoken belegt ist.");
 
   const details = element("aside", "whale-details");
@@ -1611,7 +1725,15 @@ function renderWhale() {
   detailRow(list, "MIDI-Port", service.midi_port || "automatisch");
   detailRow(list, "Ausgabe", service.target || "PipeWire-Standard");
   detailRow(list, "Roland", state.snapshot.presence?.observed?.roland_fp_30x ? "FP-30X beobachtet" : "vor Ort nicht belegt");
-  detailRow(list, "Ausführbar", writable ? "Start / Modus / Stop" : "nur lokale Loopback-Autorität");
+  detailRow(
+    list,
+    "Ausführbar",
+    writable
+      ? remoteWhaleActionsAllowed()
+        ? "Start / Modus / Stop · private iPad-Bridge"
+        : "Start / Modus / Stop · lokal"
+      : "keine wirkende Autorität belegt",
+  );
   details.append(list);
   if (whale.error) appendText(details, "p", "dialog-message", whale.error);
   wrapper.append(main, details);
@@ -1641,20 +1763,23 @@ function setWhalePending(pending) {
 }
 
 async function runWhaleAction(operation, mode) {
-  if (!state.snapshot || state.loading || state.whaleActionPending || !whaleActionsAllowed()) return;
+  if (!state.snapshot || state.loading || state.whaleActionPending) return;
   state.whaleActionPending = true;
   clearNotice();
   setWhalePending(true);
   syncRemoteControls();
   try {
+    if (state.remoteBridgeProjection === true && !remoteWhaleSessionFresh()) {
+      await ensureRemoteWhaleSession({ force: true });
+    }
+    if (!whaleActionsAllowed()) {
+      throw new Error(
+        state.remoteWhaleSessionError || "Walsteuerung ist aktuell nicht autorisiert.",
+      );
+    }
     const payload = { operation };
     if (mode) payload.mode = mode;
-    const result = await fetchJson("/api/v1/actions/whale", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Audio-Control-Token": state.snapshot.service.action_token },
-      body: JSON.stringify(payload),
-      timeoutMs: 70000,
-    });
+    const result = await postWhaleAction(payload);
     if (result?.kind !== "audio_control_action_result" || !result.snapshot) throw new Error("Buckelwal-Aktion kam ohne autoritativen Readback zurück.");
     state.whaleModeDraft = null;
     state.snapshot = result.snapshot;
@@ -1662,6 +1787,10 @@ async function runWhaleAction(operation, mode) {
     const confirmedMode = result.mode || mode;
     showNotice(operation === "stop" ? "Walstimme wurde beendet und als inaktiv zurückgelesen." : `Walstimme wurde als ${displayMode(confirmedMode)} aktiv zurückgelesen.`, "success");
   } catch (error) {
+    if (state.remoteBridgeProjection === true && [401, 403].includes(error?.status)) {
+      state.remoteWhaleSessionToken = null;
+      state.remoteWhaleSessionExpiresAt = 0;
+    }
     showNotice(error instanceof Error ? error.message : "Walstimmen-Aktion wurde blockiert.");
   } finally {
     state.whaleActionPending = false;

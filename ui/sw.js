@@ -39,6 +39,10 @@ function isApiPath(pathname) {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
+function isBridgePath(pathname) {
+  return pathname === "/bridge" || pathname.startsWith("/bridge/");
+}
+
 /*
  * Nur exakte, query-freie App-Shell-Pfade sind cachefähig. Ein Suffix, eine
  * Query oder ein unbekannter Pfad fällt auf normales Netzwerkverhalten zurück.
@@ -128,6 +132,12 @@ self.addEventListener("fetch", (event) => {
      * Strikt network-only: keine Cache-Öffnung, kein Fallback, kein Replay.
      * Ein Netzwerkfehler bleibt ein Netzwerkfehler.
      */
+    event.respondWith(fetch(request));
+    return;
+  }
+
+  if (isBridgePath(url.pathname)) {
+    /* Session- und Bridge-Readbacks sind ebenfalls strikt network-only. */
     event.respondWith(fetch(request));
     return;
   }

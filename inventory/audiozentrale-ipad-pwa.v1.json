@@ -8,7 +8,11 @@
     "sha256": "0a264069b026f96257afe37f69511f33461a5f01e8ae4dcbe4a7fc30a1a93335"
   },
   "surface": {
-    "canonical_frontend": ["ui/index.html", "ui/app.js", "ui/styles.css"],
+    "canonical_frontend": [
+      "ui/index.html",
+      "ui/app.js",
+      "ui/styles.css"
+    ],
     "added_assets": [
       "ui/manifest.webmanifest",
       "ui/sw.js",
@@ -81,11 +85,11 @@
         "backend_authority": "heim-pc-backend",
         "native_hardware_authority": false,
         "requires": [
-          "a separately proven authenticated secure remote frontend",
-          "an HTTPS transport that is not the loopback control service",
-          "an authorization boundary that survives review before any device effect"
+          "the private Tailscale Serve frontend on HTTPS 9443",
+          "the loopback-only Audiozentrale remote bridge",
+          "an identity-bound short-lived bridge session before scoped whale effects"
         ],
-        "boundary": "The Heim-PC backend stays authoritative for state. The current loopback control service is explicitly not a remote transport, so this mode is only reachable over a future, separately proven remote frontend."
+        "boundary": "The Heim-PC backend stays authoritative for state. The remote bridge is read-only except for the explicitly typed Buckelwal start/mode/stop channel; recorder, profiles, routing, devices and system effects remain remote-denied."
       }
     }
   },
@@ -165,7 +169,8 @@
       "Qobuz and other provider state",
       "playback, routing and device-control responses",
       "live telemetry and snapshot responses",
-      "WAV and other audio payloads"
+      "WAV and other audio payloads",
+      "bridge session and scoped whale-action responses"
     ],
     "absent_capabilities": [
       "background sync",
@@ -181,9 +186,9 @@
     "microphone_permissions_policy": "denied",
     "api_cache_control": "no-store",
     "remote_mode_requires": [
-      "an authenticated secure remote frontend proven in a separate milestone",
-      "HTTPS transport terminated outside the loopback control service",
-      "an explicit review of the host and origin gates before any remote exposure"
+      "private Tailscale Serve HTTPS transport terminated outside the loopback control service",
+      "a loopback-only bridge that requires Tailscale identity plus a bound short-lived session for whale effects",
+      "an exact host and Same-Origin gate for the scoped whale POST endpoint"
     ],
     "remote_bridge_proven": false
   },
@@ -198,9 +203,9 @@
   "does_not_establish": [
     "that the surface has been installed on a physical iPad",
     "that a standalone launch has been observed on iPadOS",
-    "that an authenticated secure remote transport to the Heim-PC exists",
+    "that the current scoped remote bridge revision has passed physical Safari/PWA acceptance",
     "that the browser may open, route or capture any audio device",
-    "that Web MIDI has been granted or that a Roland device is reachable",
+    "that Web MIDI has been granted or that a Roland device is reachable from the iPad",
     "that the loopback control service may be exposed beyond 127.0.0.1",
     "permission to apply or activate an audio profile"
   ]
