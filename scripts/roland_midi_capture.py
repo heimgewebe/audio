@@ -20,12 +20,18 @@ SMPTE_TICKS_PER_FRAME = 40
 SMPTE_DIVISION = ((256 - SMPTE_FPS) << 8) | SMPTE_TICKS_PER_FRAME
 ADDRESS_RE = re.compile(r"(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)")
 CLIENT_RE = re.compile(
-    r'^Client\s+(\d+)\s*:\s*"([^"]*)"\s+\[[^\]]*\bCard=(\d+)\b[^\]]*\]\s*$'
+    r'^Client\s+(\d+)\s*:\s*"([^"]*)"\s+\[([^\]]*)\]\s*$'
 )
-PORT_RE = re.compile(r'^\s+Port\s+(\d+)\s*:\s*"([^"]*)"(?:\s+\([^)]*\))?\s*$')
+CARD_METADATA_RE = re.compile(r"\bCard=(\d+)\b")
+PORT_RE = re.compile(
+    r'^\s+Port\s+(\d+)\s*:\s*"([^"]*)"'
+    r'(?:\s+\([^)]*\))?(?:\s+\[[^\]]*\])?\s*$'
+)
 LIST_PORT_RE = re.compile(r"^\s*((?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*))\s+(.+?)\s{2,}(.+?)\s*$")
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 SPACE_RE = re.compile(r"\s+")
+PROC_CARD_RE = re.compile(r"card(0|[1-9][0-9]*)")
+PROC_MIDI_RE = re.compile(r"midi(?:0|[1-9][0-9]*)")
 
 ROLAND_VENDOR_ID = "0582"
 ROLAND_PRODUCT_ID = "01b1"
@@ -74,10 +80,12 @@ def parse_seq_clients(text: str) -> list[dict[str, Any]]:
     for line in text.splitlines():
         match = CLIENT_RE.fullmatch(line)
         if match:
-            client, name, card = match.groups()
+            client, name, metadata = match.groups()
+            card_match = CARD_METADATA_RE.search(metadata)
             current = {
                 "client": int(client),
-                "card": int(card),
+                "card": int(card_match.group(1)) if card_match else None,
+                "kernel_legacy": metadata.strip() == "Kernel Legacy",
                 "client_label": name,
                 "ports": [],
             }
@@ -151,12 +159,88 @@ def _usb_identity_for_card(
     return None
 
 
+def _proc_midi_device_label(path: pathlib.Path) -> str:
+    try:
+        descriptor = os.open(
+            path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        )
+    except OSError as exc:
+        raise MidiCaptureError("ALSA raw-MIDI card metadata cannot be opened") from exc
+    try:
+        try:
+            payload = os.read(descriptor, 4097)
+        except OSError as exc:
+            raise MidiCaptureError("ALSA raw-MIDI card metadata cannot be read") from exc
+        if len(payload) > 4096:
+            raise MidiCaptureError("ALSA raw-MIDI card metadata exceeds its bound")
+    finally:
+        os.close(descriptor)
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise MidiCaptureError("ALSA raw-MIDI card metadata is not UTF-8") from exc
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise MidiCaptureError("ALSA raw-MIDI card metadata has no device label")
+    return lines[0]
+
+
+def _legacy_client_card(
+    client_label: str,
+    *,
+    sound_class_root: pathlib.Path,
+    sys_devices_root: pathlib.Path,
+    proc_asound_root: pathlib.Path,
+) -> tuple[int, dict[str, Any]] | None:
+    """Map one kernel-legacy sequencer label back to a unique Roland USB card."""
+
+    try:
+        card_roots = sorted(
+            (item for item in proc_asound_root.iterdir() if PROC_CARD_RE.fullmatch(item.name)),
+            key=lambda item: item.name,
+        )
+    except OSError as exc:
+        raise MidiCaptureError("ALSA card inventory is unavailable") from exc
+    if len(card_roots) > 256:
+        raise MidiCaptureError("ALSA card inventory exceeds its bound")
+    expected_label = _normalized_label_hash(client_label)
+    matches: list[tuple[int, dict[str, Any]]] = []
+    for card_root in card_roots:
+        card_match = PROC_CARD_RE.fullmatch(card_root.name)
+        assert card_match is not None
+        card = int(card_match.group(1))
+        usb = _usb_identity_for_card(
+            card,
+            sound_class_root=sound_class_root,
+            sys_devices_root=sys_devices_root,
+        )
+        if usb is None:
+            continue
+        try:
+            midi_entries = sorted(
+                (item for item in card_root.iterdir() if PROC_MIDI_RE.fullmatch(item.name)),
+                key=lambda item: item.name,
+            )
+        except OSError as exc:
+            raise MidiCaptureError("Roland ALSA raw-MIDI inventory is unavailable") from exc
+        if len(midi_entries) > 32:
+            raise MidiCaptureError("Roland ALSA raw-MIDI inventory exceeds its bound")
+        for item in midi_entries:
+            if _normalized_label_hash(_proc_midi_device_label(item)) == expected_label:
+                matches.append((card, usb))
+                break
+    if len(matches) > 1:
+        raise MidiCaptureError("Roland legacy MIDI client maps to multiple USB cards")
+    return matches[0] if matches else None
+
+
 def discover_unique_roland_port(
     *,
     arecordmidi_listing: str,
     clients_path: pathlib.Path = pathlib.Path("/proc/asound/seq/clients"),
     sound_class_root: pathlib.Path = pathlib.Path("/sys/class/sound"),
     sys_devices_root: pathlib.Path = pathlib.Path("/sys/devices"),
+    proc_asound_root: pathlib.Path = pathlib.Path("/proc/asound"),
 ) -> dict[str, Any]:
     """Bind one USB 0582:01b1 kernel port also present in ``arecordmidi -l``."""
 
@@ -173,25 +257,46 @@ def discover_unique_roland_port(
     listing = parse_arecordmidi_ports(arecordmidi_listing)
     matches: list[dict[str, Any]] = []
     for client in clients:
-        usb = _usb_identity_for_card(
-            client["card"],
-            sound_class_root=sound_class_root,
-            sys_devices_root=sys_devices_root,
-        )
-        if usb is None:
-            continue
+        card = client["card"]
+        if card is None:
+            if client.get("kernel_legacy") is not True:
+                continue
+            legacy = _legacy_client_card(
+                client["client_label"],
+                sound_class_root=sound_class_root,
+                sys_devices_root=sys_devices_root,
+                proc_asound_root=proc_asound_root,
+            )
+            if legacy is None:
+                continue
+            card, usb = legacy
+        else:
+            usb = _usb_identity_for_card(
+                card,
+                sound_class_root=sound_class_root,
+                sys_devices_root=sys_devices_root,
+            )
+            if usb is None:
+                continue
         for port in client["ports"]:
             address = f"{client['client']}:{port['port']}"
             listed = listing.get(address)
             if listed is None:
                 continue
+            kernel_client_label_sha256 = _normalized_label_hash(client["client_label"])
+            kernel_port_label_sha256 = _normalized_label_hash(port["port_label"])
+            if (
+                listed["client_label_sha256"] != kernel_client_label_sha256
+                or listed["port_label_sha256"] != kernel_port_label_sha256
+            ):
+                continue
             identity = {
                 "address": address,
                 "client": client["client"],
                 "port": port["port"],
-                "kernel_card": client["card"],
-                "kernel_client_label_sha256": _normalized_label_hash(client["client_label"]),
-                "kernel_port_label_sha256": _normalized_label_hash(port["port_label"]),
+                "kernel_card": card,
+                "kernel_client_label_sha256": kernel_client_label_sha256,
+                "kernel_port_label_sha256": kernel_port_label_sha256,
                 "arecordmidi_client_label_sha256": listed["client_label_sha256"],
                 "arecordmidi_port_label_sha256": listed["port_label_sha256"],
                 "usb": usb,
