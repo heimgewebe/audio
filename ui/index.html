@@ -129,7 +129,11 @@
               <div class="section-heading compact"><h3>Bereitschaft nach Arbeitsart</h3></div>
               <div class="readiness-grid" id="home-readiness"></div>
               <div class="section-heading compact"><h3>Signalbahnen im Detail</h3></div>
-              <div class="active-lane-grid" id="now-signal-lanes"></div>
+              <div class="active-lane-grid" id="now-signal-lanes">
+                <article class="lane-card" id="recorder-workspace" tabindex="-1" aria-label="Recorder-Arbeitsbereich" data-lane="recording" data-control="recorder-workspace">
+                  <div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div>
+                </article>
+              </div>
             </div>
           </article>
 
@@ -155,7 +159,7 @@
         </section>
 
         <section class="view" id="view-setups" data-view="setups" hidden>
-          <article class="depth-panel" id="setup-playing" data-depth-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Read-only Instrumentzustand; Start, Stop und Moduswechsel sind in T020 nicht freigeschaltet.">
+          <article class="depth-panel" id="setup-playing" tabindex="-1" data-depth-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Read-only Instrumentzustand; Start, Stop und Moduswechsel sind in T020 nicht freigeschaltet.">
             <header class="depth-heading"><div><p class="eyebrow">Instrument</p><h2>Buckelwal</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="play-intro-stat"></div>
             <div id="whale-control"></div>
@@ -186,7 +190,7 @@
             </div>
           </article>
 
-          <article class="depth-panel" id="setup-listening" data-depth-panel data-focus-title="Hör-Setups" data-focus-summary="Definierte Hörwege und ihre beobachteten, konfigurierten und ausführbaren Voraussetzungen.">
+          <article class="depth-panel" id="setup-listening" tabindex="-1" data-depth-panel data-focus-title="Hör-Setups" data-focus-summary="Definierte Hörwege und ihre beobachteten, konfigurierten und ausführbaren Voraussetzungen.">
             <header class="depth-heading"><div><p class="eyebrow">Wiedergabe</p><h2>Hören</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="listen-intro-stat"></div>
             <div class="profile-grid" id="listening-profiles"></div>

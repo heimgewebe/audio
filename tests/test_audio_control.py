@@ -6,6 +6,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1217,7 +1218,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('klaenge: "library"', javascript)
         self.assertIn('hoeren: "setups"', javascript)
         self.assertIn('spielen: "setups"', javascript)
-        self.assertIn('aufnehmen: "setups"', javascript)
+        self.assertIn('aufnehmen: "now"', javascript)
         self.assertIn('hoeren: "setup-listening"', javascript)
         self.assertIn('diagnose: "system"', javascript)
         self.assertIn('["Rate", graph.force_rate_hz', javascript)
@@ -1240,6 +1241,207 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn("/api/v1/actions/whale", javascript)
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
+
+    def test_recording_shortcut_opens_authoritative_action_workspace(self):
+        html = (ROOT / "ui" / "index.html").read_text()
+        javascript = (ROOT / "ui" / "app.js").read_text()
+
+        self.assertIn('aufnehmen: "now"', javascript)
+        self.assertIn('aufnehmen: "recorder-workspace"', javascript)
+        self.assertEqual(html.count('id="recorder-workspace"'), 1)
+        self.assertRegex(
+            html,
+            r'id="now-signal-lanes"[^>]*>\s*<article[^>]+id="recorder-workspace"',
+        )
+        self.assertIn(
+            'id="recorder-workspace" tabindex="-1" aria-label="Recorder-Arbeitsbereich"',
+            html,
+        )
+
+        route_start = javascript.index("function revealRouteTarget(target)")
+        route_end = javascript.index("function loadPreferences()", route_start)
+        route = javascript[route_start:route_end]
+        self.assertIn('target.closest(".depth-detail")', route)
+        self.assertIn("detail.hidden = false", route)
+        self.assertIn('toggle.setAttribute("aria-expanded", "true")', route)
+        self.assertIn("target.focus({ preventScroll: true })", route)
+        self.assertIn("target.scrollIntoView", route)
+
+        controls_start = javascript.index("function renderRecordingControls(")
+        controls_end = javascript.index("async function loadRecordingLibrary", controls_start)
+        controls = javascript[controls_start:controls_end]
+        self.assertEqual(javascript.count("renderRecordingControls("), 2)
+        self.assertIn("const writable = recordingActionsAllowed();", controls)
+        self.assertIn("stopButton.disabled = !writable || !active", controls)
+        self.assertIn(
+            'runRecordingAction({ operation: "stop", session_id: session?.session_id })',
+            controls,
+        )
+        for label in ("Plan prüfen", "Aufnahme starten", "Stop", "Recovery"):
+            with self.subTest(label=label):
+                self.assertEqual(controls.count(f'"{label}"'), 1)
+                self.assertNotIn(f">{label}</button>", html)
+
+        permission_start = javascript.index("function recordingActionsAllowed()")
+        permission_end = javascript.index("function recordingStatusLabel", permission_start)
+        permission = javascript[permission_start:permission_end]
+        self.assertIn("state.snapshot?.recording?.actionable === true", permission)
+        self.assertIn('typeof state.snapshot?.service?.action_token === "string"', permission)
+        self.assertIn("state.snapshot.service.action_token.length >= 16", permission)
+
+        action_start = javascript.index("async function postRecordingAction(")
+        action_end = javascript.index("async function runRecordingAction", action_start)
+        action = javascript[action_start:action_end]
+        self.assertIn("if (!recordingActionsAllowed())", action)
+        self.assertIn('"X-Audio-Control-Token": state.snapshot.service.action_token', action)
+
+    def test_recorder_rerender_preserves_focus_draft_and_workspace_node(self):
+        html = (ROOT / "ui" / "index.html").read_text()
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        self.assertIn('data-lane="recording" data-control="recorder-workspace"', html)
+
+        controls_start = javascript.index("function renderRecordingControls(")
+        controls_end = javascript.index("async function loadRecordingLibrary", controls_start)
+        controls = javascript[controls_start:controls_end]
+        for key in (
+            "take-name",
+            "maximum-seconds",
+            "plan",
+            "start",
+            "stop",
+            "recovery",
+        ):
+            with self.subTest(control=key):
+                self.assertEqual(controls.count(f'dataset.control = "{key}"'), 1)
+        self.assertIn('nameInput.addEventListener("input", invalidatePlan)', controls)
+        self.assertIn("name: nameInput.value", controls)
+
+        lanes_start = javascript.index("function renderActiveLanes(")
+        lanes_end = javascript.index("function homeProfile(", lanes_start)
+        lanes = javascript[lanes_start:lanes_end]
+        self.assertNotIn('byId("now-signal-lanes").replaceChildren', lanes)
+        self.assertIn("existingCards.get(lane.key)", lanes)
+        self.assertIn("reconcileKeyedChildren(container, cards)", lanes)
+        self.assertIn(
+            "restoreRecorderInteraction(workspace, interaction, { preserveDraft })",
+            lanes,
+        )
+
+        action_start = javascript.index("async function runRecordingAction(")
+        action_end = javascript.index("function renderRecordingControls(", action_start)
+        action = javascript[action_start:action_end]
+        self.assertIn("renderActiveLanes({ preserveDraft: false })", action)
+        self.assertIn("renderAll({ preserveRecorderDraft: false })", action)
+
+        helpers_start = javascript.index("function captureRecorderInteraction(")
+        helpers_end = javascript.index("function renderActiveLanes(", helpers_start)
+        helpers = javascript[helpers_start:helpers_end]
+        harness = f"""
+{helpers}
+const events = [];
+const active = {{
+  dataset: {{ control: "take-name" }},
+  value: "draft-name.wav",
+  selectionStart: 2,
+  selectionEnd: 8,
+  selectionDirection: "forward",
+}};
+const control = {{
+  dataset: {{ control: "take-name" }},
+  value: "authoritative.wav",
+  disabled: false,
+  closest() {{ return null; }},
+  focus() {{ events.push("control-focus"); }},
+  setSelectionRange(start, end, direction) {{
+    events.push(["selection", start, end, direction]);
+  }},
+}};
+const workspace = {{
+  dataset: {{ control: "recorder-workspace" }},
+  contains(node) {{ return node === active || node === workspace; }},
+  querySelectorAll() {{ return [control]; }},
+  focus() {{ events.push("workspace-focus"); }},
+}};
+globalThis.document = {{ activeElement: active }};
+const interaction = captureRecorderInteraction(workspace);
+restoreRecorderInteraction(workspace, interaction, {{ preserveDraft: true }});
+const passive = {{ value: control.value, events: [...events] }};
+
+control.value = "new-authoritative.wav";
+events.length = 0;
+restoreRecorderInteraction(workspace, interaction, {{ preserveDraft: false }});
+const action = {{ value: control.value, events: [...events] }};
+
+control.disabled = true;
+events.length = 0;
+restoreRecorderInteraction(workspace, interaction, {{ preserveDraft: true }});
+const fallback = [...events];
+
+control.disabled = false;
+workspace.querySelectorAll = () => [];
+events.length = 0;
+restoreRecorderInteraction(workspace, interaction, {{ preserveDraft: true }});
+const missing = [...events];
+
+document.activeElement = workspace;
+events.length = 0;
+const workspaceInteraction = captureRecorderInteraction(workspace);
+restoreRecorderInteraction(workspace, workspaceInteraction, {{ preserveDraft: true }});
+const routeFocus = [...events];
+
+let recorderRemoved = false;
+const listening = {{ remove() {{ remove(this); }} }};
+const playing = {{ remove() {{ remove(this); }} }};
+const stale = {{ remove() {{ remove(this); }} }};
+const recorder = {{ remove() {{ recorderRemoved = true; remove(this); }} }};
+const parent = {{
+  children: [listening, stale, recorder],
+  insertBefore(child, reference) {{
+    const oldIndex = this.children.indexOf(child);
+    if (oldIndex >= 0) this.children.splice(oldIndex, 1);
+    const index = reference === null ? this.children.length : this.children.indexOf(reference);
+    this.children.splice(index, 0, child);
+  }},
+}};
+function remove(child) {{
+  const index = parent.children.indexOf(child);
+  if (index >= 0) parent.children.splice(index, 1);
+}}
+reconcileKeyedChildren(parent, [listening, playing, recorder]);
+const keyed = {{
+  order: parent.children.map((child) =>
+    child === listening ? "listening" : child === playing ? "playing" : "recording"
+  ),
+  recorderRemoved,
+}};
+process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, routeFocus, keyed }}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["passive"]["value"], "draft-name.wav")
+        self.assertEqual(
+            result["passive"]["events"],
+            ["control-focus", ["selection", 2, 8, "forward"]],
+        )
+        self.assertEqual(result["action"], {
+            "value": "new-authoritative.wav",
+            "events": ["control-focus"],
+        })
+        self.assertEqual(result["fallback"], ["workspace-focus"])
+        self.assertEqual(result["missing"], ["workspace-focus"])
+        self.assertEqual(result["routeFocus"], ["workspace-focus"])
+        self.assertEqual(
+            result["keyed"],
+            {
+                "order": ["listening", "playing", "recording"],
+                "recorderRemoved": False,
+            },
+        )
 
     def test_home_view_preserves_unreadable_whale_truth(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
@@ -1478,7 +1680,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("ausdrücklich als veraltet", renderer)
         self.assertIn("TELEMETRY_AVAILABILITY_LABELS", javascript)
         self.assertNotIn("innerHTML", javascript)
-        renderer_all_start = javascript.index("function renderAll()")
+        renderer_all_start = javascript.index("function renderAll(")
         renderer_all_end = javascript.index("function renderTruth()", renderer_all_start)
         self.assertNotIn(
             "renderTelemetry",

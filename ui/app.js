@@ -11,7 +11,7 @@ const ROUTE_ALIASES = {
   start: "now",
   hoeren: "setups",
   spielen: "setups",
-  aufnehmen: "setups",
+  aufnehmen: "now",
   klaenge: "library",
   verbindungen: "system",
   diagnose: "system",
@@ -21,7 +21,7 @@ const ROUTE_ALIASES = {
 const ROUTE_TARGETS = {
   hoeren: "setup-listening",
   spielen: "setup-playing",
-  aufnehmen: "setup-recording",
+  aufnehmen: "recorder-workspace",
 };
 
 const MODE_LABELS = {
@@ -720,7 +720,7 @@ function renderAuthority(status = "ready") {
   byId("mobile-authority").setAttribute("aria-label", fullLabel);
 }
 
-function renderAll() {
+function renderAll({ preserveRecorderDraft = true } = {}) {
   if (!state.snapshot) return;
   renderAuthority("ready");
   renderRuntimeMode();
@@ -730,7 +730,7 @@ function renderAll() {
   ).replace("Stand ", "");
   renderTruth();
   renderHome();
-  renderActiveLanes();
+  renderActiveLanes({ preserveDraft: preserveRecorderDraft });
   renderWhale();
   renderWhaleLessonSummary();
   renderProfiles();
@@ -841,7 +841,7 @@ async function runRecordingAction(payload) {
   if (state.recordingActionPending) return;
   state.recordingActionPending = true;
   syncRemoteControls();
-  renderActiveLanes();
+  renderActiveLanes({ preserveDraft: false });
   try {
     const result = await postRecordingAction(payload);
     if (result.operation === "plan") {
@@ -881,7 +881,7 @@ async function runRecordingAction(payload) {
   } finally {
     state.recordingActionPending = false;
     syncRemoteControls();
-    if (state.snapshot) renderAll();
+    if (state.snapshot) renderAll({ preserveRecorderDraft: false });
   }
 }
 
@@ -938,6 +938,7 @@ function renderRecordingControls(card, recording) {
   const nameLabel = element("label", "recording-field");
   appendText(nameLabel, "span", "", "Take-Name");
   const nameInput = element("input", "recording-input");
+  nameInput.dataset.control = "take-name";
   nameInput.type = "text";
   nameInput.autocomplete = "off";
   nameInput.spellcheck = false;
@@ -948,6 +949,7 @@ function renderRecordingControls(card, recording) {
   const durationLabel = element("label", "recording-field");
   appendText(durationLabel, "span", "", "Maximale Dauer (Sekunden)");
   const durationInput = element("input", "recording-input");
+  durationInput.dataset.control = "maximum-seconds";
   durationInput.type = "number";
   durationInput.min = String(contract.capture?.minimum_duration_seconds || 1);
   durationInput.max = String(contract.capture?.maximum_duration_seconds || 14400);
@@ -963,6 +965,10 @@ function renderRecordingControls(card, recording) {
   const startButton = element("button", "primary-button", "Aufnahme starten");
   const stopButton = element("button", "secondary-button", "Stop");
   const recoverButton = element("button", "secondary-button", "Recovery");
+  planButton.dataset.control = "plan";
+  startButton.dataset.control = "start";
+  stopButton.dataset.control = "stop";
+  recoverButton.dataset.control = "recovery";
   for (const button of [planButton, startButton, stopButton, recoverButton]) button.type = "button";
   planButton.disabled = !writable || active || state.recordingActionPending;
   startButton.disabled =
@@ -1050,13 +1056,70 @@ async function loadRecordingLibrary({ render = true } = {}) {
   if (render && state.snapshot) renderLibrary();
 }
 
-function renderActiveLanes() {
+function captureRecorderInteraction(workspace) {
+  const active = document.activeElement;
+  if (!workspace.contains(active)) return null;
+  return {
+    control: active.dataset.control || "recorder-workspace",
+    value: "value" in active ? active.value : null,
+    selectionStart: active.selectionStart,
+    selectionEnd: active.selectionEnd,
+    selectionDirection: active.selectionDirection,
+  };
+}
+
+function restoreRecorderInteraction(workspace, interaction, { preserveDraft }) {
+  if (!interaction) return;
+  const target = [...workspace.querySelectorAll("[data-control]")].find(
+    (control) => control.dataset.control === interaction.control,
+  );
+  const applicable = target && !target.disabled && !target.closest("[hidden]");
+  const focusTarget = applicable ? target : workspace;
+  if (applicable && preserveDraft && interaction.value !== null) {
+    focusTarget.value = interaction.value;
+  }
+  focusTarget.focus({ preventScroll: true });
+  if (
+    applicable &&
+    preserveDraft &&
+    Number.isInteger(interaction.selectionStart) &&
+    Number.isInteger(interaction.selectionEnd)
+  ) {
+    focusTarget.setSelectionRange(
+      interaction.selectionStart,
+      interaction.selectionEnd,
+      interaction.selectionDirection || "none",
+    );
+  }
+}
+
+function reconcileKeyedChildren(parent, children) {
+  const retained = new Set(children);
+  for (const child of [...parent.children]) {
+    if (!retained.has(child)) child.remove();
+  }
+  children.forEach((child, index) => {
+    const current = parent.children[index] || null;
+    if (current !== child) parent.insertBefore(child, current);
+  });
+}
+
+function renderActiveLanes({ preserveDraft = true } = {}) {
   const snapshot = state.snapshot;
   const graph = snapshot.doctor?.graph || {};
   const whale = snapshot.whale || {};
   const recording = snapshot.recording || {};
+  const container = byId("now-signal-lanes");
+  const workspace = byId("recorder-workspace");
+  const interaction = captureRecorderInteraction(workspace);
+  const existingCards = new Map(
+    [...container.children]
+      .filter((card) => card.dataset.lane)
+      .map((card) => [card.dataset.lane, card]),
+  );
   const lanes = [
     {
+      key: "listening",
       name: "Hören",
       path: `${formatEndpoint(graph.default_source)} → ${formatEndpoint(graph.default_sink)}`,
       observed: snapshot.doctor?.status === "ok" ? "Route gelesen" : "nicht lesbar",
@@ -1065,6 +1128,7 @@ function renderActiveLanes() {
       executable: "keine Apply-Aktion",
     },
     {
+      key: "playing",
       name: "Spielen",
       path: `Roland → ${displayMode(whale.service?.voice_mode || whale.contract?.default_mode)}`,
       observed: whale.status === "ok" ? (whale.service?.active ? "aktiv" : "inaktiv") : "nicht lesbar",
@@ -1073,6 +1137,7 @@ function renderActiveLanes() {
       executable: "in T020 gesperrt",
     },
     {
+      key: "recording",
       name: "Aufnehmen",
       path: "MOTU M2 → unveränderlicher Take",
       observed: snapshot.presence?.observed?.motu_m2 ? "MOTU beobachtet" : "MOTU nicht beobachtet",
@@ -1088,21 +1153,23 @@ function renderActiveLanes() {
       kind: "recording",
     },
   ];
-  byId("now-signal-lanes").replaceChildren(
-    ...lanes.map((lane) => {
-      const card = element("article", "lane-card");
-      appendText(card, "p", "eyebrow", lane.name);
-      appendText(card, "h3", "", lane.path);
-      const list = element("dl", "truth-list");
-      detailRow(list, "Beobachtet", lane.observed);
-      detailRow(list, "Konfiguriert", lane.configured);
-      detailRow(list, "Physisch offen", lane.physical);
-      detailRow(list, "Ausführbar", lane.executable);
-      card.append(list);
-      if (lane.kind === "recording") renderRecordingControls(card, recording);
-      return card;
-    }),
-  );
+  const cards = lanes.map((lane) => {
+    const card = existingCards.get(lane.key) || element("article", "lane-card");
+    card.dataset.lane = lane.key;
+    card.replaceChildren();
+    appendText(card, "p", "eyebrow", lane.name);
+    appendText(card, "h3", "", lane.path);
+    const list = element("dl", "truth-list");
+    detailRow(list, "Beobachtet", lane.observed);
+    detailRow(list, "Konfiguriert", lane.configured);
+    detailRow(list, "Physisch offen", lane.physical);
+    detailRow(list, "Ausführbar", lane.executable);
+    card.append(list);
+    if (lane.kind === "recording") renderRecordingControls(card, recording);
+    return card;
+  });
+  reconcileKeyedChildren(container, cards);
+  restoreRecorderInteraction(workspace, interaction, { preserveDraft });
 }
 
 function homeProfile(profileId) {
@@ -2464,6 +2531,25 @@ function prefersReducedMotion() {
   );
 }
 
+function revealRouteTarget(target) {
+  const detail = target.closest(".depth-detail");
+  if (detail?.hidden) {
+    detail.hidden = false;
+    const panel = detail.closest("[data-depth-panel]");
+    const toggle = panel?.querySelector(":scope > .depth-heading .depth-toggle");
+    panel?.classList.add("is-expanded");
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", "true");
+      toggle.textContent = "Reduzieren";
+    }
+  }
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({
+    block: "start",
+    behavior: prefersReducedMotion() ? "auto" : "smooth",
+  });
+}
+
 function applyRoute(event) {
   const routeKey = window.location.hash.slice(1);
   const route = routeFromHash();
@@ -2486,19 +2572,16 @@ function applyRoute(event) {
   byId("view-title").textContent = ROUTES[route].title;
   byId("view-eyebrow").textContent = ROUTES[route].eyebrow;
   document.title = `${ROUTES[route].title} · Audiozentrale`;
-  if (event?.type === "hashchange") {
-    byId("view-title").focus({ preventScroll: true });
-  }
   if (routeTarget) {
     window.requestAnimationFrame(() => {
       const target = byId(routeTarget);
       if (!target || target.hidden) return;
-      target.scrollIntoView({
-        block: "start",
-        behavior: prefersReducedMotion() ? "auto" : "smooth",
-      });
+      revealRouteTarget(target);
     });
   } else {
+    if (event?.type === "hashchange") {
+      byId("view-title").focus({ preventScroll: true });
+    }
     window.scrollTo({
       top: 0,
       behavior: prefersReducedMotion() ? "auto" : "smooth",

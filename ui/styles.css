@@ -2836,7 +2836,8 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
 
 #setup-playing,
 #setup-listening,
-#setup-recording {
+#setup-recording,
+#recorder-workspace {
   scroll-margin-top: 72px;
 }
 
