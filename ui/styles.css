@@ -2530,6 +2530,24 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   margin: 0;
 }
 
+.recording-mode-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.recording-mode-switch button[aria-pressed="true"] {
+  border-color: var(--mint-border);
+  color: var(--mint-strong);
+  background: rgba(185, 230, 181, 0.08);
+}
+
+.recording-product-hint {
+  margin: 0;
+  color: var(--muted-bright);
+  font-size: 0.78rem;
+}
+
 .recording-draft {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(140px, 0.6fr);

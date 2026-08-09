@@ -7,6 +7,9 @@ import os
 import pathlib
 import stat
 import subprocess
+import signal
+import struct
+import sys
 import tempfile
 import types
 import unittest
@@ -78,6 +81,40 @@ class RecordingSessionTest(unittest.TestCase):
                     "object_serial_sha256": "8" * 64,
                 }
             )
+        elif session_type == "piano-vocal-performance":
+            audio = dict(common)
+            audio.update(
+                {
+                    "vendor_id": "07fd",
+                    "product_id": "0008",
+                    "serial_sha256": "1" * 64,
+                    "bus_path_sha256": "3" * 64,
+                }
+            )
+            audio["fingerprint"] = MODULE.canonical_sha256(audio)
+            usb = {
+                "vendor_id": "0582",
+                "product_id": "01b1",
+                "identity_strength": "model-usb-port",
+                "bus_number": "1",
+                "port_path": "2.3",
+            }
+            usb["fingerprint"] = MODULE.canonical_sha256(usb)
+            midi = {
+                "address": "24:0",
+                "client": 24,
+                "port": 0,
+                "kernel_card": 2,
+                "kernel_client_label_sha256": "4" * 64,
+                "kernel_port_label_sha256": "5" * 64,
+                "arecordmidi_client_label_sha256": "6" * 64,
+                "arecordmidi_port_label_sha256": "7" * 64,
+                "usb": usb,
+            }
+            midi["fingerprint"] = MODULE.canonical_sha256(midi)
+            performance = {"audio": audio, "midi": midi}
+            performance["fingerprint"] = MODULE.canonical_sha256(performance)
+            return performance
         else:
             raise AssertionError(session_type)
         common["fingerprint"] = MODULE.canonical_sha256(common)
@@ -135,7 +172,7 @@ class RecordingSessionTest(unittest.TestCase):
                 "motu_phantom_48v": "on",
                 "motu_input_gain_reference": "mark 10",
             }
-            if session_type == "voice-recording"
+            if session_type in {"voice-recording", "piano-vocal-performance"}
             else {},
             "error": None,
         }
@@ -178,6 +215,14 @@ class RecordingSessionTest(unittest.TestCase):
                 MODULE,
                 "parecord_binding",
                 return_value={"launcher": "/usr/bin/parecord"},
+            ),
+            mock.patch.object(
+                MODULE,
+                "arecordmidi_binding",
+                return_value={
+                    "launcher": "/usr/bin/arecordmidi",
+                    "resolved": {"path": "/usr/bin/arecordmidi", "sha256": "a" * 64},
+                },
             ),
         ):
             return MODULE.build_plan(
@@ -250,12 +295,13 @@ class RecordingSessionTest(unittest.TestCase):
             48_000 * 2 * 4 * 10 + 1_048_576,
         )
 
-    def test_catalog_exposes_three_explicit_session_contracts(self) -> None:
+    def test_catalog_exposes_four_explicit_session_contracts(self) -> None:
         contracts = {name: MODULE.load_catalog(name) for name in MODULE.SESSION_TYPES}
         self.assertEqual(
             set(contracts),
             {
                 "voice-recording",
+                "piano-vocal-performance",
                 "roland-audio-recording",
                 "production-mix-recording",
             },
@@ -276,6 +322,7 @@ class RecordingSessionTest(unittest.TestCase):
             {contract["process"]["client_name"] for contract in contracts.values()},
             {
                 "audio-voice-recording",
+                "audio-piano-vocal-performance",
                 "audio-roland-recording",
                 "audio-production-recording",
             },
@@ -514,6 +561,173 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertEqual(first["readiness"]["blockers"], [])
         self.assertFalse(self.state.exists())
 
+    def test_performance_plan_binds_arecordmidi_digest_smpte_outputs_and_collisions(self) -> None:
+        plan = self.ready_plan(session_type="piano-vocal-performance")
+        self.assertTrue(plan["ready"])
+        performance = plan["identity"]["performance"]
+        self.assertEqual(performance["midi_output"]["name"], "take-01.mid")
+        self.assertEqual(performance["manifest_output"]["name"], "take-01.take.json")
+        self.assertEqual(
+            performance["timing"],
+            {"basis": "SMPTE", "fps": 25, "ticks_per_frame": 40, "nominal_resolution_ms": 1},
+        )
+        self.assertEqual(
+            performance["capture_argv"],
+            ["-p", "<plan-bound-client:port>", "-f", "25", "-t", "40", "<private-partial.mid>"],
+        )
+        self.assertEqual(performance["arecordmidi"]["resolved"]["sha256"], "a" * 64)
+        (self.output / "take-01.mid").write_bytes(b"occupied")
+        blocked = self.ready_plan(session_type="piano-vocal-performance")
+        self.assertIn("midi-output-already-exists", blocked["readiness"]["blockers"])
+
+    def test_performance_plan_rejects_timing_or_argv_drift(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance")
+        MODULE._validate_persisted_spec(spec, state_root=self.state)
+        spec["plan_identity"]["performance"]["capture_argv"][4] = "24"
+        spec["plan_sha256"] = MODULE.canonical_sha256(spec["plan_identity"])
+        with self.assertRaisesRegex(MODULE.RecordingError, "performance recording plan"):
+            MODULE._validate_persisted_spec(spec, state_root=self.state)
+
+    def test_capture_child_group_is_owned_and_bounded_cleanup_reaps_it(self) -> None:
+        with tempfile.TemporaryFile() as stderr:
+            child = MODULE._spawn_capture_child(
+                [sys.executable, "-c", "import time; time.sleep(30)"], stderr
+            )
+            self.addCleanup(lambda: child.poll() is None and child.kill())
+            self.assertEqual(os.getpgid(child.pid), child.pid)
+            returncodes, forced = MODULE._stop_capture_children([child], 2)
+        self.assertFalse(forced)
+        self.assertIn(returncodes[0], {-signal.SIGINT, 0})
+        self.assertIsNotNone(child.poll())
+
+    def test_arecordmidi_sigint_exit_requires_normal_finalization_code(self) -> None:
+        self.assertTrue(MODULE._performance_child_exit_codes_clean([0, 0]))
+        self.assertTrue(
+            MODULE._performance_child_exit_codes_clean([-signal.SIGINT, 0])
+        )
+        self.assertFalse(
+            MODULE._performance_child_exit_codes_clean([0, -signal.SIGINT])
+        )
+        self.assertFalse(MODULE._performance_child_exit_codes_clean([0, 1]))
+
+    def test_mid_publication_failure_preserves_uncommitted_siblings_without_manifest(self) -> None:
+        wav_partial = self.output / ".song.partial.wav"
+        wav_final = self.output / "song.wav"
+        midi_partial = self.output / ".song.partial.mid"
+        midi_final = self.output / "song.mid"
+        manifest_final = self.output / "song.take.json"
+        wav_partial.write_bytes(b"private-wave")
+        midi_partial.write_bytes(b"private-midi")
+        wav_partial.chmod(0o600)
+        midi_partial.chmod(0o600)
+        wav_binding = MODULE._safe_regular_binding(
+            wav_partial, maximum_bytes=1024, require_private=True, include_identity=True
+        )
+        midi_binding = MODULE._safe_regular_binding(
+            midi_partial, maximum_bytes=1024, require_private=True, include_identity=True
+        )
+        MODULE._link_no_replace_keep_partial(
+            wav_partial, wav_final, wav_binding, maximum_bytes=1024
+        )
+        with mock.patch.object(MODULE.os, "link", side_effect=OSError("injected")):
+            with self.assertRaises(OSError):
+                MODULE._link_no_replace_keep_partial(
+                    midi_partial, midi_final, midi_binding, maximum_bytes=1024
+                )
+        self.assertTrue(wav_final.is_file())
+        self.assertTrue(wav_partial.is_file())
+        self.assertTrue(midi_partial.is_file())
+        self.assertFalse(midi_final.exists())
+        self.assertFalse(manifest_final.exists())
+
+    def test_worker_failure_before_manifest_commit_is_failed_preserved(self) -> None:
+        MODULE.ensure_private_directory(self.state)
+        spec = self.persisted_spec(
+            session_id="c" * 24,
+            name="performance.wav",
+            session_type="piano-vocal-performance",
+        )
+        session_paths = MODULE._session_paths(self.state, spec["session_id"])
+        MODULE._atomic_private_json(session_paths["spec"], spec, create_only=True)
+        spec_binding = MODULE._safe_regular_binding(
+            session_paths["spec"], require_private=True
+        )
+        silent_smf = (
+            b"MThd"
+            + struct.pack(">IHHH", 6, 0, 1, MODULE.MIDI.SMPTE_DIVISION)
+            + b"MTrk"
+            + struct.pack(">I", 4)
+            + b"\x00\xff\x2f\x00"
+        )
+
+        class FakeProcess:
+            @staticmethod
+            def poll():
+                return None
+
+        def fake_spawn(argv, _stderr):
+            output = pathlib.Path(argv[-1])
+            if output.suffix == ".mid":
+                output.write_bytes(silent_smf)
+                output.chmod(0o600)
+            else:
+                self.write_wave(output)
+            return FakeProcess()
+
+        real_link = MODULE._link_no_replace_keep_partial
+        link_count = 0
+
+        def fail_manifest_link(partial, final, binding, *, maximum_bytes):
+            nonlocal link_count
+            link_count += 1
+            if link_count == 3:
+                raise OSError("injected before final manifest")
+            return real_link(
+                partial, final, binding, maximum_bytes=maximum_bytes
+            )
+
+        def run_performance(_spec):
+            return MODULE._performance_worker_run(
+                _spec,
+                pathlib.Path("/fixture/parecord"),
+                pathlib.Path("/fixture/arecordmidi"),
+            )
+
+        with (
+            mock.patch.object(MODULE, "worker_run", side_effect=run_performance),
+            mock.patch.object(MODULE, "_spawn_capture_child", side_effect=fake_spawn),
+            mock.patch.object(
+                MODULE, "_stop_capture_children", return_value=([0, 0], False)
+            ),
+            mock.patch.object(
+                MODULE.time,
+                "monotonic",
+                side_effect=[0.0, 0.1, 0.2, 0.3, 0.4, 100.0],
+            ),
+            mock.patch.object(MODULE.resource, "setrlimit"),
+            mock.patch.object(MODULE.os, "umask"),
+            mock.patch.object(MODULE.signal, "signal"),
+            mock.patch.object(
+                MODULE,
+                "_link_no_replace_keep_partial",
+                side_effect=fail_manifest_link,
+            ),
+        ):
+            returncode = MODULE.worker_entry(
+                session_paths["spec"], spec_binding["sha256"]
+            )
+
+        self.assertEqual(returncode, 1)
+        result = MODULE._safe_json_read(session_paths["result"], require_private=True)
+        MODULE._validate_result(result, spec)
+        self.assertEqual(result["status"], "failed-preserved")
+        self.assertTrue(pathlib.Path(spec["paths"]["final"]).is_file())
+        self.assertTrue(pathlib.Path(spec["paths"]["midi_final"]).is_file())
+        self.assertFalse(pathlib.Path(spec["paths"]["manifest_final"]).exists())
+        self.assertIsNotNone(result["performance_artifacts"]["wav_final"])
+        self.assertIsNotNone(result["performance_artifacts"]["midi_final"])
+        self.assertIsNone(result["performance_artifacts"]["manifest_final"])
+
     def test_source_projection_ignores_volatile_observation_metadata(self) -> None:
         identity = self.source_identity()
         contract = MODULE.load_catalog()["source"]
@@ -747,7 +961,7 @@ class RecordingSessionTest(unittest.TestCase):
         capture["maximum_file_bytes"] = 48_000 * 2 * 4 * maximum_seconds + 1_048_576
         plan_identity["state_root"] = str(self.state)
         paths = MODULE._session_paths(self.state, session_id)
-        return {
+        spec = {
             "schema_version": 1,
             "kind": "audio_recording_session_spec",
             "session_id": session_id,
@@ -761,6 +975,31 @@ class RecordingSessionTest(unittest.TestCase):
                 "result": str(paths["result"]),
             },
         }
+        if session_type == "piano-vocal-performance":
+            midi_final = final.with_suffix(".mid")
+            manifest_final = final.with_suffix(".take.json")
+            plan_identity["performance"]["midi_output"].update(
+                {"name": midi_final.name, "path": str(midi_final)}
+            )
+            plan_identity["performance"]["manifest_output"].update(
+                {"name": manifest_final.name, "path": str(manifest_final)}
+            )
+            spec["midi_source"] = "24:0"
+            spec["paths"].update(
+                {
+                    "midi_partial": str(
+                        self.output / f".{final.stem}.{session_id}.partial.mid"
+                    ),
+                    "midi_final": str(midi_final),
+                    "manifest_partial": str(
+                        self.output
+                        / f".{final.stem}.{session_id}.partial.take.json"
+                    ),
+                    "manifest_final": str(manifest_final),
+                }
+            )
+            spec["plan_sha256"] = MODULE.canonical_sha256(plan_identity)
+        return spec
 
     def completed_result(self, spec: dict[str, object]) -> dict[str, object]:
         final = pathlib.Path(spec["paths"]["final"])
@@ -1003,6 +1242,44 @@ class RecordingSessionTest(unittest.TestCase):
     def test_parecord_binding_rejects_missing_test_executable(self) -> None:
         with self.assertRaises(MODULE.RecordingError):
             MODULE.parecord_binding(self.base / "missing-parecord")
+
+    def test_arecordmidi_binding_hashes_the_current_resolved_binary(self) -> None:
+        resolved = self.base / "arecordmidi-fixture"
+        resolved.write_bytes(b"#!/bin/sh\nexit 0\n")
+        resolved.chmod(0o755)
+        launcher = self.base / "arecordmidi"
+        launcher.symlink_to(resolved.name)
+
+        binding = MODULE.arecordmidi_binding(launcher)
+
+        self.assertEqual(binding["launcher"], str(launcher))
+        self.assertEqual(binding["launcher_symlink_target"], resolved.name)
+        self.assertEqual(
+            binding["resolved"]["sha256"],
+            hashlib.sha256(resolved.read_bytes()).hexdigest(),
+        )
+
+    def test_performance_start_rejects_arecordmidi_digest_drift(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance")
+        planned = spec["plan_identity"]["performance"]["arecordmidi"]
+        changed = json.loads(json.dumps(planned))
+        changed["resolved"]["sha256"] = "f" * 64
+        self.assertNotEqual(changed, planned)
+        with (
+            mock.patch.object(
+                MODULE,
+                "contract_bindings",
+                return_value=spec["plan_identity"]["contracts"],
+            ),
+            mock.patch.object(
+                MODULE,
+                "parecord_binding",
+                return_value=spec["plan_identity"]["parecord"],
+            ),
+            mock.patch.object(MODULE, "arecordmidi_binding", return_value=changed),
+        ):
+            with self.assertRaisesRegex(MODULE.RecordingError, "arecordmidi changed"):
+                MODULE._validate_spec(spec)
 
     def test_worker_cleanly_stops_fake_recorder_and_publishes_wav(self) -> None:
         fake = self.base / "fake-parecord"

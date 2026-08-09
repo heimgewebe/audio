@@ -83,10 +83,12 @@ def _result_projection(result: dict[str, Any], spec: dict[str, Any]) -> dict[str
         "status": result["status"],
         "reason": result["reason"],
     }
+    performance = spec["plan_identity"]["session_type"] == "piano-vocal-performance"
     if result["status"] == "completed":
         started_at = result.get("started_at")
         completed_at = result.get("completed_at")
-        artifact = result.get("artifact")
+        artifacts = result.get("artifacts") if performance else None
+        artifact = artifacts.get("vocal_wav") if isinstance(artifacts, dict) else result.get("artifact")
         final_path = pathlib.Path(spec["paths"]["final"])
         try:
             REC._validate_binding_shape(
@@ -110,6 +112,20 @@ def _result_projection(result: dict[str, Any], spec: dict[str, Any]) -> dict[str
             or artifact["duration_seconds"] <= 0
         ):
             raise RecordingProductError("Take-Beleg enthält unplausible Metadaten.")
+        if performance:
+            try:
+                if not isinstance(artifacts, dict):
+                    raise REC.RecordingError("performance artifact receipt is missing")
+                REC._validate_result(result, spec)
+                manifest = REC._validate_performance_manifest(
+                    pathlib.Path(spec["paths"]["manifest_final"]),
+                    spec,
+                    {**artifacts, "does_not_establish": result["does_not_establish"]},
+                )
+            except REC.RecordingError as exc:
+                raise RecordingProductError(
+                    "Performance-Take hat kein gültiges Manifest als Commit-Beleg."
+                ) from exc
         projection.update(
             {
                 "started_at": started_at,
@@ -127,11 +143,44 @@ def _result_projection(result: dict[str, Any], spec: dict[str, Any]) -> dict[str
                 },
             }
         )
+        if performance:
+            projection["artifacts"] = {
+                "vocal_wav": projection.pop("artifact"),
+                "roland_midi_smf": {
+                    "sha256": artifacts["roland_midi_smf"]["sha256"],
+                    "bytes": artifacts["roland_midi_smf"]["bytes"],
+                    "receipt_bound": True,
+                },
+                "take_manifest": {
+                    "sha256": artifacts["take_manifest"]["sha256"],
+                    "bytes": artifacts["take_manifest"]["bytes"],
+                    "commit_truth": True,
+                },
+            }
+            projection["midi_event_counts"] = manifest["midi_event_counts"]
     else:
         timestamp = result.get("failed_at") or result.get("recovered_at")
         if timestamp is not None and not REC._valid_timestamp(timestamp):
             raise RecordingProductError("Recovery-Beleg enthält keinen gültigen Zeitpunkt.")
         projection["at"] = timestamp
+        if performance:
+            try:
+                REC._validate_result(result, spec)
+            except REC.RecordingError as exc:
+                raise RecordingProductError(
+                    "Performance-Recovery-Beleg ist nicht sicher lesbar."
+                ) from exc
+            inventory = result["performance_artifacts"]
+            projection["recovery_artifacts"] = {
+                name: (
+                    "missing"
+                    if value is None
+                    else "invalid"
+                    if "error" in value
+                    else "present"
+                )
+                for name, value in inventory.items()
+            }
     return projection
 
 
@@ -183,6 +232,12 @@ def _session_projection(
     resolved = resolved if isinstance(resolved, list) else []
     final_name = pathlib.Path(spec["paths"]["final"]).name
     active_pointer = active_session_id == session_id
+    source_identity = source.get("identity") or {}
+    audio_identity = (
+        source_identity.get("audio", {})
+        if identity["session_type"] == "piano-vocal-performance"
+        else source_identity
+    )
     return {
         "session_id": session_id,
         "session_type": identity["session_type"],
@@ -211,9 +266,14 @@ def _session_projection(
         "source": {
             "bound": isinstance(source.get("identity"), dict),
             "identity_sha256": source.get("identity_sha256"),
-            "sample_rate_hz": (source.get("identity") or {}).get("sample_rate_hz"),
-            "sample_format": (source.get("identity") or {}).get("sample_format"),
-            "channels": (source.get("identity") or {}).get("channels"),
+            "sample_rate_hz": audio_identity.get("sample_rate_hz"),
+            "sample_format": audio_identity.get("sample_format"),
+            "channels": audio_identity.get("channels"),
+            "midi_bound": (
+                isinstance(source_identity.get("midi"), dict)
+                if identity["session_type"] == "piano-vocal-performance"
+                else False
+            ),
         },
         "physical": {
             "rode_nt1a_connected": facts.get("rode_nt1a_connected"),
@@ -320,7 +380,10 @@ def library(
         except RecordingProductError:
             skipped += 1
             continue
-        if item["session_type"] != "voice-recording":
+        if item["session_type"] not in {
+            "voice-recording",
+            "piano-vocal-performance",
+        }:
             continue
         if len(items) < limit:
             items.append(item)
@@ -352,16 +415,24 @@ def verified_media(
         raise RecordingProductError("Take ist nicht vollständig verifiziert lesbar.") from exc
     result = status.get("result")
     final = status.get("final")
+    session_type = status.get("session_type")
+    artifact = None
+    if isinstance(result, dict):
+        artifact = (
+            result.get("artifacts", {}).get("vocal_wav")
+            if session_type == "piano-vocal-performance"
+            else result.get("artifact")
+        )
     if (
-        status.get("session_type") != "voice-recording"
+        session_type not in {"voice-recording", "piano-vocal-performance"}
         or status.get("status") != "completed"
         or not isinstance(result, dict)
         or result.get("status") != "completed"
         or not isinstance(final, dict)
         or "error" in final
-        or not isinstance(result.get("artifact"), dict)
-        or result["artifact"].get("sha256") != final.get("sha256")
-        or result["artifact"].get("bytes") != final.get("bytes")
+        or not isinstance(artifact, dict)
+        or artifact.get("sha256") != final.get("sha256")
+        or artifact.get("bytes") != final.get("bytes")
     ):
         raise RecordingProductError("Take ist nicht als finalisierte Sprachaufnahme gebunden.")
     return {
@@ -374,9 +445,9 @@ def verified_media(
         "mode": final["mode"],
         "device": final["device"],
         "inode": final["inode"],
-        "channels": result["artifact"]["channels"],
-        "sample_rate_hz": result["artifact"]["sample_rate_hz"],
-        "duration_seconds": result["artifact"]["duration_seconds"],
+        "channels": artifact["channels"],
+        "sample_rate_hz": artifact["sample_rate_hz"],
+        "duration_seconds": artifact["duration_seconds"],
         "verified_current": True,
     }
 

@@ -321,6 +321,33 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
             post.index('return fetchJson("/api/v1/actions/recording"'),
         )
 
+    def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
+        controls = self.app.split("function renderRecordingControls(", 1)[1].split(
+            "\nasync function loadRecordingLibrary", 1
+        )[0]
+        plan_disable = controls.split("planButton.disabled =", 1)[1].split(
+            ";", 1
+        )[0]
+        start_disable = controls.split("startButton.disabled =", 1)[1].split(
+            ";", 1
+        )[0]
+        self.assertIn("!writable", plan_disable)
+        self.assertNotIn("actionable", plan_disable)
+        self.assertNotIn("selectedRecordingModeActionable", self.app)
+        self.assertIn("!recordingPlanMatchesDraft()", start_disable)
+        self.assertIn("modeButton.disabled = active || state.recordingActionPending", controls)
+        mode_change = controls.split('modeButton.addEventListener("click"', 1)[1].split(
+            "});", 1
+        )[0]
+        self.assertIn("state.recordingPlan = null", mode_change)
+        self.assertIn("state.recordingPlanInput = null", mode_change)
+
+        matcher = self.app.split("function recordingPlanMatchesDraft()", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("input?.mode === state.recordingDraft.mode", matcher)
+        self.assertIn("plan.mode === state.recordingDraft.mode", matcher)
+
 
 class FeatureDetectionTests(unittest.TestCase):
     def setUp(self) -> None:

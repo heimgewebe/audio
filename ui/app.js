@@ -155,7 +155,7 @@ const state = {
   recordingLibraryError: null,
   recordingPlan: null,
   recordingPlanInput: null,
-  recordingDraft: { name: "voice-take.wav", maximumSeconds: 600 },
+  recordingDraft: { mode: "voice", name: "voice-take.wav", maximumSeconds: 600 },
   recordingActionPending: false,
   replay: null,
   replayScenarioId: "normal",
@@ -814,7 +814,13 @@ function recordingPlanMatchesDraft() {
     plan?.ready === true &&
       typeof plan.plan_sha256 === "string" &&
       input?.name === state.recordingDraft.name &&
-      input?.maximumSeconds === state.recordingDraft.maximumSeconds
+      input?.maximumSeconds === state.recordingDraft.maximumSeconds &&
+      input?.mode === state.recordingDraft.mode &&
+      plan.mode === state.recordingDraft.mode &&
+      plan.session_type ===
+        (state.recordingDraft.mode === "piano-vocal"
+          ? "piano-vocal-performance"
+          : "voice-recording")
   );
 }
 
@@ -849,12 +855,13 @@ async function runRecordingAction(payload) {
       state.recordingPlanInput = {
         name: state.recordingDraft.name,
         maximumSeconds: state.recordingDraft.maximumSeconds,
+        mode: state.recordingDraft.mode,
       };
       const blockers = result.plan?.readiness?.blockers || [];
       showNotice(
         result.plan?.ready
-          ? "Voice-Plan ist vollständig gebunden und startbereit."
-          : `Voice-Plan bleibt blockiert (${blockers.length} Gate${blockers.length === 1 ? "" : "s"}).`,
+          ? "Aufnahmeplan ist vollständig gebunden und startbereit."
+          : `Aufnahmeplan bleibt blockiert (${blockers.length} Gate${blockers.length === 1 ? "" : "s"}).`,
         result.plan?.ready ? "success" : "info",
       );
     } else {
@@ -892,8 +899,8 @@ function renderRecordingControls(card, recording) {
   const levels = contract.levels || {};
   const session = recording.session || null;
   const controls = element("section", "recording-controls");
-  controls.setAttribute("aria-label", "Voice-Aufnahme");
-  appendText(controls, "p", "eyebrow", "Voice-Recorder");
+  controls.setAttribute("aria-label", "Aufnahme");
+  appendText(controls, "p", "eyebrow", "Recorder");
   appendText(
     controls,
     "strong",
@@ -934,6 +941,52 @@ function renderRecordingControls(card, recording) {
 
   const writable = recordingActionsAllowed();
   const active = session?.active === true;
+  const modeSwitch = element("div", "recording-mode-switch");
+  modeSwitch.setAttribute("role", "group");
+  modeSwitch.setAttribute("aria-label", "Aufnahmemodus");
+  for (const mode of recording.modes || []) {
+    const modeButton = element("button", "secondary-button", mode.label);
+    modeButton.type = "button";
+    modeButton.dataset.recordingMode = mode.id;
+    modeButton.setAttribute(
+      "aria-pressed",
+      String(state.recordingDraft.mode === mode.id),
+    );
+    modeButton.disabled = active || state.recordingActionPending;
+    modeButton.addEventListener("click", () => {
+      state.recordingDraft = { ...state.recordingDraft, mode: mode.id };
+      state.recordingPlan = null;
+      state.recordingPlanInput = null;
+      renderActiveLanes({ preserveDraft: false });
+    });
+    modeSwitch.append(modeButton);
+  }
+  controls.append(modeSwitch);
+  appendText(
+    controls,
+    "p",
+    "recording-product-hint",
+    state.recordingDraft.mode === "piano-vocal"
+      ? "Gesang WAV + Roland MIDI"
+      : "Gesang WAV",
+  );
+  const selectedMode = (recording.modes || []).find(
+    (mode) => mode.id === state.recordingDraft.mode,
+  );
+  if (selectedMode?.actionable !== true && selectedMode?.blocker) {
+    appendText(
+      controls,
+      "p",
+      "recording-plan",
+      `Modus derzeit blockiert: ${
+        selectedMode.blocker === "roland-midi-source-not-observed"
+          ? "Roland-MIDI-Quelle nicht beobachtet"
+          : selectedMode.blocker === "exact-midi-gate-requires-plan"
+            ? "exakter MIDI-Port und arecordmidi werden erst im Plan geprüft"
+          : selectedMode.blocker
+      }`,
+    );
+  }
   const draft = element("div", "recording-draft");
   const nameLabel = element("label", "recording-field");
   appendText(nameLabel, "span", "", "Take-Name");
@@ -970,9 +1023,15 @@ function renderRecordingControls(card, recording) {
   stopButton.dataset.control = "stop";
   recoverButton.dataset.control = "recovery";
   for (const button of [planButton, startButton, stopButton, recoverButton]) button.type = "button";
-  planButton.disabled = !writable || active || state.recordingActionPending;
+  planButton.disabled =
+    !writable ||
+    active ||
+    state.recordingActionPending;
   startButton.disabled =
-    !writable || active || state.recordingActionPending || !recordingPlanMatchesDraft();
+    !writable ||
+    active ||
+    state.recordingActionPending ||
+    !recordingPlanMatchesDraft();
   stopButton.disabled = !writable || !active || state.recordingActionPending;
   recoverButton.disabled =
     !writable ||
@@ -982,6 +1041,7 @@ function renderRecordingControls(card, recording) {
   const invalidatePlan = () => {
     const parsedDuration = Number.parseInt(durationInput.value, 10);
     state.recordingDraft = {
+      mode: state.recordingDraft.mode,
       name: nameInput.value,
       maximumSeconds: Number.isInteger(parsedDuration) ? parsedDuration : 0,
     };
@@ -995,6 +1055,7 @@ function renderRecordingControls(card, recording) {
     invalidatePlan();
     runRecordingAction({
       operation: "plan",
+      mode: state.recordingDraft.mode,
       name: state.recordingDraft.name,
       maximum_seconds: state.recordingDraft.maximumSeconds,
     });
@@ -1003,6 +1064,7 @@ function renderRecordingControls(card, recording) {
     if (!recordingPlanMatchesDraft()) return;
     runRecordingAction({
       operation: "start",
+      mode: state.recordingDraft.mode,
       name: state.recordingDraft.name,
       maximum_seconds: state.recordingDraft.maximumSeconds,
       expected_plan_sha256: state.recordingPlan.plan_sha256,
@@ -1704,7 +1766,7 @@ function renderLibrary() {
     summary,
     "strong",
     "",
-    library ? `${items.length} Voice-Take${items.length === 1 ? "" : "s"}` : "nicht lesbar",
+    library ? `${items.length} Take${items.length === 1 ? "" : "s"}` : "nicht lesbar",
   );
   appendText(
     summary,
@@ -1753,6 +1815,19 @@ function renderLibrary() {
       const artifact = item.result.artifact;
       detailRow(meta, "Dauer", `${Number(artifact.duration_seconds).toFixed(2)} s`);
       detailRow(meta, "Take-SHA", shortRevision(artifact.sha256));
+    }
+    if (item.result?.artifacts) {
+      const artifacts = item.result.artifacts;
+      const vocal = artifacts.vocal_wav;
+      detailRow(meta, "Produkt", "Gesang WAV + Roland MIDI");
+      if (vocal) detailRow(meta, "Dauer", `${Number(vocal.duration_seconds).toFixed(2)} s`);
+      detailRow(
+        meta,
+        "Geschwister",
+        artifacts.take_manifest?.commit_truth === true
+          ? "WAV + MID · Manifest gültig"
+          : "unvollständig",
+      );
     }
     card.append(meta);
     if (item.status === "completed" && typeof item.audio_url === "string") {

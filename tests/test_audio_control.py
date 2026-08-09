@@ -467,6 +467,17 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(snapshot["recording"]["contract"]["profile"], "voice-recording")
         self.assertEqual(snapshot["recording"]["contract"]["source"]["kind"], "motu-voice")
         self.assertEqual(snapshot["recording"]["contract"]["monitoring"]["mode"], "hardware-direct")
+        recording_modes = {
+            mode["id"]: mode for mode in snapshot["recording"]["modes"]
+        }
+        self.assertEqual(recording_modes["voice"]["label"], "Nur Gesang")
+        self.assertEqual(recording_modes["piano-vocal"]["label"], "Klavier + Gesang")
+        self.assertTrue(recording_modes["voice"]["actionable"])
+        self.assertFalse(recording_modes["piano-vocal"]["actionable"])
+        self.assertEqual(
+            recording_modes["piano-vocal"]["blocker"],
+            "exact-midi-gate-requires-plan",
+        )
         self.assertEqual(snapshot["dauersong"]["status"], "planned-not-executable")
         self.assertEqual(len(snapshot["profiles"]), 10)
         self.assertFalse(snapshot["summary"]["active_whale"])
@@ -558,6 +569,32 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(snapshot["summary"]["state"], "attention")
         self.assertEqual(snapshot["summary"]["runtime_high_warning_count"], 1)
         self.assertEqual(snapshot["summary"]["onsite_warning_count"], 0)
+
+    def test_missing_roland_blocks_only_performance_recording_mode(self):
+        controller = self.controller()
+        doctor = {
+            "warnings": [],
+            "physical_unknowns": [],
+            "hardware": {"motu_m2": True, "roland_fp_30x": False},
+            "device_truth": {"desired": {"motu_m2": True, "roland_fp_30x": True}},
+            "graph": {},
+            "external_endpoints": {},
+            "command_health": [],
+            "read_only_contract": True,
+        }
+        with (
+            mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+            mock.patch.object(
+                controller, "_whale_status", return_value=("ok", {"active": False}, None)
+            ),
+        ):
+            snapshot = controller.snapshot(refresh=True)
+        modes = {mode["id"]: mode for mode in snapshot["recording"]["modes"]}
+        self.assertTrue(modes["voice"]["actionable"])
+        self.assertFalse(modes["piano-vocal"]["actionable"])
+        self.assertEqual(
+            modes["piano-vocal"]["blocker"], "roland-midi-source-not-observed"
+        )
 
     def test_deployment_projection_is_bounded_current_and_path_free(self):
         commit = "c" * 40

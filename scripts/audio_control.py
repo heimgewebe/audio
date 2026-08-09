@@ -153,6 +153,16 @@ STATIC_FILES = {
     "/whale-learning-articulation.wav": ("whale-learning-articulation.wav", "audio/wav"),
 }
 ALLOWED_WHALE_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
+RECORDING_MODES = {
+    "voice": {"session_type": "voice-recording", "label": "Nur Gesang"},
+    "piano-vocal": {
+        "session_type": "piano-vocal-performance",
+        "label": "Klavier + Gesang",
+    },
+}
+RECORDING_SESSION_TYPES = frozenset(
+    mode["session_type"] for mode in RECORDING_MODES.values()
+)
 ONSITE_WARNING_CODES = frozenset({"voice-source-not-motu"})
 PROFILE_AREAS = {
     "desktop-mixed": "listening",
@@ -525,6 +535,56 @@ def read_voice_recording_contract() -> dict[str, Any]:
     }
 
 
+def read_recording_contract(mode: str) -> dict[str, Any]:
+    mode_spec = RECORDING_MODES.get(mode)
+    if mode_spec is None:
+        raise ControlError("Unbekannter Aufnahmemodus.")
+    voice = read_voice_recording_contract()
+    if mode == "voice":
+        return voice
+    catalog = load_json_object(RECORDING_CATALOG)
+    sessions = require_mapping(catalog.get("sessions"), label="Recorderkatalog sessions")
+    performance = require_mapping(
+        sessions.get("piano-vocal-performance"), label="Recorderprofil Performance"
+    )
+    source = require_mapping(performance.get("source"), label="Performancequelle")
+    midi = require_mapping(source.get("midi"), label="Performance-MIDI")
+    if (
+        performance.get("profile") != "voice-recording"
+        or performance.get("capture")
+        != require_mapping(
+            sessions.get("voice-recording"), label="Recorderprofil Stimme"
+        ).get("capture")
+        or source.get("kind") != "motu-voice-with-roland-midi"
+        or midi.get("kind") != "alsa-sequencer-midi"
+        or midi.get("usb_vendor_id") != "0582"
+        or midi.get("usb_product_id") != "01b1"
+        or midi.get("capture") != "arecordmidi-standard-midi-file"
+        or midi.get("timing")
+        != {
+            "basis": "SMPTE",
+            "fps": 25,
+            "ticks_per_frame": 40,
+            "nominal_resolution_ms": 1,
+        }
+    ):
+        raise ControlError("Recorderprofil verletzt den Performance-Vertrag.")
+    return {
+        **voice,
+        "session_type": mode_spec["session_type"],
+        "source": {
+            "kind": "motu-voice-with-roland-midi",
+            "audio": voice["source"],
+            "midi": {
+                "instrument": "Roland FP-30X",
+                "format": "Standard MIDI File",
+                "timing": midi["timing"],
+            },
+        },
+        "product": "Gesang WAV + Roland MIDI",
+    }
+
+
 def _valid_sha256(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
@@ -550,9 +610,10 @@ def _validate_recording_name(value: Any) -> str:
     return value
 
 
-def _validate_recording_duration(value: Any) -> int:
-    maximum = read_voice_recording_contract()["capture"]["maximum_duration_seconds"]
-    minimum = read_voice_recording_contract()["capture"]["minimum_duration_seconds"]
+def _validate_recording_duration(value: Any, mode: str = "voice") -> int:
+    contract = read_recording_contract(mode)
+    maximum = contract["capture"]["maximum_duration_seconds"]
+    minimum = contract["capture"]["minimum_duration_seconds"]
     if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
         raise ControlError(
             f"Aufnahmedauer muss zwischen {minimum} und {maximum} Sekunden liegen."
@@ -588,10 +649,10 @@ def validate_recording_product_probe(report: dict[str, Any]) -> None:
         if not isinstance(session, dict):
             raise ControlError("Recorderprojektion enthält keine gültige Sitzung.")
         _validate_recording_session_id(session.get("session_id"))
-        if session.get("session_type") != "voice-recording" or not _valid_sha256(
+        if session.get("session_type") not in RECORDING_SESSION_TYPES or not _valid_sha256(
             session.get("plan_sha256")
         ):
-            raise ControlError("Recorderprojektion ist nicht an Voice und Plan gebunden.")
+            raise ControlError("Recorderprojektion ist nicht an Modus und Plan gebunden.")
     _reject_recording_private_paths(report)
 
 
@@ -610,14 +671,14 @@ def validate_recording_library(report: dict[str, Any]) -> None:
         if not isinstance(item, dict):
             raise ControlError("Recorderbibliothek enthält einen ungültigen Take.")
         _validate_recording_session_id(item.get("session_id"))
-        if item.get("session_type") != "voice-recording" or not _valid_sha256(
+        if item.get("session_type") not in RECORDING_SESSION_TYPES or not _valid_sha256(
             item.get("plan_sha256")
         ):
             raise ControlError("Recorderbibliothek enthält einen ungebundenen Take.")
     _reject_recording_private_paths(report)
 
 
-def project_recording_plan(report: dict[str, Any]) -> dict[str, Any]:
+def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> dict[str, Any]:
     if (
         report.get("schema_version") != 1
         or report.get("kind") != "audio_recording_plan"
@@ -626,8 +687,13 @@ def project_recording_plan(report: dict[str, Any]) -> dict[str, Any]:
     ):
         raise ControlError("Recorderplan lieferte einen fremden Vertrag.")
     identity = require_mapping(report.get("identity"), label="Recorderplan identity")
-    if identity.get("session_type") != "voice-recording" or identity.get("profile") != "voice-recording":
-        raise ControlError("Recorderplan ist nicht an das Voice-Setup gebunden.")
+    mode_spec = RECORDING_MODES.get(mode)
+    if (
+        mode_spec is None
+        or identity.get("session_type") != mode_spec["session_type"]
+        or identity.get("profile") != "voice-recording"
+    ):
+        raise ControlError("Recorderplan ist nicht an den gewählten Modus gebunden.")
     output = require_mapping(identity.get("output"), label="Recorderplan output")
     capture = require_mapping(identity.get("capture"), label="Recorderplan capture")
     physical = require_mapping(identity.get("physical"), label="Recorderplan physical")
@@ -642,11 +708,18 @@ def project_recording_plan(report: dict[str, Any]) -> dict[str, Any]:
     blockers = require_list(readiness.get("blockers"), label="Recorderplan blockers")
     if not all(isinstance(item, str) and item for item in blockers):
         raise ControlError("Recorderplan enthält ungültige Blocker.")
-    return {
+    audio_identity = (
+        source_identity.get("audio")
+        if mode == "piano-vocal" and isinstance(source_identity, dict)
+        else source_identity
+    )
+    projected = {
         "schema_version": 1,
         "kind": "audio_control_recording_plan",
         "ready": report["ready"],
         "plan_sha256": report["plan_sha256"],
+        "mode": mode,
+        "session_type": mode_spec["session_type"],
         "output": {"name": output.get("name"), "mode": output.get("mode"), "overwrite": output.get("overwrite")},
         "capture": {
             "sample_rate_hz": capture.get("sample_rate_hz"),
@@ -666,9 +739,9 @@ def project_recording_plan(report: dict[str, Any]) -> dict[str, Any]:
         "source": {
             "bound": isinstance(source_identity, dict),
             "identity_sha256": source.get("identity_sha256"),
-            "sample_rate_hz": (source_identity or {}).get("sample_rate_hz"),
-            "sample_format": (source_identity or {}).get("sample_format"),
-            "channels": (source_identity or {}).get("channels"),
+            "sample_rate_hz": (audio_identity or {}).get("sample_rate_hz"),
+            "sample_format": (audio_identity or {}).get("sample_format"),
+            "channels": (audio_identity or {}).get("channels"),
         },
         "monitoring": identity.get("monitoring"),
         "readiness": {
@@ -679,6 +752,18 @@ def project_recording_plan(report: dict[str, Any]) -> dict[str, Any]:
         },
         "authority": "backend-plan-hash-and-source-binding",
     }
+    if mode == "piano-vocal":
+        performance = require_mapping(
+            identity.get("performance"), label="Recorderplan performance"
+        )
+        midi_identity = (source_identity or {}).get("midi")
+        projected["performance"] = {
+            "product": "Gesang WAV + Roland MIDI",
+            "midi_bound": isinstance(midi_identity, dict),
+            "midi_identity_sha256": (midi_identity or {}).get("fingerprint"),
+            "midi_timing": performance.get("timing"),
+        }
+    return projected
 
 
 def validate_recording_media_binding(report: dict[str, Any], session_id: str) -> None:
@@ -1454,9 +1539,14 @@ class AudioControl:
                 )
         return projected
 
-    def recording_plan(self, *, name: Any, maximum_seconds: Any) -> dict[str, Any]:
+    def recording_plan(
+        self, *, mode: str = "voice", name: Any, maximum_seconds: Any
+    ) -> dict[str, Any]:
+        mode_spec = RECORDING_MODES.get(mode)
+        if mode_spec is None:
+            raise ControlError("Unbekannter Aufnahmemodus.")
         safe_name = _validate_recording_name(name)
-        duration = _validate_recording_duration(maximum_seconds)
+        duration = _validate_recording_duration(maximum_seconds, mode)
         if not self._plan_lock.acquire(blocking=False):
             raise ActionBusy("Eine andere Audio- oder Recorderplanung läuft bereits.")
         try:
@@ -1467,7 +1557,7 @@ class AudioControl:
                     "plan",
                     safe_name,
                     "--session-type",
-                    "voice-recording",
+                    mode_spec["session_type"],
                     "--maximum-seconds",
                     str(duration),
                     "--root",
@@ -1482,8 +1572,8 @@ class AudioControl:
                 raise ControlError(
                     safe_error_message(report, "Recorderplan konnte nicht erstellt werden.")
                 )
-            projected = project_recording_plan(report)
-            projected["contract"] = read_voice_recording_contract()
+            projected = project_recording_plan(report, mode=mode)
+            projected["contract"] = read_recording_contract(mode)
             return projected
         finally:
             self._plan_lock.release()
@@ -1517,15 +1607,21 @@ class AudioControl:
         if operation not in {"plan", "start", "stop", "recover"}:
             raise ControlError("Unbekannte Recorderaktion.")
         if operation == "plan":
-            if set(payload) != {"operation", "name", "maximum_seconds"}:
+            if set(payload) != {"operation", "mode", "name", "maximum_seconds"}:
                 raise ControlError("Recorderplan enthält unbekannte oder fehlende Felder.")
+            mode = payload.get("mode")
+            if mode not in RECORDING_MODES:
+                raise ControlError("Unbekannter Aufnahmemodus.")
             plan = self.recording_plan(
-                name=payload["name"], maximum_seconds=payload["maximum_seconds"]
+                mode=mode,
+                name=payload["name"],
+                maximum_seconds=payload["maximum_seconds"],
             )
             return {
                 "schema_version": 1,
                 "kind": "audio_control_recording_action_result",
                 "operation": "plan",
+                "mode": mode,
                 "plan": plan,
             }
 
@@ -1533,13 +1629,18 @@ class AudioControl:
         if operation == "start":
             if set(payload) != {
                 "operation",
+                "mode",
                 "name",
                 "maximum_seconds",
                 "expected_plan_sha256",
             }:
                 raise ControlError("Recorderstart enthält unbekannte oder fehlende Felder.")
+            mode = payload.get("mode")
+            mode_spec = RECORDING_MODES.get(mode)
+            if mode_spec is None:
+                raise ControlError("Unbekannter Aufnahmemodus.")
             name = _validate_recording_name(payload["name"])
-            duration = _validate_recording_duration(payload["maximum_seconds"])
+            duration = _validate_recording_duration(payload["maximum_seconds"], mode)
             expected_plan_sha256 = payload["expected_plan_sha256"]
             if not _valid_sha256(expected_plan_sha256):
                 raise ControlError("Recorderstart benötigt einen gültigen Plan-Hash.")
@@ -1549,7 +1650,7 @@ class AudioControl:
                 "start",
                 name,
                 "--session-type",
-                "voice-recording",
+                mode_spec["session_type"],
                 "--maximum-seconds",
                 str(duration),
                 "--root",
@@ -1603,7 +1704,7 @@ class AudioControl:
                     if (
                         report.get("kind") != "audio_recording_start_receipt"
                         or report.get("status") != "running"
-                        or report.get("session_type") != "voice-recording"
+                        or report.get("session_type") != mode_spec["session_type"]
                         or report.get("plan_sha256") != expected_plan_sha256
                     ):
                         raise ControlError("Recorderstart lieferte keinen gebundenen Startbeleg.")
@@ -1614,7 +1715,7 @@ class AudioControl:
                     if (
                         report.get("schema_version") != 1
                         or report.get("kind") != "audio_recording_status"
-                        or report.get("session_type") != "voice-recording"
+                        or report.get("session_type") not in RECORDING_SESSION_TYPES
                         or report.get("status")
                         not in {
                             "running",
@@ -1641,6 +1742,7 @@ class AudioControl:
                         or not isinstance(session, dict)
                         or session.get("session_id") != session_id
                         or session.get("plan_sha256") != expected_plan_sha256
+                        or session.get("session_type") != mode_spec["session_type"]
                         or session.get("active") is not True
                     ):
                         raise ControlError(
@@ -1686,6 +1788,28 @@ class AudioControl:
         if not isinstance(physical_unknowns, list):
             physical_unknowns = []
         hardware = hardware_projection(doctor_status, doctor)
+        recording_modes = [
+            {
+                "id": mode_id,
+                "session_type": mode_spec["session_type"],
+                "label": mode_spec["label"],
+                "actionable": recording_status == "ok" and mode_id == "voice",
+                "blocker": (
+                    "roland-midi-source-not-observed"
+                    if mode_id == "piano-vocal"
+                    and hardware["observed"].get("roland_fp_30x") is not True
+                    else "exact-midi-gate-requires-plan"
+                    if mode_id == "piano-vocal"
+                    else None
+                ),
+                "product": (
+                    "Gesang WAV + Roland MIDI"
+                    if mode_id == "piano-vocal"
+                    else "Gesang WAV"
+                ),
+            }
+            for mode_id, mode_spec in RECORDING_MODES.items()
+        ]
         onsite_high_warnings = [
             warning
             for warning in high_warnings
@@ -1806,6 +1930,7 @@ class AudioControl:
                 ),
                 "authority": "recorder-plan-hash-and-current-readback",
                 "contract": recording_contract,
+                "modes": recording_modes,
                 "session": recording_probe.get("session"),
                 "active_session_id": recording_probe.get("active_session_id"),
                 "actions": ["plan", "start", "stop", "recover"],
