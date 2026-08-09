@@ -97,22 +97,39 @@
         </section>
 
         <section class="view is-active" id="view-now" data-view="now">
-          <article class="depth-panel" data-depth-panel data-focus-title="Aktiver Systemzustand" data-focus-summary="Autoritativer aktueller Readback ohne Audioaktion.">
-            <header class="depth-heading">
-              <div><p class="eyebrow">Aktives Setup</p><h2>Jetzt</h2></div>
-              <div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div>
+          <article
+            class="depth-panel home-dashboard"
+            id="home-dashboard"
+            data-depth-panel
+            data-focus-title="Audiozentrale"
+            data-focus-summary="Direkter Einstieg in Hören, Aufnehmen und Spielen mit aktuellem Backend- und Geräte-Readback."
+          >
+            <header class="depth-heading home-heading">
+              <div><p class="eyebrow">Arbeitsplatz</p><h2>Audiozentrale</h2></div>
+              <div class="depth-actions"><a class="secondary-button home-system-link" href="#system">System</a><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Details</button><button class="depth-focus secondary-button" type="button">Fokus</button></div>
             </header>
-            <div class="depth-compact">
-              <div class="overview-grid">
-                <article class="state-card" id="home-state-card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div></article>
-                <div class="metric-grid home-metrics" id="home-metrics"></div>
-              </div>
+
+            <div class="home-command-grid">
+              <article class="state-card home-state" id="home-state-card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div></article>
+              <nav class="home-action-grid" id="home-actions" aria-label="Schnellzugriff"></nav>
             </div>
+
+            <section class="home-signal-block" aria-labelledby="home-signal-title">
+              <div class="section-heading compact home-signal-heading">
+                <div><p class="eyebrow">Referenzweg</p><h3 id="home-signal-title">Hören</h3></div>
+                <span class="home-signal-caption" id="home-signal-caption">Signalweg wird gelesen</span>
+              </div>
+              <div class="home-signal-flow" id="home-signal-flow"></div>
+            </section>
+
+            <div class="metric-grid home-metrics" id="home-metrics"></div>
+            <div class="insight-grid home-insights" id="home-insights"></div>
+
             <div class="depth-detail" hidden>
-              <div class="section-heading compact"><h3>Signalbahnen</h3></div>
-              <div class="active-lane-grid" id="now-signal-lanes"></div>
-              <div class="section-heading compact"><h3>Profilreife</h3></div>
+              <div class="section-heading compact"><h3>Bereitschaft nach Arbeitsart</h3></div>
               <div class="readiness-grid" id="home-readiness"></div>
+              <div class="section-heading compact"><h3>Signalbahnen im Detail</h3></div>
+              <div class="active-lane-grid" id="now-signal-lanes"></div>
             </div>
           </article>
 
@@ -135,16 +152,10 @@
               <p class="read-only-boundary">Die Telemetrie liest nur. Sie ändert keine Standardgeräte, Routen, Profile, Lautstärken oder Verbindungen und öffnet keinen Audiostrom.</p>
             </div>
           </article>
-
-          <article class="depth-panel" data-depth-panel data-focus-title="Nächste Orte" data-focus-summary="Vier stabile Produktorte ersetzen die bisherige Aufgabenzerlegung.">
-            <header class="depth-heading"><div><p class="eyebrow">Navigation</p><h2>Weiterarbeiten</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
-            <div class="task-grid" id="home-tasks"></div>
-            <div class="depth-detail" hidden><div class="section-heading compact"><h3>Hinweise</h3></div><div class="insight-grid" id="home-insights"></div></div>
-          </article>
         </section>
 
         <section class="view" id="view-setups" data-view="setups" hidden>
-          <article class="depth-panel" data-depth-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Read-only Instrumentzustand; Start, Stop und Moduswechsel sind in T020 nicht freigeschaltet.">
+          <article class="depth-panel" id="setup-playing" data-depth-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Read-only Instrumentzustand; Start, Stop und Moduswechsel sind in T020 nicht freigeschaltet.">
             <header class="depth-heading"><div><p class="eyebrow">Instrument</p><h2>Buckelwal</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="play-intro-stat"></div>
             <div id="whale-control"></div>
@@ -175,14 +186,14 @@
             </div>
           </article>
 
-          <article class="depth-panel" data-depth-panel data-focus-title="Hör-Setups" data-focus-summary="Definierte Hörwege und ihre beobachteten, konfigurierten und ausführbaren Voraussetzungen.">
+          <article class="depth-panel" id="setup-listening" data-depth-panel data-focus-title="Hör-Setups" data-focus-summary="Definierte Hörwege und ihre beobachteten, konfigurierten und ausführbaren Voraussetzungen.">
             <header class="depth-heading"><div><p class="eyebrow">Wiedergabe</p><h2>Hören</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="listen-intro-stat"></div>
             <div class="profile-grid" id="listening-profiles"></div>
             <div class="depth-detail" hidden><p class="callout">Profilpläne bleiben nebenwirkungsfrei. Sie zeigen Voraussetzungen, führen aber kein Apply aus.</p></div>
           </article>
 
-          <article class="depth-panel" data-depth-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile sind sichtbar; Recorder-Start und Dateiwirkung folgen erst in T022.">
+          <article class="depth-panel" id="setup-recording" data-depth-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile und Recorderzustand sind sichtbar; wirkende Voice-Recorder-Aktionen bleiben an das autoritative lokale Backend und ein frisches Aktionstoken gebunden.">
             <header class="depth-heading"><div><p class="eyebrow">Aufnahmeplanung</p><h2>Aufnehmen</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="callout" id="recording-boundary"></div>
             <div class="depth-detail" hidden><div class="profile-grid" id="recording-profiles"></div></div>
