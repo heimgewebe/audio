@@ -1350,6 +1350,41 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("body.workspace-focus-open", styles)
         self.assertIn(".depth-panel.is-workspace-focused", styles)
 
+    def test_whale_rerender_preserves_pending_mode_and_keyboard_focus(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        render_start = javascript.index("function renderWhale()")
+        render_end = javascript.index("function selectedWhaleMode()", render_start)
+        renderer = javascript[render_start:render_end]
+
+        self.assertIn("whaleModeDraft: null", javascript)
+        self.assertIn("state.whaleModeDraft = null", javascript)
+        self.assertIn("const selectedMode = state.whaleModeDraft || currentMode", renderer)
+        invalidation_start = renderer.index("if (\n    !writable ||")
+        invalidation_end = renderer.index("const selectedMode", invalidation_start)
+        invalidation = renderer[invalidation_start:invalidation_end]
+        self.assertIn("!writable ||", invalidation)
+        self.assertIn("state.whaleModeDraft = null", invalidation)
+        self.assertIn("input.checked = mode.id === selectedMode", renderer)
+        self.assertIn("state.whaleModeDraft = event.target.value", renderer)
+        picker_end = renderer.index('const actions = element("div", "card-actions")')
+        picker_prefix = renderer[:picker_end]
+        self.assertIn("state.whaleModeDraft = event.target.value", picker_prefix)
+        self.assertNotIn("input.disabled = state.loading ||", renderer)
+        self.assertIn("const focusedMode =", renderer)
+        self.assertIn("input.value === focusedMode", renderer)
+        self.assertIn("replacement.focus({ preventScroll: true })", renderer)
+        self.assertIn('state.route === "spielen"', renderer)
+
+        selected_start = javascript.index("function selectedWhaleMode()")
+        selected_end = javascript.index("function setWhalePending", selected_start)
+        selected = javascript[selected_start:selected_end]
+        self.assertIn('typeof state.whaleModeDraft === "string"', selected)
+
+        action_start = javascript.index("async function runWhaleAction(")
+        action_end = javascript.index("function detailRow", action_start)
+        action = javascript[action_start:action_end]
+        self.assertIn("state.whaleModeDraft = null", action)
+
     def test_recorder_rerender_preserves_focus_draft_and_workspace_node(self):
         html = (ROOT / "ui" / "index.html").read_text()
         javascript = (ROOT / "ui" / "app.js").read_text()
