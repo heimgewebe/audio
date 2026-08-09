@@ -610,6 +610,42 @@ class RecordingSessionTest(unittest.TestCase):
         )
         self.assertFalse(MODULE._performance_child_exit_codes_clean([0, 1]))
 
+    def test_wav_fsize_limit_uses_64_mib_floor_without_lowering_larger_budget(self) -> None:
+        floor = 64 * 1024 * 1024
+        self.assertEqual(MODULE.PARECORD_WAV_FSIZE_FLOOR_BYTES, floor)
+        self.assertEqual(MODULE._wav_compatible_fsize_limit(2_200_576), floor)
+        self.assertEqual(MODULE._wav_compatible_fsize_limit(floor + 1), floor + 1)
+
+    def test_midi_capture_ready_accepts_private_empty_partial_only_for_live_child(self) -> None:
+        partial = self.output / ".buffered.partial.mid"
+
+        class FakeChild:
+            def __init__(self, returncode):
+                self.returncode = returncode
+
+            def poll(self):
+                return self.returncode
+
+        partial.touch()
+        partial.chmod(0o600)
+        self.assertEqual(partial.stat().st_size, 0)
+        self.assertTrue(MODULE._midi_capture_process_ready(FakeChild(None), partial))
+        self.assertFalse(MODULE._midi_capture_process_ready(FakeChild(1), partial))
+
+        partial.unlink()
+        self.assertFalse(MODULE._midi_capture_process_ready(FakeChild(None), partial))
+
+        partial.touch()
+        partial.chmod(0o644)
+        self.assertFalse(MODULE._midi_capture_process_ready(FakeChild(None), partial))
+
+        partial.unlink()
+        target = self.output / "target.mid"
+        target.touch()
+        target.chmod(0o600)
+        partial.symlink_to(target)
+        self.assertFalse(MODULE._midi_capture_process_ready(FakeChild(None), partial))
+
     def test_mid_publication_failure_preserves_uncommitted_siblings_without_manifest(self) -> None:
         wav_partial = self.output / ".song.partial.wav"
         wav_final = self.output / "song.wav"
