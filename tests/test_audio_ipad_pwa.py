@@ -96,8 +96,13 @@ class ContractTests(unittest.TestCase):
         for mode in (local, remote):
             self.assertIs(mode["native_hardware_authority"], False)
         self.assertTrue(
-            any("authenticated secure remote" in item for item in remote["requires"])
+            any("private Tailscale Serve" in item for item in remote["requires"])
         )
+        self.assertTrue(
+            any("identity-bound short-lived bridge session" in item for item in remote["requires"])
+        )
+        self.assertIn("Buckelwal start/mode/stop", remote["boundary"])
+        self.assertIn("recorder, profiles, routing, devices and system effects remain remote-denied", remote["boundary"])
 
     def test_contract_records_loopback_is_not_a_remote_transport(self):
         transport = self.contract["transport"]
@@ -266,14 +271,20 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('aria-describedby="runtime-mode-local-description"', self.html)
         self.assertIn("<legend class=\"sr-only\">Laufzeitmodus wählen</legend>", self.html)
 
-    def test_remote_mode_requires_separate_read_only_bridge(self):
+    def test_remote_mode_requires_scoped_bridge_and_keeps_loopback_boundary(self):
         self.assertIn("kein Ferntransport", self.html)
-        self.assertIn("Read-only-Bridge", self.html)
-        self.assertIn("Read-only-Bridge", self.app)
         self.assertIn("Loopback-only", self.app)
         self.assertIn('response.headers.get("X-Audio-Remote-Bridge")', self.app)
-        self.assertIn('=== "read-only-v1"', self.app)
-        self.assertIn("keine Audiowirkung", self.app)
+        self.assertIn('bridgeMarker === "read-only-v1"', self.app)
+        self.assertIn('bridgeMarker === "whale-action-v1"', self.app)
+        self.assertIn('response.headers.get("X-Audio-Remote-Effects") === "whale-v1"', self.app)
+        self.assertIn('fetchJson("/bridge/v1/session"', self.app)
+        session_loader = self.app.split('fetchJson("/bridge/v1/session"', 1)[1].split("});", 1)[0]
+        self.assertIn('method: "POST"', session_loader)
+        self.assertIn('body: "{}"', session_loader)
+        self.assertIn('fetchJson("/bridge/v1/actions/whale"', self.app)
+        self.assertIn('"X-Audio-Bridge-Session": state.remoteWhaleSessionToken', self.app)
+        self.assertIn("Recorder bleibt lokal", self.app)
 
     def test_local_mode_denies_native_hardware_authority_in_the_surface(self):
         for token in ("MOTU", "ALSA", "PipeWire", "Roland"):
@@ -307,12 +318,16 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("recording?.actionable === true", gate)
         self.assertIn("action_token.length >= 16", gate)
 
-    def test_read_only_bridge_observation_stays_sticky_for_page_lifetime(self):
+    def test_remote_bridge_observation_stays_sticky_for_page_lifetime(self):
         fetch_block = self.app.split("async function fetchJson(url, options = {}) {", 1)[1].split(
             "\nfunction showNotice", 1
         )[0]
-        self.assertIn('response.headers.get("X-Audio-Remote-Bridge") === "read-only-v1"', fetch_block)
+        self.assertIn('const bridgeMarker = response.headers.get("X-Audio-Remote-Bridge")', fetch_block)
+        self.assertIn('bridgeMarker === "read-only-v1"', fetch_block)
+        self.assertIn('bridgeMarker === "whale-action-v1"', fetch_block)
         self.assertIn("state.remoteBridgeProjection = true;", fetch_block)
+        self.assertIn('response.headers.get("X-Audio-Remote-Effects") === "whale-v1"', fetch_block)
+        self.assertIn("state.remoteWhaleActionObserved = true;", fetch_block)
         self.assertIn("else if (state.remoteBridgeProjection === null)", fetch_block)
         self.assertIn("state.remoteBridgeProjection = false;", fetch_block)
         self.assertLess(
@@ -330,6 +345,35 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
             post.index("if (!recordingActionsAllowed())"),
             post.index('return fetchJson("/api/v1/actions/recording"'),
         )
+
+    def test_only_whale_actions_gain_scoped_remote_effect_authority(self):
+        local_gate = self.app.split("function localWhaleActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("directLoopbackControlOrigin() &&", local_gate)
+        self.assertIn("state.remoteBridgeProjection !== true", local_gate)
+        self.assertIn("action_token.length >= 16", local_gate)
+
+        remote_gate = self.app.split("function remoteWhaleActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("remoteWhaleSessionFresh()", remote_gate)
+        self.assertIn("whale_control === true", remote_gate)
+        self.assertNotIn("action_token", remote_gate)
+
+        router = self.app.split("async function postWhaleAction(payload) {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn('fetchJson("/api/v1/actions/whale"', router)
+        self.assertIn('fetchJson("/bridge/v1/actions/whale"', router)
+        self.assertIn('"X-Audio-Bridge-Session"', router)
+        self.assertNotIn("/api/v1/actions/recording", router)
+
+        recorder_gate = self.app.split("function recordingActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("directLoopbackControlOrigin() &&", recorder_gate)
+        self.assertIn("state.remoteBridgeProjection !== true", recorder_gate)
 
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
         controls = self.app.split("function renderRecordingControls(", 1)[1].split(
@@ -428,6 +472,7 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
         )[0]
         self.assertIn("target.origin !== window.location.origin", block)
         self.assertIn('target.pathname.startsWith("/api/")', block)
+        self.assertIn('target.pathname.startsWith("/bridge/v1/")', block)
         self.assertIn("return true;", block)
 
     def test_every_backend_reader_is_guarded(self):
@@ -444,6 +489,8 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             "async function openProfilePlan(profile, trigger) {\n"
             "  if (!backendAllowed()) return;",
             "function autoRefreshTick() {\n  if (!backendAllowed()) return;",
+            "async function ensureRemoteWhaleSession({ force = false } = {}) {\n"
+            "  if (state.remoteBridgeProjection !== true || !backendAllowed()) return false;",
         )
         for fragment in guarded:
             with self.subTest(fragment=fragment.splitlines()[0]):
@@ -510,6 +557,16 @@ class ServiceWorkerTests(unittest.TestCase):
 
     def test_api_requests_are_strictly_network_only(self):
         branch = self.worker.split("if (isApiPath(url.pathname)) {", 1)[1].split(
+            "return;", 1
+        )[0]
+        self.assertIn("event.respondWith(fetch(request));", branch)
+        for forbidden in ("caches", "cache", "catch", "match", "put"):
+            with self.subTest(token=forbidden):
+                self.assertNotIn(forbidden, branch)
+
+    def test_bridge_requests_are_strictly_network_only(self):
+        self.assertIn("function isBridgePath(pathname)", self.worker)
+        branch = self.worker.split("if (isBridgePath(url.pathname)) {", 1)[1].split(
             "return;", 1
         )[0]
         self.assertIn("event.respondWith(fetch(request));", branch)

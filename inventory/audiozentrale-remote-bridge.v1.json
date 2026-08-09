@@ -5,14 +5,18 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "e363d934c145bbd75fcc36e52f0cae0ad494824dc18e27011eabd62a5a3b5877"
+    "sha256": "0f1fb3cbfc088bfd0861429f34de94d8f6958c71f6dd71d2e09743030391a319"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
     "listen_port": 8766,
     "backend_host": "127.0.0.1",
     "backend_port": 8765,
-    "methods": ["GET", "HEAD"],
+    "methods": [
+      "GET",
+      "HEAD",
+      "POST"
+    ],
     "static_routes": [
       "/",
       "/index.html",
@@ -36,10 +40,19 @@
       "/api/v1/replay",
       "/api/v1/whale/lesson"
     ],
-    "snapshot_queries": ["", "refresh=1"],
+    "snapshot_queries": [
+      "",
+      "refresh=1"
+    ],
     "profile_plan_pattern": "/api/v1/profiles/{profile_id}/plan",
-    "request_header_forward": ["If-None-Match", "Range"],
-    "backend_headers_synthesized": ["Host", "Connection"],
+    "request_header_forward": [
+      "If-None-Match",
+      "Range"
+    ],
+    "backend_headers_synthesized": [
+      "Host",
+      "Connection"
+    ],
     "response_header_forward": [
       "Content-Type",
       "Cache-Control",
@@ -61,11 +74,52 @@
     "json_scrubbing": {
       "enabled": true,
       "policy": "recursive-key-name",
-      "must_remove": ["action_token"],
+      "must_remove": [
+        "action_token"
+      ],
       "invalid_json": "fail-closed"
     },
-    "effect_authority": false,
-    "backend_remote_exposure": false
+    "effect_authority": true,
+    "backend_remote_exposure": false,
+    "effect_scope": [
+      "whale:start",
+      "whale:mode",
+      "whale:stop"
+    ],
+    "effect_exclusions": [
+      "recording",
+      "profiles",
+      "routing",
+      "devices",
+      "system"
+    ],
+    "remote_action": {
+      "session_route": "/bridge/v1/session",
+      "action_route": "/bridge/v1/actions/whale",
+      "tailnet_host": "heim-pc.tail6dbb90.ts.net:9443",
+      "session_header": "X-Audio-Bridge-Session",
+      "session_ttl_seconds": 900,
+      "session_capacity": 8,
+      "max_body_bytes": 512,
+      "operations": [
+        "start",
+        "mode",
+        "stop"
+      ],
+      "modes": [
+        "morph",
+        "organic",
+        "realistic",
+        "ufo"
+      ],
+      "tailscale_identity_required": true,
+      "session_identity_bound": true,
+      "backend_action_token_exposed": false,
+      "action_response_marker": "whale-action-v1",
+      "effects_header": "X-Audio-Remote-Effects",
+      "effects_value": "whale-v1",
+      "session_method": "POST"
+    }
   },
   "tailscale_serve": {
     "tool": "tailscale serve",
@@ -74,7 +128,11 @@
     "tailnet_only": true,
     "public_exposure": false,
     "preserve_other_config": true,
-    "forbidden_operations": ["funnel", "reset", "clear"]
+    "forbidden_operations": [
+      "funnel",
+      "reset",
+      "clear"
+    ]
   },
   "runtime_acceptance": {
     "bridge_service_verified": false,

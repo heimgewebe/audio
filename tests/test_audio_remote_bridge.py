@@ -1,4 +1,4 @@
-"""Security and contract tests for the read-only Audiozentrale remote bridge."""
+"""Security and contract tests for the scoped Audiozentrale remote bridge."""
 
 from __future__ import annotations
 
@@ -48,7 +48,15 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(contract["bridge"]["listen_port"], 8766)
         self.assertEqual(contract["bridge"]["backend_port"], 8765)
         self.assertEqual(contract["tailscale_serve"]["https_port"], 9443)
-        self.assertIs(contract["bridge"]["effect_authority"], False)
+        self.assertIs(contract["bridge"]["effect_authority"], True)
+        self.assertEqual(
+            contract["bridge"]["effect_scope"],
+            ["whale:start", "whale:mode", "whale:stop"],
+        )
+        self.assertEqual(
+            contract["bridge"]["effect_exclusions"],
+            ["recording", "profiles", "routing", "devices", "system"],
+        )
         self.assertIs(contract["bridge"]["backend_remote_exposure"], False)
         for name, value in contract["runtime_acceptance"].items():
             with self.subTest(name=name):
@@ -87,7 +95,7 @@ class ContractTests(unittest.TestCase):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
         self.assertEqual(set(contract["bridge"]["static_routes"]), MODULE.STATIC_ROUTES)
         self.assertEqual(set(contract["bridge"]["fixed_api_routes"]), MODULE.FIXED_API_ROUTES)
-        self.assertEqual(contract["bridge"]["methods"], ["GET", "HEAD"])
+        self.assertEqual(contract["bridge"]["methods"], ["GET", "HEAD", "POST"])
         self.assertEqual(
             {name.lower() for name in contract["bridge"]["response_header_forward"]},
             MODULE.FORWARDED_RESPONSE_HEADERS,
@@ -97,6 +105,15 @@ class ContractTests(unittest.TestCase):
             {"if-none-match", "range"},
         )
         self.assertIn("action_token", contract["bridge"]["json_scrubbing"]["must_remove"])
+        remote_action = contract["bridge"]["remote_action"]
+        self.assertEqual(remote_action["session_route"], MODULE.REMOTE_SESSION_ROUTE)
+        self.assertEqual(remote_action["session_method"], "POST")
+        self.assertEqual(remote_action["action_route"], MODULE.REMOTE_WHALE_ACTION_ROUTE)
+        self.assertEqual(remote_action["tailnet_host"], MODULE.REMOTE_TAILNET_HOST)
+        self.assertEqual(remote_action["session_header"], MODULE.REMOTE_ACTION_TOKEN_HEADER)
+        self.assertIs(remote_action["tailscale_identity_required"], True)
+        self.assertIs(remote_action["session_identity_bound"], True)
+        self.assertIs(remote_action["backend_action_token_exposed"], False)
         self.assertEqual(set(contract["runtime_acceptance"]), set(MODULE.ACCEPTANCE_KEYS))
 
 
@@ -244,6 +261,7 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         type(self).records.append(
             {
+                "method": "GET",
                 "path": self.path,
                 "headers": {name.lower(): value for name, value in self.headers.items()},
             }
@@ -258,6 +276,56 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        type(self).records.append(
+            {
+                "method": "POST",
+                "path": self.path,
+                "headers": {name.lower(): value for name, value in self.headers.items()},
+                "body": body,
+            }
+        )
+        if self.path != "/api/v1/actions/whale":
+            status = 404
+            response = b"{}\n"
+        else:
+            action = json.loads(body.decode("utf-8"))
+            operation = action["operation"]
+            mode = action.get("mode", "organic")
+            status = 200
+            response = json.dumps(
+                {
+                    "kind": "audio_control_action_result",
+                    "operation": operation,
+                    "mode": mode if operation != "stop" else None,
+                    "snapshot": {
+                        "kind": "audio_control_snapshot",
+                        "schema_version": 1,
+                        "capabilities": {"whale_control": True},
+                        "service": {
+                            "action_token": "local-secret-value",
+                            "authority": "local-backend",
+                        },
+                        "whale": {
+                            "status": "ok",
+                            "service": {
+                                "active": operation != "stop",
+                                "voice_mode": mode,
+                            },
+                        },
+                    },
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
@@ -284,11 +352,14 @@ class BridgeHTTPTests(unittest.TestCase):
                 ],
                 json.dumps(
                     {
+                        "kind": "audio_control_snapshot",
                         "schema_version": 1,
+                        "capabilities": {"whale_control": True},
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
                         },
+                        "whale": {"status": "ok", "service": {"active": False}},
                         "nested": {"private_key": "hidden", "ok": True},
                     }
                 ).encode(),
@@ -296,7 +367,19 @@ class BridgeHTTPTests(unittest.TestCase):
             "/api/v1/snapshot?refresh=1": (
                 200,
                 [("Content-Type", "application/json; charset=utf-8")],
-                b'{"service":{"action_token":"hidden"},"refresh":true}',
+                json.dumps(
+                    {
+                        "kind": "audio_control_snapshot",
+                        "schema_version": 1,
+                        "capabilities": {"whale_control": True},
+                        "service": {
+                            "action_token": "local-secret-value",
+                            "authority": "local-backend",
+                        },
+                        "whale": {"status": "ok", "service": {"active": False}},
+                        "refresh": True,
+                    }
+                ).encode(),
             ),
             "/api/v1/health": (
                 200,
@@ -438,7 +521,7 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
         self.assertNotIn(b"not-json", payload)
 
-    def test_non_read_methods_and_request_bodies_are_rejected(self):
+    def test_non_scoped_mutations_and_request_bodies_are_rejected(self):
         for method in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"):
             with self.subTest(method=method):
                 status, headers, payload = self.request(method, "/api/v1/health")
@@ -458,14 +541,197 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(status, 404)
         self.assertEqual(len(FakeBackendHandler.records), before)
 
+    def remote_headers(self, *, identity: str = "owner@example.test") -> dict[str, str]:
+        return {
+            "Host": MODULE.REMOTE_TAILNET_HOST,
+            "Tailscale-User-Login": identity,
+        }
+
+    def issue_remote_session(self, *, identity: str = "owner@example.test") -> str:
+        status, headers, payload = self.request(
+            "POST",
+            MODULE.REMOTE_SESSION_ROUTE,
+            headers={
+                **self.remote_headers(identity=identity),
+                "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+                "Content-Type": "application/json",
+            },
+            body=b"{}",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
+        self.assertEqual(headers[MODULE.REMOTE_EFFECTS_HEADER], MODULE.REMOTE_EFFECTS_VALUE)
+        session = json.loads(payload)
+        self.assertEqual(session["kind"], "audio_remote_bridge_session")
+        self.assertEqual(session["effect_scope"], ["whale"])
+        self.assertEqual(set(session["allowed_operations"]), {"start", "mode", "stop"})
+        self.assertNotIn("action_token", session)
+        self.assertGreaterEqual(len(session["session_token"]), 32)
+        return session["session_token"]
+
+    def test_remote_session_requires_post_exact_origin_host_and_verified_identity(self):
+        status, _response_headers, _payload = self.request(
+            "GET", MODULE.REMOTE_SESSION_ROUTE, headers=self.remote_headers()
+        )
+        self.assertEqual(status, 404)
+
+        cases = (
+            {
+                "Host": "other.tail6dbb90.ts.net:9443",
+                "Origin": "https://other.tail6dbb90.ts.net:9443",
+                "Tailscale-User-Login": "owner@example.test",
+                "Content-Type": "application/json",
+            },
+            {
+                "Host": MODULE.REMOTE_TAILNET_HOST,
+                "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+                "Content-Type": "application/json",
+            },
+            {
+                **self.remote_headers(),
+                "Origin": "https://evil.example",
+                "Content-Type": "application/json",
+            },
+        )
+        for headers in cases:
+            with self.subTest(headers=headers):
+                status, _response_headers, _payload = self.request(
+                    "POST", MODULE.REMOTE_SESSION_ROUTE, headers=headers, body=b"{}"
+                )
+                self.assertEqual(status, 403)
+
+    def test_remote_sessions_are_bounded_expiring_and_identity_bound(self):
+        owner_identity = hashlib.sha256(b"owner@example.test").hexdigest()
+        other_identity = hashlib.sha256(b"other@example.test").hexdigest()
+        tokens = []
+        for _index in range(MODULE.REMOTE_ACTION_SESSION_CAPACITY + 2):
+            token, _expires = self.bridge.issue_action_session(owner_identity)
+            tokens.append(token)
+        self.assertEqual(
+            len(self.bridge._action_sessions), MODULE.REMOTE_ACTION_SESSION_CAPACITY
+        )
+        self.assertFalse(self.bridge.action_session_valid(tokens[0], owner_identity))
+        self.assertTrue(self.bridge.action_session_valid(tokens[-1], owner_identity))
+        self.assertFalse(self.bridge.action_session_valid(tokens[-1], other_identity))
+
+        latest_digest = hashlib.sha256(tokens[-1].encode("utf-8")).hexdigest()
+        self.bridge._action_sessions[latest_digest] = (
+            int(MODULE.time.time()) - 1,
+            owner_identity,
+        )
+        self.assertFalse(self.bridge.action_session_valid(tokens[-1], owner_identity))
+        self.assertNotIn(latest_digest, self.bridge._action_sessions)
+
+    def test_remote_whale_action_rejects_parallel_effect_before_backend_dispatch(self):
+        token = self.issue_remote_session()
+        headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        body = json.dumps({"operation": "start", "mode": "morph"}).encode("utf-8")
+        before = len(FakeBackendHandler.records)
+        self.assertTrue(self.bridge._action_lock.acquire(blocking=False))
+        try:
+            status, _response_headers, _payload = self.request(
+                "POST", MODULE.REMOTE_WHALE_ACTION_ROUTE, headers=headers, body=body
+            )
+        finally:
+            self.bridge._action_lock.release()
+        self.assertEqual(status, 409)
+        self.assertEqual(len(FakeBackendHandler.records), before)
+
+    def test_remote_whale_action_is_identity_origin_session_and_type_bound(self):
+        token = self.issue_remote_session()
+        before = len(FakeBackendHandler.records)
+        body = json.dumps({"operation": "start", "mode": "morph"}).encode("utf-8")
+        headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        status, response_headers, payload = self.request(
+            "POST", MODULE.REMOTE_WHALE_ACTION_ROUTE, headers=headers, body=body
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(response_headers["X-Audio-Remote-Bridge"], "whale-action-v1")
+        self.assertEqual(
+            response_headers[MODULE.REMOTE_EFFECTS_HEADER], MODULE.REMOTE_EFFECTS_VALUE
+        )
+        decoded = json.loads(payload)
+        self.assertEqual(decoded["kind"], "audio_control_action_result")
+        self.assertTrue(decoded["snapshot"]["whale"]["service"]["active"])
+        self.assertNotIn(b"local-secret-value", payload)
+        self.assertNotIn("action_token", decoded["snapshot"]["service"])
+
+        records = FakeBackendHandler.records[before:]
+        self.assertEqual([record["method"] for record in records], ["GET", "POST"])
+        self.assertEqual(records[0]["path"], "/api/v1/snapshot?refresh=1")
+        self.assertEqual(records[1]["path"], "/api/v1/actions/whale")
+        backend_headers = records[1]["headers"]
+        self.assertEqual(backend_headers["x-audio-control-token"], "local-secret-value")
+        self.assertEqual(
+            backend_headers["origin"], f"http://127.0.0.1:{self.backend.server_port}"
+        )
+        self.assertEqual(json.loads(records[1]["body"]), {"operation": "start", "mode": "morph"})
+
+    def test_remote_whale_action_rejects_wrong_identity_origin_session_and_payload(self):
+        token = self.issue_remote_session(identity="owner@example.test")
+        base = {
+            **self.remote_headers(identity="owner@example.test"),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        cases = (
+            ({**base, "Origin": "https://evil.example"}, {"operation": "start", "mode": "morph"}, 403),
+            ({**base, "Tailscale-User-Login": "other@example.test"}, {"operation": "start", "mode": "morph"}, 403),
+            ({**base, MODULE.REMOTE_ACTION_TOKEN_HEADER: "x" * 40}, {"operation": "start", "mode": "morph"}, 403),
+            (base, {"operation": "start", "mode": "unknown"}, 400),
+            (base, {"operation": "stop", "mode": "morph"}, 400),
+            (base, {"operation": "start", "mode": "morph", "extra": True}, 400),
+        )
+        for headers, action, expected_status in cases:
+            before = len(FakeBackendHandler.records)
+            with self.subTest(action=action, status=expected_status):
+                status, _response_headers, _payload = self.request(
+                    "POST",
+                    MODULE.REMOTE_WHALE_ACTION_ROUTE,
+                    headers=headers,
+                    body=json.dumps(action).encode("utf-8"),
+                )
+                self.assertEqual(status, expected_status)
+                self.assertEqual(len(FakeBackendHandler.records), before)
+
+        status, _headers, _payload = self.request(
+            "POST",
+            "/api/v1/actions/recording",
+            headers=base,
+            body=json.dumps({"operation": "start"}).encode("utf-8"),
+        )
+        self.assertEqual(status, 405)
+        status, _headers, _payload = self.request(
+            "PUT", MODULE.REMOTE_WHALE_ACTION_ROUTE, headers=base, body=b"{}"
+        )
+        self.assertEqual(status, 405)
+
     def test_bridge_health_is_local_contract_truth_only(self):
         status, headers, payload = self.request("GET", "/bridge/v1/health")
         self.assertEqual(status, 200)
         self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
         health = json.loads(payload)
         self.assertEqual(health["contract_id"], "audiozentrale-remote-bridge-v1")
-        self.assertEqual(health["projection"], "read-only")
-        self.assertIs(health["effect_authority"], False)
+        self.assertEqual(health["projection"], "read-only-plus-whale-actions")
+        self.assertIs(health["effect_authority"], True)
+        self.assertEqual(
+            health["effect_scope"], ["whale:start", "whale:mode", "whale:stop"]
+        )
+        self.assertIn("recording", health["effect_exclusions"])
+        self.assertIs(health["remote_action"]["backend_token_exposed"], False)
+        self.assertIs(health["remote_action"]["tailscale_identity_required"], True)
+        self.assertIs(health["remote_action"]["session_identity_bound"], True)
         self.assertIs(health["backend"]["remote_exposure"], False)
         self.assertEqual(health["runtime_sha256"], MODULE.BRIDGE_RUNTIME_SHA256)
         self.assertEqual(set(health["runtime_acceptance"]), set(MODULE.ACCEPTANCE_KEYS))

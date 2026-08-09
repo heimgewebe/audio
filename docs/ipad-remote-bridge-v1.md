@@ -2,19 +2,25 @@
 
 ## Ziel
 
-Die iPad-/PWA-Oberfläche darf den Heim-PC lesen, ohne den lokalen Audio-Control-Dienst selbst ins Netz zu stellen. Deshalb bleibt `audio_control.py` unverändert auf `127.0.0.1:8765`; davor sitzt ein eigener, eng begrenzter Read-only-Bridge auf `127.0.0.1:8766`. Tailscale Serve darf ausschließlich diesen Bridge über HTTPS-Port `9443` im privaten Tailnet veröffentlichen.
+Die iPad-/PWA-Oberfläche darf den Heim-PC über den privaten Tailnet-Zugang lesen und genau die Buckelwal-Stimme steuern, ohne den lokalen Audio-Control-Dienst selbst ins Netz zu stellen. `audio_control.py` bleibt unverändert auf `127.0.0.1:8765`; davor sitzt der eng begrenzte Bridge auf `127.0.0.1:8766`. Tailscale Serve veröffentlicht ausschließlich diesen Bridge über HTTPS-Port `9443` im privaten Tailnet.
 
 Der bestehende Tailscale-Serve-Eintrag auf HTTPS 443 gehört einer anderen Anwendung und ist ausdrücklich fremdes Eigentum. Der Audiozentrale-Controller darf ihn weder ersetzen noch zurücksetzen noch löschen.
 
 ## Sicherheitsgrenzen
 
-`audio_remote_bridge.py` ist kein allgemeiner Reverse Proxy. Backendhost und -port sind Konstanten. Akzeptiert werden nur `GET` und `HEAD`, eine feste statische App-/Lektions-Allowlist sowie die read-only API-Endpunkte Health, Telemetrie, Replay, Buckelwal-Lektion, Snapshot und genau ein typisierter Profilplanpfad. Statische und feste API-Pfade akzeptieren keine Query; der Snapshot akzeptiert nur keine Query oder `refresh=1`. Kodierte Slash-/Backslash-Umgehungen werden fail-closed abgewiesen.
+`audio_remote_bridge.py` ist kein allgemeiner Reverse Proxy. Backendhost und -port sind Konstanten. Die normale Projektion bleibt auf `GET`/`HEAD`, eine feste statische App-/Lektions-Allowlist sowie die read-only API-Endpunkte Health, Telemetrie, Replay, Buckelwal-Lektion, Snapshot und genau einen typisierten Profilplanpfad beschränkt. Statische und feste API-Pfade akzeptieren keine Query; der Snapshot akzeptiert nur keine Query oder `refresh=1`. Kodierte Slash-/Backslash-Umgehungen werden fail-closed abgewiesen.
 
-Zum Backend werden ausschließlich ein synthetischer `Host: 127.0.0.1:8765`, `Connection: close` und optional `If-None-Match` gesendet. Andere eingehende Header, Cookies, Autorisierungsdaten und Bodies werden nicht weitergereicht. Von Backendantworten übernimmt der Bridge nur die für Darstellung, Cache und Browser-Sandbox benötigten Header; `Content-Length` wird aus der tatsächlich ausgelieferten Darstellung neu berechnet. Jede Antwort trägt `X-Audio-Remote-Bridge: read-only-v1`.
+Zusätzlich existiert genau ein wirkender Fernpfad: `POST /bridge/v1/actions/whale`. Er akzeptiert ausschließlich die Operationen `start`, `mode` und `stop`; `start` und `mode` sind auf `morph`, `organic`, `realistic` und `ufo` begrenzt. Recorder, Profile, Routing, Geräte-, Lautstärke- und Systemaktionen bleiben remote gesperrt.
 
-JSON-Antworten werden vor der Auslieferung vollständig geparst, rekursiv nach lokal-only bzw. sicherheitsrelevanten Schlüsseln gefiltert, erneut geprüft und deterministisch kodiert. Insbesondere darf die lokale Aktionsauthentisierung des Control-Dienstes niemals die Remoteprojektion erreichen. Ungültiges oder zu großes JSON wird nicht transparent weitergereicht.
+Der Fernpfad ist an den exakten HTTPS-Host `heim-pc.tail6dbb90.ts.net:9443`, eine passende Same-Origin-`Origin`, eine von Tailscale Serve verifizierte `Tailscale-User-Login`-Identität und einen kurzlebigen Bridge-Sessionnachweis gebunden. Auch die Ausgabe dieses Sessionnachweises erfolgt ausschließlich per Same-Origin-`POST /bridge/v1/session` mit JSON; ein `GET` erzeugt keinen Capability-Zustand. Tailscale Serve entfernt eingehend gefälschte Identitätsheader und setzt sie für Tailnet-Traffic selbst; der Bridge läuft deshalb weiterhin ausschließlich auf Loopback. Der Bridge speichert vom Sessionnachweis nur SHA-256 und Ablaufzeit und bindet ihn an den Hash der Tailscale-Identität.
 
-Der Bridge besitzt keine Audio-, Aufnahme-, Profil-, Geräte- oder Operatorwirkung. Ein Request ist niemals ein Beleg für Geräteanwesenheit oder eine erfolgreiche Audiowirkung.
+Der lokale Backend-`action_token` verlässt den Heim-PC niemals. Für jede Walwirkung liest der Bridge zuerst einen frischen lokalen Snapshot, prüft `whale_control` und den Walstatus, übernimmt den lokalen Aktionstoken nur intern und sendet die streng typisierte Aktion an `127.0.0.1:8765`. Die Antwort wird vor der Auslieferung rekursiv geschrubbt. Erfolg gilt nur mit autoritativem `audio_control_action_result` samt Snapshot-Readback.
+
+Zum Backend werden bei normalen Leseanfragen ausschließlich ein synthetischer `Host: 127.0.0.1:8765`, `Connection: close` und optional `If-None-Match` beziehungsweise `Range` gesendet. Andere eingehende Header, Cookies, Autorisierungsdaten und Bodies werden nicht weitergereicht. Jede normale Projektionsantwort trägt `X-Audio-Remote-Bridge: read-only-v1`; erfolgreiche Walaktionen tragen `X-Audio-Remote-Bridge: whale-action-v1` und `X-Audio-Remote-Effects: whale-v1`.
+
+JSON-Antworten der lokalen API werden vollständig geparst, rekursiv nach lokal-only beziehungsweise sicherheitsrelevanten Schlüsseln gefiltert, erneut geprüft und deterministisch kodiert. Ungültiges oder zu großes JSON wird nicht transparent weitergereicht.
+
+Ein Request allein ist weiterhin kein Beleg für Geräteanwesenheit oder eine erfolgreiche Audiowirkung. Nur der autoritative Backend-Readback nach der typisierten Walaktion belegt die konkrete Wirkung.
 
 ## Tailscale Serve
 
@@ -22,21 +28,23 @@ Der Bridge besitzt keine Audio-, Aufnahme-, Profil-, Geräte- oder Operatorwirku
 
 Nach `apply` wird geprüft, dass 9443 exakt auf den Bridge zeigt und die komplette Serve-Konfiguration nach Entfernung des eigenen 9443-Anteils semantisch identisch zum Vorzustand ist. Bei Abweichung wird ausschließlich 9443 wieder abgeschaltet und der Vorzustand erneut geprüft. `remove` greift nur dann ein, wenn 9443 exakt dem eigenen Vertrag entspricht. Andere Ports und Handler bleiben immer fremdes Eigentum.
 
-## Deployment
+## Deployment und Abnahme
 
-`systemd/user/audio-remote-bridge-v1.service` wird releasegebunden installiert, aber nicht automatisch aktiviert oder gestartet. Ebenso verändert das normale Audio-Control-Deployment niemals die Tailscale-Konfiguration. Repositorylieferung und Runtimeaktivierung sind getrennte Stufen.
+`systemd/user/audio-remote-bridge-v1.service` wird releasegebunden installiert. Die Tailscale-Konfiguration wird durch das normale Audio-Control-Deployment weiterhin nicht verändert.
 
-Die spätere Runtimeabnahme benötigt mindestens:
+Die Runtimeabnahme benötigt mindestens:
 
 - gemergten, hashgebunden deployten Release,
 - laufenden lokalen Control-Dienst auf `127.0.0.1:8765`,
 - laufenden Bridge auf `127.0.0.1:8766`,
 - revisionsgebundenen Serve-Readback für HTTPS 9443 bei unverändertem übrigen Serve-Zustand,
 - HTTPS-Readback aus dem Tailnet,
-- physischen Safari-/PWA-Readback auf dem vorgesehenen iPad.
+- Sessionnachweis mit verifizierter Tailscale-Identität,
+- kontrollierten iPad-Readback `start → mode → stop` mit final inaktiver Walstimme,
+- separaten Safari-/PWA-Bediennachweis für die sichtbare Oberfläche.
 
-Bis diese Belege vorliegen, bleiben sämtliche `runtime_acceptance`-Felder in `inventory/audiozentrale-remote-bridge.v1.json` auf `false`.
+Die allgemeinen `runtime_acceptance`-Felder bleiben revisions- und TTL-gebunden. Ein alter Read-only-Abnahmebeleg darf einen neuen wirkenden Bridge-Release nicht automatisch freigeben.
 
 ## Rückbau
 
-Der Rückbau erfolgt in umgekehrter Reihenfolge: den exakt eigenen Serve-9443-Eintrag entfernen, Bridge-Dienst stoppen/deaktivieren, danach bei Bedarf den Repository-Commit revertieren. Der lokale Audio-Control-Dienst auf 8765 und fremde Serve-Konfigurationen werden dabei nicht verändert.
+Der Rückbau erfolgt in umgekehrter Reihenfolge: die neue Bridge-Revision zurücknehmen beziehungsweise Dienst auf den vorherigen Release setzen und bei Bedarf den exakt eigenen Serve-9443-Eintrag entfernen. Der lokale Audio-Control-Dienst auf 8765 und fremde Serve-Konfigurationen werden dabei nicht verändert.

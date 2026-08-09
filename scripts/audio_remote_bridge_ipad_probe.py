@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canonical read-only physical-iPad acceptance probe for Audiozentrale."""
+"""Canonical physical-iPad acceptance probe for the scoped Audiozentrale bridge."""
 
 from __future__ import annotations
 
@@ -30,8 +30,16 @@ def is_tailnet_address(value: str) -> bool:
     return address in TAILNET_V4 or address in TAILNET_V6
 
 
-def fetch(path: str, *, method: str = "GET") -> dict[str, Any]:
-    request = urllib.request.Request(BASE_URL + path, method=method)
+def fetch(
+    path: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+) -> dict[str, Any]:
+    request = urllib.request.Request(
+        BASE_URL + path, data=body, headers=headers or {}, method=method
+    )
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
@@ -74,8 +82,20 @@ def run_probe() -> dict[str, Any]:
     )
     health = json.loads(health_response["body"].decode("utf-8"))
     require(health.get("kind") == "audio_remote_bridge_health", "wrong bridge health identity")
-    require(health.get("projection") == "read-only", "bridge is not read-only")
-    require(health.get("effect_authority") is False, "bridge unexpectedly has effect authority")
+    require(
+        health.get("projection") == "read-only-plus-whale-actions",
+        "bridge projection does not expose the scoped whale contract",
+    )
+    require(health.get("effect_authority") is True, "scoped whale authority is missing")
+    require(
+        health.get("effect_scope") == ["whale:start", "whale:mode", "whale:stop"],
+        "remote effect scope is broader or incomplete",
+    )
+    remote_action = health.get("remote_action")
+    require(isinstance(remote_action, dict), "remote action contract is missing")
+    require(remote_action.get("backend_token_exposed") is False, "backend token exposure is enabled")
+    require(remote_action.get("tailscale_identity_required") is True, "Tailscale identity is not required")
+    require(remote_action.get("session_identity_bound") is True, "session is not identity-bound")
     backend = health.get("backend")
     require(isinstance(backend, dict) and backend.get("remote_exposure") is False, "backend is remotely exposed")
     bridge_runtime_sha256 = health.get("runtime_sha256")
@@ -107,8 +127,41 @@ def run_probe() -> dict[str, Any]:
     redactions = int(snapshot_response["headers"].get("x-audio-remote-redactions", "0"))
     require(redactions >= 1, "snapshot did not prove sensitive-field redaction")
 
+    session_response = fetch(
+        "/bridge/v1/session",
+        method="POST",
+        headers={"Origin": BASE_URL, "Content-Type": "application/json"},
+        body=b"{}",
+    )
+    require(session_response["status"] == 200, "remote whale session is unavailable")
+    require(
+        session_response["headers"].get("x-audio-remote-effects") == "whale-v1",
+        "remote whale capability marker is missing",
+    )
+    session = json.loads(session_response["body"].decode("utf-8"))
+    require(session.get("kind") == "audio_remote_bridge_session", "wrong session identity")
+    session_token = session.get("session_token")
+    require(isinstance(session_token, str) and len(session_token) >= 32, "session token is missing")
+    require("action_token" not in session, "backend-style action token leaked into session")
+
+    invalid_action = json.dumps({"operation": "start", "mode": "not-allowed"}).encode("utf-8")
+    negative_action_response = fetch(
+        "/bridge/v1/actions/whale",
+        method="POST",
+        headers={
+            "Origin": BASE_URL,
+            "Content-Type": "application/json",
+            "X-Audio-Bridge-Session": session_token,
+        },
+        body=invalid_action,
+    )
+    require(
+        negative_action_response["status"] == 400,
+        "invalid scoped whale action did not fail before effect dispatch",
+    )
+
     post_response = fetch("/api/v1/health", method="POST")
-    require(post_response["status"] == 405, "POST is not blocked by the bridge")
+    require(post_response["status"] == 405, "generic POST is not blocked by the bridge")
 
     return {
         "schema_version": 1,
@@ -132,9 +185,14 @@ def run_probe() -> dict[str, Any]:
         },
         "security": {
             "bridge_marker": "read-only-v1",
+            "remote_effects_marker": "whale-v1",
             "snapshot_redactions": redactions,
-            "post_status": post_response["status"],
-            "effect_authority": False,
+            "generic_post_status": post_response["status"],
+            "invalid_whale_action_status": negative_action_response["status"],
+            "effect_authority": True,
+            "effect_scope": ["whale:start", "whale:mode", "whale:stop"],
+            "session_identity_bound": True,
+            "backend_action_token_exposed": False,
             "backend_remote_exposure": False,
         },
         "runtime_acceptance": {
@@ -145,6 +203,7 @@ def run_probe() -> dict[str, Any]:
             "pwa_installation_verified": False,
         },
         "does_not_establish": [
+            "successful remote whale effect",
             "Safari renderer behavior",
             "PWA home-screen installation",
         ],

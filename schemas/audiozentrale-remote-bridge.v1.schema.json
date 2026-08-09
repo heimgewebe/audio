@@ -16,17 +16,33 @@
     "runtime_acceptance_state"
   ],
   "properties": {
-    "schema_version": {"const": 1},
-    "kind": {"const": "audiozentrale_remote_bridge_contract"},
-    "id": {"const": "audiozentrale-remote-bridge-v1"},
-    "status": {"const": "runtime-evidence-gated"},
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "audiozentrale_remote_bridge_contract"
+    },
+    "id": {
+      "const": "audiozentrale-remote-bridge-v1"
+    },
+    "status": {
+      "const": "runtime-evidence-gated"
+    },
     "schema_binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256"],
+      "required": [
+        "path",
+        "sha256"
+      ],
       "properties": {
-        "path": {"const": "schemas/audiozentrale-remote-bridge.v1.schema.json"},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "path": {
+          "const": "schemas/audiozentrale-remote-bridge.v1.schema.json"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     },
     "bridge": {
@@ -47,22 +63,40 @@
         "response_header_forward",
         "bridge_response_header",
         "json_scrubbing",
+        "effect_scope",
+        "effect_exclusions",
+        "remote_action",
         "effect_authority",
         "backend_remote_exposure"
       ],
       "properties": {
-        "listen_host": {"const": "127.0.0.1"},
-        "listen_port": {"const": 8766},
-        "backend_host": {"const": "127.0.0.1"},
-        "backend_port": {"const": 8765},
+        "listen_host": {
+          "const": "127.0.0.1"
+        },
+        "listen_port": {
+          "const": 8766
+        },
+        "backend_host": {
+          "const": "127.0.0.1"
+        },
+        "backend_port": {
+          "const": 8765
+        },
         "methods": {
-          "const": ["GET", "HEAD"]
+          "const": [
+            "GET",
+            "HEAD",
+            "POST"
+          ]
         },
         "static_routes": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^/"}
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
         },
         "fixed_api_routes": {
           "const": [
@@ -72,43 +106,185 @@
             "/api/v1/whale/lesson"
           ]
         },
-        "snapshot_queries": {"const": ["", "refresh=1"]},
-        "profile_plan_pattern": {"const": "/api/v1/profiles/{profile_id}/plan"},
-        "request_header_forward": {"const": ["If-None-Match", "Range"]},
-        "backend_headers_synthesized": {"const": ["Host", "Connection"]},
+        "snapshot_queries": {
+          "const": [
+            "",
+            "refresh=1"
+          ]
+        },
+        "profile_plan_pattern": {
+          "const": "/api/v1/profiles/{profile_id}/plan"
+        },
+        "request_header_forward": {
+          "const": [
+            "If-None-Match",
+            "Range"
+          ]
+        },
+        "backend_headers_synthesized": {
+          "const": [
+            "Host",
+            "Connection"
+          ]
+        },
         "response_header_forward": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "bridge_response_header": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["name", "value"],
+          "required": [
+            "name",
+            "value"
+          ],
           "properties": {
-            "name": {"const": "X-Audio-Remote-Bridge"},
-            "value": {"const": "read-only-v1"}
+            "name": {
+              "const": "X-Audio-Remote-Bridge"
+            },
+            "value": {
+              "const": "read-only-v1"
+            }
           }
         },
         "json_scrubbing": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "policy", "must_remove", "invalid_json"],
+          "required": [
+            "enabled",
+            "policy",
+            "must_remove",
+            "invalid_json"
+          ],
           "properties": {
-            "enabled": {"const": true},
-            "policy": {"const": "recursive-key-name"},
+            "enabled": {
+              "const": true
+            },
+            "policy": {
+              "const": "recursive-key-name"
+            },
             "must_remove": {
               "type": "array",
               "minItems": 1,
               "uniqueItems": true,
-              "items": {"type": "string", "minLength": 1}
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             },
-            "invalid_json": {"const": "fail-closed"}
+            "invalid_json": {
+              "const": "fail-closed"
+            }
           }
         },
-        "effect_authority": {"const": false},
-        "backend_remote_exposure": {"const": false}
+        "effect_authority": {
+          "const": true
+        },
+        "backend_remote_exposure": {
+          "const": false
+        },
+        "effect_scope": {
+          "const": [
+            "whale:start",
+            "whale:mode",
+            "whale:stop"
+          ]
+        },
+        "effect_exclusions": {
+          "const": [
+            "recording",
+            "profiles",
+            "routing",
+            "devices",
+            "system"
+          ]
+        },
+        "remote_action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_route",
+            "session_method",
+            "action_route",
+            "tailnet_host",
+            "session_header",
+            "session_ttl_seconds",
+            "session_capacity",
+            "max_body_bytes",
+            "operations",
+            "modes",
+            "tailscale_identity_required",
+            "session_identity_bound",
+            "backend_action_token_exposed",
+            "action_response_marker",
+            "effects_header",
+            "effects_value"
+          ],
+          "properties": {
+            "session_route": {
+              "const": "/bridge/v1/session"
+            },
+            "action_route": {
+              "const": "/bridge/v1/actions/whale"
+            },
+            "tailnet_host": {
+              "const": "heim-pc.tail6dbb90.ts.net:9443"
+            },
+            "session_header": {
+              "const": "X-Audio-Bridge-Session"
+            },
+            "session_ttl_seconds": {
+              "const": 900
+            },
+            "session_capacity": {
+              "const": 8
+            },
+            "max_body_bytes": {
+              "const": 512
+            },
+            "operations": {
+              "const": [
+                "start",
+                "mode",
+                "stop"
+              ]
+            },
+            "modes": {
+              "const": [
+                "morph",
+                "organic",
+                "realistic",
+                "ufo"
+              ]
+            },
+            "tailscale_identity_required": {
+              "const": true
+            },
+            "session_identity_bound": {
+              "const": true
+            },
+            "backend_action_token_exposed": {
+              "const": false
+            },
+            "action_response_marker": {
+              "const": "whale-action-v1"
+            },
+            "effects_header": {
+              "const": "X-Audio-Remote-Effects"
+            },
+            "effects_value": {
+              "const": "whale-v1"
+            },
+            "session_method": {
+              "const": "POST"
+            }
+          }
+        }
       }
     },
     "tailscale_serve": {
@@ -124,13 +300,31 @@
         "forbidden_operations"
       ],
       "properties": {
-        "tool": {"const": "tailscale serve"},
-        "https_port": {"const": 9443},
-        "target": {"const": "http://127.0.0.1:8766"},
-        "tailnet_only": {"const": true},
-        "public_exposure": {"const": false},
-        "preserve_other_config": {"const": true},
-        "forbidden_operations": {"const": ["funnel", "reset", "clear"]}
+        "tool": {
+          "const": "tailscale serve"
+        },
+        "https_port": {
+          "const": 9443
+        },
+        "target": {
+          "const": "http://127.0.0.1:8766"
+        },
+        "tailnet_only": {
+          "const": true
+        },
+        "public_exposure": {
+          "const": false
+        },
+        "preserve_other_config": {
+          "const": true
+        },
+        "forbidden_operations": {
+          "const": [
+            "funnel",
+            "reset",
+            "clear"
+          ]
+        }
       }
     },
     "runtime_acceptance": {
@@ -144,23 +338,49 @@
         "pwa_installation_verified"
       ],
       "properties": {
-        "bridge_service_verified": {"type": "boolean"},
-        "tailscale_serve_verified": {"type": "boolean"},
-        "ipad_https_reachability_verified": {"type": "boolean"},
-        "ipad_safari_verified": {"type": "boolean"},
-        "pwa_installation_verified": {"type": "boolean"}
+        "bridge_service_verified": {
+          "type": "boolean"
+        },
+        "tailscale_serve_verified": {
+          "type": "boolean"
+        },
+        "ipad_https_reachability_verified": {
+          "type": "boolean"
+        },
+        "ipad_safari_verified": {
+          "type": "boolean"
+        },
+        "pwa_installation_verified": {
+          "type": "boolean"
+        }
       }
     },
     "runtime_acceptance_state": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "mode", "max_ttl_seconds", "fail_closed", "binds_bridge_sha256"],
+      "required": [
+        "path",
+        "mode",
+        "max_ttl_seconds",
+        "fail_closed",
+        "binds_bridge_sha256"
+      ],
       "properties": {
-        "path": {"const": "~/.local/state/audio-remote-bridge-v1/acceptance.json"},
-        "mode": {"const": "0600"},
-        "max_ttl_seconds": {"const": 604800},
-        "fail_closed": {"const": true},
-        "binds_bridge_sha256": {"const": true}
+        "path": {
+          "const": "~/.local/state/audio-remote-bridge-v1/acceptance.json"
+        },
+        "mode": {
+          "const": "0600"
+        },
+        "max_ttl_seconds": {
+          "const": 604800
+        },
+        "fail_closed": {
+          "const": true
+        },
+        "binds_bridge_sha256": {
+          "const": true
+        }
       }
     }
   }

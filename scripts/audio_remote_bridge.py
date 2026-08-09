@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Fail-closed read-only projection bridge for the Audiozentrale.
+"""Fail-closed remote projection with one scoped Buckelwal action channel.
 
 The canonical Audio Control service remains loopback-only on 127.0.0.1:8765.
-This separate loopback service exposes only an explicit read-only projection for
-an independently authenticated HTTPS frontend. It is not an open proxy and it
-never gains audio, device, profile-transition or other effect authority.
+This separate loopback service exposes a read-only projection plus exactly the
+typed Buckelwal start/mode/stop actions for the private Tailnet frontend. It is
+not an open proxy and never exposes the backend action token.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import http.client
 import ipaddress
 import json
 import os
 import pathlib
 import re
+import secrets
 import socket
 import stat
 import threading
@@ -28,6 +30,18 @@ from typing import Any
 
 CONTRACT_ID = "audiozentrale-remote-bridge-v1"
 BRIDGE_HEADER = "read-only-v1"
+BRIDGE_ACTION_HEADER = "whale-action-v1"
+REMOTE_EFFECTS_HEADER = "X-Audio-Remote-Effects"
+REMOTE_EFFECTS_VALUE = "whale-v1"
+REMOTE_SESSION_ROUTE = "/bridge/v1/session"
+REMOTE_WHALE_ACTION_ROUTE = "/bridge/v1/actions/whale"
+REMOTE_ACTION_TOKEN_HEADER = "X-Audio-Bridge-Session"
+REMOTE_ACTION_SESSION_TTL_SECONDS = 15 * 60
+REMOTE_ACTION_SESSION_CAPACITY = 8
+MAX_ACTION_BODY_BYTES = 512
+WHALE_ACTION_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
+WHALE_ACTION_OPERATIONS = frozenset({"start", "mode", "stop"})
+REMOTE_TAILNET_HOST = "heim-pc.tail6dbb90.ts.net:9443"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
 BACKEND_HOST = "127.0.0.1"
@@ -250,6 +264,14 @@ class RequestRejected(BridgeError):
     """Client request violates the bounded request contract."""
 
 
+class ActionDenied(BridgeError):
+    """Remote effect request lacks the exact scoped authorization."""
+
+
+class ActionBusy(BridgeError):
+    """Another scoped remote effect is already being processed."""
+
+
 class BackendFailure(BridgeError):
     """Local backend response cannot be forwarded safely."""
 
@@ -389,6 +411,68 @@ def validate_request_target(raw_target: str) -> tuple[str, bool]:
     raise RouteDenied("route is not allowlisted")
 
 
+
+def validate_remote_tailnet_host(headers: Any) -> str:
+    values = headers.get_all("Host", []) if headers is not None else []
+    if len(values) != 1:
+        raise ActionDenied("remote action requires one Host header")
+    host = values[0].strip().lower()
+    if (
+        not host
+        or len(host) > 255
+        or any(character in host for character in "\r\n\0")
+        or host != REMOTE_TAILNET_HOST
+    ):
+        raise ActionDenied("remote action host is outside the private Tailnet HTTPS contract")
+    return host
+
+
+def validate_remote_tailnet_origin(headers: Any) -> str:
+    host = validate_remote_tailnet_host(headers)
+    values = headers.get_all("Origin", []) if headers is not None else []
+    if len(values) != 1 or values[0] != f"https://{host}":
+        raise ActionDenied("remote action Origin does not match the Tailnet HTTPS host")
+    return host
+
+
+
+def validated_tailscale_identity(headers: Any) -> str:
+    values = headers.get_all("Tailscale-User-Login", []) if headers is not None else []
+    if len(values) != 1:
+        raise ActionDenied("remote action requires one verified Tailscale identity")
+    value = values[0].strip()
+    if (
+        not value
+        or len(value.encode("utf-8", errors="replace")) > 512
+        or any(character in value for character in "\r\n\0")
+    ):
+        raise ActionDenied("remote Tailscale identity is invalid")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+def validate_whale_action_payload(payload: bytes) -> dict[str, str]:
+    if not payload or len(payload) > MAX_ACTION_BODY_BYTES:
+        raise RequestRejected("remote whale action body is outside the size contract")
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RequestRejected("remote whale action body is invalid JSON") from error
+    if not isinstance(decoded, dict):
+        raise RequestRejected("remote whale action body must be an object")
+    operation = decoded.get("operation")
+    if operation not in WHALE_ACTION_OPERATIONS:
+        raise RequestRejected("remote whale action operation is not allowlisted")
+    if operation == "stop":
+        if set(decoded) != {"operation"}:
+            raise RequestRejected("remote stop accepts no additional fields")
+        return {"operation": "stop"}
+    if set(decoded) != {"operation", "mode"}:
+        raise RequestRejected("remote start/mode requires exactly operation and mode")
+    mode = decoded.get("mode")
+    if mode not in WHALE_ACTION_MODES:
+        raise RequestRejected("remote whale mode is not allowlisted")
+    return {"operation": str(operation), "mode": str(mode)}
+
+
 def backend_request_headers(
     headers: Any,
     *,
@@ -478,6 +562,95 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         connection.close()
 
 
+def _bounded_backend_payload(response: http.client.HTTPResponse) -> tuple[list[tuple[str, str]], bytes]:
+    headers = response.getheaders()
+    header_bytes = sum(
+        len(name.encode("latin-1", errors="replace"))
+        + len(value.encode("latin-1", errors="replace"))
+        + 4
+        for name, value in headers
+    )
+    if header_bytes > MAX_BACKEND_HEADER_BYTES:
+        raise BackendFailure("backend headers exceed bridge limit")
+    payload = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(payload) > MAX_RESPONSE_BYTES:
+        raise BackendFailure("backend response exceeds bridge limit")
+    return headers, payload
+
+
+def read_backend_action_token() -> str:
+    connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT_SECONDS)
+    try:
+        connection.putrequest("GET", "/api/v1/snapshot?refresh=1", skip_host=True, skip_accept_encoding=True)
+        connection.putheader("Host", f"{BACKEND_HOST}:{BACKEND_PORT}")
+        connection.putheader("Connection", "close")
+        connection.endheaders()
+        response = connection.getresponse()
+        _headers, payload = _bounded_backend_payload(response)
+        if response.status != HTTPStatus.OK:
+            raise BackendFailure("backend snapshot is unavailable for remote action")
+        try:
+            snapshot = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise BackendFailure("backend snapshot for remote action is invalid") from error
+        if not isinstance(snapshot, dict) or snapshot.get("kind") != "audio_control_snapshot":
+            raise BackendFailure("backend snapshot identity is invalid")
+        capabilities = snapshot.get("capabilities")
+        whale = snapshot.get("whale")
+        service = snapshot.get("service")
+        if not isinstance(capabilities, dict) or capabilities.get("whale_control") is not True:
+            raise BackendFailure("backend whale control is not actionable")
+        if not isinstance(whale, dict) or whale.get("status") != "ok":
+            raise BackendFailure("backend whale status is not actionable")
+        token = service.get("action_token") if isinstance(service, dict) else None
+        if not isinstance(token, str) or not 16 <= len(token) <= 512:
+            raise BackendFailure("backend action token is unavailable")
+        return token
+    except BackendFailure:
+        raise
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        raise BackendFailure("backend is unavailable") from error
+    finally:
+        connection.close()
+
+
+def write_backend_whale_action(action: dict[str, str]) -> tuple[int, bytes, int]:
+    token = read_backend_action_token()
+    body = json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=70.0)
+    try:
+        connection.putrequest("POST", "/api/v1/actions/whale", skip_host=True, skip_accept_encoding=True)
+        connection.putheader("Host", f"{BACKEND_HOST}:{BACKEND_PORT}")
+        connection.putheader("Connection", "close")
+        connection.putheader("Origin", f"http://{BACKEND_HOST}:{BACKEND_PORT}")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", str(len(body)))
+        connection.putheader("X-Audio-Control-Token", token)
+        connection.endheaders(body)
+        response = connection.getresponse()
+        headers, payload = _bounded_backend_payload(response)
+        content_type = next((value for name, value in headers if name.lower() == "content-type"), "")
+        if content_type.lower().split(";", 1)[0].strip() != "application/json":
+            raise BackendFailure("backend whale action response is not JSON")
+        scrubbed, redactions = encode_scrubbed_json(payload)
+        if response.status == HTTPStatus.OK:
+            decoded = json.loads(scrubbed.decode("utf-8"))
+            if (
+                not isinstance(decoded, dict)
+                or decoded.get("kind") != "audio_control_action_result"
+                or not isinstance(decoded.get("snapshot"), dict)
+                or decoded["snapshot"].get("kind") != "audio_control_snapshot"
+            ):
+                raise BackendFailure("backend whale action lacks authoritative readback")
+        return response.status, scrubbed, redactions
+    except BackendFailure:
+        raise
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        raise BackendFailure("backend whale action is unavailable") from error
+    finally:
+        connection.close()
+
+
 class AudioRemoteBridgeHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
@@ -497,6 +670,9 @@ class AudioRemoteBridgeHTTPServer(ThreadingHTTPServer):
         if test_mode and port != 0 and not 1024 <= port <= 65535:
             raise BridgeError("test bridge port is invalid")
         self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+        self._action_lock = threading.Lock()
+        self._action_session_lock = threading.Lock()
+        self._action_sessions: dict[str, tuple[int, str]] = {}
         super().__init__(server_address, AudioRemoteBridgeHandler)
 
     def get_request(self) -> tuple[socket.socket, Any]:
@@ -532,6 +708,47 @@ class AudioRemoteBridgeHTTPServer(ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self._request_slots.release()
+
+    def issue_action_session(self, identity_sha256: str) -> tuple[str, int]:
+        now = int(time.time())
+        expires = now + REMOTE_ACTION_SESSION_TTL_SECONDS
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+        with self._action_session_lock:
+            self._action_sessions = {
+                key: value for key, value in self._action_sessions.items() if value[0] > now
+            }
+            if len(self._action_sessions) >= REMOTE_ACTION_SESSION_CAPACITY:
+                oldest = min(self._action_sessions, key=lambda key: self._action_sessions[key][0])
+                del self._action_sessions[oldest]
+            self._action_sessions[digest] = (expires, identity_sha256)
+        return token, expires
+
+    def action_session_valid(self, token: str, identity_sha256: str) -> bool:
+        if not isinstance(token, str) or not 32 <= len(token) <= 256:
+            return False
+        now = int(time.time())
+        candidate = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        with self._action_session_lock:
+            expired = [key for key, value in self._action_sessions.items() if value[0] <= now]
+            for key in expired:
+                del self._action_sessions[key]
+            for digest, (expires, bound_identity) in self._action_sessions.items():
+                if (
+                    expires > now
+                    and hmac.compare_digest(digest, candidate)
+                    and hmac.compare_digest(bound_identity, identity_sha256)
+                ):
+                    return True
+        return False
+
+    def execute_whale_action(self, action: dict[str, str]) -> tuple[int, bytes, int]:
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("another remote whale action is already in progress")
+        try:
+            return write_backend_whale_action(action)
+        finally:
+            self._action_lock.release()
 
 
 class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
@@ -599,6 +816,8 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
         backend_headers: list[tuple[str, str]] | None = None,
         content_type: str = "application/json; charset=utf-8",
         redactions: int = 0,
+        bridge_marker: str = BRIDGE_HEADER,
+        remote_effect: str | None = None,
     ) -> None:
         self.send_response(status)
         supplied = {name.lower() for name, _value in backend_headers or []}
@@ -618,7 +837,9 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
                 "camera=(), microphone=(), geolocation=(), display-capture=()",
             )
         self.send_header("Content-Length", str(content_length))
-        self.send_header("X-Audio-Remote-Bridge", BRIDGE_HEADER)
+        self.send_header("X-Audio-Remote-Bridge", bridge_marker)
+        if remote_effect:
+            self.send_header(REMOTE_EFFECTS_HEADER, remote_effect)
         if redactions:
             self.send_header("X-Audio-Remote-Redactions", str(redactions))
         self.send_header("Connection", "close")
@@ -660,9 +881,20 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
                     "kind": "audio_remote_bridge_health",
                     "contract_id": CONTRACT_ID,
                     "status": "serving",
-                    "projection": "read-only",
-                    "effect_authority": False,
-                    "allowed_methods": ["GET", "HEAD"],
+                    "projection": "read-only-plus-whale-actions",
+                    "effect_authority": True,
+                    "effect_scope": ["whale:start", "whale:mode", "whale:stop"],
+                    "effect_exclusions": ["recording", "profiles", "routing", "devices", "system"],
+                    "allowed_methods": ["GET", "HEAD", "POST"],
+                    "remote_action": {
+                        "session_route": REMOTE_SESSION_ROUTE,
+                        "action_route": REMOTE_WHALE_ACTION_ROUTE,
+                        "session_ttl_seconds": REMOTE_ACTION_SESSION_TTL_SECONDS,
+                        "token_header": REMOTE_ACTION_TOKEN_HEADER,
+                        "backend_token_exposed": False,
+                        "tailscale_identity_required": True,
+                        "session_identity_bound": True,
+                    },
                     "json_sensitive_key_redaction": True,
                     "backend": {
                         "authority": "local-loopback-only",
@@ -680,6 +912,128 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
         self._send_headers(HTTPStatus.OK, content_length=len(payload))
         if not head_only:
             self.wfile.write(payload)
+
+    def _remote_session(self) -> None:
+        try:
+            validate_remote_tailnet_origin(self.headers)
+            identity_sha256 = validated_tailscale_identity(self.headers)
+        except ActionDenied as error:
+            self._send_error(HTTPStatus.FORBIDDEN, str(error))
+            return
+        if self.headers.get_all("Transfer-Encoding", []):
+            self._send_error(HTTPStatus.BAD_REQUEST, "chunked remote session bodies are forbidden")
+            return
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote session requires one Content-Length")
+            return
+        try:
+            length = int(lengths[0], 10)
+        except ValueError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote session Content-Length is invalid")
+            return
+        if not 1 <= length <= 16:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote session body is outside the size contract")
+            return
+        content_types = self.headers.get_all("Content-Type", [])
+        if (
+            len(content_types) != 1
+            or content_types[0].split(";", 1)[0].strip().lower() != "application/json"
+        ):
+            self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "remote session requires application/json")
+            return
+        request_payload = self.rfile.read(length)
+        if len(request_payload) != length:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote session body is incomplete")
+            return
+        try:
+            session_request = json.loads(request_payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote session body is invalid JSON")
+            return
+        if session_request != {}:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote session body must be an empty object")
+            return
+        token, expires = self.server.issue_action_session(identity_sha256)
+        payload = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "audio_remote_bridge_session",
+                    "effect_scope": ["whale"],
+                    "allowed_operations": sorted(WHALE_ACTION_OPERATIONS),
+                    "session_token": token,
+                    "expires_at_unix": expires,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        self._send_headers(
+            HTTPStatus.OK,
+            content_length=len(payload),
+            remote_effect=REMOTE_EFFECTS_VALUE,
+        )
+        self.wfile.write(payload)
+
+    def _serve_whale_action(self) -> None:
+        try:
+            validate_remote_tailnet_origin(self.headers)
+            identity_sha256 = validated_tailscale_identity(self.headers)
+        except ActionDenied as error:
+            self._send_error(HTTPStatus.FORBIDDEN, str(error))
+            return
+        token_values = self.headers.get_all(REMOTE_ACTION_TOKEN_HEADER, [])
+        if (
+            len(token_values) != 1
+            or not self.server.action_session_valid(token_values[0], identity_sha256)
+        ):
+            self._send_error(HTTPStatus.FORBIDDEN, "remote whale action session is invalid or expired")
+            return
+        if self.headers.get_all("Transfer-Encoding", []):
+            self._send_error(HTTPStatus.BAD_REQUEST, "chunked remote action bodies are forbidden")
+            return
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote whale action requires one Content-Length")
+            return
+        try:
+            length = int(lengths[0], 10)
+        except ValueError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote whale action Content-Length is invalid")
+            return
+        if not 1 <= length <= MAX_ACTION_BODY_BYTES:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote whale action body is outside the size contract")
+            return
+        content_types = self.headers.get_all("Content-Type", [])
+        if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
+            self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "remote whale action requires application/json")
+            return
+        payload = self.rfile.read(length)
+        if len(payload) != length:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote whale action body is incomplete")
+            return
+        try:
+            action = validate_whale_action_payload(payload)
+            status, response_payload, redactions = self.server.execute_whale_action(action)
+        except RequestRejected as error:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except ActionBusy as error:
+            self._send_error(HTTPStatus.CONFLICT, str(error))
+            return
+        except BackendFailure as error:
+            self._send_error(HTTPStatus.BAD_GATEWAY, str(error))
+            return
+        self._send_headers(
+            status,
+            content_length=len(response_payload),
+            redactions=redactions,
+            bridge_marker=BRIDGE_ACTION_HEADER,
+            remote_effect=REMOTE_EFFECTS_VALUE,
+        )
+        self.wfile.write(response_payload)
 
     def _serve(self, *, head_only: bool) -> None:
         if self.headers.get_all("Transfer-Encoding", []):
@@ -728,14 +1082,20 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
         self._serve(head_only=True)
 
     def do_POST(self) -> None:
+        if self.path == REMOTE_SESSION_ROUTE:
+            self._remote_session()
+            return
+        if self.path == REMOTE_WHALE_ACTION_ROUTE:
+            self._serve_whale_action()
+            return
         self._method_not_allowed()
 
-    do_PUT = do_POST
-    do_PATCH = do_POST
-    do_DELETE = do_POST
-    do_OPTIONS = do_POST
-    do_CONNECT = do_POST
-    do_TRACE = do_POST
+    do_PUT = _method_not_allowed
+    do_PATCH = _method_not_allowed
+    do_DELETE = _method_not_allowed
+    do_OPTIONS = _method_not_allowed
+    do_CONNECT = _method_not_allowed
+    do_TRACE = _method_not_allowed
 
 
 def validate_configuration(host: str, port: int, backend_host: str, backend_port: int) -> None:
@@ -770,7 +1130,8 @@ def main(argv: list[str] | None = None) -> int:
                     "kind": "audio_remote_bridge_check",
                     "contract_id": CONTRACT_ID,
                     "status": "ok",
-                    "effect_authority": False,
+                    "effect_authority": True,
+                    "effect_scope": ["whale:start", "whale:mode", "whale:stop"],
                 },
                 sort_keys=True,
                 separators=(",", ":"),
