@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "0f1fb3cbfc088bfd0861429f34de94d8f6958c71f6dd71d2e09743030391a319"
+    "sha256": "4363627f7fc4753b0bb4e9409358e98ee0aed131b2636eb57d30650b45bf4ecd"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
