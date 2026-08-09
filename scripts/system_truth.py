@@ -390,17 +390,44 @@ def command_record(result: CommandResult) -> dict[str, Any]:
     }
 
 
+def _doctor_stream_projection(
+    text: str, *, total_bytes: int, truncated: bool
+) -> tuple[str, bool]:
+    encoded = text.encode("utf-8")
+    bounded = encoded[: DOCTOR.MAX_COMMAND_OUTPUT_BYTES]
+    return (
+        bounded.decode("utf-8", errors="replace"),
+        truncated or total_bytes > DOCTOR.MAX_COMMAND_OUTPUT_BYTES,
+    )
+
+
 def doctor_inputs_from_capture(results: list[CommandResult]) -> list[Any]:
-    return [
-        DOCTOR.CommandResult(
-            result.argv,
-            result.returncode,
+    projected: list[Any] = []
+    for result in results:
+        stdout, stdout_truncated = _doctor_stream_projection(
             result.stdout,
-            result.stderr,
-            result.error,
+            total_bytes=result.stdout_total_bytes,
+            truncated=result.stdout_truncated,
         )
-        for result in results
-    ]
+        stderr, stderr_truncated = _doctor_stream_projection(
+            result.stderr,
+            total_bytes=result.stderr_total_bytes,
+            truncated=result.stderr_truncated,
+        )
+        timed_out = result.error == "timeout"
+        projected.append(
+            DOCTOR.CommandResult(
+                result.argv,
+                124 if timed_out else result.returncode,
+                stdout,
+                stderr,
+                "TimeoutExpired" if timed_out else result.error,
+                stdout_truncated,
+                stderr_truncated,
+                timed_out,
+            )
+        )
+    return projected
 
 
 def capture_from_doctor_results(results: Iterable[Any]) -> list[CommandResult]:
@@ -1887,14 +1914,32 @@ def verify_report(report: dict[str, Any]) -> None:
     if runtime.get("observation_completeness") != expected_completeness:
         raise ValueError("runtime observation completeness mismatch")
     doctor_health = doctor.get("command_health")
-    expected_doctor_health = [
-        {
-            "command": shlex.join(tuple(item["argv"])),
-            "available": item.get("error") is None,
-            "returncode": item.get("returncode"),
-        }
-        for item in commands[: len(DOCTOR.READ_ONLY_COMMANDS)]
-    ]
+    expected_doctor_health = []
+    for item in commands[: len(DOCTOR.READ_ONLY_COMMANDS)]:
+        timed_out = item.get("error") == "timeout"
+        stdout_retained = min(
+            int(item.get("stdout_total_bytes", 0)), DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+        )
+        stderr_retained = min(
+            int(item.get("stderr_total_bytes", 0)), DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+        )
+        expected_doctor_health.append(
+            {
+                "command": shlex.join(tuple(item["argv"])),
+                "available": item.get("error") is None,
+                "returncode": 124 if timed_out else item.get("returncode"),
+                "timed_out": timed_out,
+                "stdout_truncated": bool(item.get("stdout_truncated"))
+                or int(item.get("stdout_total_bytes", 0))
+                > DOCTOR.MAX_COMMAND_OUTPUT_BYTES,
+                "stderr_truncated": bool(item.get("stderr_truncated"))
+                or int(item.get("stderr_total_bytes", 0))
+                > DOCTOR.MAX_COMMAND_OUTPUT_BYTES,
+                "stdout_retained_bytes": stdout_retained,
+                "stderr_retained_bytes": stderr_retained,
+                "max_output_bytes_per_stream": DOCTOR.MAX_COMMAND_OUTPUT_BYTES,
+            }
+        )
     if doctor_health != expected_doctor_health:
         raise ValueError("Doctor command-health projection mismatch")
     expected_gates = build_gate_status(

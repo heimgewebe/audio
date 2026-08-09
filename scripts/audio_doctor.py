@@ -6,13 +6,16 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import itertools
 import os
 import pathlib
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -29,6 +32,11 @@ READ_ONLY_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("systemctl", "is-active", "bluetooth"),
 )
 
+MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
+MAX_ELD_FILES = 32
+MAX_ELD_BYTES = 256 * 1024
+STREAM_CHUNK_BYTES = 8192
+
 SERIAL_PATTERNS = (
     re.compile(r"usb-[^\s]+", re.IGNORECASE),
     re.compile(r"M2_[A-Z0-9-]+", re.IGNORECASE),
@@ -42,21 +50,119 @@ class CommandResult:
     stdout: str
     stderr: str
     error: str | None = None
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    timed_out: bool = False
 
 
-def run_read_only(argv: tuple[str, ...], timeout: float = 4.0) -> CommandResult:
+class BoundedText(str):
+    truncated: bool
+    observed_items: int
+    max_items: int
+    max_bytes: int
+
+    def __new__(
+        cls,
+        value: str,
+        *,
+        truncated: bool,
+        observed_items: int,
+        max_items: int,
+        max_bytes: int,
+    ) -> "BoundedText":
+        instance = str.__new__(cls, value)
+        instance.truncated = truncated
+        instance.observed_items = observed_items
+        instance.max_items = max_items
+        instance.max_bytes = max_bytes
+        return instance
+
+
+def _drain_bounded_stream(
+    stream: object, limit: int, result: dict[str, object]
+) -> None:
+    kept = bytearray()
+    truncated = False
     try:
-        result = subprocess.run(
+        while True:
+            chunk = stream.read(STREAM_CHUNK_BYTES)  # type: ignore[attr-defined]
+            if not chunk:
+                break
+            remaining = max(0, limit - len(kept))
+            if remaining:
+                kept.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                truncated = True
+    finally:
+        stream.close()  # type: ignore[attr-defined]
+    result["bytes"] = bytes(kept)
+    result["truncated"] = truncated
+
+
+def run_read_only(
+    argv: tuple[str, ...],
+    timeout: float = 4.0,
+    max_output_bytes: int = MAX_COMMAND_OUTPUT_BYTES,
+) -> CommandResult:
+    if max_output_bytes < 1:
+        raise ValueError("max_output_bytes must be positive")
+    try:
+        process = subprocess.Popen(
             argv,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
             env={**os.environ, "LC_ALL": "C.UTF-8"},
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except FileNotFoundError as exc:
         return CommandResult(argv, 127, "", "", type(exc).__name__)
-    return CommandResult(argv, result.returncode, result.stdout, result.stderr)
+
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout_result: dict[str, object] = {}
+    stderr_result: dict[str, object] = {}
+    readers = [
+        threading.Thread(
+            target=_drain_bounded_stream,
+            args=(process.stdout, max_output_bytes, stdout_result),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_drain_bounded_stream,
+            args=(process.stderr, max_output_bytes, stderr_result),
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        returncode = process.wait()
+    for reader in readers:
+        reader.join()
+
+    stdout_bytes = stdout_result.get("bytes", b"")
+    stderr_bytes = stderr_result.get("bytes", b"")
+    assert isinstance(stdout_bytes, bytes)
+    assert isinstance(stderr_bytes, bytes)
+    return CommandResult(
+        argv,
+        124 if timed_out else returncode,
+        stdout_bytes.decode("utf-8", errors="replace"),
+        stderr_bytes.decode("utf-8", errors="replace"),
+        "TimeoutExpired" if timed_out else None,
+        bool(stdout_result.get("truncated", False)),
+        bool(stderr_result.get("truncated", False)),
+        timed_out,
+    )
 
 
 def redact(text: str) -> str:
@@ -131,14 +237,56 @@ def contains_device(text: str, device: str) -> bool:
     raise ValueError(f"unknown device: {device}")
 
 
-def read_eld_text() -> str:
-    chunks: list[str] = []
-    for path in pathlib.Path("/proc/asound").glob("card*/eld#*"):
+def read_bounded_text_files(
+    paths: Iterable[pathlib.Path],
+    *,
+    max_files: int,
+    max_bytes: int,
+) -> BoundedText:
+    if max_files < 1 or max_bytes < 1:
+        raise ValueError("bounded text limits must be positive")
+    retained = bytearray()
+    observed_items = 0
+    truncated = False
+    for path in paths:
+        if observed_items >= max_files:
+            truncated = True
+            break
+        observed_items += 1
+        separator_bytes = 1 if retained else 0
+        remaining = max_bytes - len(retained) - separator_bytes
+        if remaining <= 0:
+            truncated = True
+            break
         try:
-            chunks.append(path.read_text(errors="replace"))
+            with path.open("rb") as handle:
+                chunk = handle.read(remaining + 1)
         except OSError:
             continue
-    return "\n".join(chunks)
+        if retained:
+            retained.extend(b"\n")
+        if len(chunk) > remaining:
+            retained.extend(chunk[:remaining])
+            truncated = True
+            break
+        retained.extend(chunk)
+    value = bytes(retained).decode("utf-8", errors="replace")
+    return BoundedText(
+        value,
+        truncated=truncated,
+        observed_items=observed_items,
+        max_items=max_files,
+        max_bytes=max_bytes,
+    )
+
+
+def read_eld_text() -> BoundedText:
+    paths = itertools.islice(
+        pathlib.Path("/proc/asound").glob("card*/eld#*"), MAX_ELD_FILES + 1
+    )
+    return read_bounded_text_files(
+        paths, max_files=MAX_ELD_FILES, max_bytes=MAX_ELD_BYTES
+    )
 
 
 def physical_unknowns(contract_path: pathlib.Path | None = None) -> list[str]:
@@ -348,11 +496,26 @@ def build_report(
         },
         "physical_unknowns": physical_unknowns(),
         "warnings": warnings,
+        "input_health": {
+            "eld": {
+                "truncated": bool(getattr(eld_text, "truncated", False)),
+                "observed_files": getattr(eld_text, "observed_items", None),
+                "max_files": getattr(eld_text, "max_items", MAX_ELD_FILES),
+                "max_bytes": getattr(eld_text, "max_bytes", MAX_ELD_BYTES),
+                "retained_bytes": len(eld_text.encode("utf-8")),
+            }
+        },
         "command_health": [
             {
                 "command": " ".join(result.argv),
                 "available": result.error is None,
                 "returncode": result.returncode,
+                "timed_out": result.timed_out,
+                "stdout_truncated": result.stdout_truncated,
+                "stderr_truncated": result.stderr_truncated,
+                "stdout_retained_bytes": len(result.stdout.encode("utf-8")),
+                "stderr_retained_bytes": len(result.stderr.encode("utf-8")),
+                "max_output_bytes_per_stream": MAX_COMMAND_OUTPUT_BYTES,
             }
             for result in result_list
         ],
