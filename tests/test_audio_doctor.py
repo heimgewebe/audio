@@ -3,6 +3,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -178,6 +179,63 @@ class AudioDoctorTests(unittest.TestCase):
                 MODULE.atomic_write_output(linked / "nested" / "doctor.json", '{}\n')
 
             self.assertFalse((nested / "doctor.json").exists())
+
+    def test_run_read_only_bounds_both_streams(self):
+        payload = MODULE.MAX_COMMAND_OUTPUT_BYTES + 4096
+        code = (
+            "import os; "
+            f"os.write(1, b'x' * {payload}); "
+            f"os.write(2, b'y' * {payload})"
+        )
+        result = MODULE.run_read_only((sys.executable, "-c", code), timeout=2.0)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(len(result.stdout.encode("utf-8")), MODULE.MAX_COMMAND_OUTPUT_BYTES)
+        self.assertEqual(len(result.stderr.encode("utf-8")), MODULE.MAX_COMMAND_OUTPUT_BYTES)
+        self.assertTrue(result.stdout_truncated)
+        self.assertTrue(result.stderr_truncated)
+        self.assertFalse(result.timed_out)
+
+    def test_run_read_only_reports_timeout_explicitly(self):
+        result = MODULE.run_read_only(
+            (sys.executable, "-c", "import time; time.sleep(2)"), timeout=0.05
+        )
+        self.assertEqual(result.returncode, 124)
+        self.assertEqual(result.error, "TimeoutExpired")
+        self.assertTrue(result.timed_out)
+
+    def test_timeout_kills_descendants_holding_capture_pipes(self):
+        code = (
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)']); "
+            "time.sleep(10)"
+        )
+        started = time.monotonic()
+        result = MODULE.run_read_only((sys.executable, "-c", code), timeout=0.05)
+        elapsed = time.monotonic() - started
+        self.assertTrue(result.timed_out)
+        self.assertEqual(result.returncode, 124)
+        self.assertLess(elapsed, 1.0)
+
+    def test_bounded_eld_input_exposes_byte_and_file_truncation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            paths = []
+            for index in range(3):
+                path = root / f"eld-{index}"
+                path.write_bytes((str(index) * 20).encode("ascii"))
+                paths.append(path)
+
+            value = MODULE.read_bounded_text_files(paths, max_files=2, max_bytes=25)
+            self.assertLessEqual(len(value.encode("utf-8")), 25)
+            self.assertTrue(value.truncated)
+            self.assertEqual(value.observed_items, 2)
+            self.assertEqual(value.max_items, 2)
+            self.assertEqual(value.max_bytes, 25)
+
+            report = MODULE.build_report([], value)
+            self.assertTrue(report["input_health"]["eld"]["truncated"])
+            self.assertEqual(report["input_health"]["eld"]["max_files"], 2)
+            self.assertEqual(report["input_health"]["eld"]["max_bytes"], 25)
 
     def test_physical_unknowns_come_from_contract(self):
         unknowns = MODULE.physical_unknowns()
