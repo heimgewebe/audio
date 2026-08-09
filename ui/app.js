@@ -1521,6 +1521,7 @@ function renderWhale() {
   const modes = Array.isArray(contract.modes) ? contract.modes : [];
   const modeIds = new Set(modes.map((mode) => mode.id));
   if (
+    !writable ||
     !modeIds.has(state.whaleModeDraft) ||
     state.whaleModeDraft === currentMode
   ) {

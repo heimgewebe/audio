@@ -1359,6 +1359,11 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("whaleModeDraft: null", javascript)
         self.assertIn("state.whaleModeDraft = null", javascript)
         self.assertIn("const selectedMode = state.whaleModeDraft || currentMode", renderer)
+        invalidation_start = renderer.index("if (\n    !writable ||")
+        invalidation_end = renderer.index("const selectedMode", invalidation_start)
+        invalidation = renderer[invalidation_start:invalidation_end]
+        self.assertIn("!writable ||", invalidation)
+        self.assertIn("state.whaleModeDraft = null", invalidation)
         self.assertIn("input.checked = mode.id === selectedMode", renderer)
         self.assertIn("state.whaleModeDraft = event.target.value", renderer)
         picker_end = renderer.index('const actions = element("div", "card-actions")')
