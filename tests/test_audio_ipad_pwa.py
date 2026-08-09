@@ -237,6 +237,13 @@ class RuntimeModeTests(unittest.TestCase):
         self.app = read("app.js")
         self.html = read("index.html")
 
+    def test_default_home_start_disables_browser_scroll_restoration(self):
+        self.assertIn('window.history.scrollRestoration = isHomeStartRoute() ? "manual" : "auto";', self.app)
+        self.assertIn('window.addEventListener("pageshow"', self.app)
+        self.assertIn("restoreHomeStartPosition();", self.app)
+        self.assertIn('routeFromHash() === "now" && !ROUTE_TARGETS[routeKey]', self.app)
+        self.assertIn('window.requestAnimationFrame(restoreHomeStartPosition)', self.app)
+
     def test_modes_are_declared_and_persisted_locally(self):
         self.assertIn('const REMOTE_MODE = "remote-audiozentrale";', self.app)
         self.assertIn('const LOCAL_MODE = "local-device";', self.app)

@@ -2599,6 +2599,22 @@ function routeFromHash() {
   return ROUTES[resolved] ? resolved : "now";
 }
 
+function isHomeStartRoute() {
+  const routeKey = window.location.hash.slice(1);
+  return routeFromHash() === "now" && !ROUTE_TARGETS[routeKey];
+}
+
+function configureNativeScrollRestoration() {
+  if ("scrollRestoration" in window.history) {
+    window.history.scrollRestoration = isHomeStartRoute() ? "manual" : "auto";
+  }
+}
+
+function restoreHomeStartPosition() {
+  if (!isHomeStartRoute()) return;
+  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+}
+
 function prefersReducedMotion() {
   return (
     document.documentElement.classList.contains("reduced-motion") ||
@@ -2626,6 +2642,7 @@ function revealRouteTarget(target) {
 }
 
 function applyRoute(event) {
+  configureNativeScrollRestoration();
   const routeKey = window.location.hash.slice(1);
   const route = routeFromHash();
   const routeTarget = ROUTE_TARGETS[routeKey] || null;
@@ -2731,6 +2748,14 @@ function keepDialogFocus(event) {
 
 function wireEvents() {
   window.addEventListener("hashchange", applyRoute);
+  window.addEventListener("pageshow", () => {
+    configureNativeScrollRestoration();
+    // Safari/iPadOS may restore a previous scroll position after initial script
+    // execution. Re-assert the Home position only for the default route;
+    // explicit deep-route targets such as #aufnehmen remain untouched.
+    restoreHomeStartPosition();
+    window.requestAnimationFrame(restoreHomeStartPosition);
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden || !backendAllowed()) {
       stopTelemetryPolling();
@@ -2782,11 +2807,13 @@ function wireEvents() {
 }
 
 installBackendFetchGuard();
+configureNativeScrollRestoration();
 state.runtimeMode = loadRuntimeMode();
 state.capabilities = detectCapabilities();
 loadPreferences();
 wireEvents();
 wireDepthPanels();
 applyRoute();
+restoreHomeStartPosition();
 registerServiceWorker();
 applyRuntimeMode();
