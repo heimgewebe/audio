@@ -2917,3 +2917,97 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
     justify-self: start;
   }
 }
+
+
+/* Audiozentrale task workspaces v1: Home -> workspace -> state-preserving focus. */
+.workspace-staging {
+  display: none !important;
+}
+
+.workspace-signal-host,
+.recording-workspace-host,
+.system-truth-host,
+.system-live-host {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.workspace-signal-host {
+  margin: 12px 0 16px;
+}
+
+.recording-workspace-host {
+  margin-bottom: 12px;
+}
+
+.recording-workspace-host .active-lane-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.recording-workspace-host .lane-card {
+  min-height: 260px;
+}
+
+.system-truth-host,
+.system-live-host {
+  margin-bottom: 12px;
+}
+
+.depth-focus[aria-pressed="true"] {
+  border-color: var(--mint-border);
+  color: var(--mint-strong);
+}
+
+body.workspace-focus-open {
+  overflow: hidden;
+}
+
+.depth-panel.is-workspace-focused {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding:
+    max(18px, env(safe-area-inset-top))
+    max(18px, env(safe-area-inset-right))
+    max(18px, env(safe-area-inset-bottom))
+    max(18px, env(safe-area-inset-left));
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  box-shadow: none;
+}
+
+.depth-panel.is-workspace-focused > .depth-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: -4px -4px 14px;
+  padding: 8px 4px 14px;
+  background: linear-gradient(to bottom, var(--bg) 78%, transparent);
+}
+
+.depth-panel.is-workspace-focused > .depth-heading h2 {
+  font-size: clamp(1.65rem, 3vw, 2.5rem);
+}
+
+.depth-panel.is-workspace-focused .depth-detail:not([hidden]) {
+  animation: none;
+}
+
+@media (max-width: 900px) {
+  .depth-panel.is-workspace-focused {
+    padding:
+      max(14px, env(safe-area-inset-top))
+      max(14px, env(safe-area-inset-right))
+      max(14px, env(safe-area-inset-bottom))
+      max(14px, env(safe-area-inset-left));
+  }
+}

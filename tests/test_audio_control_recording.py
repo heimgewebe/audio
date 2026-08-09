@@ -385,13 +385,14 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertNotIn("/api/", text)
         self.assertIn("POST status=200 bytes=42", text)
 
-    def test_browser_exposes_only_typed_recorder_action_and_remote_bridge_is_sticky(self):
+    def test_browser_exposes_typed_local_audio_actions_and_remote_bridge_is_sticky(self):
         javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-        self.assertEqual(javascript.count("/api/v1/actions/"), 1)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 2)
         self.assertIn('/api/v1/actions/recording', javascript)
-        self.assertNotIn('/api/v1/actions/whale', javascript)
+        self.assertIn('/api/v1/actions/whale', javascript)
         self.assertIn("state.remoteBridgeProjection = true", javascript)
         self.assertIn("state.remoteBridgeProjection !== true", javascript)
+        self.assertIn("state.snapshot?.capabilities?.whale_control === true", javascript)
         self.assertIn("microphone=()", (ROOT / "scripts" / "audio_control.py").read_text())
 
     def test_ui_mode_switch_invalidates_and_binds_the_plan(self):

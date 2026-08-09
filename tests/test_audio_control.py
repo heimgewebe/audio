@@ -1010,7 +1010,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(report["whale_keyboard_keys"], 88)
         self.assertEqual(
             set(report["areas"]),
-            {"now", "setups", "library", "system"},
+            {"home", "hoeren", "aufnehmen", "spielen", "material", "system"},
         )
         self.assertEqual(
             report["replay_scenarios"],
@@ -1175,7 +1175,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(len(parser.ids), len(set(parser.ids)))
         self.assertEqual(
             set(parser.routes),
-            {"now", "setups", "library", "system"},
+            {"home", "hoeren", "aufnehmen", "spielen", "material", "system"},
         )
         self.assertEqual(parser.inline_handlers, [])
         self.assertNotIn(None, parser.route_labels)
@@ -1208,8 +1208,8 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('"snapshot_busy"', javascript)
         self.assertIn("Backend beschäftigt", javascript)
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 1)
-        self.assertNotIn("/api/v1/actions/whale", javascript)
+        self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 2)
 
     def test_static_surface_prioritizes_compact_functional_controls(self):
         html = (ROOT / "ui" / "index.html").read_text()
@@ -1252,16 +1252,16 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('byId("home-metrics")', javascript)
         self.assertIn('byId("home-readiness")', javascript)
         self.assertIn('byId("deployment-status")', javascript)
-        self.assertIn('klaenge: "library"', javascript)
-        self.assertIn('hoeren: "setups"', javascript)
-        self.assertIn('spielen: "setups"', javascript)
-        self.assertIn('aufnehmen: "now"', javascript)
-        self.assertIn('hoeren: "setup-listening"', javascript)
+        self.assertIn('klaenge: "material"', javascript)
+        self.assertIn('now: "home"', javascript)
+        self.assertIn('setups: "home"', javascript)
+        self.assertIn('library: "material"', javascript)
+        self.assertIn('installTaskWorkspaceLayout', javascript)
         self.assertIn('diagnose: "system"', javascript)
         self.assertIn('["Rate", graph.force_rate_hz', javascript)
         self.assertIn('["Quantum",', javascript)
 
-    def test_auto_refresh_policy_blocks_dialogs_without_live_action_state(self):
+    def test_auto_refresh_policy_blocks_dialogs_and_audio_actions(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         policy_start = javascript.index("function autoRefreshBlocked()")
         policy_end = javascript.index("function autoRefreshTick()", policy_start)
@@ -1270,12 +1270,17 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('!byId("dialog-backdrop").hidden', policy)
         self.assertIn("state.loading", policy)
         self.assertIn("state.interactionUntil", policy)
-        self.assertNotIn("state.actionPending", policy)
-        self.assertNotIn("runWhaleAction", javascript)
+        self.assertIn("state.recordingActionPending", policy)
+        self.assertIn("state.whaleActionPending", policy)
+        self.assertIn("runWhaleAction", javascript)
+        self.assertIn("function whaleActionsAllowed()", javascript)
+        self.assertIn("directLoopbackControlOrigin()", javascript)
+        self.assertIn("state.remoteBridgeProjection !== true", javascript)
+        self.assertIn("state.snapshot?.capabilities?.whale_control === true", javascript)
         self.assertNotIn("WHALE_ACTION_TIMEOUT_MS", javascript)
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 1)
-        self.assertNotIn("/api/v1/actions/whale", javascript)
+        self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 2)
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
 
@@ -1283,26 +1288,18 @@ class AudioControlTests(unittest.TestCase):
         html = (ROOT / "ui" / "index.html").read_text()
         javascript = (ROOT / "ui" / "app.js").read_text()
 
-        self.assertIn('aufnehmen: "now"', javascript)
-        self.assertIn('aufnehmen: "recorder-workspace"', javascript)
+        self.assertIn('id="view-aufnehmen" data-view="aufnehmen"', html)
+        self.assertIn('id="recording-live-host"', html)
         self.assertEqual(html.count('id="recorder-workspace"'), 1)
-        self.assertRegex(
-            html,
-            r'id="now-signal-lanes"[^>]*>\s*<article[^>]+id="recorder-workspace"',
-        )
         self.assertIn(
             'id="recorder-workspace" tabindex="-1" aria-label="Recorder-Arbeitsbereich"',
             html,
         )
-
-        route_start = javascript.index("function revealRouteTarget(target)")
-        route_end = javascript.index("function loadPreferences()", route_start)
-        route = javascript[route_start:route_end]
-        self.assertIn('target.closest(".depth-detail")', route)
-        self.assertIn("detail.hidden = false", route)
-        self.assertIn('toggle.setAttribute("aria-expanded", "true")', route)
-        self.assertIn("target.focus({ preventScroll: true })", route)
-        self.assertIn("target.scrollIntoView", route)
+        self.assertIn(
+            'byId("recording-live-host").append(byId("now-signal-lanes"));',
+            javascript,
+        )
+        self.assertIn('lanes.filter((lane) => lane.key === "recording")', javascript)
 
         controls_start = javascript.index("function renderRecordingControls(")
         controls_end = javascript.index("async function loadRecordingLibrary", controls_start)
@@ -1331,6 +1328,27 @@ class AudioControlTests(unittest.TestCase):
         action = javascript[action_start:action_end]
         self.assertIn("if (!recordingActionsAllowed())", action)
         self.assertIn('"X-Audio-Control-Token": state.snapshot.service.action_token', action)
+
+    def test_task_workspace_focus_reuses_the_live_panel_dom(self):
+        html = (ROOT / "ui" / "index.html").read_text()
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        styles = (ROOT / "ui" / "styles.css").read_text()
+        plan = (ROOT / "docs" / "plans" / "audiozentrale-task-workspaces-v1.md").read_text()
+
+        for route in ("home", "hoeren", "aufnehmen", "spielen", "material", "system"):
+            with self.subTest(route=route):
+                self.assertIn(f'data-route="{route}"', html)
+                self.assertIn(f'id="view-{route}"', html)
+        self.assertIn("Home → Arbeitsbereich → Fokus", plan)
+        self.assertIn("nicht dupliziert", plan)
+        self.assertNotIn("focusLines(panel)", javascript)
+        self.assertIn('panel.classList.add("is-workspace-focused")', javascript)
+        self.assertIn('panel.classList.remove("is-workspace-focused")', javascript)
+        self.assertIn('document.body.classList.add("workspace-focus-open")', javascript)
+        self.assertIn("keepDepthFocus", javascript)
+        self.assertIn('!node.closest("[hidden]")', javascript)
+        self.assertIn("body.workspace-focus-open", styles)
+        self.assertIn(".depth-panel.is-workspace-focused", styles)
 
     def test_recorder_rerender_preserves_focus_draft_and_workspace_node(self):
         html = (ROOT / "ui" / "index.html").read_text()

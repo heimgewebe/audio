@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#0d1414">
     <meta name="audio-control-deployment-contract" content="revision-bound-v1">
-    <meta name="audiozentrale-product-surface" content="four-places-read-only-v1">
+    <meta name="audiozentrale-product-surface" content="task-workspaces-v1">
     <meta name="audiozentrale-ipad-pwa-contract" content="audiozentrale-ipad-pwa-v1">
     <meta name="application-name" content="Audiozentrale">
     <meta name="mobile-web-app-capable" content="yes">
@@ -20,7 +20,7 @@
     <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
     <meta
       name="description"
-      content="Read-only Audiozentrale für Jetzt, Setups, Bibliothek und System."
+      content="Audiozentrale für Hören, Aufnehmen, Spielen, Material und System mit lokal autorisierten Audioaktionen."
     >
     <title>Audiozentrale</title>
     <link rel="stylesheet" href="/styles.css">
@@ -32,7 +32,7 @@
 
     <div class="app-shell" id="app-shell">
       <aside class="sidebar" aria-label="Hauptnavigation">
-        <a class="brand" href="#now" aria-label="Audiozentrale – Jetzt">
+        <a class="brand" href="#home" aria-label="Audiozentrale – Home">
           <span class="brand-mark" aria-hidden="true">
             <span></span><span></span><span></span><span></span>
           </span>
@@ -40,14 +40,20 @@
         </a>
 
         <nav class="primary-nav">
-          <a href="#now" data-route="now" aria-label="Jetzt">
-            <span class="nav-icon" aria-hidden="true">●</span><span>Jetzt</span>
+          <a href="#home" data-route="home" aria-label="Home">
+            <span class="nav-icon" aria-hidden="true">⌂</span><span>Home</span>
           </a>
-          <a href="#setups" data-route="setups" aria-label="Setups">
-            <span class="nav-icon" aria-hidden="true">◇</span><span>Setups</span>
+          <a href="#hoeren" data-route="hoeren" aria-label="Hören">
+            <span class="nav-icon" aria-hidden="true">◖</span><span>Hören</span>
           </a>
-          <a href="#library" data-route="library" aria-label="Bibliothek">
-            <span class="nav-icon" aria-hidden="true">≋</span><span>Bibliothek</span>
+          <a href="#aufnehmen" data-route="aufnehmen" aria-label="Aufnehmen">
+            <span class="nav-icon" aria-hidden="true">●</span><span>Aufnehmen</span>
+          </a>
+          <a href="#spielen" data-route="spielen" aria-label="Spielen">
+            <span class="nav-icon" aria-hidden="true">♬</span><span>Spielen</span>
+          </a>
+          <a href="#material" data-route="material" aria-label="Material">
+            <span class="nav-icon" aria-hidden="true">≋</span><span>Material</span>
           </a>
           <a href="#system" data-route="system" aria-label="System">
             <span class="nav-icon" aria-hidden="true">⊙</span><span>System</span>
@@ -64,8 +70,8 @@
       <main id="main-content" tabindex="-1">
         <header class="topbar">
           <div class="view-heading">
-            <p class="eyebrow" id="view-eyebrow">Aktiver Arbeitsstand</p>
-            <h1 id="view-title" tabindex="-1">Jetzt</h1>
+            <p class="eyebrow" id="view-eyebrow">Arbeitsbereiche</p>
+            <h1 id="view-title" tabindex="-1">Home</h1>
           </div>
           <div class="topbar-actions">
             <span class="mobile-authority" id="mobile-authority" role="status">
@@ -96,7 +102,7 @@
           <p><a class="secondary-button" href="#system">Betriebsmodus öffnen</a></p>
         </section>
 
-        <section class="view is-active" id="view-now" data-view="now">
+        <section class="view is-active" id="view-home" data-view="home">
           <article
             class="depth-panel home-dashboard"
             id="home-dashboard"
@@ -106,7 +112,7 @@
           >
             <header class="depth-heading home-heading">
               <div><p class="eyebrow">Arbeitsplatz</p><h2>Audiozentrale</h2></div>
-              <div class="depth-actions"><a class="secondary-button home-system-link" href="#system">System</a><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Details</button><button class="depth-focus secondary-button" type="button">Fokus</button></div>
+              <div class="depth-actions"><a class="secondary-button home-system-link" href="#system">System</a></div>
             </header>
 
             <div class="home-command-grid">
@@ -158,8 +164,14 @@
           </article>
         </section>
 
-        <section class="view" id="view-setups" data-view="setups" hidden>
-          <article class="depth-panel" id="setup-playing" tabindex="-1" data-depth-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Read-only Instrumentzustand; Start, Stop und Moduswechsel sind in T020 nicht freigeschaltet.">
+        <section class="view" id="view-hoeren" data-view="hoeren" hidden></section>
+
+        <section class="view" id="view-aufnehmen" data-view="aufnehmen" hidden></section>
+
+        <section class="view" id="view-spielen" data-view="spielen" hidden></section>
+
+        <section class="workspace-staging" id="task-workspace-staging" hidden>
+          <article class="depth-panel" id="setup-playing" tabindex="-1" data-depth-panel data-workspace-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Buckelwal-Instrument mit lokaler Start-, Stop- und Modussteuerung; Fernzugriff bleibt read-only.">
             <header class="depth-heading"><div><p class="eyebrow">Instrument</p><h2>Buckelwal</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="play-intro-stat"></div>
             <div id="whale-control"></div>
@@ -190,23 +202,25 @@
             </div>
           </article>
 
-          <article class="depth-panel" id="setup-listening" tabindex="-1" data-depth-panel data-focus-title="Hör-Setups" data-focus-summary="Definierte Hörwege und ihre beobachteten, konfigurierten und ausführbaren Voraussetzungen.">
+          <article class="depth-panel" id="setup-listening" tabindex="-1" data-depth-panel data-workspace-panel data-focus-title="Hör-Setups" data-focus-summary="Definierte Hörwege und ihre beobachteten, konfigurierten und ausführbaren Voraussetzungen.">
             <header class="depth-heading"><div><p class="eyebrow">Wiedergabe</p><h2>Hören</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="listen-intro-stat"></div>
+            <div class="workspace-signal-host" id="listening-signal-host"></div>
             <div class="profile-grid" id="listening-profiles"></div>
             <div class="depth-detail" hidden><p class="callout">Profilpläne bleiben nebenwirkungsfrei. Sie zeigen Voraussetzungen, führen aber kein Apply aus.</p></div>
           </article>
 
-          <article class="depth-panel" id="setup-recording" data-depth-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile und Recorderzustand sind sichtbar; wirkende Voice-Recorder-Aktionen bleiben an das autoritative lokale Backend und ein frisches Aktionstoken gebunden.">
+          <article class="depth-panel" id="setup-recording" data-depth-panel data-workspace-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile und Recorderzustand sind sichtbar; wirkende Voice-Recorder-Aktionen bleiben an das autoritative lokale Backend und ein frisches Aktionstoken gebunden.">
             <header class="depth-heading"><div><p class="eyebrow">Aufnahmeplanung</p><h2>Aufnehmen</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="recording-workspace-host" id="recording-live-host"></div>
             <div class="callout" id="recording-boundary"></div>
             <div class="depth-detail" hidden><div class="profile-grid" id="recording-profiles"></div></div>
           </article>
         </section>
 
-        <section class="view" id="view-library" data-view="library" hidden>
-          <article class="depth-panel" data-depth-panel data-focus-title="Takes und Klänge" data-focus-summary="Bibliotheksobjekte bleiben unveränderlich; Bearbeitung würde später ein neues Objekt erzeugen.">
-            <header class="depth-heading"><div><p class="eyebrow">Unveränderliche Objekte</p><h2>Bibliothek</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+        <section class="view" id="view-material" data-view="material" hidden>
+          <article class="depth-panel" id="material-library" data-depth-panel data-workspace-panel data-focus-title="Takes und Klänge" data-focus-summary="Bibliotheksobjekte bleiben unveränderlich; Bearbeitung würde später ein neues Objekt erzeugen.">
+            <header class="depth-heading"><div><p class="eyebrow">Aufnahmen und Klänge</p><h2>Material</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="library-summary" id="library-takes"></div>
             <div class="depth-detail" hidden><div class="section-heading compact"><h3>Klangsysteme</h3></div><div class="sound-grid" id="sound-library"></div></div>
           </article>
@@ -233,7 +247,9 @@
         </section>
 
         <section class="view" id="view-system" data-view="system" hidden>
-          <article class="depth-panel" data-depth-panel data-focus-title="Systemwahrheit" data-focus-summary="Geräte, Route, Deployment und Doctor bleiben die technische Autorität.">
+          <div class="system-truth-host" id="system-truth-host"></div>
+          <div class="system-live-host" id="system-live-host"></div>
+          <article class="depth-panel" id="system-workspace" data-depth-panel data-workspace-panel data-focus-title="Systemwahrheit" data-focus-summary="Geräte, Route, Deployment und Doctor bleiben die technische Autorität.">
             <header class="depth-heading"><div><p class="eyebrow">Betrieb und Integration</p><h2>System</h2></div><div class="depth-actions"><button class="secondary-button" id="diagnostic-refresh" type="button">Neu prüfen</button><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="metric-grid system-summary" id="system-summary"></div>
             <div class="depth-detail" hidden>

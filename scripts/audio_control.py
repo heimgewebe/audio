@@ -3188,6 +3188,7 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
             PROFILE_CATALOG,
             WHALE_PROFILE,
             ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md",
+            ROOT / "docs" / "plans" / "audiozentrale-task-workspaces-v1.md",
             ROOT / "inventory" / "buckelwal-learning-lesson.v1.json",
             ROOT / "schemas" / "buckelwal-learning-lesson.v1.schema.json",
             WHALE_LESSON_SCRIPT,
@@ -3203,10 +3204,10 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
     try:
         index = read_static_file("index.html").decode("utf-8")
         javascript = read_static_file("app.js").decode("utf-8")
-        read_static_file("styles.css").decode("utf-8")
+        styles = read_static_file("styles.css").decode("utf-8")
     except (ControlError, UnicodeDecodeError) as error:
         raise ControlError("Statische UI-Dateien verletzen den Vertrag.") from error
-    required_areas = ("now", "setups", "library", "system")
+    required_areas = ("home", "hoeren", "aufnehmen", "spielen", "material", "system")
     absent = [
         area
         for area in required_areas
@@ -3214,6 +3215,10 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
     ]
     if absent:
         raise ControlError("UI-Bereiche fehlen: " + ", ".join(absent))
+    if 'audiozentrale-product-surface" content="task-workspaces-v1"' not in index:
+        raise ControlError("UI ist nicht an den Task-Workspace-Vertrag gebunden.")
+    if "installTaskWorkspaceLayout" not in javascript or "is-workspace-focused" not in styles:
+        raise ControlError("UI enthält keinen zustandserhaltenden Workspace-Fokus.")
     if "/api/v1/snapshot" not in javascript:
         raise ControlError("UI ist nicht an die versionierte Zustands-API gebunden.")
     if "/api/v1/replay" not in javascript:
@@ -3230,11 +3235,20 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
     action_endpoints = set(
         re.findall(r"/api/v1/actions/[a-z0-9_-]+", javascript)
     )
-    if "/api/v1/actions/recording" not in action_endpoints:
-        raise ControlError("UI ist nicht an die typisierte Recorderaktion gebunden.")
-    if action_endpoints - {"/api/v1/actions/recording"}:
+    required_action_endpoints = {
+        "/api/v1/actions/recording",
+        "/api/v1/actions/whale",
+    }
+    missing_action_endpoints = required_action_endpoints - action_endpoints
+    if missing_action_endpoints:
         raise ControlError(
-            "Produktoberfläche enthält eine nicht freigegebene Audioaktion."
+            "UI-Aktionsbindungen fehlen: " + ", ".join(sorted(missing_action_endpoints))
+        )
+    unexpected_action_endpoints = action_endpoints - required_action_endpoints
+    if unexpected_action_endpoints:
+        raise ControlError(
+            "Produktoberfläche enthält nicht freigegebene Audioaktionen: "
+            + ", ".join(sorted(unexpected_action_endpoints))
         )
     if "/api/v1/recordings" not in javascript:
         raise ControlError("UI ist nicht an die Recorderbibliothek gebunden.")
