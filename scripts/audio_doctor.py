@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import itertools
 import os
@@ -53,6 +54,12 @@ class CommandResult:
     stdout_truncated: bool = False
     stderr_truncated: bool = False
     timed_out: bool = False
+    stdout_total_bytes: int | None = None
+    stderr_total_bytes: int | None = None
+    stdout_retained_bytes: int | None = None
+    stderr_retained_bytes: int | None = None
+    stdout_sha256: str | None = None
+    stderr_sha256: str | None = None
 
 
 class BoundedText(str):
@@ -60,6 +67,7 @@ class BoundedText(str):
     observed_items: int
     max_items: int
     max_bytes: int
+    retained_bytes: int
 
     def __new__(
         cls,
@@ -69,25 +77,43 @@ class BoundedText(str):
         observed_items: int,
         max_items: int,
         max_bytes: int,
+        retained_bytes: int,
     ) -> "BoundedText":
         instance = str.__new__(cls, value)
         instance.truncated = truncated
         instance.observed_items = observed_items
         instance.max_items = max_items
         instance.max_bytes = max_bytes
+        instance.retained_bytes = retained_bytes
         return instance
+
+
+def decode_bounded_utf8(data: bytes, limit: int) -> tuple[str, bool]:
+    """Decode bytes while keeping the UTF-8 representation within the byte budget."""
+    if limit < 1:
+        raise ValueError("decode limit must be positive")
+    text = data.decode("utf-8", errors="replace")
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text, False
+    # `encoded` is valid UTF-8. Ignore only a final partial code point after slicing.
+    return encoded[:limit].decode("utf-8", errors="ignore"), True
 
 
 def _drain_bounded_stream(
     stream: object, limit: int, result: dict[str, object]
 ) -> None:
     kept = bytearray()
+    total_bytes = 0
+    digest = hashlib.sha256()
     truncated = False
     try:
         while True:
             chunk = stream.read(STREAM_CHUNK_BYTES)  # type: ignore[attr-defined]
             if not chunk:
                 break
+            total_bytes += len(chunk)
+            digest.update(chunk)
             remaining = max(0, limit - len(kept))
             if remaining:
                 kept.extend(chunk[:remaining])
@@ -97,6 +123,8 @@ def _drain_bounded_stream(
         stream.close()  # type: ignore[attr-defined]
     result["bytes"] = bytes(kept)
     result["truncated"] = truncated
+    result["total_bytes"] = total_bytes
+    result["sha256"] = digest.hexdigest()
 
 
 def run_read_only(
@@ -153,15 +181,33 @@ def run_read_only(
     stderr_bytes = stderr_result.get("bytes", b"")
     assert isinstance(stdout_bytes, bytes)
     assert isinstance(stderr_bytes, bytes)
+    stdout_text, stdout_decode_truncated = decode_bounded_utf8(
+        stdout_bytes, max_output_bytes
+    )
+    stderr_text, stderr_decode_truncated = decode_bounded_utf8(
+        stderr_bytes, max_output_bytes
+    )
     return CommandResult(
-        argv,
-        124 if timed_out else returncode,
-        stdout_bytes.decode("utf-8", errors="replace"),
-        stderr_bytes.decode("utf-8", errors="replace"),
-        "TimeoutExpired" if timed_out else None,
-        bool(stdout_result.get("truncated", False)),
-        bool(stderr_result.get("truncated", False)),
-        timed_out,
+        argv=argv,
+        returncode=124 if timed_out else returncode,
+        stdout=stdout_text,
+        stderr=stderr_text,
+        error="TimeoutExpired" if timed_out else None,
+        stdout_truncated=bool(stdout_result.get("truncated", False))
+        or stdout_decode_truncated,
+        stderr_truncated=bool(stderr_result.get("truncated", False))
+        or stderr_decode_truncated,
+        timed_out=timed_out,
+        stdout_total_bytes=int(stdout_result.get("total_bytes", len(stdout_bytes))),
+        stderr_total_bytes=int(stderr_result.get("total_bytes", len(stderr_bytes))),
+        stdout_retained_bytes=len(stdout_bytes),
+        stderr_retained_bytes=len(stderr_bytes),
+        stdout_sha256=str(
+            stdout_result.get("sha256", hashlib.sha256(stdout_bytes).hexdigest())
+        ),
+        stderr_sha256=str(
+            stderr_result.get("sha256", hashlib.sha256(stderr_bytes).hexdigest())
+        ),
     )
 
 
@@ -270,13 +316,15 @@ def read_bounded_text_files(
             truncated = True
             break
         retained.extend(chunk)
-    value = bytes(retained).decode("utf-8", errors="replace")
+    retained_bytes = len(retained)
+    value, decode_truncated = decode_bounded_utf8(bytes(retained), max_bytes)
     return BoundedText(
         value,
-        truncated=truncated,
+        truncated=truncated or decode_truncated,
         observed_items=observed_items,
         max_items=max_files,
         max_bytes=max_bytes,
+        retained_bytes=retained_bytes,
     )
 
 
@@ -502,7 +550,9 @@ def build_report(
                 "observed_files": getattr(eld_text, "observed_items", None),
                 "max_files": getattr(eld_text, "max_items", MAX_ELD_FILES),
                 "max_bytes": getattr(eld_text, "max_bytes", MAX_ELD_BYTES),
-                "retained_bytes": len(eld_text.encode("utf-8")),
+                "retained_bytes": getattr(
+                    eld_text, "retained_bytes", len(eld_text.encode("utf-8"))
+                ),
             }
         },
         "command_health": [
@@ -513,8 +563,16 @@ def build_report(
                 "timed_out": result.timed_out,
                 "stdout_truncated": result.stdout_truncated,
                 "stderr_truncated": result.stderr_truncated,
-                "stdout_retained_bytes": len(result.stdout.encode("utf-8")),
-                "stderr_retained_bytes": len(result.stderr.encode("utf-8")),
+                "stdout_retained_bytes": (
+                    result.stdout_retained_bytes
+                    if result.stdout_retained_bytes is not None
+                    else len(result.stdout.encode("utf-8"))
+                ),
+                "stderr_retained_bytes": (
+                    result.stderr_retained_bytes
+                    if result.stderr_retained_bytes is not None
+                    else len(result.stderr.encode("utf-8"))
+                ),
                 "max_output_bytes_per_stream": MAX_COMMAND_OUTPUT_BYTES,
             }
             for result in result_list
