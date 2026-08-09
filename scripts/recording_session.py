@@ -42,6 +42,7 @@ PARECORD_PATH = pathlib.Path("/usr/bin/parecord")
 ARECORDMIDI_PATH = pathlib.Path("/usr/bin/arecordmidi")
 MAX_JSON_BYTES = 524_288
 MAX_BINDING_BYTES = 64_000_000
+PARECORD_WAV_FSIZE_FLOOR_BYTES = 64 * 1024 * 1024
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 HEX64_RE = re.compile(r"[0-9a-f]{64}")
 SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
@@ -3187,6 +3188,32 @@ def _performance_child_exit_codes_clean(returncodes: list[int]) -> bool:
     )
 
 
+def _wav_compatible_fsize_limit(maximum_file_bytes: int) -> int:
+    """Keep libsndfile WAV startup viable while retaining a hard file-size ceiling."""
+
+    return max(maximum_file_bytes, PARECORD_WAV_FSIZE_FLOOR_BYTES)
+
+
+def _midi_capture_process_ready(
+    child: subprocess.Popen[bytes], partial: pathlib.Path
+) -> bool:
+    """Observe arecordmidi startup without requiring buffered SMF bytes."""
+
+    if child.poll() is not None:
+        return False
+    try:
+        observed = partial.lstat()
+    except FileNotFoundError:
+        return False
+    return (
+        stat.S_ISREG(observed.st_mode)
+        and observed.st_uid == os.geteuid()
+        and observed.st_nlink == 1
+        and stat.S_IMODE(observed.st_mode) == 0o600
+        and observed.st_size <= MIDI.MAX_MIDI_BYTES
+    )
+
+
 def _performance_worker_run(
     spec: dict[str, Any],
     parecord_path: pathlib.Path,
@@ -3215,7 +3242,10 @@ def _performance_worker_run(
         raise RecordingError("performance output or partial path already exists")
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    maximum_artifact = max(int(capture["maximum_file_bytes"]), MIDI.MAX_MIDI_BYTES)
+    maximum_artifact = max(
+        _wav_compatible_fsize_limit(int(capture["maximum_file_bytes"])),
+        MIDI.MAX_MIDI_BYTES,
+    )
     resource.setrlimit(resource.RLIMIT_FSIZE, (maximum_artifact, maximum_artifact))
     resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
     stop_requested = False
@@ -3252,10 +3282,9 @@ def _performance_worker_run(
                 if midi_process.poll() is not None:
                     stop_reason = "midi-child-exited"
                     break
-                try:
-                    midi_started = paths["midi_partial"].stat().st_size >= 14
-                except FileNotFoundError:
-                    midi_started = False
+                midi_started = _midi_capture_process_ready(
+                    midi_process, paths["midi_partial"]
+                )
                 if midi_started:
                     timeline["midi_running_observed_offset_ns"] = time.monotonic_ns() - epoch_ns
                     break
@@ -3320,7 +3349,12 @@ def _performance_worker_run(
         or len(audio_error) > maximum_stderr
         or len(midi_error) > maximum_stderr
     ):
-        raise RecordingError("audio/MIDI capture children did not terminate through the bounded clean path")
+        raise RecordingError(
+            "audio/MIDI capture children did not terminate through the bounded clean path "
+            f"(ready={str(ready).lower()}, stop_reason={stop_reason}, "
+            f"returncodes={returncodes}, forced_kill={str(forced_kill).lower()}, "
+            f"audio_stderr_bytes={len(audio_error)}, midi_stderr_bytes={len(midi_error)})"
+        )
     paths["partial"].chmod(0o600)
     paths["midi_partial"].chmod(0o600)
     for partial in (paths["partial"], paths["midi_partial"]):
@@ -3434,9 +3468,10 @@ def worker_run(
         raise RecordingError("recording output or partial path already exists")
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    file_size_limit = _wav_compatible_fsize_limit(int(capture["maximum_file_bytes"]))
     resource.setrlimit(
         resource.RLIMIT_FSIZE,
-        (int(capture["maximum_file_bytes"]), int(capture["maximum_file_bytes"])),
+        (file_size_limit, file_size_limit),
     )
     resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
     stop_requested = False
