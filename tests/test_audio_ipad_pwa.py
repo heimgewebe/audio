@@ -241,8 +241,11 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('window.history.scrollRestoration = isHomeStartRoute() ? "manual" : "auto";', self.app)
         self.assertIn('window.addEventListener("pageshow"', self.app)
         self.assertIn("restoreHomeStartPosition();", self.app)
-        self.assertIn('routeFromHash() === "now" && !ROUTE_TARGETS[routeKey]', self.app)
+        self.assertIn('routeFromHash() === "home" && !ROUTE_TARGETS[routeKey]', self.app)
+        self.assertIn('route: "home"', self.app)
         self.assertIn('window.requestAnimationFrame(restoreHomeStartPosition)', self.app)
+        self.assertIn('document.body.classList.add("workspace-focus-open")', self.app)
+        self.assertIn('panel.classList.add("is-workspace-focused")', self.app)
 
     def test_modes_are_declared_and_persisted_locally(self):
         self.assertIn('const REMOTE_MODE = "remote-audiozentrale";', self.app)
