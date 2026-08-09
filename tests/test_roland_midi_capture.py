@@ -152,6 +152,101 @@ class RolandMidiCaptureTests(unittest.TestCase):
                         clients_path=clients_path,
                     )
 
+    def test_kernel_legacy_client_is_bound_through_unique_roland_rawmidi_card(self):
+        clients = (
+            'Client 24 : "Roland Digital Piano" [Kernel Legacy]\n'
+            '  Port 0 : "Roland Digital Piano MIDI 1" (RWeX) [In/Out]\n'
+        )
+        listing = (
+            " Port    Client name                      Port name\n"
+            " 24:0    Roland Digital Piano             Roland Digital Piano MIDI 1\n"
+        )
+        usb = {
+            "vendor_id": "0582",
+            "product_id": "01b1",
+            "identity_strength": "model-usb-port",
+            "bus_number": "1",
+            "port_path": "9.3",
+        }
+        usb["fingerprint"] = MIDI.canonical_sha256(usb)
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            clients_path = root / "clients"
+            clients_path.write_text(clients, encoding="utf-8")
+            proc_root = root / "asound"
+            (proc_root / "card2").mkdir(parents=True)
+            (proc_root / "card2" / "midi0").write_text(
+                "Roland Digital Piano\n\nType: Legacy\n", encoding="utf-8"
+            )
+            with mock.patch.object(MIDI, "_usb_identity_for_card", return_value=usb):
+                match = MIDI.discover_unique_roland_port(
+                    arecordmidi_listing=listing,
+                    clients_path=clients_path,
+                    sound_class_root=root / "sound",
+                    proc_asound_root=proc_root,
+                )
+        self.assertEqual(match["address"], "24:0")
+        self.assertEqual(match["identity"]["kernel_card"], 2)
+
+    def test_kernel_legacy_mapping_rejects_user_client_spoof(self):
+        clients = (
+            'Client 24 : "Roland Digital Piano" [User Legacy]\n'
+            '  Port 0 : "Roland Digital Piano MIDI 1" (RWeX) [In/Out]\n'
+        )
+        listing = (
+            " Port    Client name                      Port name\n"
+            " 24:0    Roland Digital Piano             Roland Digital Piano MIDI 1\n"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            clients_path = root / "clients"
+            clients_path.write_text(clients, encoding="utf-8")
+            with mock.patch.object(MIDI, "_usb_identity_for_card") as usb_lookup:
+                with self.assertRaisesRegex(MIDI.MidiCaptureError, "observed 0"):
+                    MIDI.discover_unique_roland_port(
+                        arecordmidi_listing=listing,
+                        clients_path=clients_path,
+                        sound_class_root=root / "sound",
+                        proc_asound_root=root / "asound",
+                    )
+            usb_lookup.assert_not_called()
+
+    def test_kernel_legacy_mapping_fails_closed_when_two_roland_cards_match(self):
+        clients = (
+            'Client 24 : "Roland Digital Piano" [Kernel Legacy]\n'
+            '  Port 0 : "Roland Digital Piano MIDI 1" (RWeX) [In/Out]\n'
+        )
+        listing = (
+            " Port    Client name                      Port name\n"
+            " 24:0    Roland Digital Piano             Roland Digital Piano MIDI 1\n"
+        )
+        usb = {
+            "vendor_id": "0582",
+            "product_id": "01b1",
+            "identity_strength": "model-usb-port",
+            "bus_number": "1",
+            "port_path": "9.3",
+        }
+        usb["fingerprint"] = MIDI.canonical_sha256(usb)
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            clients_path = root / "clients"
+            clients_path.write_text(clients, encoding="utf-8")
+            proc_root = root / "asound"
+            for card in (2, 4):
+                (proc_root / f"card{card}").mkdir(parents=True)
+                (proc_root / f"card{card}" / "midi0").write_text(
+                    "Roland Digital Piano\n", encoding="utf-8"
+                )
+            with mock.patch.object(MIDI, "_usb_identity_for_card", return_value=usb):
+                with self.assertRaisesRegex(MIDI.MidiCaptureError, "multiple USB cards"):
+                    MIDI.discover_unique_roland_port(
+                        arecordmidi_listing=listing,
+                        clients_path=clients_path,
+                        sound_class_root=root / "sound",
+                        proc_asound_root=proc_root,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
