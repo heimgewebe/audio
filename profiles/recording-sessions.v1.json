@@ -65,6 +65,87 @@
         "stream_name_prefix": "voice-recording"
       }
     },
+    "piano-vocal-performance": {
+      "purpose": "Record RØDE NT1-A through the serial-bound MOTU M2 and the unique Roland FP-30X ALSA MIDI performance as one plan-bound take.",
+      "profile": "voice-recording",
+      "required_physical_facts": {
+        "rode_nt1a_connected": true,
+        "rode_nt1a_motu_input": [
+          "input-1",
+          "input-2"
+        ],
+        "motu_phantom_48v": "on",
+        "motu_input_gain_reference": "non-empty-string"
+      },
+      "required_laboratory_gates": [
+        "voice-level-measurement"
+      ],
+      "capture": {
+        "sample_rate_hz": 48000,
+        "sample_format": "s32le",
+        "channels": 2,
+        "channel_map": "front-left,front-right",
+        "container": "wav",
+        "minimum_duration_seconds": 1,
+        "maximum_duration_seconds": 14400,
+        "startup_timeout_seconds": 5,
+        "stop_grace_seconds": 8,
+        "bytes_per_sample": 4,
+        "header_and_metadata_allowance_bytes": 1048576,
+        "free_space_reserve_bytes": 1073741824,
+        "maximum_stderr_bytes": 65536
+      },
+      "source": {
+        "kind": "motu-voice-with-roland-midi",
+        "audio": {
+          "kind": "motu-voice",
+          "vendor_id": "07fd",
+          "product_id": "0008",
+          "serial_prefix": "MOTU_M2_",
+          "node_name_prefix": "alsa_input.usb-MOTU_M2_",
+          "required_sample_formats": [
+            "s32le"
+          ],
+          "required_sample_rate_hz": 48000,
+          "required_channels": 2,
+          "requires_unmuted": true,
+          "requires_unity_volume": true
+        },
+        "midi": {
+          "kind": "alsa-sequencer-midi",
+          "manufacturer": "Roland",
+          "model": "FP-30X",
+          "usb_vendor_id": "0582",
+          "usb_product_id": "01b1",
+          "capture": "arecordmidi-standard-midi-file",
+          "port_inventory": "kernel-sequencer-plus-arecordmidi-list",
+          "timing": {
+            "basis": "SMPTE",
+            "fps": 25,
+            "ticks_per_frame": 40,
+            "nominal_resolution_ms": 1
+          }
+        }
+      },
+      "monitoring": {
+        "mode": "hardware-direct",
+        "endpoint": "motu-m2",
+        "software_loopback": false,
+        "level_claim": "physical-reference-required"
+      },
+      "process": {
+        "stdin": "devnull",
+        "stdout": "devnull",
+        "stderr": "bounded-private-temporary-file",
+        "new_session": true,
+        "core_dumps": false,
+        "maximum_open_files": 64,
+        "partial_file_policy": "preserve-on-failure",
+        "publication_policy": "manifest-last-hardlink-no-replace",
+        "client_name": "audio-piano-vocal-performance",
+        "stream_name_prefix": "piano-vocal-performance"
+      }
+    },
     "roland-audio-recording": {
       "purpose": "Record the unique Roland FP-30X USB audio source into the 48 kHz production format after the explicit single-stage resampling decision passes.",
       "profile": "piano-digital-recording",
@@ -181,6 +262,10 @@
     "planning is read-only",
     "only one managed recording session may be active",
     "start requires the exact current plan digest and session type",
+    "piano-vocal performance requires the voice gates and exactly one Roland FP-30X ALSA MIDI source",
+    "performance MIDI is written directly by the plan-bound arecordmidi binary as an SMPTE 25 fps / 40 ticks-per-frame Standard MIDI File",
+    "performance SMF timing has 1 ms nominal file resolution and is neither a musical tempo nor a sample-accurate WAV/MIDI synchronization claim",
+    "the take manifest is the last publication step and the only complete-take commit marker",
     "stop and recovery require exact PID, start-time, executable and command-line identity",
     "a partial file is never silently promoted after an unclean worker exit",
     "the final WAV path is never overwritten",

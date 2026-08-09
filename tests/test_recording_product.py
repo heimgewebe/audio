@@ -170,6 +170,125 @@ class RecordingProductTests(unittest.TestCase):
         self.assertNotIn(str(root), serialized)
         self.assertNotIn('"path"', serialized)
 
+    def test_performance_projection_requires_manifest_commit_truth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            session_id, _paths, spec, _state = self.synthetic_session(root)
+            spec["plan_identity"]["session_type"] = "piano-vocal-performance"
+            spec["paths"].update(
+                {
+                    "midi_final": str(root / "voice-take.mid"),
+                    "manifest_final": str(root / "voice-take.take.json"),
+                }
+            )
+            vocal = {
+                "path": spec["paths"]["final"],
+                "sha256": "d" * 64,
+                "bytes": 4096,
+                "mode": "0600",
+                "device": 1,
+                "inode": 2,
+                "channels": 2,
+                "bit_depth_container": 32,
+                "sample_rate_hz": 48_000,
+                "frames": 48_000,
+                "duration_seconds": 1.0,
+            }
+            result = {
+                "schema_version": 1,
+                "kind": "audio_recording_result",
+                "session_id": session_id,
+                "plan_sha256": spec["plan_sha256"],
+                "status": "completed",
+                "reason": "requested-stop",
+                "started_at": "2026-08-08T06:00:01+00:00",
+                "completed_at": "2026-08-08T06:00:05+00:00",
+                "artifacts": {
+                    "vocal_wav": vocal,
+                    "roland_midi_smf": {"sha256": "e" * 64, "bytes": 128},
+                    "take_manifest": {"sha256": "f" * 64, "bytes": 512},
+                },
+                "does_not_establish": ["sample-accurate-wav-midi-synchronization"],
+            }
+            with (
+                mock.patch.object(MODULE.REC, "_validate_binding_shape"),
+                mock.patch.object(
+                    MODULE.REC,
+                    "_validate_result",
+                    side_effect=MODULE.REC.RecordingError("manifest missing"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.RecordingProductError, "Manifest"
+                ):
+                    MODULE._result_projection(result, spec)
+            manifest = {"midi_event_counts": {"note_on": 0, "note_off": 0}}
+            with (
+                mock.patch.object(MODULE.REC, "_validate_binding_shape"),
+                mock.patch.object(MODULE.REC, "_validate_result"),
+                mock.patch.object(
+                    MODULE.REC, "_validate_performance_manifest", return_value=manifest
+                ),
+            ):
+                projection = MODULE._result_projection(result, spec)
+        self.assertTrue(
+            projection["artifacts"]["take_manifest"]["commit_truth"]
+        )
+        self.assertEqual(projection["midi_event_counts"]["note_on"], 0)
+
+    def test_failed_performance_lists_final_siblings_only_as_recovery_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            session_id, _paths, spec, _state = self.synthetic_session(root)
+            spec["plan_identity"]["session_type"] = "piano-vocal-performance"
+            spec["plan_identity"]["capture"]["maximum_file_bytes"] = 1_000_000
+            spec["paths"].update(
+                {
+                    "partial": str(root / ".voice.partial.wav"),
+                    "midi_partial": str(root / ".voice.partial.mid"),
+                    "midi_final": str(root / "voice-take.mid"),
+                    "manifest_partial": str(root / ".voice.partial.take.json"),
+                    "manifest_final": str(root / "voice-take.take.json"),
+                }
+            )
+            for key, payload in (
+                ("partial", b"partial wav"),
+                ("final", b"final wav"),
+                ("midi_partial", b"partial midi"),
+                ("midi_final", b"final midi"),
+                ("manifest_partial", b"{}"),
+            ):
+                path = pathlib.Path(spec["paths"][key])
+                path.write_bytes(payload)
+                path.chmod(0o600)
+            inventory = MODULE.REC._performance_path_inventory(spec)
+            result = {
+                "schema_version": 1,
+                "kind": "audio_recording_result",
+                "session_id": session_id,
+                "plan_sha256": spec["plan_sha256"],
+                "status": "failed-preserved",
+                "reason": "OSError",
+                "failed_at": "2026-08-08T06:00:05+00:00",
+                "error": "injected before manifest commit",
+                "partial": inventory["wav_partial"],
+                "performance_artifacts": inventory,
+                "does_not_establish": ["successful-recording"],
+            }
+
+            projection = MODULE._result_projection(result, spec)
+
+        self.assertEqual(projection["status"], "failed-preserved")
+        self.assertEqual(projection["recovery_artifacts"]["wav_final"], "present")
+        self.assertEqual(projection["recovery_artifacts"]["midi_final"], "present")
+        self.assertEqual(
+            projection["recovery_artifacts"]["manifest_partial"], "present"
+        )
+        self.assertEqual(
+            projection["recovery_artifacts"]["manifest_final"], "missing"
+        )
+        self.assertNotIn("artifacts", projection)
+
 
 if __name__ == "__main__":
     unittest.main()

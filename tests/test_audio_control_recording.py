@@ -18,6 +18,65 @@ class RecordingActionRunner(FakeRunner):
         self.malformed_terminal = malformed_terminal
 
     def voice_plan(self, argv):
+        session_type = argv[argv.index("--session-type") + 1]
+        audio_identity = {
+            "sample_rate_hz": 48_000,
+            "sample_format": "s32le",
+            "channels": 2,
+        }
+        source_identity = audio_identity
+        performance = None
+        if session_type == "piano-vocal-performance":
+            source_identity = {
+                "audio": audio_identity,
+                "midi": {"fingerprint": "b" * 64},
+            }
+            performance = {
+                "timing": {
+                    "basis": "SMPTE",
+                    "fps": 25,
+                    "ticks_per_frame": 40,
+                    "nominal_resolution_ms": 1,
+                }
+            }
+        identity = {
+            "session_type": session_type,
+            "profile": "voice-recording",
+            "output": {
+                "name": argv[3],
+                "mode": "0600",
+                "overwrite": False,
+            },
+            "capture": {
+                "sample_rate_hz": 48_000,
+                "sample_format": "s32le",
+                "channels": 2,
+                "container": "wav",
+                "maximum_duration_seconds": 600,
+                "maximum_file_bytes": 250_000_000,
+            },
+            "physical": {
+                "facts": {
+                    "rode_nt1a_connected": True,
+                    "rode_nt1a_motu_input": "input-1",
+                    "motu_phantom_48v": "on",
+                    "motu_input_gain_reference": "mark-1",
+                }
+            },
+            "laboratory": {"resolved": ["voice-level-measurement"]},
+            "source": {
+                "identity": source_identity,
+                "identity_sha256": "a" * 64,
+            },
+            "monitoring": {
+                "mode": "hardware-direct",
+                "endpoint": "motu-m2",
+                "software_loopback": False,
+                "level_claim": "physical-reference-required",
+            },
+        }
+        if performance is not None:
+            identity["performance"] = performance
         return self.result(
             argv,
             {
@@ -25,46 +84,7 @@ class RecordingActionRunner(FakeRunner):
                 "kind": "audio_recording_plan",
                 "ready": True,
                 "plan_sha256": self.PLAN_SHA,
-                "identity": {
-                    "session_type": "voice-recording",
-                    "profile": "voice-recording",
-                    "output": {
-                        "name": argv[3],
-                        "mode": "0600",
-                        "overwrite": False,
-                    },
-                    "capture": {
-                        "sample_rate_hz": 48_000,
-                        "sample_format": "s32le",
-                        "channels": 2,
-                        "container": "wav",
-                        "maximum_duration_seconds": 600,
-                        "maximum_file_bytes": 250_000_000,
-                    },
-                    "physical": {
-                        "facts": {
-                            "rode_nt1a_connected": True,
-                            "rode_nt1a_motu_input": "input-1",
-                            "motu_phantom_48v": "on",
-                            "motu_input_gain_reference": "mark-1",
-                        }
-                    },
-                    "laboratory": {"resolved": ["voice-level-measurement"]},
-                    "source": {
-                        "identity": {
-                            "sample_rate_hz": 48_000,
-                            "sample_format": "s32le",
-                            "channels": 2,
-                        },
-                        "identity_sha256": "a" * 64,
-                    },
-                    "monitoring": {
-                        "mode": "hardware-direct",
-                        "endpoint": "motu-m2",
-                        "software_loopback": False,
-                        "level_claim": "physical-reference-required",
-                    },
-                },
+                "identity": identity,
                 "readiness": {
                     "blockers": [],
                     "free_bytes": 10_000_000_000,
@@ -83,13 +103,14 @@ class RecordingActionRunner(FakeRunner):
                 return self.voice_plan(argv)
             if operation == "start":
                 expected_index = argv.index("--expected-plan-sha256") + 1
+                session_type = argv[argv.index("--session-type") + 1]
                 return self.result(
                     argv,
                     {
                         "schema_version": 1,
                         "kind": "audio_recording_start_receipt",
                         "session_id": self.SESSION_ID,
-                        "session_type": "voice-recording",
+                        "session_type": session_type,
                         "status": "running",
                         "plan_sha256": argv[expected_index],
                     },
@@ -119,7 +140,7 @@ class RecordingActionRunner(FakeRunner):
         return super().run(argv, timeout=timeout)
 
 
-def running_snapshot(session_id, plan_sha):
+def running_snapshot(session_id, plan_sha, session_type="voice-recording"):
     return {
         "schema_version": 1,
         "kind": "audio_control_snapshot",
@@ -128,6 +149,7 @@ def running_snapshot(session_id, plan_sha):
             "session": {
                 "session_id": session_id,
                 "plan_sha256": plan_sha,
+                "session_type": session_type,
                 "active": True,
             },
         },
@@ -182,7 +204,7 @@ class AudioControlRecordingTests(unittest.TestCase):
     def test_recording_plan_is_typed_path_free_and_plan_hash_bound(self):
         runner = RecordingActionRunner()
         result = self.controller(runner).perform_recording_action(
-            {"operation": "plan", "name": "voice-take.wav", "maximum_seconds": 600}
+            {"operation": "plan", "mode": "voice", "name": "voice-take.wav", "maximum_seconds": 600}
         )
         self.assertEqual(result["operation"], "plan")
         plan = result["plan"]
@@ -206,7 +228,7 @@ class AudioControlRecordingTests(unittest.TestCase):
             runner = RecordingActionRunner()
             with self.subTest(name=name), self.assertRaises(MODULE.ControlError):
                 self.controller(runner).perform_recording_action(
-                    {"operation": "plan", "name": name, "maximum_seconds": 60}
+                    {"operation": "plan", "mode": "voice", "name": name, "maximum_seconds": 60}
                 )
             self.assertEqual(runner.calls, [])
 
@@ -216,6 +238,7 @@ class AudioControlRecordingTests(unittest.TestCase):
             controller.perform_recording_action(
                 {
                     "operation": "plan",
+                    "mode": "voice",
                     "name": "take.wav",
                     "maximum_seconds": 60,
                     "command": "parecord anything",
@@ -223,10 +246,30 @@ class AudioControlRecordingTests(unittest.TestCase):
             )
         self.assertEqual(runner.calls, [])
 
+        for payload in (
+            {
+                "operation": "plan",
+                "mode": "voice",
+                "name": "take.wav",
+                "maximum_seconds": 60,
+                "session_type": "production-mix-recording",
+            },
+            {
+                "operation": "plan",
+                "mode": "production-mix-recording",
+                "name": "take.wav",
+                "maximum_seconds": 60,
+            },
+        ):
+            with self.assertRaises(MODULE.ControlError):
+                controller.perform_recording_action(payload)
+        self.assertEqual(runner.calls, [])
+
         with self.assertRaisesRegex(MODULE.ControlError, "Plan-Hash"):
             controller.perform_recording_action(
                 {
                     "operation": "start",
+                    "mode": "voice",
                     "name": "take.wav",
                     "maximum_seconds": 60,
                     "expected_plan_sha256": "not-a-hash",
@@ -245,6 +288,7 @@ class AudioControlRecordingTests(unittest.TestCase):
             result = controller.perform_recording_action(
                 {
                     "operation": "start",
+                    "mode": "voice",
                     "name": "take.wav",
                     "maximum_seconds": 60,
                     "expected_plan_sha256": runner.PLAN_SHA,
@@ -269,11 +313,31 @@ class AudioControlRecordingTests(unittest.TestCase):
                 mismatch.perform_recording_action(
                     {
                         "operation": "start",
+                        "mode": "voice",
                         "name": "take.wav",
                         "maximum_seconds": 60,
                         "expected_plan_sha256": runner.PLAN_SHA,
                     }
                 )
+
+    def test_performance_mode_maps_only_to_fixed_session_type(self):
+        runner = RecordingActionRunner()
+        result = self.controller(runner).perform_recording_action(
+            {
+                "operation": "plan",
+                "mode": "piano-vocal",
+                "name": "song.wav",
+                "maximum_seconds": 600,
+            }
+        )
+        self.assertEqual(result["mode"], "piano-vocal")
+        self.assertEqual(result["plan"]["session_type"], "piano-vocal-performance")
+        self.assertEqual(result["plan"]["performance"]["product"], "Gesang WAV + Roland MIDI")
+        plan_call = next(
+            call for call, _timeout in runner.calls if call[2] == "plan"
+        )
+        index = plan_call.index("--session-type")
+        self.assertEqual(plan_call[index + 1], "piano-vocal-performance")
 
     def test_stop_requires_typed_status_receipt_and_inactive_readback(self):
         runner = RecordingActionRunner()
@@ -329,6 +393,17 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertIn("state.remoteBridgeProjection = true", javascript)
         self.assertIn("state.remoteBridgeProjection !== true", javascript)
         self.assertIn("microphone=()", (ROOT / "scripts" / "audio_control.py").read_text())
+
+    def test_ui_mode_switch_invalidates_and_binds_the_plan(self):
+        javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('mode: "voice", name: "voice-take.wav"', javascript)
+        self.assertIn('modeButton.dataset.recordingMode = mode.id', javascript)
+        self.assertIn('state.recordingPlan = null', javascript)
+        self.assertIn('input?.mode === state.recordingDraft.mode', javascript)
+        self.assertIn('plan.session_type ===', javascript)
+        self.assertIn('mode: state.recordingDraft.mode', javascript)
+        self.assertIn('"Gesang WAV + Roland MIDI"', javascript)
+        self.assertIn('state.remoteBridgeProjection !== true', javascript)
 
 
 if __name__ == "__main__":
