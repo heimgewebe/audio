@@ -161,6 +161,7 @@ const state = {
   recordingDraft: { mode: "voice", name: "voice-take.wav", maximumSeconds: 600 },
   recordingActionPending: false,
   whaleActionPending: false,
+  whaleModeDraft: null,
   replay: null,
   replayScenarioId: "normal",
   replayFrameIndex: 0,
@@ -513,6 +514,7 @@ function stopRemoteActivity() {
   state.recordingPlanInput = null;
   state.recordingActionPending = false;
   state.whaleActionPending = false;
+  state.whaleModeDraft = null;
   for (const audio of document.querySelectorAll("audio.recording-player")) {
     audio.pause();
     audio.removeAttribute("src");
@@ -1512,6 +1514,20 @@ function renderWhale() {
   const statusReadable = whale.status === "ok";
   const keyboard = contract.keyboard || {};
   const writable = whaleActionsAllowed();
+  const focusedMode =
+    document.activeElement?.matches?.('input[name="whale-mode"]') === true
+      ? document.activeElement.value
+      : null;
+  const modes = Array.isArray(contract.modes) ? contract.modes : [];
+  const modeIds = new Set(modes.map((mode) => mode.id));
+  if (
+    !writable ||
+    !modeIds.has(state.whaleModeDraft) ||
+    state.whaleModeDraft === currentMode
+  ) {
+    state.whaleModeDraft = null;
+  }
+  const selectedMode = state.whaleModeDraft || currentMode;
 
   const intro = byId("play-intro-stat");
   intro.replaceChildren();
@@ -1545,18 +1561,22 @@ function renderWhale() {
 
   const picker = element("fieldset", "mode-picker");
   appendText(picker, "legend", "", "Walstimme / Klangcharakter");
-  for (const mode of contract.modes || []) {
+  for (const mode of modes) {
     const label = element("label", "mode-choice");
     const input = element("input");
     input.type = "radio";
     input.name = "whale-mode";
     input.value = mode.id;
-    input.checked = mode.id === currentMode;
-    input.disabled = state.loading || state.whaleActionPending || !statusReadable || !writable;
+    input.checked = mode.id === selectedMode;
+    input.disabled = state.whaleActionPending || !statusReadable || !writable;
     label.append(input, element("span", "", displayMode(mode.id)));
     picker.append(label);
   }
   main.append(picker);
+  picker.addEventListener("change", (event) => {
+    if (event.target?.name !== "whale-mode") return;
+    state.whaleModeDraft = event.target.value;
+  });
 
   const actions = element("div", "card-actions");
   const actionButton = element("button", active ? "primary-button danger" : "primary-button", active ? "Walstimme beenden" : "Walstimme starten");
@@ -1595,10 +1615,20 @@ function renderWhale() {
   details.append(list);
   if (whale.error) appendText(details, "p", "dialog-message", whale.error);
   wrapper.append(main, details);
-  byId("whale-control").replaceChildren(wrapper);
+  const whaleControl = byId("whale-control");
+  whaleControl.replaceChildren(wrapper);
+  if (focusedMode && state.route === "spielen") {
+    const replacement = [...whaleControl.querySelectorAll('input[name="whale-mode"]')].find(
+      (input) => input.value === focusedMode,
+    );
+    if (replacement && !replacement.disabled) {
+      replacement.focus({ preventScroll: true });
+    }
+  }
 }
 
 function selectedWhaleMode() {
+  if (typeof state.whaleModeDraft === "string") return state.whaleModeDraft;
   const checked = document.querySelector('input[name="whale-mode"]:checked');
   return checked ? checked.value : state.snapshot?.whale?.contract?.default_mode;
 }
@@ -1626,6 +1656,7 @@ async function runWhaleAction(operation, mode) {
       timeoutMs: 70000,
     });
     if (result?.kind !== "audio_control_action_result" || !result.snapshot) throw new Error("Buckelwal-Aktion kam ohne autoritativen Readback zurück.");
+    state.whaleModeDraft = null;
     state.snapshot = result.snapshot;
     renderAll();
     const confirmedMode = result.mode || mode;
