@@ -13,6 +13,7 @@ import re
 import stat
 import sys
 import time
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -38,6 +39,20 @@ SYSTEMD_PROPERTIES = (
     "NRestarts",
 )
 SERVICE_RE = re.compile(r"^[A-Za-z0-9_.@:-]+\.service$")
+SYSTEMD_TIMESPAN_TOKEN_RE = re.compile(
+    r"(?P<value>[0-9]+(?:\.[0-9]+)?)\s*"
+    r"(?P<unit>us|ms|s|min|h|d|weeks|week)"
+)
+SYSTEMD_TIMESPAN_USEC = {
+    "us": Decimal(1),
+    "ms": Decimal(1_000),
+    "s": Decimal(1_000_000),
+    "min": Decimal(60_000_000),
+    "h": Decimal(3_600_000_000),
+    "d": Decimal(86_400_000_000),
+    "week": Decimal(604_800_000_000),
+    "weeks": Decimal(604_800_000_000),
+}
 MAX_PROC_BYTES = 65_536
 
 
@@ -207,6 +222,34 @@ def _parse_optional_counter(value: str, label: str) -> int | None:
     return _nonnegative_int(parsed, label)
 
 
+def _parse_systemd_usec(value: str, label: str) -> int:
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{label} is empty")
+    if text.isdigit():
+        return _nonnegative_int(int(text), label)
+    total = Decimal(0)
+    position = 0
+    matched = False
+    try:
+        for match in SYSTEMD_TIMESPAN_TOKEN_RE.finditer(text):
+            if text[position : match.start()].strip():
+                raise ValueError(f"{label} has an unsupported systemd timespan")
+            total += Decimal(match.group("value")) * SYSTEMD_TIMESPAN_USEC[
+                match.group("unit")
+            ]
+            position = match.end()
+            matched = True
+    except InvalidOperation as exc:
+        raise ValueError(f"{label} has an invalid systemd timespan") from exc
+    if not matched or text[position:].strip():
+        raise ValueError(f"{label} has an unsupported systemd timespan")
+    integral = total.to_integral_value()
+    if total != integral:
+        raise ValueError(f"{label} resolves below one microsecond")
+    return _nonnegative_int(int(integral), label)
+
+
 def _service_properties(unit: str) -> dict[str, Any]:
     if SERVICE_RE.fullmatch(unit) is None:
         raise ValueError("plugin-host unit name is invalid")
@@ -236,8 +279,8 @@ def _service_properties(unit: str) -> dict[str, Any]:
         "limit_nofile": _parse_limit(raw["LimitNOFILE"], "LimitNOFILE"),
         "standard_output": raw["StandardOutput"],
         "standard_error": raw["StandardError"],
-        "log_rate_limit_interval_usec": _nonnegative_int(
-            int(raw["LogRateLimitIntervalUSec"]), "LogRateLimitIntervalUSec"
+        "log_rate_limit_interval_usec": _parse_systemd_usec(
+            raw["LogRateLimitIntervalUSec"], "LogRateLimitIntervalUSec"
         ),
         "log_rate_limit_burst": _nonnegative_int(
             int(raw["LogRateLimitBurst"]), "LogRateLimitBurst"
