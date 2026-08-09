@@ -172,6 +172,76 @@ class SystemTruthTests(unittest.TestCase):
                 (("systemctl", "--user", "restart", "pipewire"),)
             )
 
+    def test_supplied_doctor_truncation_and_timeout_metadata_round_trip(self):
+        results = doctor_results()
+        payload = "x" * MODULE.DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+        full_stdout = payload + "y" * 17
+        full_stdout_sha256 = MODULE.sha256_bytes(full_stdout.encode("utf-8"))
+        results[0] = MODULE.DOCTOR.CommandResult(
+            argv=results[0].argv,
+            returncode=0,
+            stdout=payload,
+            stderr="",
+            stdout_truncated=True,
+            stdout_total_bytes=MODULE.DOCTOR.MAX_COMMAND_OUTPUT_BYTES + 17,
+            stderr_total_bytes=0,
+            stdout_retained_bytes=MODULE.DOCTOR.MAX_COMMAND_OUTPUT_BYTES,
+            stderr_retained_bytes=0,
+            stdout_sha256=full_stdout_sha256,
+            stderr_sha256=MODULE.sha256_bytes(b""),
+        )
+        results[1] = MODULE.DOCTOR.CommandResult(
+            argv=results[1].argv,
+            returncode=124,
+            stdout="",
+            stderr="",
+            error="TimeoutExpired",
+            timed_out=True,
+            stdout_total_bytes=0,
+            stderr_total_bytes=0,
+            stdout_retained_bytes=0,
+            stderr_retained_bytes=0,
+            stdout_sha256=MODULE.sha256_bytes(b""),
+            stderr_sha256=MODULE.sha256_bytes(b""),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            report = MODULE.build_report(
+                results,
+                runtime_results(),
+                physical_state=root / "physical.json",
+                laboratory_state=root / "laboratory.json",
+                generated_at="2026-07-28T00:00:00+00:00",
+            )
+
+        first, second = report["doctor"]["command_health"][:2]
+        self.assertTrue(first["stdout_truncated"])
+        self.assertEqual(
+            first["stdout_retained_bytes"], MODULE.DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+        )
+        self.assertEqual(report["commands"][0]["stdout_sha256"], full_stdout_sha256)
+        self.assertNotEqual(
+            report["commands"][0]["stdout_sha256"],
+            MODULE.sha256_bytes(payload.encode("utf-8")),
+        )
+        self.assertTrue(second["timed_out"])
+        self.assertEqual(second["returncode"], 124)
+        MODULE.verify_report(report)
+
+    def test_supplied_truncated_doctor_result_requires_full_stream_digest(self):
+        result = MODULE.DOCTOR.CommandResult(
+            argv=MODULE.DOCTOR.READ_ONLY_COMMANDS[0],
+            returncode=0,
+            stdout="prefix",
+            stderr="",
+            stdout_truncated=True,
+            stdout_total_bytes=100,
+            stdout_retained_bytes=6,
+        )
+        with self.assertRaisesRegex(ValueError, "full-stream digest"):
+            MODULE.capture_from_doctor_results([result])
+
     def test_truth_chain_is_stable_but_report_binds_timestamp(self):
         first = self.report("2026-07-28T00:00:00+00:00")
         second = self.report("2026-07-29T00:00:00+00:00")
@@ -1174,6 +1244,42 @@ class SystemTruthTests(unittest.TestCase):
         self.assertTrue(result.stdout_truncated)
         self.assertEqual(len(result.stdout.encode()), MODULE.MAX_COMMAND_BYTES)
         self.assertGreater(result.stdout_total_bytes, MODULE.MAX_COMMAND_BYTES)
+
+    def test_subprocess_capture_bounds_invalid_utf8_representation(self):
+        payload = 30_000
+        result = MODULE.run_read_only(
+            (
+                sys.executable,
+                "-c",
+                "import os; " f"os.write(1, b'\\xff' * {payload})",
+            )
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout_total_bytes, payload)
+        self.assertLessEqual(len(result.stdout.encode("utf-8")), MODULE.MAX_COMMAND_BYTES)
+        self.assertFalse(result.stdout_truncated)
+        self.assertEqual(
+            result.stdout_sha256, MODULE.sha256_bytes(b"\xff" * payload)
+        )
+        doctor_capture = MODULE.CommandResult(
+            argv=MODULE.DOCTOR.READ_ONLY_COMMANDS[0],
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            error=result.error,
+            duration_ms=result.duration_ms,
+            stdout_total_bytes=result.stdout_total_bytes,
+            stderr_total_bytes=result.stderr_total_bytes,
+            stdout_sha256=result.stdout_sha256,
+            stderr_sha256=result.stderr_sha256,
+            stdout_truncated=result.stdout_truncated,
+            stderr_truncated=result.stderr_truncated,
+        )
+        projected = MODULE.doctor_inputs_from_capture([doctor_capture])[0]
+        evidence = MODULE.command_record(doctor_capture)
+        self.assertTrue(projected.stdout_truncated)
+        self.assertTrue(evidence["stdout_truncated"])
+        self.assertEqual(projected.stdout_sha256, evidence["stdout_sha256"])
 
     def test_command_evidence_contains_no_raw_output(self):
         record = MODULE.command_record(runtime_results()[2])

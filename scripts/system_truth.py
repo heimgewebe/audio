@@ -334,24 +334,30 @@ def run_read_only(argv: tuple[str, ...]) -> CommandResult:
             returncode = 124
             error = "timeout"
 
-    def text(name: str) -> str:
-        # Raw output remains process-local and bounded. Persisted projections either
-        # normalize it or store only digests; pre-parse redaction can erase device identity.
-        return bytes(streams[name]["buffer"]).decode("utf-8", "replace")
+    def text(name: str) -> tuple[str, bool]:
+        # Raw output remains process-local and bounded. Keep the decoded UTF-8
+        # representation bounded too: replacement characters can otherwise expand it.
+        return DOCTOR.decode_bounded_utf8(
+            bytes(streams[name]["buffer"]), MAX_COMMAND_BYTES
+        )
 
+    stdout_text, stdout_representation_truncated = text("stdout")
+    stderr_text, stderr_representation_truncated = text("stderr")
     return CommandResult(
         argv=argv,
         returncode=124 if error == "timeout" else returncode,
-        stdout=text("stdout"),
-        stderr=text("stderr"),
+        stdout=stdout_text,
+        stderr=stderr_text,
         error=error,
         duration_ms=round((time.monotonic() - started) * 1000),
         stdout_total_bytes=int(streams["stdout"]["total"]),
         stderr_total_bytes=int(streams["stderr"]["total"]),
         stdout_sha256=streams["stdout"]["digest"].hexdigest(),
         stderr_sha256=streams["stderr"]["digest"].hexdigest(),
-        stdout_truncated=bool(streams["stdout"]["truncated"]),
-        stderr_truncated=bool(streams["stderr"]["truncated"]),
+        stdout_truncated=bool(streams["stdout"]["truncated"])
+        or stdout_representation_truncated,
+        stderr_truncated=bool(streams["stderr"]["truncated"])
+        or stderr_representation_truncated,
     )
 
 
@@ -364,8 +370,25 @@ def command_by_prefix(
     return None
 
 
+def _command_evidence_stream_truncated(
+    result: CommandResult, stream_name: str
+) -> bool:
+    truncated = bool(getattr(result, f"{stream_name}_truncated"))
+    if result.argv not in DOCTOR.READ_ONLY_COMMANDS:
+        return truncated
+    total_bytes = int(getattr(result, f"{stream_name}_total_bytes"))
+    text = str(getattr(result, stream_name))
+    return (
+        truncated
+        or total_bytes > DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+        or len(text.encode("utf-8")) > DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+    )
+
+
 def command_record(result: CommandResult) -> dict[str, Any]:
     """Return command evidence without persisting raw stdout, stderr or arguments."""
+    stdout_truncated = _command_evidence_stream_truncated(result, "stdout")
+    stderr_truncated = _command_evidence_stream_truncated(result, "stderr")
     return {
         "argv": list(result.argv),
         "command": shlex.join(result.argv),
@@ -374,8 +397,8 @@ def command_record(result: CommandResult) -> dict[str, Any]:
         "accepted": (
             result.error is None
             and result.returncode in allowed_returncodes(result.argv)
-            and not result.stdout_truncated
-            and not result.stderr_truncated
+            and not stdout_truncated
+            and not stderr_truncated
         ),
         "error": result.error,
         "duration_ms": result.duration_ms,
@@ -385,8 +408,8 @@ def command_record(result: CommandResult) -> dict[str, Any]:
         "stderr_sha256": result.stderr_sha256 or sha256_bytes(result.stderr.encode()),
         "stdout_line_count": len(result.stdout.splitlines()),
         "stderr_line_count": len(result.stderr.splitlines()),
-        "stdout_truncated": result.stdout_truncated,
-        "stderr_truncated": result.stderr_truncated,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
     }
 
 
@@ -394,10 +417,14 @@ def _doctor_stream_projection(
     text: str, *, total_bytes: int, truncated: bool
 ) -> tuple[str, bool]:
     encoded = text.encode("utf-8")
-    bounded = encoded[: DOCTOR.MAX_COMMAND_OUTPUT_BYTES]
+    bounded, representation_truncated = DOCTOR.decode_bounded_utf8(
+        encoded, DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+    )
     return (
-        bounded.decode("utf-8", errors="replace"),
-        truncated or total_bytes > DOCTOR.MAX_COMMAND_OUTPUT_BYTES,
+        bounded,
+        truncated
+        or total_bytes > DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+        or representation_truncated,
     )
 
 
@@ -425,9 +452,39 @@ def doctor_inputs_from_capture(results: list[CommandResult]) -> list[Any]:
                 stdout_truncated,
                 stderr_truncated,
                 timed_out,
+                stdout_total_bytes=result.stdout_total_bytes,
+                stderr_total_bytes=result.stderr_total_bytes,
+                stdout_retained_bytes=min(
+                    result.stdout_total_bytes, DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+                ),
+                stderr_retained_bytes=min(
+                    result.stderr_total_bytes, DOCTOR.MAX_COMMAND_OUTPUT_BYTES
+                ),
+                stdout_sha256=result.stdout_sha256,
+                stderr_sha256=result.stderr_sha256,
             )
         )
     return projected
+
+
+def _doctor_full_stream_digest(
+    result: Any, stream_name: str, payload: bytes
+) -> str:
+    digest = getattr(result, f"{stream_name}_sha256", None)
+    if digest is not None:
+        if not isinstance(digest, str) or not SHA256_PATTERN.fullmatch(digest):
+            raise ValueError(f"Doctor {stream_name} digest is invalid")
+        return digest
+    has_raw_metadata = (
+        getattr(result, f"{stream_name}_total_bytes", None) is not None
+        or getattr(result, f"{stream_name}_retained_bytes", None) is not None
+        or bool(getattr(result, f"{stream_name}_truncated", False))
+    )
+    if has_raw_metadata:
+        raise ValueError(
+            f"Doctor {stream_name} raw-byte metadata requires a full-stream digest"
+        )
+    return sha256_bytes(payload)
 
 
 def capture_from_doctor_results(results: Iterable[Any]) -> list[CommandResult]:
@@ -435,17 +492,35 @@ def capture_from_doctor_results(results: Iterable[Any]) -> list[CommandResult]:
     for result in results:
         stdout = str(result.stdout)
         stderr = str(result.stderr)
+        stdout_bytes = stdout.encode("utf-8")
+        stderr_bytes = stderr.encode("utf-8")
+        stdout_total_bytes = getattr(result, "stdout_total_bytes", None)
+        stderr_total_bytes = getattr(result, "stderr_total_bytes", None)
+        if stdout_total_bytes is None:
+            stdout_total_bytes = getattr(result, "stdout_retained_bytes", None)
+        if stderr_total_bytes is None:
+            stderr_total_bytes = getattr(result, "stderr_retained_bytes", None)
+        if stdout_total_bytes is None:
+            stdout_total_bytes = len(stdout_bytes)
+        if stderr_total_bytes is None:
+            stderr_total_bytes = len(stderr_bytes)
+        stdout_sha256 = _doctor_full_stream_digest(result, "stdout", stdout_bytes)
+        stderr_sha256 = _doctor_full_stream_digest(result, "stderr", stderr_bytes)
+        doctor_error = getattr(result, "error", None)
+        error = "timeout" if doctor_error == "TimeoutExpired" else doctor_error
         captured.append(
             CommandResult(
                 argv=tuple(result.argv),
-                returncode=int(result.returncode),
+                returncode=124 if error == "timeout" else int(result.returncode),
                 stdout=stdout,
                 stderr=stderr,
-                error=result.error,
-                stdout_total_bytes=len(stdout.encode("utf-8")),
-                stderr_total_bytes=len(stderr.encode("utf-8")),
-                stdout_sha256=sha256_bytes(stdout.encode("utf-8")),
-                stderr_sha256=sha256_bytes(stderr.encode("utf-8")),
+                error=error,
+                stdout_total_bytes=int(stdout_total_bytes),
+                stderr_total_bytes=int(stderr_total_bytes),
+                stdout_sha256=stdout_sha256,
+                stderr_sha256=stderr_sha256,
+                stdout_truncated=bool(getattr(result, "stdout_truncated", False)),
+                stderr_truncated=bool(getattr(result, "stderr_truncated", False)),
             )
         )
     return captured

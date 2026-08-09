@@ -195,6 +195,24 @@ class AudioDoctorTests(unittest.TestCase):
         self.assertTrue(result.stderr_truncated)
         self.assertFalse(result.timed_out)
 
+    def test_run_read_only_bounds_invalid_utf8_after_decode(self):
+        payload = MODULE.MAX_COMMAND_OUTPUT_BYTES
+        code = "import os; " f"os.write(1, b'\\xff' * {payload})"
+        result = MODULE.run_read_only((sys.executable, "-c", code), timeout=2.0)
+        self.assertEqual(result.returncode, 0)
+        self.assertLessEqual(
+            len(result.stdout.encode("utf-8")), MODULE.MAX_COMMAND_OUTPUT_BYTES
+        )
+        self.assertEqual(result.stdout_total_bytes, payload)
+        self.assertEqual(result.stdout_retained_bytes, payload)
+        self.assertEqual(result.stdout_sha256, MODULE.hashlib.sha256(b"\xff" * payload).hexdigest())
+        self.assertTrue(result.stdout_truncated)
+
+        report = MODULE.build_report([result])
+        health = report["command_health"][0]
+        self.assertEqual(health["stdout_retained_bytes"], payload)
+        self.assertTrue(health["stdout_truncated"])
+
     def test_run_read_only_reports_timeout_explicitly(self):
         result = MODULE.run_read_only(
             (sys.executable, "-c", "import time; time.sleep(2)"), timeout=0.05
@@ -236,6 +254,21 @@ class AudioDoctorTests(unittest.TestCase):
             self.assertTrue(report["input_health"]["eld"]["truncated"])
             self.assertEqual(report["input_health"]["eld"]["max_files"], 2)
             self.assertEqual(report["input_health"]["eld"]["max_bytes"], 25)
+
+    def test_bounded_eld_invalid_utf8_preserves_raw_byte_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "eld-invalid"
+            path.write_bytes(b"\xff" * 25)
+            value = MODULE.read_bounded_text_files([path], max_files=1, max_bytes=25)
+
+            self.assertLessEqual(len(value.encode("utf-8")), 25)
+            self.assertEqual(value.retained_bytes, 25)
+            self.assertTrue(value.truncated)
+
+            report = MODULE.build_report([], value)
+            health = report["input_health"]["eld"]
+            self.assertEqual(health["retained_bytes"], 25)
+            self.assertTrue(health["truncated"])
 
     def test_physical_unknowns_come_from_contract(self):
         unknowns = MODULE.physical_unknowns()
