@@ -228,6 +228,14 @@ class PluginHostObserverTests(unittest.TestCase):
         self.assertEqual(unit, "fluidsynth.service")
         self.assertTrue(cgroup.endswith("/fluidsynth.service"))
 
+    def test_systemd_usec_parser_accepts_systemctl_timespans(self):
+        self.assertEqual(MODULE._parse_systemd_usec("30000000", "interval"), 30_000_000)
+        self.assertEqual(MODULE._parse_systemd_usec("30s", "interval"), 30_000_000)
+        self.assertEqual(MODULE._parse_systemd_usec("250ms", "interval"), 250_000)
+        self.assertEqual(MODULE._parse_systemd_usec("1min 30s", "interval"), 90_000_000)
+        with self.assertRaisesRegex(ValueError, "unsupported systemd timespan"):
+            MODULE._parse_systemd_usec("30fortnights", "interval")
+
 
 if __name__ == "__main__":
     unittest.main()
