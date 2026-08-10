@@ -397,7 +397,15 @@ class AudioControlRecordingTests(unittest.TestCase):
 
     def test_ui_mode_switch_invalidates_and_binds_the_plan(self):
         javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('mode: "voice", name: "voice-take.wav"', javascript)
+        self.assertIn('name: automaticTakeName("voice")', javascript)
+        self.assertIn('automaticName: true', javascript)
+        self.assertIn('function automaticTakeName(', javascript)
+        self.assertIn('function ensureAutomaticTakeNameFree()', javascript)
+        self.assertIn('RECORDING_COLLISION_BLOCKERS', javascript)
+        self.assertIn('async function runRecordingStart()', javascript)
+        self.assertIn('await requestRecordingPlan({ autoRenameCollision: true })', javascript)
+        self.assertIn('runRecordingStart();', javascript)
+        self.assertIn('nameEdited ? false : state.recordingDraft.automaticName === true', javascript)
         self.assertIn('modeButton.dataset.recordingMode = mode.id', javascript)
         self.assertIn('state.recordingPlan = null', javascript)
         self.assertIn('input?.mode === state.recordingDraft.mode', javascript)
