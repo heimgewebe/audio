@@ -1421,8 +1421,10 @@ class AudioControlTests(unittest.TestCase):
         ):
             with self.subTest(control=key):
                 self.assertEqual(controls.count(f'dataset.control = "{key}"'), 1)
-        self.assertIn('nameInput.addEventListener("input", invalidatePlan)', controls)
+        self.assertIn('nameInput.addEventListener("input", () => invalidatePlan({ nameEdited: true }))', controls)
+        self.assertIn('durationInput.addEventListener("input", () => invalidatePlan())', controls)
         self.assertIn("name: nameInput.value", controls)
+        self.assertIn("automaticName: nameEdited ? false", controls)
 
         lanes_start = javascript.index("function renderActiveLanes(")
         lanes_end = javascript.index("function homeProfile(", lanes_start)
