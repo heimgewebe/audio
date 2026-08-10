@@ -765,6 +765,7 @@ function renderAll({ preserveRecorderDraft = true } = {}) {
   renderTruth();
   renderHome();
   renderActiveLanes({ preserveDraft: preserveRecorderDraft });
+  renderRecordingRecentTakes();
   renderWhale();
   renderWhaleLessonSummary();
   renderProfiles();
@@ -1290,7 +1291,81 @@ async function loadRecordingLibrary({ render = true } = {}) {
     state.recordingLibraryError =
       error instanceof Error ? error.message : "Recorderbibliothek ist nicht lesbar.";
   }
-  if (render && state.snapshot) renderLibrary();
+  if (render && state.snapshot) {
+    renderLibrary();
+    renderRecordingRecentTakes();
+  }
+}
+
+function recordingTakeDuration(item) {
+  const vocal = item.result?.artifacts?.vocal_wav;
+  const artifact = item.result?.artifact;
+  const seconds = vocal?.duration_seconds ?? artifact?.duration_seconds;
+  return Number.isFinite(Number(seconds)) ? `${Number(seconds).toFixed(2)} s` : null;
+}
+
+function recordingTakeProduct(item) {
+  return item.session_type === "piano-vocal-performance"
+    ? "Klavier + Gesang · WAV + MIDI"
+    : "Gesang · WAV";
+}
+
+function renderRecordingRecentTakes() {
+  const target = byId("recording-recent-takes");
+  if (!target) return;
+  const library = state.recordingLibrary;
+  if (!library) {
+    target.replaceChildren(
+      element(
+        "div",
+        "empty-state",
+        state.recordingLibraryError || "Aufnahmen werden geladen.",
+      ),
+    );
+    return;
+  }
+  const items = Array.isArray(library.items) ? library.items.slice(0, 3) : [];
+  if (!items.length) {
+    target.replaceChildren(
+      element("div", "empty-state", "Noch keine Aufnahme vorhanden."),
+    );
+    return;
+  }
+  target.replaceChildren(
+    ...items.map((item) => {
+      const card = element("article", "recording-recent-card");
+      const head = element("div", "recording-recent-card-head");
+      const copy = element("div");
+      appendText(copy, "strong", "", item.name || `Take ${shortRevision(item.session_id)}`);
+      const duration = recordingTakeDuration(item);
+      appendText(
+        copy,
+        "small",
+        "",
+        `${recordingTakeProduct(item)}${duration ? ` · ${duration}` : ""} · ${formatDateTime(item.created_at)}`,
+      );
+      head.append(copy);
+      appendText(
+        head,
+        "span",
+        `status-pill ${item.status === "completed" ? "ready" : ""}`,
+        recordingStatusLabel(item.status),
+      );
+      card.append(head);
+      if (item.status === "completed" && typeof item.audio_url === "string") {
+        const audio = element("audio", "recording-player");
+        audio.controls = true;
+        audio.preload = "metadata";
+        audio.src = item.audio_url;
+        audio.setAttribute(
+          "aria-label",
+          `Take ${item.name || shortRevision(item.session_id)} abspielen`,
+        );
+        card.append(audio);
+      }
+      return card;
+    }),
+  );
 }
 
 function captureRecorderInteraction(workspace) {

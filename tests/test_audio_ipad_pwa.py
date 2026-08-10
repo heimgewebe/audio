@@ -286,6 +286,8 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('body: "{}"', session_loader)
         self.assertIn('fetchJson("/bridge/v1/actions/whale"', self.app)
         self.assertIn('fetchJson("/bridge/v1/actions/recording"', self.app)
+        self.assertIn('fetchJson("/api/v1/recordings"', self.app)
+        self.assertIn("audio.src = item.audio_url", self.app)
         self.assertIn('"X-Audio-Bridge-Session": state.remoteWhaleSessionToken', self.app)
         self.assertIn("Recorderaktionen dürfen wirken", self.app)
 

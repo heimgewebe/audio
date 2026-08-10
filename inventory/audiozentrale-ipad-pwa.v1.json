@@ -5,7 +5,7 @@
   "status": "specified-not-physically-verified",
   "schema_binding": {
     "path": "schemas/audiozentrale-ipad-pwa.v1.schema.json",
-    "sha256": "26b621a18e9d577b7d7d8b081e286e062857e28234d219af970109cd102d6a63"
+    "sha256": "9539ad19addbd0390da8790eaebc1e5a1f84ae25481a519dbda0db7cd9036516"
   },
   "surface": {
     "canonical_frontend": [
@@ -138,7 +138,7 @@
     "route": "/sw.js",
     "scope": "/",
     "cache_prefix": "audiozentrale-app-shell-",
-    "cache_name": "audiozentrale-app-shell-v3",
+    "cache_name": "audiozentrale-app-shell-v4",
     "registration": "secure-contexts-only",
     "app_shell_strategy": "network-first-cache-fallback-static-only",
     "app_shell_routes": [

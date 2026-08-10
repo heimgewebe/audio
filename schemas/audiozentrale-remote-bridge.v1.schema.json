@@ -58,6 +58,7 @@
         "fixed_api_routes",
         "snapshot_queries",
         "profile_plan_pattern",
+        "recording_audio_pattern",
         "request_header_forward",
         "backend_headers_synthesized",
         "response_header_forward",
@@ -103,7 +104,8 @@
             "/api/v1/health",
             "/api/v1/telemetry",
             "/api/v1/replay",
-            "/api/v1/whale/lesson"
+            "/api/v1/whale/lesson",
+            "/api/v1/recordings"
           ]
         },
         "snapshot_queries": {
@@ -114,6 +116,9 @@
         },
         "profile_plan_pattern": {
           "const": "/api/v1/profiles/{profile_id}/plan"
+        },
+        "recording_audio_pattern": {
+          "const": "/api/v1/recordings/{session_id}/audio"
         },
         "request_header_forward": {
           "const": [

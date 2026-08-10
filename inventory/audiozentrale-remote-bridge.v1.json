@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "8656552d770d154fc0c6e2dd05dde0bf865c770bc2b45a8dc5a992187fda37af"
+    "sha256": "ffa8d998a11ce8452dfa6ac74a2692b332f674b2b764e7835c7811f9611417fd"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -38,13 +38,15 @@
       "/api/v1/health",
       "/api/v1/telemetry",
       "/api/v1/replay",
-      "/api/v1/whale/lesson"
+      "/api/v1/whale/lesson",
+      "/api/v1/recordings"
     ],
     "snapshot_queries": [
       "",
       "refresh=1"
     ],
     "profile_plan_pattern": "/api/v1/profiles/{profile_id}/plan",
+    "recording_audio_pattern": "/api/v1/recordings/{session_id}/audio",
     "request_header_forward": [
       "If-None-Match",
       "Range"

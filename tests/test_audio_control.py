@@ -1290,6 +1290,9 @@ class AudioControlTests(unittest.TestCase):
 
         self.assertIn('id="view-aufnehmen" data-view="aufnehmen"', html)
         self.assertIn('id="recording-live-host"', html)
+        self.assertIn('id="recording-recent-takes"', html)
+        self.assertIn('id="recording-recent-title">Letzte Takes</h3>', html)
+        self.assertIn('href="#material">Alle Aufnahmen</a>', html)
         self.assertEqual(html.count('id="recorder-workspace"'), 1)
         self.assertIn(
             'id="recorder-workspace" tabindex="-1" aria-label="Recorder-Arbeitsbereich"',
@@ -1300,6 +1303,14 @@ class AudioControlTests(unittest.TestCase):
             javascript,
         )
         self.assertIn('lanes.filter((lane) => lane.key === "recording")', javascript)
+        recent_start = javascript.index("function renderRecordingRecentTakes()")
+        recent_end = javascript.index("function captureRecorderInteraction", recent_start)
+        recent = javascript[recent_start:recent_end]
+        self.assertIn("library.items.slice(0, 3)", recent)
+        self.assertIn('item.status === "completed"', recent)
+        self.assertIn("audio.src = item.audio_url", recent)
+        self.assertIn('"Klavier + Gesang · WAV + MIDI"', javascript)
+        self.assertIn("renderRecordingRecentTakes();", javascript)
 
         controls_start = javascript.index("function renderRecordingControls(")
         controls_end = javascript.index("async function loadRecordingLibrary", controls_start)
