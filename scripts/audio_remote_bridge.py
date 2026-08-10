@@ -46,7 +46,12 @@ MAX_RECORDING_ACTION_BODY_BYTES = 1024
 WHALE_ACTION_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
 WHALE_ACTION_OPERATIONS = frozenset({"start", "mode", "stop"})
 RECORDING_ACTION_MODES = frozenset({"voice", "piano-vocal"})
-RECORDING_ACTION_OPERATIONS = frozenset({"plan", "start", "stop", "recover"})
+RECORDING_ACTION_OPERATIONS = frozenset(
+    {"plan", "start", "stop", "recover", "categorize", "trash", "restore"}
+)
+RECORDING_LIBRARY_CATEGORIES = frozenset(
+    {"unsorted", "song", "practice", "idea", "test", "finished"}
+)
 RECORDING_SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 REMOTE_TAILNET_HOST = "heim-pc.tail6dbb90.ts.net:9443"
 DEFAULT_HOST = "127.0.0.1"
@@ -528,6 +533,8 @@ def validate_recording_action_payload(payload: bytes) -> dict[str, Any]:
         required = {"operation", "mode", "name", "maximum_seconds"}
     elif operation == "start":
         required = {"operation", "mode", "name", "maximum_seconds", "expected_plan_sha256"}
+    elif operation == "categorize":
+        required = {"operation", "session_id", "category"}
     else:
         required = {"operation", "session_id"}
     if set(decoded) != required:
@@ -551,7 +558,13 @@ def validate_recording_action_payload(payload: bytes) -> dict[str, Any]:
     session_id = decoded.get("session_id")
     if not isinstance(session_id, str) or RECORDING_SESSION_ID_RE.fullmatch(session_id) is None:
         raise RequestRejected("remote recording session id is invalid")
-    return {"operation": str(operation), "session_id": session_id}
+    result = {"operation": str(operation), "session_id": session_id}
+    if operation == "categorize":
+        category = decoded.get("category")
+        if category not in RECORDING_LIBRARY_CATEGORIES:
+            raise RequestRejected("remote recording category is not allowlisted")
+        result["category"] = str(category)
+    return result
 
 
 def backend_request_headers(
@@ -892,6 +905,16 @@ def write_backend_recording_action(action: dict[str, Any]) -> tuple[int, bytes, 
                 snapshot = decoded.get("snapshot")
                 if not isinstance(snapshot, dict) or snapshot.get("kind") != "audio_control_snapshot":
                     raise BackendFailure("backend recording action lacks authoritative readback")
+                if action["operation"] in {"categorize", "trash", "restore"}:
+                    library = decoded.get("library")
+                    if (
+                        not isinstance(library, dict)
+                        or library.get("kind") != "audio_recording_library_metadata"
+                        or library.get("session_id") != action["session_id"]
+                        or library.get("category") not in RECORDING_LIBRARY_CATEGORIES
+                        or not isinstance(library.get("trashed"), bool)
+                    ):
+                        raise BackendFailure("backend recording library action lacks bound metadata")
         return response.status, scrubbed, redactions
     except BackendFailure:
         raise
@@ -1149,6 +1172,9 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
                         "recording:start",
                         "recording:stop",
                         "recording:recover",
+                        "recording:categorize",
+                        "recording:trash",
+                        "recording:restore",
                     ],
                     "effect_exclusions": ["profiles", "routing", "devices", "system"],
                     "allowed_methods": ["GET", "HEAD", "POST"],

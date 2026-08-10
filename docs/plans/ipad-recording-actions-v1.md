@@ -4,7 +4,7 @@ Status: vom Nutzer am 10. August 2026 nach erfolgreichem lokalem Klavier-und-Ges
 
 ## Ziel
 
-Die private Tailnet-Audiozentrale auf HTTPS 9443 darf vom vorgesehenen iPad neben den bereits freigegebenen Buckelwal-Aktionen genau die typisierten Recorderoperationen `plan`, `start`, `stop` und `recover` ausführen. Der autoritative Audio-Control-Dienst bleibt ausschließlich auf `127.0.0.1:8765`; sein Aktionstoken verlässt den Heim-PC niemals.
+Die private Tailnet-Audiozentrale auf HTTPS 9443 darf vom vorgesehenen iPad neben den bereits freigegebenen Buckelwal-Aktionen die typisierten Recorderoperationen `plan`, `start`, `stop` und `recover` sowie die nachträglich ergänzten, rein bibliotheksbezogenen Aktionen `categorize`, `trash` und `restore` ausführen. Der autoritative Audio-Control-Dienst bleibt ausschließlich auf `127.0.0.1:8765`; sein Aktionstoken verlässt den Heim-PC niemals.
 
 ## Harte Invarianten
 

@@ -147,6 +147,18 @@ const CAPABILITY_STATE_LABELS = {
   unknown: "nicht ermittelbar",
 };
 
+const RECORDING_LIBRARY_CATEGORIES = Object.freeze({
+  unsorted: "Unsortiert",
+  song: "Song",
+  practice: "Übung",
+  idea: "Idee",
+  test: "Test",
+  finished: "Fertig",
+});
+const LIBRARY_VIEWS = new Set(["active", "trash", "all"]);
+const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category"]);
+const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
+
 const RECORDING_COLLISION_BLOCKERS = new Set([
   "output-already-exists",
   "midi-output-already-exists",
@@ -222,6 +234,9 @@ const state = {
   remoteWhaleSessionError: null,
   recordingLibrary: null,
   recordingLibraryError: null,
+  libraryView: "active",
+  libraryCategory: "all",
+  librarySort: "newest",
   recordingPlan: null,
   recordingPlanInput: null,
   recordingDraft: {
@@ -915,6 +930,32 @@ function recordingActionsAllowed() {
   return localRecordingActionsAllowed() || remoteRecordingActionsAllowed();
 }
 
+function localRecordingLibraryActionsAllowed() {
+  return Boolean(
+    directLoopbackControlOrigin() &&
+      backendAllowed() &&
+      state.remoteBridgeProjection !== true &&
+      state.snapshot?.capabilities?.recording_control === true &&
+      typeof state.snapshot?.service?.action_token === "string" &&
+      state.snapshot.service.action_token.length >= 16
+  );
+}
+
+function remoteRecordingLibraryActionsAllowed() {
+  return Boolean(
+    backendAllowed() &&
+      state.snapshot?.capabilities?.recording_control === true &&
+      remoteWhaleSessionFresh() &&
+      state.remoteActionScopes.includes("recording")
+  );
+}
+
+function recordingLibraryActionsAllowed() {
+  return (
+    localRecordingLibraryActionsAllowed() || remoteRecordingLibraryActionsAllowed()
+  );
+}
+
 function localWhaleActionsAllowed() {
   return Boolean(
     directLoopbackControlOrigin() &&
@@ -1053,14 +1094,22 @@ function recordingPlanMatchesDraft() {
 }
 
 async function postRecordingAction(payload) {
-  if (!recordingActionsAllowed()) {
+  const libraryAction = RECORDING_LIBRARY_ACTIONS.has(payload?.operation);
+  const allowed = libraryAction
+    ? recordingLibraryActionsAllowed()
+    : recordingActionsAllowed();
+  if (!allowed) {
     throw new Error(
       state.remoteBridgeProjection === true
         ? state.remoteWhaleSessionError || "Recorder ist auf dieser privaten Fernverbindung nicht autorisiert."
-        : "Der lokale Voice-Recorder ist nicht für Aktionen freigeschaltet.",
+        : libraryAction
+          ? "Die lokale Aufnahmebibliothek ist nicht für Änderungen freigeschaltet."
+          : "Der lokale Voice-Recorder ist nicht für Aktionen freigeschaltet.",
     );
   }
-  if (localRecordingActionsAllowed()) {
+  if (
+    libraryAction ? localRecordingLibraryActionsAllowed() : localRecordingActionsAllowed()
+  ) {
     return fetchJson("/api/v1/actions/recording", {
       method: "POST",
       timeoutMs: 55000,
@@ -1071,7 +1120,9 @@ async function postRecordingAction(payload) {
       body: JSON.stringify(payload),
     });
   }
-  if (remoteRecordingActionsAllowed()) {
+  if (
+    libraryAction ? remoteRecordingLibraryActionsAllowed() : remoteRecordingActionsAllowed()
+  ) {
     return fetchJson("/bridge/v1/actions/recording", {
       method: "POST",
       timeoutMs: 55000,
@@ -1202,6 +1253,9 @@ async function runRecordingAction(payload) {
           start: "Aufnahme läuft; der Start wurde durch Recorder-Readback bestätigt.",
           stop: "Take wurde gestoppt und Recorder-Readback bestätigt.",
           recover: "Recovery wurde ausgeführt und Recorder-Readback bestätigt.",
+          categorize: "Kategorie wurde gespeichert und exakt zurückgelesen.",
+          trash: "Take wurde in den Papierkorb verschoben.",
+          restore: "Take wurde aus dem Papierkorb wiederhergestellt.",
         }[result.operation] || "Recorderaktion bestätigt.",
         "success",
       );
@@ -1449,12 +1503,21 @@ async function loadRecordingLibrary({ render = true } = {}) {
   }
 }
 
-function recordingTakeDuration(item) {
+function recordingTakeDurationSeconds(item) {
   const mix = item.result?.artifacts?.mix_wav;
   const vocal = item.result?.artifacts?.vocal_wav;
   const artifact = item.result?.artifact;
   const seconds = mix?.duration_seconds ?? vocal?.duration_seconds ?? artifact?.duration_seconds;
-  return Number.isFinite(Number(seconds)) ? `${Number(seconds).toFixed(2)} s` : null;
+  return Number.isFinite(Number(seconds)) ? Number(seconds) : null;
+}
+
+function recordingTakeDuration(item) {
+  const seconds = recordingTakeDurationSeconds(item);
+  return seconds === null ? null : `${seconds.toFixed(2)} s`;
+}
+
+function recordingCategoryLabel(value) {
+  return RECORDING_LIBRARY_CATEGORIES[value] || "Unsortiert";
 }
 
 function recordingTakeProduct(item) {
@@ -1501,7 +1564,9 @@ function renderRecordingRecentTakes() {
     return;
   }
   const items = Array.isArray(library.items)
-    ? library.items.filter((item) => item.status === "completed").slice(0, 3)
+    ? library.items
+        .filter((item) => item.status === "completed" && item.library?.trashed !== true)
+        .slice(0, 3)
     : [];
   if (!items.length) {
     target.replaceChildren(
@@ -2292,51 +2357,112 @@ function renderLibrary() {
   const recording = state.snapshot.recording || {};
   const library = state.recordingLibrary;
   const target = byId("library-takes");
-  const items = Array.isArray(library?.items) ? library.items : [];
-  const cards = [];
+  const allItems = Array.isArray(library?.items) ? [...library.items] : [];
+  const activeCount = allItems.filter((item) => item.library?.trashed !== true).length;
+  const trashedCount = allItems.length - activeCount;
 
+  if (byId("library-view")) byId("library-view").value = state.libraryView;
+  if (byId("library-category-filter")) {
+    byId("library-category-filter").value = state.libraryCategory;
+  }
+  if (byId("library-sort")) byId("library-sort").value = state.librarySort;
+
+  let items = allItems.filter((item) => {
+    const trashed = item.library?.trashed === true;
+    if (state.libraryView === "active" && trashed) return false;
+    if (state.libraryView === "trash" && !trashed) return false;
+    if (state.libraryCategory !== "all" && item.library?.category !== state.libraryCategory) {
+      return false;
+    }
+    return true;
+  });
+  const createdAt = (item) => Date.parse(item.created_at || "") || 0;
+  items.sort((left, right) => {
+    if (state.librarySort === "oldest") return createdAt(left) - createdAt(right);
+    if (state.librarySort === "name") {
+      return String(left.name || "").localeCompare(String(right.name || ""), "de");
+    }
+    if (state.librarySort === "duration") {
+      return (recordingTakeDurationSeconds(right) || 0) - (recordingTakeDurationSeconds(left) || 0);
+    }
+    if (state.librarySort === "category") {
+      const category = recordingCategoryLabel(left.library?.category).localeCompare(
+        recordingCategoryLabel(right.library?.category),
+        "de",
+      );
+      return category || createdAt(right) - createdAt(left);
+    }
+    return createdAt(right) - createdAt(left);
+  });
+
+  const cards = [];
   const summary = element("article", "metric-card");
   appendText(summary, "p", "eyebrow", "Takes");
   appendText(
     summary,
     "strong",
     "",
-    library ? `${items.length} Take${items.length === 1 ? "" : "s"}` : "nicht lesbar",
+    library ? `${activeCount} aktiv · ${trashedCount} Papierkorb` : "nicht lesbar",
   );
   appendText(
     summary,
     "span",
     "",
     state.recordingLibraryError ||
-      "Metadaten sind receipt-gebunden; Audiodaten werden erst beim Abspielen erneut vollständig verifiziert.",
+      `${items.length} von ${allItems.length} Takes in der aktuellen Ansicht${library?.truncated ? " · weitere Takes vorhanden" : ""}.`,
   );
   cards.push(summary);
 
+  const organization = element("article", "metric-card");
+  appendText(organization, "p", "eyebrow", "Organisation");
+  appendText(organization, "strong", "", "Kategorien + Sortierung");
+  appendText(
+    organization,
+    "span",
+    "",
+    "Kategorie ist getrennte Bibliotheksmetadaten und verändert weder WAV noch MIDI noch Take-Manifest.",
+  );
+  cards.push(organization);
+
   const immutable = element("article", "metric-card");
-  appendText(immutable, "p", "eyebrow", "Unveränderlichkeit");
-  appendText(immutable, "strong", "", "no-replace + SHA-256");
+  appendText(immutable, "p", "eyebrow", "Löschschutz");
+  appendText(immutable, "strong", "", "Papierkorb + SHA-256");
   appendText(
     immutable,
     "span",
     "",
-    "Stop finalisiert ohne Überschreiben. Geräteverlust bleibt explizit recoverbar statt still verworfen zu werden.",
+    "Löschen ist zunächst wiederherstellbar. Im Papierkorb werden Wiedergabe und Export gesperrt.",
   );
   cards.push(immutable);
 
+  if (library && !items.length) {
+    const empty = element("article", "metric-card");
+    appendText(empty, "p", "eyebrow", "Ansicht");
+    appendText(empty, "strong", "", "Keine passenden Takes");
+    appendText(empty, "span", "", "Filter oder Ansicht ändern, um andere Aufnahmen zu sehen.");
+    cards.push(empty);
+  }
+
   for (const item of items) {
-    const card = element("article", "profile-card recording-take");
+    const trashed = item.library?.trashed === true;
+    const category = item.library?.category || "unsorted";
+    const card = element("article", `profile-card recording-take${trashed ? " is-trashed" : ""}`);
     const top = element("div", "card-topline");
     appendText(top, "span", "card-glyph", "●").setAttribute("aria-hidden", "true");
     appendText(
       top,
       "span",
-      `status-pill ${item.status === "completed" ? "ready" : item.recovery_required ? "laboratory" : ""}`,
-      recordingStatusLabel(item.status),
+      `status-pill ${!trashed && item.status === "completed" ? "ready" : item.recovery_required ? "laboratory" : ""}`,
+      trashed ? "Papierkorb" : recordingStatusLabel(item.status),
     );
     card.append(top);
     appendText(card, "h3", "", item.name || `Take ${shortRevision(item.session_id)}`);
     const meta = element("dl", "truth-list");
+    detailRow(meta, "Kategorie", recordingCategoryLabel(category));
     detailRow(meta, "Erstellt", formatDateTime(item.created_at));
+    if (trashed && item.library?.trashed_at) {
+      detailRow(meta, "Papierkorb seit", formatDateTime(item.library.trashed_at));
+    }
     detailRow(meta, "Session", shortRevision(item.session_id));
     detailRow(meta, "Plan", shortRevision(item.plan_sha256));
     detailRow(
@@ -2370,7 +2496,8 @@ function renderLibrary() {
       );
     }
     card.append(meta);
-    if (item.status === "completed" && typeof item.audio_url === "string") {
+
+    if (!trashed && item.status === "completed" && typeof item.audio_url === "string") {
       const audio = element("audio", "recording-player");
       audio.controls = true;
       audio.preload = "none";
@@ -2387,8 +2514,59 @@ function renderLibrary() {
         "Wiedergabe: Backend hasht den aktuell geöffneten finalen Take erneut; keine Browser-Mikrofonaufnahme.",
       );
     }
-    appendTakeExports(card, item);
-    if (item.recovery_required === true || item.cleanup_required === true) {
+    if (!trashed) appendTakeExports(card, item);
+
+    const terminal = item.status === "completed" || item.status === "failed-preserved";
+    if (terminal) {
+      const actions = element("div", "recording-library-actions");
+      const categoryLabel = element("label", "recording-library-category");
+      appendText(categoryLabel, "span", "", "Kategorie");
+      const categorySelect = element("select", "recording-category-select");
+      for (const [value, label] of Object.entries(RECORDING_LIBRARY_CATEGORIES)) {
+        const option = element("option", "", label);
+        option.value = value;
+        option.selected = value === category;
+        categorySelect.append(option);
+      }
+      categorySelect.disabled =
+        trashed || !recordingLibraryActionsAllowed() || state.recordingActionPending;
+      categorySelect.addEventListener("change", (event) =>
+        runRecordingAction({
+          operation: "categorize",
+          session_id: item.session_id,
+          category: event.target.value,
+        }),
+      );
+      categoryLabel.append(categorySelect);
+      actions.append(categoryLabel);
+
+      if (trashed) {
+        const restore = element("button", "secondary-button", "Wiederherstellen");
+        restore.type = "button";
+        restore.disabled =
+          !recordingLibraryActionsAllowed() || state.recordingActionPending;
+        restore.addEventListener("click", () =>
+          runRecordingAction({ operation: "restore", session_id: item.session_id }),
+        );
+        actions.append(restore);
+      } else {
+        const remove = element("button", "secondary-button danger-button", "Löschen");
+        remove.type = "button";
+        remove.disabled =
+          !recordingLibraryActionsAllowed() || state.recordingActionPending;
+        remove.addEventListener("click", () => {
+          const name = item.name || `Take ${shortRevision(item.session_id)}`;
+          if (!window.confirm(`${name} in den Papierkorb verschieben? Der Take kann wiederhergestellt werden.`)) {
+            return;
+          }
+          runRecordingAction({ operation: "trash", session_id: item.session_id });
+        });
+        actions.append(remove);
+      }
+      card.append(actions);
+    }
+
+    if (!trashed && (item.recovery_required === true || item.cleanup_required === true)) {
       const recover = element("button", "secondary-button", "Recovery");
       recover.type = "button";
       recover.disabled = !recordingActionsAllowed() || state.recordingActionPending;
@@ -3273,6 +3451,14 @@ function loadPreferences() {
       window.localStorage.getItem("audio-ui-reduce-motion") === "true";
     const autoRefresh =
       window.localStorage.getItem("audio-ui-auto-refresh") !== "false";
+    const libraryView = window.localStorage.getItem("audio-ui-library-view");
+    const libraryCategory = window.localStorage.getItem("audio-ui-library-category");
+    const librarySort = window.localStorage.getItem("audio-ui-library-sort");
+    if (LIBRARY_VIEWS.has(libraryView)) state.libraryView = libraryView;
+    if (libraryCategory === "all" || Object.hasOwn(RECORDING_LIBRARY_CATEGORIES, libraryCategory)) {
+      state.libraryCategory = libraryCategory;
+    }
+    if (LIBRARY_SORTS.has(librarySort)) state.librarySort = librarySort;
     byId("motion-toggle").checked = reduceMotion;
     byId("auto-refresh-toggle").checked = autoRefresh;
     document.documentElement.classList.toggle("reduced-motion", reduceMotion);
@@ -3364,6 +3550,25 @@ function wireEvents() {
   });
   byId("refresh-button").addEventListener("click", () => refreshSnapshot(true));
   byId("diagnostic-refresh").addEventListener("click", () => refreshSnapshot(true));
+  byId("library-view").addEventListener("change", (event) => {
+    if (!LIBRARY_VIEWS.has(event.target.value)) return;
+    state.libraryView = event.target.value;
+    savePreference("audio-ui-library-view", state.libraryView);
+    renderLibrary();
+  });
+  byId("library-category-filter").addEventListener("change", (event) => {
+    const next = event.target.value;
+    if (next !== "all" && !Object.hasOwn(RECORDING_LIBRARY_CATEGORIES, next)) return;
+    state.libraryCategory = next;
+    savePreference("audio-ui-library-category", state.libraryCategory);
+    renderLibrary();
+  });
+  byId("library-sort").addEventListener("change", (event) => {
+    if (!LIBRARY_SORTS.has(event.target.value)) return;
+    state.librarySort = event.target.value;
+    savePreference("audio-ui-library-sort", state.librarySort);
+    renderLibrary();
+  });
   byId("replay-scenario").addEventListener("change", (event) => {
     stopReplay();
     state.replayScenarioId = event.target.value;

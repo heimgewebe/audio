@@ -195,7 +195,10 @@
             "recording:plan",
             "recording:start",
             "recording:stop",
-            "recording:recover"
+            "recording:recover",
+            "recording:categorize",
+            "recording:trash",
+            "recording:restore"
           ]
         },
         "effect_exclusions": {
@@ -302,7 +305,10 @@
                 "plan",
                 "start",
                 "stop",
-                "recover"
+                "recover",
+                "categorize",
+                "trash",
+                "restore"
               ]
             },
             "recording_modes": {

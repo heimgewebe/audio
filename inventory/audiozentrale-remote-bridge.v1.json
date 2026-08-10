@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "cca82499bd1b1177c535ed90e6c3faf2c0acd87c892fa0c68881082a7e497b35"
+    "sha256": "4158715fbf2c2fe1c6112e34f4ac99db0930a438ef83ad81aee1ef45a2becba8"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -90,7 +90,10 @@
       "recording:plan",
       "recording:start",
       "recording:stop",
-      "recording:recover"
+      "recording:recover",
+      "recording:categorize",
+      "recording:trash",
+      "recording:restore"
     ],
     "effect_exclusions": [
       "profiles",
@@ -130,7 +133,10 @@
         "plan",
         "start",
         "stop",
-        "recover"
+        "recover",
+        "categorize",
+        "trash",
+        "restore"
       ],
       "recording_modes": [
         "voice",

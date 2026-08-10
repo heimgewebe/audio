@@ -102,7 +102,8 @@ class ContractTests(unittest.TestCase):
             any("identity-bound short-lived bridge session" in item for item in remote["requires"])
         )
         self.assertIn("Buckelwal start/mode/stop", remote["boundary"])
-        self.assertIn("recorder plan/start/stop/recover channels", remote["boundary"])
+        self.assertIn("recorder plan/start/stop/recover", remote["boundary"])
+        self.assertIn("recording-library categorize/trash/restore", remote["boundary"])
         self.assertIn("profiles, routing, devices and system effects remain remote-denied", remote["boundary"])
 
     def test_contract_records_loopback_is_not_a_remote_transport(self):
@@ -352,12 +353,15 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         post = self.app.split("async function postRecordingAction(payload) {", 1)[1].split(
             "\nasync function runRecordingAction", 1
         )[0]
-        self.assertIn("if (!recordingActionsAllowed())", post)
+        self.assertIn("RECORDING_LIBRARY_ACTIONS.has(payload?.operation)", post)
+        self.assertIn("recordingLibraryActionsAllowed()", post)
+        self.assertIn("recordingActionsAllowed()", post)
+        self.assertIn("if (!allowed)", post)
         self.assertIn('return fetchJson("/api/v1/actions/recording"', post)
         self.assertIn('return fetchJson("/bridge/v1/actions/recording"', post)
         self.assertIn('"X-Audio-Bridge-Session"', post)
         self.assertLess(
-            post.index("if (!recordingActionsAllowed())"),
+            post.index("if (!allowed)"),
             post.index('return fetchJson("/api/v1/actions/recording"'),
         )
 

@@ -166,6 +166,10 @@ RECORDING_MODES = {
 RECORDING_SESSION_TYPES = frozenset(
     mode["session_type"] for mode in RECORDING_MODES.values()
 )
+RECORDING_LIBRARY_CATEGORIES = frozenset(
+    {"unsorted", "song", "practice", "idea", "test", "finished"}
+)
+RECORDING_LIBRARY_OPERATIONS = frozenset({"categorize", "trash", "restore"})
 ONSITE_WARNING_CODES = frozenset({"voice-source-not-motu"})
 PROFILE_AREAS = {
     "desktop-mixed": "listening",
@@ -675,15 +679,73 @@ def validate_recording_product_probe(report: dict[str, Any]) -> None:
     _reject_recording_private_paths(report)
 
 
+def _valid_recording_library_timestamp(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, str) or not value or len(value) > 80:
+        return False
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return False
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def validate_recording_library_metadata(value: Any, session_id: str) -> None:
+    required = {
+        "schema_version",
+        "kind",
+        "session_id",
+        "category",
+        "trashed",
+        "updated_at",
+        "trashed_at",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != required
+        or value.get("schema_version") != 1
+        or value.get("kind") != "audio_recording_library_metadata"
+        or value.get("session_id") != session_id
+        or value.get("category") not in RECORDING_LIBRARY_CATEGORIES
+        or not isinstance(value.get("trashed"), bool)
+        or not _valid_recording_library_timestamp(value.get("updated_at"))
+        or not _valid_recording_library_timestamp(value.get("trashed_at"))
+        or (value["trashed"] and value.get("trashed_at") is None)
+        or (not value["trashed"] and value.get("trashed_at") is not None)
+    ):
+        raise ControlError("Recorderbibliothek enthält ungültige Organisationsmetadaten.")
+
+
+def validate_recording_library_action(
+    report: dict[str, Any], operation: str, session_id: str
+) -> None:
+    if (
+        report.get("schema_version") != 1
+        or report.get("kind") != "audio_recording_library_action_result"
+        or report.get("operation") != operation
+        or report.get("session_id") != session_id
+        or not isinstance(report.get("changed"), bool)
+    ):
+        raise ControlError("Bibliotheksaktion lieferte keinen gebundenen Ergebnisbeleg.")
+    validate_recording_library_metadata(report.get("library"), session_id)
+    _reject_recording_private_paths(report)
+
+
 def validate_recording_library(report: dict[str, Any]) -> None:
     if (
         report.get("schema_version") != 1
         or report.get("kind") != "audio_recording_product_library"
         or report.get("read_only") is not True
         or not isinstance(report.get("items"), list)
-        or isinstance(report.get("count"), bool)
-        or not isinstance(report.get("count"), int)
+        or any(
+            isinstance(report.get(name), bool) or not isinstance(report.get(name), int)
+            for name in ("count", "active_count", "trashed_count")
+        )
         or report.get("count") != len(report["items"])
+        or report.get("active_count") + report.get("trashed_count") != report.get("count")
     ):
         raise ControlError("Recorderbibliothek lieferte einen fremden Vertrag.")
     for item in report["items"]:
@@ -694,6 +756,7 @@ def validate_recording_library(report: dict[str, Any]) -> None:
             item.get("plan_sha256")
         ):
             raise ControlError("Recorderbibliothek enthält einen ungebundenen Take.")
+        validate_recording_library_metadata(item.get("library"), item["session_id"])
     _reject_recording_private_paths(report)
 
 
@@ -1552,7 +1615,7 @@ class AudioControl:
         except ControlError as error:
             return "unavailable", {}, str(error)
 
-    def recording_library(self, *, limit: int = 24) -> dict[str, Any]:
+    def recording_library(self, *, limit: int = 64) -> dict[str, Any]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 64:
             raise ControlError("Bibliothekslimit ist ungültig.")
         result = self.runner.run(
@@ -1575,7 +1638,10 @@ class AudioControl:
         validate_recording_library(report)
         projected = json.loads(json.dumps(report))
         for item in projected["items"]:
-            if item.get("status") == "completed":
+            if (
+                item.get("status") == "completed"
+                and item.get("library", {}).get("trashed") is not True
+            ):
                 item["audio_url"] = (
                     f"/api/{API_VERSION}/recordings/{item['session_id']}/audio"
                 )
@@ -1668,12 +1734,112 @@ class AudioControl:
         validate_recording_midi_binding(report, safe_id)
         return report
 
+    def _perform_recording_library_action(self, payload: dict[str, Any]) -> dict[str, Any]:
+        operation = str(payload.get("operation", ""))
+        session_id = _validate_recording_session_id(payload.get("session_id"))
+        expected_fields = (
+            {"operation", "session_id", "category"}
+            if operation == "categorize"
+            else {"operation", "session_id"}
+        )
+        if set(payload) != expected_fields:
+            raise ControlError("Bibliotheksaktion enthält unbekannte oder fehlende Felder.")
+        category: str | None = None
+        if operation == "categorize":
+            category = payload.get("category")
+            if category not in RECORDING_LIBRARY_CATEGORIES:
+                raise ControlError("Unbekannte Aufnahmekategorie.")
+        command = [
+            sys.executable,
+            str(RECORDING_PRODUCT_SCRIPT),
+            operation,
+            "--state-root",
+            str(RECORDING_STATE_ROOT),
+            "--session-id",
+            session_id,
+        ]
+        if category is not None:
+            command.extend(["--category", category])
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere Audioaktion läuft bereits.")
+        try:
+            if not self._snapshot_lock.acquire(blocking=False):
+                raise ActionBusy(
+                    "Eine Zustandsabfrage verhindert den sicheren Bibliotheks-Readback."
+                )
+            try:
+                self.invalidate()
+                try:
+                    result = self.runner.run(command, timeout=15)
+                    report = parse_json_output(result, label="Recorderbibliotheksaktion")
+                    if result.returncode != 0:
+                        raise ControlError(
+                            safe_error_message(report, "Bibliotheksaktion wurde blockiert.")
+                        )
+                    validate_recording_library_action(report, operation, session_id)
+                    snapshot = self._readback_after_mutation()
+                    targeted_result = self.runner.run(
+                        [
+                            sys.executable,
+                            str(RECORDING_PRODUCT_SCRIPT),
+                            "probe",
+                            "--state-root",
+                            str(RECORDING_STATE_ROOT),
+                            "--session-id",
+                            session_id,
+                        ],
+                        timeout=15,
+                    )
+                    targeted_report = parse_json_output(
+                        targeted_result, label="Recorderbibliotheks-Readback"
+                    )
+                    if targeted_result.returncode != 0:
+                        raise ControlError(
+                            safe_error_message(
+                                targeted_report,
+                                "Bibliotheksaktion konnte nicht gezielt zurückgelesen werden.",
+                            )
+                        )
+                    validate_recording_product_probe(targeted_report)
+                except Exception:
+                    try:
+                        self._readback_after_mutation()
+                    except Exception:
+                        pass
+                    raise
+                current = targeted_report.get("session")
+                if (
+                    not isinstance(current, dict)
+                    or current.get("session_id") != session_id
+                    or current.get("library") != report["library"]
+                ):
+                    raise ControlError(
+                        "Bibliotheksaktion wurde nicht durch aktuellen Bibliothekszustand bestätigt."
+                    )
+                return {
+                    "schema_version": 1,
+                    "kind": "audio_control_recording_action_result",
+                    "operation": operation,
+                    "session_id": session_id,
+                    "changed": report["changed"],
+                    "library": report["library"],
+                    "snapshot": snapshot,
+                }
+            finally:
+                self._snapshot_lock.release()
+        finally:
+            self._action_lock.release()
+
     def perform_recording_action(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ControlError("Recorderaktion muss ein JSON-Objekt sein.")
         operation = payload.get("operation")
-        if operation not in {"plan", "start", "stop", "recover"}:
+        if operation not in (
+            {"plan", "start", "stop", "recover"} | RECORDING_LIBRARY_OPERATIONS
+        ):
             raise ControlError("Unbekannte Recorderaktion.")
+        if operation in RECORDING_LIBRARY_OPERATIONS:
+            return self._perform_recording_library_action(payload)
         if operation == "plan":
             if set(payload) != {"operation", "mode", "name", "maximum_seconds"}:
                 raise ControlError("Recorderplan enthält unbekannte oder fehlende Felder.")
@@ -2001,7 +2167,15 @@ class AudioControl:
                 "modes": recording_modes,
                 "session": recording_probe.get("session"),
                 "active_session_id": recording_probe.get("active_session_id"),
-                "actions": ["plan", "start", "stop", "recover"],
+                "actions": [
+                    "plan",
+                    "start",
+                    "stop",
+                    "recover",
+                    "categorize",
+                    "trash",
+                    "restore",
+                ],
             },
             "capabilities": {
                 "refresh_state": True,

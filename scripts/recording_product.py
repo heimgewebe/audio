@@ -9,6 +9,7 @@ performs full artifact verification only when media playback is requested.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -23,6 +24,9 @@ RECORDING_SESSION_PATH = ROOT / "scripts" / "recording_session.py"
 SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
 MAX_LIBRARY_ITEMS = 64
 MAX_SCAN_ITEMS = 512
+LIBRARY_CATEGORIES = frozenset({"unsorted", "song", "practice", "idea", "test", "finished"})
+LIBRARY_OPERATIONS = frozenset({"categorize", "trash", "restore"})
+LIBRARY_METADATA_KIND = "audio_recording_library_metadata"
 
 
 def _load_recording_session() -> Any:
@@ -189,6 +193,145 @@ def _result_projection(result: dict[str, Any], spec: dict[str, Any]) -> dict[str
     return projection
 
 
+def _library_metadata_path(state_root: pathlib.Path, session_id: str) -> pathlib.Path:
+    if not SESSION_ID_RE.fullmatch(session_id):
+        raise RecordingProductError("Ungültige Recorder-Sitzungs-ID.")
+    return REC.lexical_absolute(state_root) / f"{session_id}.library.json"
+
+
+def _default_library_metadata(session_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "kind": LIBRARY_METADATA_KIND,
+        "session_id": session_id,
+        "category": "unsorted",
+        "trashed": False,
+        "updated_at": None,
+        "trashed_at": None,
+    }
+
+
+def _validate_library_metadata(value: Any, session_id: str) -> dict[str, Any]:
+    expected = {
+        "schema_version",
+        "kind",
+        "session_id",
+        "category",
+        "trashed",
+        "updated_at",
+        "trashed_at",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected
+        or value.get("schema_version") != 1
+        or value.get("kind") != LIBRARY_METADATA_KIND
+        or value.get("session_id") != session_id
+        or value.get("category") not in LIBRARY_CATEGORIES
+        or not isinstance(value.get("trashed"), bool)
+    ):
+        raise RecordingProductError("Bibliotheksmetadaten sind ungültig.")
+    updated_at = value.get("updated_at")
+    trashed_at = value.get("trashed_at")
+    if updated_at is not None and not REC._valid_timestamp(updated_at):
+        raise RecordingProductError("Bibliotheksmetadaten enthalten einen ungültigen Zeitstempel.")
+    if value["trashed"]:
+        if trashed_at is None or not REC._valid_timestamp(trashed_at):
+            raise RecordingProductError("Papierkorbmetadaten enthalten keinen gültigen Zeitstempel.")
+    elif trashed_at is not None:
+        raise RecordingProductError("Aktiver Take darf keinen Papierkorbzeitpunkt tragen.")
+    return dict(value)
+
+
+def _read_library_metadata(state_root: pathlib.Path, session_id: str) -> dict[str, Any]:
+    path = _library_metadata_path(state_root, session_id)
+    if not path.exists() and not path.is_symlink():
+        return _default_library_metadata(session_id)
+    try:
+        value = REC._safe_json_read(path, require_private=True)
+    except REC.RecordingError as exc:
+        raise RecordingProductError("Bibliotheksmetadaten sind nicht sicher lesbar.") from exc
+    return _validate_library_metadata(value, session_id)
+
+
+def mutate_library(
+    session_id: str,
+    operation: str,
+    *,
+    state_root: pathlib.Path = DEFAULT_STATE_ROOT,
+    category: str | None = None,
+) -> dict[str, Any]:
+    if not SESSION_ID_RE.fullmatch(session_id):
+        raise RecordingProductError("Ungültige Recorder-Sitzungs-ID.")
+    if operation not in LIBRARY_OPERATIONS:
+        raise RecordingProductError("Unbekannte Bibliotheksaktion.")
+    if operation == "categorize":
+        if category not in LIBRARY_CATEGORIES:
+            raise RecordingProductError("Unbekannte Aufnahmekategorie.")
+    elif category is not None:
+        raise RecordingProductError("Diese Bibliotheksaktion akzeptiert keine Kategorie.")
+    root = _private_state_root(state_root)
+    if root is None:
+        raise RecordingProductError("Recorderzustand ist noch nicht angelegt.")
+    with REC.state_lock(root):
+        try:
+            paths, spec, state = REC._read_session(root, session_id)
+        except REC.RecordingError as exc:
+            raise RecordingProductError("Recorder-Sitzung ist nicht gebunden lesbar.") from exc
+        active_path = root / "active.json"
+        if active_path.exists() or active_path.is_symlink():
+            try:
+                if REC._read_active(root) == session_id:
+                    raise RecordingProductError(
+                        "Aktive oder noch nicht bereinigte Aufnahme kann nicht organisiert werden."
+                    )
+            except REC.RecordingError as exc:
+                raise RecordingProductError("Aktiver Recorderzeiger ist nicht sicher lesbar.") from exc
+        process = state.get("process")
+        if isinstance(process, dict) and REC._identity_matches(process):
+            raise RecordingProductError("Laufende Aufnahme kann nicht organisiert werden.")
+        if not paths["result"].exists() and not paths["result"].is_symlink():
+            raise RecordingProductError("Unfertige Aufnahme kann nicht organisiert werden.")
+        try:
+            result = REC._safe_json_read(paths["result"], require_private=True)
+            projected = _result_projection(result, spec)
+        except (REC.RecordingError, RecordingProductError) as exc:
+            raise RecordingProductError("Take ist nicht terminal und sicher gebunden.") from exc
+        if projected.get("status") not in {"completed", "failed-preserved"}:
+            raise RecordingProductError("Nur terminale Takes können organisiert werden.")
+        current = _read_library_metadata(root, session_id)
+        updated = dict(current)
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        if operation == "categorize":
+            updated["category"] = category
+        elif operation == "trash":
+            if not updated["trashed"]:
+                updated["trashed"] = True
+                updated["trashed_at"] = now
+        else:
+            if updated["trashed"]:
+                updated["trashed"] = False
+                updated["trashed_at"] = None
+        changed = updated != current
+        if changed:
+            updated["updated_at"] = now
+            target = _library_metadata_path(root, session_id)
+            REC._atomic_private_json(target, updated, create_only=not target.exists())
+            observed = _read_library_metadata(root, session_id)
+            if observed != updated:
+                raise RecordingProductError("Bibliotheksmutation wurde nicht exakt zurückgelesen.")
+        else:
+            observed = current
+        return {
+            "schema_version": 1,
+            "kind": "audio_recording_library_action_result",
+            "operation": operation,
+            "session_id": session_id,
+            "changed": changed,
+            "library": observed,
+        }
+
+
 def _session_projection(
     state_root: pathlib.Path,
     session_id: str,
@@ -298,6 +441,7 @@ def _session_projection(
         "laboratory": {
             "voice_level_measurement": "voice-level-measurement" in resolved,
         },
+        "library": _read_library_metadata(state_root, session_id),
         "result": projected_result,
     }
 
@@ -346,7 +490,7 @@ def probe(
 
 
 def library(
-    *, state_root: pathlib.Path = DEFAULT_STATE_ROOT, limit: int = 24
+    *, state_root: pathlib.Path = DEFAULT_STATE_ROOT, limit: int = MAX_LIBRARY_ITEMS
 ) -> dict[str, Any]:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIBRARY_ITEMS:
         raise RecordingProductError("Bibliothekslimit ist ungültig.")
@@ -357,6 +501,8 @@ def library(
             "kind": "audio_recording_product_library",
             "items": [],
             "count": 0,
+            "active_count": 0,
+            "trashed_count": 0,
             "skipped_invalid": 0,
             "truncated": False,
             "read_only": True,
@@ -404,11 +550,14 @@ def library(
             continue
         more_eligible = True
         break
+    trashed_count = sum(1 for item in items if item["library"]["trashed"] is True)
     return {
         "schema_version": 1,
         "kind": "audio_recording_product_library",
         "items": items,
         "count": len(items),
+        "active_count": len(items) - trashed_count,
+        "trashed_count": trashed_count,
         "skipped_invalid": skipped,
         "truncated": more_eligible,
         "read_only": True,
@@ -423,6 +572,8 @@ def verified_media(
     root = _private_state_root(state_root)
     if root is None:
         raise RecordingProductError("Recorderzustand ist noch nicht angelegt.")
+    if _read_library_metadata(root, session_id)["trashed"] is True:
+        raise RecordingProductError("Take liegt im Papierkorb und ist nicht abspielbar.")
     try:
         status = REC.session_status(state_root=root, session_id=session_id)
     except REC.RecordingError as exc:
@@ -484,6 +635,8 @@ def verified_midi(
     root = _private_state_root(state_root)
     if root is None:
         raise RecordingProductError("Recorderzustand ist noch nicht angelegt.")
+    if _read_library_metadata(root, session_id)["trashed"] is True:
+        raise RecordingProductError("Take liegt im Papierkorb und ist nicht exportierbar.")
     try:
         status = REC.session_status(state_root=root, session_id=session_id)
     except REC.RecordingError as exc:
@@ -521,13 +674,23 @@ def verified_midi(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("probe", "library", "media", "midi"):
+    for name in (
+        "probe",
+        "library",
+        "media",
+        "midi",
+        "categorize",
+        "trash",
+        "restore",
+    ):
         item = sub.add_parser(name)
         item.add_argument("--state-root", type=pathlib.Path, default=DEFAULT_STATE_ROOT)
-        if name in {"probe", "media", "midi"}:
+        if name in {"probe", "media", "midi", "categorize", "trash", "restore"}:
             item.add_argument("--session-id")
         if name == "library":
-            item.add_argument("--limit", type=int, default=24)
+            item.add_argument("--limit", type=int, default=MAX_LIBRARY_ITEMS)
+        if name == "categorize":
+            item.add_argument("--category")
     return parser
 
 
@@ -542,10 +705,19 @@ def main(argv: list[str] | None = None) -> int:
             if not args.session_id:
                 raise RecordingProductError("Media-Readback benötigt eine Sitzungs-ID.")
             result = verified_media(args.session_id, state_root=args.state_root)
-        else:
+        elif args.command == "midi":
             if not args.session_id:
                 raise RecordingProductError("MIDI-Readback benötigt eine Sitzungs-ID.")
             result = verified_midi(args.session_id, state_root=args.state_root)
+        else:
+            if not args.session_id:
+                raise RecordingProductError("Bibliotheksaktion benötigt eine Sitzungs-ID.")
+            result = mutate_library(
+                args.session_id,
+                args.command,
+                state_root=args.state_root,
+                category=args.category if args.command == "categorize" else None,
+            )
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except (OSError, RecordingProductError, REC.RecordingError, ValueError) as exc:
