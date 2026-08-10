@@ -332,7 +332,7 @@ class AudioControlRecordingTests(unittest.TestCase):
         )
         self.assertEqual(result["mode"], "piano-vocal")
         self.assertEqual(result["plan"]["session_type"], "piano-vocal-performance")
-        self.assertEqual(result["plan"]["performance"]["product"], "Gesang WAV + Roland MIDI")
+        self.assertEqual(result["plan"]["performance"]["product"], "Stereo-Mix WAV + Roland MIDI")
         plan_call = next(
             call for call, _timeout in runner.calls if call[2] == "plan"
         )
@@ -403,7 +403,7 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertIn('input?.mode === state.recordingDraft.mode', javascript)
         self.assertIn('plan.session_type ===', javascript)
         self.assertIn('mode: state.recordingDraft.mode', javascript)
-        self.assertIn('"Gesang WAV + Roland MIDI"', javascript)
+        self.assertIn('"Stereo-Mix WAV: Gesang + echter Roland-Klang · MIDI zusätzlich"', javascript)
         self.assertIn('state.remoteBridgeProjection !== true', javascript)
 
 

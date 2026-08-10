@@ -125,6 +125,9 @@ RECORDING_STATE_ROOT = (
     / "recordings-v1"
 )
 RECORDING_SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
+RECORDING_MEDIA_PATH_RE = re.compile(
+    rf"^/api/{API_VERSION}/recordings/([0-9a-f]{{24}})/(audio|midi)$"
+)
 MAX_DEPLOY_RECEIPT_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 4096
 MAX_REQUEST_LINE_BYTES = 2048
@@ -548,6 +551,9 @@ def read_recording_contract(mode: str) -> dict[str, Any]:
         sessions.get("piano-vocal-performance"), label="Recorderprofil Performance"
     )
     source = require_mapping(performance.get("source"), label="Performancequelle")
+    roland_audio = require_mapping(
+        source.get("roland_audio"), label="Performance-Roland-Audio"
+    )
     midi = require_mapping(source.get("midi"), label="Performance-MIDI")
     if (
         performance.get("profile") != "voice-recording"
@@ -555,7 +561,13 @@ def read_recording_contract(mode: str) -> dict[str, Any]:
         != require_mapping(
             sessions.get("voice-recording"), label="Recorderprofil Stimme"
         ).get("capture")
-        or source.get("kind") != "motu-voice-with-roland-midi"
+        or source.get("kind") != "motu-voice-with-roland-audio-and-midi"
+        or roland_audio.get("kind") != "usb-audio"
+        or roland_audio.get("vendor_id") != "0582"
+        or roland_audio.get("product_id") != "01b1"
+        or roland_audio.get("required_sample_rate_hz") != 44_100
+        or roland_audio.get("required_channels") != 2
+        or sorted(roland_audio.get("required_sample_formats", [])) != ["s24le", "s32le"]
         or midi.get("kind") != "alsa-sequencer-midi"
         or midi.get("usb_vendor_id") != "0582"
         or midi.get("usb_product_id") != "01b1"
@@ -573,15 +585,22 @@ def read_recording_contract(mode: str) -> dict[str, Any]:
         **voice,
         "session_type": mode_spec["session_type"],
         "source": {
-            "kind": "motu-voice-with-roland-midi",
+            "kind": "motu-voice-with-roland-audio-and-midi",
             "audio": voice["source"],
+            "roland_audio": {
+                "instrument": "Roland FP-30X",
+                "sample_rate_hz": roland_audio["required_sample_rate_hz"],
+                "sample_formats": roland_audio["required_sample_formats"],
+                "channels": roland_audio["required_channels"],
+                "capture_rate_hz": 48_000,
+            },
             "midi": {
                 "instrument": "Roland FP-30X",
                 "format": "Standard MIDI File",
                 "timing": midi["timing"],
             },
         },
-        "product": "Gesang WAV + Roland MIDI",
+        "product": "Stereo-Mix WAV + Roland MIDI",
     }
 
 
@@ -757,10 +776,13 @@ def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> di
             identity.get("performance"), label="Recorderplan performance"
         )
         midi_identity = (source_identity or {}).get("midi")
+        roland_audio_identity = (source_identity or {}).get("roland_audio")
         projected["performance"] = {
-            "product": "Gesang WAV + Roland MIDI",
+            "product": "Stereo-Mix WAV + Roland MIDI",
             "midi_bound": isinstance(midi_identity, dict),
             "midi_identity_sha256": (midi_identity or {}).get("fingerprint"),
+            "roland_audio_bound": isinstance(roland_audio_identity, dict),
+            "roland_audio_identity_sha256": (roland_audio_identity or {}).get("fingerprint"),
             "midi_timing": performance.get("timing"),
         }
     return projected
@@ -784,6 +806,26 @@ def validate_recording_media_binding(report: dict[str, Any], session_id: str) ->
         or not isinstance(report.get("inode"), int)
     ):
         raise ControlError("Take ist nicht als aktuelles unveränderliches Medium gebunden.")
+
+
+def validate_recording_midi_binding(report: dict[str, Any], session_id: str) -> None:
+    if (
+        report.get("schema_version") != 1
+        or report.get("kind") != "audio_recording_product_midi_binding"
+        or report.get("session_id") != session_id
+        or report.get("verified_current") is not True
+        or not isinstance(report.get("path"), str)
+        or not _valid_sha256(report.get("sha256"))
+        or isinstance(report.get("bytes"), bool)
+        or not isinstance(report.get("bytes"), int)
+        or report.get("bytes") < 1
+        or report.get("mode") != "0600"
+        or isinstance(report.get("device"), bool)
+        or not isinstance(report.get("device"), int)
+        or isinstance(report.get("inode"), bool)
+        or not isinstance(report.get("inode"), int)
+    ):
+        raise ControlError("Roland-MIDI ist nicht als aktuelles unveränderliches Medium gebunden.")
 
 
 def is_loopback_host(value: str) -> bool:
@@ -1537,6 +1579,10 @@ class AudioControl:
                 item["audio_url"] = (
                     f"/api/{API_VERSION}/recordings/{item['session_id']}/audio"
                 )
+                if item.get("session_type") == "piano-vocal-performance":
+                    item["midi_url"] = (
+                        f"/api/{API_VERSION}/recordings/{item['session_id']}/midi"
+                    )
         return projected
 
     def recording_plan(
@@ -1598,6 +1644,28 @@ class AudioControl:
                 safe_error_message(report, "Take ist nicht sicher abspielbar.")
             )
         validate_recording_media_binding(report, safe_id)
+        return report
+
+    def verified_recording_midi(self, session_id: Any) -> dict[str, Any]:
+        safe_id = _validate_recording_session_id(session_id)
+        result = self.runner.run(
+            [
+                sys.executable,
+                str(RECORDING_PRODUCT_SCRIPT),
+                "midi",
+                "--state-root",
+                str(RECORDING_STATE_ROOT),
+                "--session-id",
+                safe_id,
+            ],
+            timeout=30,
+        )
+        report = parse_json_output(result, label="Roland-MIDI-Readback")
+        if result.returncode != 0:
+            raise ControlError(
+                safe_error_message(report, "Roland-MIDI ist nicht sicher exportierbar.")
+            )
+        validate_recording_midi_binding(report, safe_id)
         return report
 
     def perform_recording_action(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2487,9 +2555,18 @@ class AudioControlHandler(BaseHTTPRequestHandler):
         if not head_only:
             self.wfile.write(body)
 
-    def _serve_recording_audio(self, session_id: str, *, head_only: bool) -> None:
+    def _serve_recording_artifact(
+        self, session_id: str, *, artifact: str, head_only: bool
+    ) -> None:
+        if artifact not in {"audio", "midi"}:
+            raise ControlError("Unbekanntes Take-Artefakt.")
+        content_type = "audio/wav" if artifact == "audio" else "audio/midi"
         try:
-            binding = self.server.controller.verified_recording_media(session_id)
+            binding = (
+                self.server.controller.verified_recording_media(session_id)
+                if artifact == "audio"
+                else self.server.controller.verified_recording_midi(session_id)
+            )
         except ControlError as error:
             self._send_error_json(
                 HTTPStatus.CONFLICT,
@@ -2530,7 +2607,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             if self.headers.get("If-None-Match") == etag:
                 self._send_headers(
                     HTTPStatus.NOT_MODIFIED,
-                    content_type="audio/wav",
+                    content_type=content_type,
                     content_length=0,
                     cache_control="no-cache",
                     etag=etag,
@@ -2551,7 +2628,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     self._send_headers(
                         HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
-                        content_type="audio/wav",
+                        content_type=content_type,
                         content_length=0,
                         cache_control="no-cache",
                         etag=etag,
@@ -2564,7 +2641,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             response_started = True
             self._send_headers(
                 status,
-                content_type="audio/wav",
+                content_type=content_type,
                 content_length=length,
                 cache_control="no-cache",
                 etag=etag,
@@ -2731,9 +2808,8 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(HTTPStatus.OK, library, head_only=head_only)
             return
-        recording_prefix = f"/api/{API_VERSION}/recordings/"
-        recording_suffix = "/audio"
-        if parsed.path.startswith(recording_prefix) and parsed.path.endswith(recording_suffix):
+        recording_media = RECORDING_MEDIA_PATH_RE.fullmatch(parsed.path)
+        if recording_media is not None:
             if parsed.query:
                 self._send_error_json(
                     HTTPStatus.BAD_REQUEST,
@@ -2742,9 +2818,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                     head_only=head_only,
                 )
                 return
-            session_id = parsed.path[
-                len(recording_prefix) : -len(recording_suffix)
-            ]
+            session_id, recording_artifact = recording_media.groups()
             try:
                 _validate_recording_session_id(session_id)
             except ControlError:
@@ -2755,7 +2829,9 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                     head_only=head_only,
                 )
                 return
-            self._serve_recording_audio(session_id, head_only=head_only)
+            self._serve_recording_artifact(
+                session_id, artifact=recording_artifact, head_only=head_only
+            )
             return
         if parsed.path == f"/api/{API_VERSION}/snapshot":
             if parsed.query not in {"", "refresh=1"}:

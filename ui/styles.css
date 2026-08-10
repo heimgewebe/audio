@@ -2607,6 +2607,17 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   margin-top: 10px;
 }
 
+.recording-take-exports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.recording-take-exports a {
+  text-decoration: none;
+}
+
 .recording-recent {
   margin-top: 12px;
   padding-top: 12px;

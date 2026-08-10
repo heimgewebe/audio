@@ -289,6 +289,57 @@ class RecordingProductTests(unittest.TestCase):
         )
         self.assertNotIn("artifacts", projection)
 
+    def test_modern_performance_projects_mix_wav_not_a_voice_stem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            session_id, _paths, spec, _state = self.synthetic_session(root)
+            spec["plan_identity"]["session_type"] = "piano-vocal-performance"
+            spec["plan_identity"]["performance"] = {
+                "ffmpeg": {}, "audio_capture": {}, "mix": {}
+            }
+            spec["paths"].update({"manifest_final": str(root / "take.take.json")})
+            mix = {
+                "path": spec["paths"]["final"],
+                "sha256": "d" * 64,
+                "bytes": 4096,
+                "mode": "0600",
+                "device": 1,
+                "inode": 2,
+                "channels": 2,
+                "bit_depth_container": 32,
+                "sample_rate_hz": 48_000,
+                "frames": 48_000,
+                "duration_seconds": 1.0,
+            }
+            result = {
+                "schema_version": 1,
+                "kind": "audio_recording_result",
+                "session_id": session_id,
+                "plan_sha256": spec["plan_sha256"],
+                "status": "completed",
+                "reason": "requested-stop",
+                "started_at": "2026-08-08T06:00:01+00:00",
+                "completed_at": "2026-08-08T06:00:05+00:00",
+                "artifacts": {
+                    "mix_wav": mix,
+                    "roland_midi_smf": {"sha256": "e" * 64, "bytes": 128},
+                    "take_manifest": {"sha256": "f" * 64, "bytes": 512},
+                },
+                "does_not_establish": ["sample-accurate-wav-midi-synchronization"],
+            }
+            with (
+                mock.patch.object(MODULE.REC, "_validate_binding_shape"),
+                mock.patch.object(MODULE.REC, "_validate_result"),
+                mock.patch.object(
+                    MODULE.REC,
+                    "_validate_performance_manifest",
+                    return_value={"midi_event_counts": {"note_on": 0, "note_off": 0}},
+                ),
+            ):
+                projection = MODULE._result_projection(result, spec)
+        self.assertIn("mix_wav", projection["artifacts"])
+        self.assertNotIn("vocal_wav", projection["artifacts"])
+
 
 if __name__ == "__main__":
     unittest.main()

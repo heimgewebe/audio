@@ -7,7 +7,7 @@
 | Sitzungstyp | Quelle | Voraussetzung | Zielformat |
 | --- | --- | --- | --- |
 | `voice-recording` | RØDE NT1-A über die seriell und busgebundene MOTU-M2-Quelle | physische RØDE-/MOTU-Fakten und `voice-level-measurement` | 48 kHz, Stereo, `s32le`, WAV |
-| `piano-vocal-performance` | dieselbe Gesangsquelle plus genau ein kernel-/USB-gebundener Roland-FP-30X-Sequencer-Port | Voice-Gates, eindeutige Roland-Quelle und gebundenes `arecordmidi` | Geschwister `name.wav`, `name.mid` und Commit-Beleg `name.take.json` |
+| `piano-vocal-performance` | RØDE/MOTU und echter Roland-FP-30X-USB-Audioeingang parallel, plus genau ein kernel-/USB-gebundener Roland-Sequencer-Port | Voice- und Resampling-Gates, eindeutige MOTU-/Roland-Quellen sowie gebundenes `arecordmidi` und `ffmpeg` | finaler Stereo-Mix `name.wav`, Roland-MIDI `name.mid` und Commit-Beleg `name.take.json` |
 | `roland-audio-recording` | eindeutige USB-Audioquelle des Roland FP-30X | gebundene Entscheidung `resampling-decision` | einmalige Umsetzung von 44,1 kHz auf 48 kHz, Stereo, `s32le`, WAV |
 | `production-mix-recording` | exakt ein PipeWire-Quellknoten namens `audio-production-mix` | der Knoten muss bereits eindeutig und vertragskonform vorhanden sein | 48 kHz, Stereo, `s32le`, WAV |
 
@@ -24,7 +24,7 @@ Der Ablauf trennt **prüfen**, **freigeben**, **aufnehmen**, **stoppen** und **w
 - Roland wird über USB-Vendor/Product, Serienkennung, Buspfad, PipeWire-Knoten, Format, Rate, Kanalzahl, Mute und Lautstärke gebunden.
 - Der Produktionspfad akzeptiert ausschließlich den eindeutigen Knoten `audio-production-mix`; er errät keine Monitorquelle und keinen wechselnden Upstream.
 - Recorderprozesse verwenden typspezifische Client- und Streamnamen.
-- Der Performance-Plan bindet `/usr/bin/arecordmidi`, den zur Planzeit tatsächlich aufgelösten Binary-Pfad und dessen auf dem aktuellen Host berechneten SHA-256 sowie die exakten Capture-Argumente `-p <client:port> -f 25 -t 40 <private-partial.mid>`. Vor dem Start wird diese Bindung erneut gelesen; jede Änderung schließt den Start.
+- Der Performance-Plan bindet `/usr/bin/arecordmidi` und `/usr/bin/ffmpeg`, jeweils mit tatsächlich aufgelöstem Binary-Pfad und Host-SHA-256. Vor dem Start wird jede Bindung erneut gelesen; jede Änderung schließt den Start.
 - Der gebundene `arecordmidi`-Vertrag verwendet `-f 25` als SMPTE-25-fps und `-t 40` als 40 Ticks pro Frame. Fehlen Binary oder exakter Vertrag auf einem Host, bleibt der Plan geschlossen; es gibt keinen stillen Rückfall auf Event-Textparsing.
 - Zieldateien werden niemals überschrieben.
 - Eine unvollständige Datei bleibt bei Fehlern als private `.partial.wav` erhalten und wird nicht stillschweigend als fertig veröffentlicht.
@@ -138,11 +138,11 @@ Zusätzlich reserviert der Vertrag 1 MiB für Header und Metadaten sowie standar
 
 Die Aufnahme entsteht zunächst als versteckte Teil-Datei im endgültigen Zielverzeichnis. Nur nach sauberem Prozessende und bestandener WAV-Prüfung wird sie per nicht überschreibendem Hardlink veröffentlicht.
 
-Beim Performance-Modus startet `arecordmidi` zuerst. Erst nachdem MIDI-Kind und private MID-Datei als laufend beobachtet wurden, startet `parecord`; Ready wird erst nach laufenden Kindern und begonnenem WAV geschrieben. Diese MIDI-Preroll verhindert verlorene frühe Tastenanschläge und wird über monotone Offsets dokumentiert. Beide Kinder laufen in eigenen, vom Worker gebundenen Prozessgruppen und erhalten unter Linux `PDEATHSIG=SIGKILL`. Der äußere Lifecycle signalisiert weiterhin ausschließlich die exakt gebundene Worker-PID; nur der Worker räumt seine Kinder auf.
+Beim Performance-Modus startet `arecordmidi` zuerst. Danach werden MOTU- und Roland-`parecord` ohne Monitoringgraph als zwei headless 48-kHz-Prozesse gestartet. Der monotone Abstand zwischen den beiden Spawn-Anforderungen darf höchstens 5 ms betragen; Überschreitung, Quellidentitätsdrift oder ungleiche Framezahlen schließen die Aufnahme fail-closed. Ready folgt erst nach beiden WAV-Stems und MIDI. Nach dem sauberen Stop erstellt das gebundene `ffmpeg` ohne Routing- oder Monitoringmutation deterministisch den 48-kHz-Stereo-Mix mit `amix`, `duration=shortest` und gleichgewichteter Eingangsnormalisierung (`normalize=1`) als statischer Headroom-Schutz. `ffmpeg` liefert dafür privates rohes `s32le`-PCM; der Recorder verpackt exakt diese erwartete Framezahl anschließend selbst in einen klassischen RIFF/PCM-WAV-Container, damit Validator und Browser keinen `WAVE_FORMAT_EXTENSIBLE`-Sonderpfad benötigen. Voice-/Roland-Stems und der Raw-Scratch bleiben temporär, privat und werden nach erfolgreichem Manifest-Commit entfernt. Die MIDI-Preroll, Spawn-Offets und der gemeinsame Ready-Zeitpunkt sind manifestiert; sie belegen keine sample-genaue WAV/MIDI-Synchronität.
 
 Nach Stop prüft ein begrenzter read-only Scanner den SMF-Header, die SMPTE-Division `25/40`, sämtliche Trackgrenzen, Running Status, Meta- und SysEx-Längen. Er zählt unter anderem Note-on/off, Velocity-Grenzen, CC, CC64 und Pitchbend. Ein strukturell gültiger stiller MIDI-Take ist ausdrücklich gültig.
 
-WAV und MID werden erst nach Validierung als nicht überschreibbare Geschwister verlinkt. Das finale `*.take.json` folgt zuletzt und bindet exakt deren SHA-256-, Größen-, Modus-, Device- und Inode-Belege. Nur dieses gültige finale Manifest ist die Commit-Wahrheit eines vollständigen Performance-Takes. Ein Fehler zwischen den Links lässt private Partials und eventuell bereits sichtbare, aber uncommitted Geschwister erhalten; Status, Library und Recovery melden daraus keinen vollständigen Take.
+Der finale Mix-WAV und MIDI werden erst nach Validierung als nicht überschreibbare Geschwister verlinkt. Das finale `*.take.json` folgt zuletzt und bindet exakt deren SHA-256-, Größen-, Modus-, Device- und Inode-Belege. Nur dieses gültige finale Manifest ist die Commit-Wahrheit eines vollständigen Performance-Takes. Ein Fehler zwischen den Links lässt private Partials und eventuell bereits sichtbare, aber uncommitted Geschwister erhalten; Status, Library und Recovery melden daraus keinen vollständigen Take. Abgeschlossene Legacy-Takes mit `vocal_wav` und MIDI bleiben lesbar; sie zeigen ausdrücklich, dass das Klavier dort MIDI-only ist.
 
 Bei einem Fehler gilt:
 

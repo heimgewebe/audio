@@ -1143,7 +1143,7 @@ function renderRecordingControls(card, recording) {
     "p",
     "recording-product-hint",
     state.recordingDraft.mode === "piano-vocal"
-      ? "Gesang WAV + Roland MIDI"
+      ? "Stereo-Mix WAV: Gesang + echter Roland-Klang · MIDI zusätzlich"
       : "Gesang WAV",
   );
   const selectedMode = (recording.modes || []).find(
@@ -1298,16 +1298,40 @@ async function loadRecordingLibrary({ render = true } = {}) {
 }
 
 function recordingTakeDuration(item) {
+  const mix = item.result?.artifacts?.mix_wav;
   const vocal = item.result?.artifacts?.vocal_wav;
   const artifact = item.result?.artifact;
-  const seconds = vocal?.duration_seconds ?? artifact?.duration_seconds;
+  const seconds = mix?.duration_seconds ?? vocal?.duration_seconds ?? artifact?.duration_seconds;
   return Number.isFinite(Number(seconds)) ? `${Number(seconds).toFixed(2)} s` : null;
 }
 
 function recordingTakeProduct(item) {
-  return item.session_type === "piano-vocal-performance"
-    ? "Klavier + Gesang · WAV + MIDI"
-    : "Gesang · WAV";
+  if (item.session_type !== "piano-vocal-performance") return "Gesang · WAV";
+  return item.result?.artifacts?.mix_wav
+    ? "Klavier + Gesang · Stereo-Mix WAV + MIDI"
+    : "Klavier: MIDI-only · Gesang WAV (Legacy-Take)";
+}
+
+function appendTakeExports(parent, item) {
+  if (item.status !== "completed") return;
+  const exports = element("div", "recording-take-exports");
+  if (typeof item.audio_url === "string") {
+    const wav = element("a", "secondary-button", "WAV sichern");
+    wav.href = item.audio_url;
+    wav.download = item.name || `take-${shortRevision(item.session_id)}.wav`;
+    wav.setAttribute("aria-label", `WAV von ${item.name || shortRevision(item.session_id)} sichern`);
+    exports.append(wav);
+  }
+  if (typeof item.midi_url === "string") {
+    const midi = element("a", "secondary-button", "MIDI sichern");
+    midi.href = item.midi_url;
+    midi.download = typeof item.name === "string" && item.name.endsWith(".wav")
+      ? `${item.name.slice(0, -4)}.mid`
+      : `take-${shortRevision(item.session_id)}.mid`;
+    midi.setAttribute("aria-label", `Roland-MIDI von ${item.name || shortRevision(item.session_id)} sichern`);
+    exports.append(midi);
+  }
+  if (exports.childElementCount) parent.append(exports);
 }
 
 function renderRecordingRecentTakes() {
@@ -1365,6 +1389,7 @@ function renderRecordingRecentTakes() {
         );
         card.append(audio);
       }
+      appendTakeExports(card, item);
       return card;
     }),
   );
@@ -2176,9 +2201,14 @@ function renderLibrary() {
     }
     if (item.result?.artifacts) {
       const artifacts = item.result.artifacts;
+      const mix = artifacts.mix_wav;
       const vocal = artifacts.vocal_wav;
-      detailRow(meta, "Produkt", "Gesang WAV + Roland MIDI");
-      if (vocal) detailRow(meta, "Dauer", `${Number(vocal.duration_seconds).toFixed(2)} s`);
+      detailRow(
+        meta,
+        "Produkt",
+        mix ? "Stereo-Mix WAV + Roland MIDI" : "Klavier: MIDI-only + Gesang WAV (Legacy)",
+      );
+      if (mix || vocal) detailRow(meta, "Dauer", `${Number((mix || vocal).duration_seconds).toFixed(2)} s`);
       detailRow(
         meta,
         "Geschwister",
@@ -2205,6 +2235,7 @@ function renderLibrary() {
         "Wiedergabe: Backend hasht den aktuell geöffneten finalen Take erneut; keine Browser-Mikrofonaufnahme.",
       );
     }
+    appendTakeExports(card, item);
     if (item.recovery_required === true || item.cleanup_required === true) {
       const recover = element("button", "secondary-button", "Recovery");
       recover.type = "button";

@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "ffa8d998a11ce8452dfa6ac74a2692b332f674b2b764e7835c7811f9611417fd"
+    "sha256": "cca82499bd1b1177c535ed90e6c3faf2c0acd87c892fa0c68881082a7e497b35"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -46,7 +46,7 @@
       "refresh=1"
     ],
     "profile_plan_pattern": "/api/v1/profiles/{profile_id}/plan",
-    "recording_audio_pattern": "/api/v1/recordings/{session_id}/audio",
+    "recording_media_pattern": "/api/v1/recordings/{session_id}/{audio|midi}",
     "request_header_forward": [
       "If-None-Match",
       "Range"

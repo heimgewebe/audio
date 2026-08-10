@@ -40,6 +40,8 @@ MIDI_CAPTURE_PATH = ROOT / "scripts" / "roland_midi_capture.py"
 WRAPPER_PATH = ROOT / "scripts" / "audio-record"
 PARECORD_PATH = pathlib.Path("/usr/bin/parecord")
 ARECORDMIDI_PATH = pathlib.Path("/usr/bin/arecordmidi")
+FFMPEG_PATH = pathlib.Path("/usr/bin/ffmpeg")
+MAX_AUDIO_SPAWN_SPREAD_NS = 5_000_000
 MAX_JSON_BYTES = 524_288
 MAX_BINDING_BYTES = 64_000_000
 PARECORD_WAV_FSIZE_FLOOR_BYTES = 64 * 1024 * 1024
@@ -405,9 +407,10 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
     if not isinstance(source, dict):
         raise RecordingError(f"recording source contract is invalid: {session_type}")
     kind = source.get("kind")
-    if kind == "motu-voice-with-roland-midi":
-        expected_fields = {"kind", "audio", "midi"}
+    if kind == "motu-voice-with-roland-audio-and-midi":
+        expected_fields = {"kind", "audio", "roland_audio", "midi"}
         audio = source.get("audio")
+        roland_audio = source.get("roland_audio")
         midi = source.get("midi")
         if (
             set(source) != expected_fields
@@ -427,6 +430,29 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
                 "requires_unity_volume",
             }
             or audio.get("kind") != "motu-voice"
+            or not isinstance(roland_audio, dict)
+            or set(roland_audio)
+            != {
+                "kind",
+                "device",
+                "vendor_id",
+                "product_id",
+                "node_name_prefix",
+                "required_sample_formats",
+                "required_sample_rate_hz",
+                "required_channels",
+                "requires_unmuted",
+                "requires_unity_volume",
+            }
+            or roland_audio.get("kind") != "usb-audio"
+            or roland_audio.get("device") != "roland_fp_30x"
+            or roland_audio.get("vendor_id") != "0582"
+            or roland_audio.get("product_id") != "01b1"
+            or roland_audio.get("required_sample_rate_hz") != 44_100
+            or sorted(roland_audio.get("required_sample_formats", [])) != ["s24le", "s32le"]
+            or roland_audio.get("required_channels") != 2
+            or roland_audio.get("requires_unmuted") is not True
+            or roland_audio.get("requires_unity_volume") is not True
             or not isinstance(midi, dict)
             or set(midi)
             != {
@@ -458,6 +484,7 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
             raise RecordingError("performance recording source contract is inconsistent")
     else:
         audio = None
+        roland_audio = None
         midi = None
     source_fields = {
         "motu-voice": {
@@ -495,11 +522,11 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
             "requires_unity_volume",
         },
     }
-    if kind != "motu-voice-with-roland-midi" and (
+    if kind != "motu-voice-with-roland-audio-and-midi" and (
         kind not in source_fields or set(source) != source_fields[kind]
     ):
         raise RecordingError(f"recording source fields are invalid: {session_type}")
-    format_source = audio if kind == "motu-voice-with-roland-midi" else source
+    format_source = audio if kind == "motu-voice-with-roland-audio-and-midi" else source
     assert isinstance(format_source, dict)
     formats = format_source.get("required_sample_formats")
     if (
@@ -566,8 +593,8 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
     expected = {
         "voice-recording": ("motu-voice", ["voice-level-measurement"]),
         "piano-vocal-performance": (
-            "motu-voice-with-roland-midi",
-            ["voice-level-measurement"],
+            "motu-voice-with-roland-audio-and-midi",
+            ["voice-level-measurement", "resampling-decision"],
         ),
         "roland-audio-recording": ("usb-audio", ["resampling-decision"]),
         "production-mix-recording": ("named-pipewire-source", []),
@@ -589,6 +616,11 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
         or audio.get("product_id") != "0008"
         or audio.get("required_sample_rate_hz") != 48_000
         or formats != ["s32le"]
+        or not isinstance(roland_audio, dict)
+        or roland_audio.get("vendor_id") != "0582"
+        or roland_audio.get("product_id") != "01b1"
+        or roland_audio.get("required_sample_rate_hz") != 44_100
+        or sorted(roland_audio.get("required_sample_formats", [])) != ["s24le", "s32le"]
         or session["required_physical_facts"]
         != {
             "rode_nt1a_connected": True,
@@ -696,6 +728,12 @@ def parecord_binding(path: pathlib.Path = PARECORD_PATH) -> dict[str, Any]:
 
 def arecordmidi_binding(path: pathlib.Path = ARECORDMIDI_PATH) -> dict[str, Any]:
     """Bind the exact locally verified arecordmidi launcher and binary digest."""
+
+    return parecord_binding(path)
+
+
+def ffmpeg_binding(path: pathlib.Path = FFMPEG_PATH) -> dict[str, Any]:
+    """Bind the offline mixer executable used by modern performance takes."""
 
     return parecord_binding(path)
 
@@ -815,7 +853,7 @@ def _source_label(contract: dict[str, Any]) -> str:
         "motu-voice": "motu",
         "usb-audio": "roland",
         "named-pipewire-source": "production-mix",
-        "motu-voice-with-roland-midi": "performance",
+        "motu-voice-with-roland-audio-and-midi": "performance",
     }.get(str(contract.get("kind")), "recording")
 
 
@@ -1024,14 +1062,20 @@ def _pactl_source_snapshot(
 
 
 def _source_snapshot_for_contract(contract: dict[str, Any]) -> dict[str, Any]:
-    if contract.get("kind") == "motu-voice-with-roland-midi":
+    if contract.get("kind") == "motu-voice-with-roland-audio-and-midi":
         audio = VOICE.source_snapshot()
+        roland_audio = _pactl_source_snapshot(contract["roland_audio"])
         midi = _roland_midi_source_snapshot()
-        complete = audio.get("complete") is True and midi.get("complete") is True
+        complete = (
+            audio.get("complete") is True
+            and roland_audio.get("complete") is True
+            and midi.get("complete") is True
+        )
         identity = None
         if complete:
             identity = {
                 "audio": audio.get("identity"),
+                "roland_audio": roland_audio.get("identity"),
                 "midi": midi.get("identity"),
             }
             identity["fingerprint"] = canonical_sha256(identity)
@@ -1040,6 +1084,7 @@ def _source_snapshot_for_contract(contract: dict[str, Any]) -> dict[str, Any]:
             "source_complete": complete,
             "identity": identity,
             "audio": audio,
+            "roland_audio": roland_audio,
             "midi": midi,
         }
     if contract.get("kind") == "motu-voice":
@@ -1048,7 +1093,7 @@ def _source_snapshot_for_contract(contract: dict[str, Any]) -> dict[str, Any]:
 
 
 def _source_name_for_contract(contract: dict[str, Any]) -> str:
-    if contract.get("kind") == "motu-voice-with-roland-midi":
+    if contract.get("kind") == "motu-voice-with-roland-audio-and-midi":
         return VOICE._source_name_from_live_query()
     if contract.get("kind") == "motu-voice":
         return VOICE._source_name_from_live_query()
@@ -1058,6 +1103,16 @@ def _source_name_for_contract(contract: dict[str, Any]) -> str:
         raise RecordingError(
             f"{_source_label(contract)} capture source is missing, invalid or ambiguous"
         )
+    return source_name
+
+
+def _roland_audio_source_name_for_contract(contract: dict[str, Any]) -> str:
+    if contract.get("kind") != "motu-voice-with-roland-audio-and-midi":
+        raise RecordingError("Roland audio source requested for a non-performance contract")
+    snapshot = _pactl_source_snapshot(contract["roland_audio"])
+    source_name = snapshot.get("source_name")
+    if snapshot.get("complete") is not True or not isinstance(source_name, str):
+        raise RecordingError("Roland audio capture source is missing, invalid or ambiguous")
     return source_name
 
 
@@ -1120,45 +1175,66 @@ def _source_projection(
     identity = snapshot.get("identity")
     blockers: list[str] = []
     source_complete = snapshot.get("source_complete", snapshot.get("complete"))
+    kind = contract.get("kind")
     if source_complete is not True or not isinstance(identity, dict):
-        if contract.get("kind") == "motu-voice-with-roland-midi":
+        if kind == "motu-voice-with-roland-audio-and-midi":
             audio = snapshot.get("audio")
+            roland_audio = snapshot.get("roland_audio")
             midi = snapshot.get("midi")
             if not isinstance(audio, dict) or audio.get("complete") is not True:
                 blockers.append("motu-source-not-unique")
+            if not isinstance(roland_audio, dict) or roland_audio.get("complete") is not True:
+                blockers.append("roland-audio-source-not-unique")
             if not isinstance(midi, dict) or midi.get("complete") is not True:
                 blockers.append("roland-midi-source-not-unique")
         else:
             blockers.append(f"{label}-source-not-unique")
         identity = None
-    if contract.get("kind") == "motu-voice-with-roland-midi":
+    if kind == "motu-voice-with-roland-audio-and-midi":
         if identity is not None:
             audio_identity = identity.get("audio")
+            roland_audio_identity = identity.get("roland_audio")
             midi_identity = identity.get("midi")
             audio_contract = contract["audio"]
-            if not isinstance(audio_identity, dict) or not isinstance(midi_identity, dict):
+            roland_contract = contract["roland_audio"]
+            if (
+                not isinstance(audio_identity, dict)
+                or not isinstance(roland_audio_identity, dict)
+                or not isinstance(midi_identity, dict)
+            ):
                 blockers.append("performance-source-invalid")
             else:
-                expected_audio = {
+                for field, value in {
                     "sample_rate_hz": audio_contract["required_sample_rate_hz"],
                     "channels": audio_contract["required_channels"],
                     "muted": False,
                     "unity_volume": True,
                     "vendor_id": audio_contract["vendor_id"],
                     "product_id": audio_contract["product_id"],
-                }
-                for field, value in expected_audio.items():
+                }.items():
                     if audio_identity.get(field) != value:
                         blockers.append(f"motu-source:{field}")
                 if audio_identity.get("sample_format") not in audio_contract["required_sample_formats"]:
                     blockers.append("motu-source:sample_format")
+                for field, value in {
+                    "sample_rate_hz": roland_contract["required_sample_rate_hz"],
+                    "channels": roland_contract["required_channels"],
+                    "muted": False,
+                    "unity_volume": True,
+                    "vendor_id": roland_contract["vendor_id"],
+                    "product_id": roland_contract["product_id"],
+                }.items():
+                    if roland_audio_identity.get(field) != value:
+                        blockers.append(f"roland-audio-source:{field}")
+                if roland_audio_identity.get("sample_format") not in roland_contract["required_sample_formats"]:
+                    blockers.append("roland-audio-source:sample_format")
                 if MIDI.ADDRESS_RE.fullmatch(str(midi_identity.get("address", ""))) is None:
                     blockers.append("roland-midi-source:address")
         return {
             "identity": identity,
             "identity_sha256": canonical_sha256(identity) if identity is not None else None,
             "error": None,
-        }, blockers
+        }, sorted(set(blockers))
     if identity is not None:
         formats = contract["required_sample_formats"]
         expected = {
@@ -1172,22 +1248,18 @@ def _source_projection(
                 blockers.append(f"{label}-source:{field}")
         if identity.get("sample_format") not in formats:
             blockers.append(f"{label}-source:sample_format")
-        if contract.get("kind") in {"motu-voice", "usb-audio"}:
+        if kind in {"motu-voice", "usb-audio"}:
             for field in ("vendor_id", "product_id"):
                 if identity.get(field) != contract.get(field):
                     blockers.append(f"{label}-source:{field}")
-        if contract.get("kind") == "named-pipewire-source" and identity.get(
-            "declared_upstream_roles"
-        ) != contract.get("upstream_roles"):
+        if kind == "named-pipewire-source" and identity.get("declared_upstream_roles") != contract.get("upstream_roles"):
             blockers.append(f"{label}-source:upstream_roles")
     result = {
         "identity": identity,
-        "identity_sha256": (
-            canonical_sha256(identity) if identity is not None else None
-        ),
+        "identity_sha256": canonical_sha256(identity) if identity is not None else None,
         "error": None,
     }
-    if contract.get("kind") == "named-pipewire-source":
+    if kind == "named-pipewire-source":
         managed_graph = snapshot.get("managed_graph")
         if (
             not isinstance(managed_graph, dict)
@@ -1195,8 +1267,7 @@ def _source_projection(
             or not isinstance(managed_graph.get("binding"), dict)
             or not isinstance(managed_graph.get("binding_sha256"), str)
             or HEX64_RE.fullmatch(managed_graph["binding_sha256"]) is None
-            or canonical_sha256(managed_graph["binding"])
-            != managed_graph["binding_sha256"]
+            or canonical_sha256(managed_graph["binding"]) != managed_graph["binding_sha256"]
         ):
             blockers.append("production-mix-graph-not-ready")
             result["managed_graph"] = None
@@ -1205,7 +1276,7 @@ def _source_projection(
                 "binding": managed_graph["binding"],
                 "binding_sha256": managed_graph["binding_sha256"],
             }
-    return result, blockers
+    return result, sorted(set(blockers))
 
 
 def maximum_file_bytes(capture: dict[str, Any], maximum_seconds: int) -> int:
@@ -1280,14 +1351,19 @@ def build_plan(
         recorder = None
         blockers.append("parecord-unavailable")
     midi_recorder: dict[str, Any] | None = None
+    mixer: dict[str, Any] | None = None
     if session_type == "piano-vocal-performance":
         try:
             midi_recorder = arecordmidi_binding()
         except RecordingError:
             blockers.append("arecordmidi-unavailable")
+        try:
+            mixer = ffmpeg_binding()
+        except RecordingError:
+            blockers.append("ffmpeg-unavailable")
     required_bytes = maximum_file_bytes(capture, maximum_seconds)
     required_session_bytes = required_bytes + (
-        MIDI.MAX_MIDI_BYTES + MAX_JSON_BYTES
+        3 * required_bytes + MIDI.MAX_MIDI_BYTES + MAX_JSON_BYTES
         if session_type == "piano-vocal-performance"
         else 0
     )
@@ -1358,8 +1434,24 @@ def build_plan(
                 "nominal_resolution_ms": 1,
             },
             "arecordmidi": midi_recorder,
+            "ffmpeg": mixer,
             "capture_argv": ["-p", "<plan-bound-client:port>", "-f", "25", "-t", "40", "<private-partial.mid>"],
-            "synchronization_boundary": "process-start alignment only; not sample-accurate WAV/MIDI synchronization",
+            "audio_capture": {
+                "sample_rate_hz": 48_000,
+                "sources": ["motu-voice", "roland-fp-30x-usb-audio"],
+                "maximum_spawn_spread_ns": MAX_AUDIO_SPAWN_SPREAD_NS,
+                "stems": "private-temporary-not-published",
+            },
+            "mix": {
+                "method": "offline-ffmpeg-amix",
+                "inputs": ["motu-voice", "roland-fp-30x-usb-audio"],
+                "duration": "shortest",
+                "normalize": True,
+                "sample_rate_hz": 48_000,
+                "sample_format": "s32le",
+                "channels": 2,
+            },
+            "synchronization_boundary": "bounded audio process-spawn alignment; not sample-accurate WAV/MIDI synchronization",
         }
     plan_sha = canonical_sha256(identity)
     blockers = sorted(set(blockers))
@@ -1613,6 +1705,15 @@ def _non_negative_integer(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value >= 0
 
 
+def _is_modern_performance_plan(plan: Any) -> bool:
+    performance = plan.get("performance") if isinstance(plan, dict) else None
+    return isinstance(performance, dict) and {
+        "ffmpeg",
+        "audio_capture",
+        "mix",
+    }.issubset(performance)
+
+
 def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -> None:
     source_contract = contract["source"] if "source" in contract else contract
     kind = source_contract["kind"]
@@ -1631,10 +1732,20 @@ def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -
         or canonical_sha256(identity) != digest
     ):
         raise RecordingError("recording source projection is not bound")
-    if kind == "motu-voice-with-roland-midi":
-        if set(identity) != {"audio", "midi", "fingerprint"}:
+    if kind in {
+        "motu-voice-with-roland-audio-and-midi",
+        "motu-voice-with-roland-midi",
+    }:
+        modern_performance = kind == "motu-voice-with-roland-audio-and-midi"
+        modern = set(identity) == {"audio", "roland_audio", "midi", "fingerprint"}
+        legacy = set(identity) == {"audio", "midi", "fingerprint"}
+        if (modern_performance and not modern and not legacy) or (
+            not modern_performance and not legacy
+        ):
             raise RecordingError("performance source identity fields are invalid")
         unbound = {"audio": identity.get("audio"), "midi": identity.get("midi")}
+        if modern:
+            unbound["roland_audio"] = identity.get("roland_audio")
         if identity.get("fingerprint") != canonical_sha256(unbound):
             raise RecordingError("performance source fingerprint is invalid")
         audio_identity = identity.get("audio")
@@ -1647,6 +1758,19 @@ def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -
             },
             source_contract["audio"],
         )
+        if modern:
+            roland_audio_identity = identity.get("roland_audio")
+            roland_contract = source_contract.get("roland_audio")
+            if not isinstance(roland_contract, dict):
+                raise RecordingError("Roland audio source contract is invalid")
+            _validate_planned_source_projection(
+                {
+                    "identity": roland_audio_identity,
+                    "identity_sha256": canonical_sha256(roland_audio_identity),
+                    "error": None,
+                },
+                roland_contract,
+            )
         if (
             not isinstance(midi_identity, dict)
             or set(midi_identity)
@@ -1828,7 +1952,6 @@ def _validate_persisted_spec(
         "created_at",
         "plan_sha256",
         "plan_identity",
-        "source_name",
         "paths",
     }
     session_id = spec.get("session_id")
@@ -1863,8 +1986,14 @@ def _validate_persisted_spec(
         "state_root",
     }
     session_type = plan.get("session_type") if isinstance(plan, dict) else None
-    required = base_required | (
-        {"midi_source"} if session_type == "piano-vocal-performance" else set()
+    modern_performance = (
+        session_type == "piano-vocal-performance"
+        and _is_modern_performance_plan(plan)
+    )
+    required = base_required | ({"source_names", "midi_source"} if modern_performance else {"source_name"}) | (
+        {"midi_source"}
+        if session_type == "piano-vocal-performance" and not modern_performance
+        else set()
     )
     if set(spec) != required:
         raise RecordingError("recording worker spec fields are invalid")
@@ -1886,14 +2015,38 @@ def _validate_persisted_spec(
     ):
         raise RecordingError("recording plan no longer matches its session contract")
     _validate_planned_source_projection(plan.get("source"), contract)
-    source_name = spec.get("source_name")
-    if (
-        not isinstance(source_name, str)
-        or not source_name
-        or len(source_name) > 4096
-        or CONTROL_RE.search(source_name)
-    ):
-        raise RecordingError("recording source name is invalid")
+    if modern_performance:
+        source_identity = plan.get("source", {}).get("identity")
+        if not isinstance(source_identity, dict) or set(source_identity) != {
+            "audio",
+            "roland_audio",
+            "midi",
+            "fingerprint",
+        }:
+            raise RecordingError("modern performance recording source identity is invalid")
+    if modern_performance:
+        source_names = spec.get("source_names")
+        if (
+            not isinstance(source_names, dict)
+            or set(source_names) != {"voice", "roland"}
+            or any(
+                not isinstance(value, str)
+                or not value
+                or len(value) > 4096
+                or CONTROL_RE.search(value)
+                for value in source_names.values()
+            )
+        ):
+            raise RecordingError("performance recording source names are invalid")
+    else:
+        source_name = spec.get("source_name")
+        if (
+            not isinstance(source_name, str)
+            or not source_name
+            or len(source_name) > 4096
+            or CONTROL_RE.search(source_name)
+        ):
+            raise RecordingError("recording source name is invalid")
     if session_type == "piano-vocal-performance" and MIDI.ADDRESS_RE.fullmatch(
         str(spec.get("midi_source", ""))
     ) is None:
@@ -1907,7 +2060,14 @@ def _validate_persisted_spec(
             "manifest_partial",
             "manifest_final",
         }
-    if not isinstance(paths, dict) or set(paths) != expected_paths:
+        if modern_performance:
+            expected_paths |= {"voice_partial", "roland_partial", "mix_raw_partial"}
+    if not isinstance(paths, dict):
+        raise RecordingError("recording worker paths are invalid")
+    accepted_path_sets = [expected_paths]
+    if modern_performance:
+        accepted_path_sets.append(expected_paths - {"mix_raw_partial"})
+    if set(paths) not in accepted_path_sets:
         raise RecordingError("recording worker paths are invalid")
     resolved: dict[str, pathlib.Path] = {}
     for key, raw_path in paths.items():
@@ -1990,27 +2150,33 @@ def _validate_persisted_spec(
         raise RecordingError("recording worker paths do not match the plan")
     if session_type == "piano-vocal-performance":
         performance = plan.get("performance")
-        if (
-            not isinstance(performance, dict)
-            or set(performance)
-            != {
-                "midi_output",
-                "manifest_output",
-                "timing",
-                "arecordmidi",
-                "capture_argv",
-                "synchronization_boundary",
-            }
-            or not isinstance(performance.get("arecordmidi"), dict)
-            or performance.get("timing")
-            != {
+        legacy_performance_fields = {
+            "midi_output",
+            "manifest_output",
+            "timing",
+            "arecordmidi",
+            "capture_argv",
+            "synchronization_boundary",
+        }
+        modern_performance_fields = legacy_performance_fields | {
+            "ffmpeg",
+            "audio_capture",
+            "mix",
+        }
+        valid_common = (
+            isinstance(performance, dict)
+            and set(performance)
+            == (modern_performance_fields if modern_performance else legacy_performance_fields)
+            and isinstance(performance.get("arecordmidi"), dict)
+            and performance.get("timing")
+            == {
                 "basis": "SMPTE",
                 "fps": 25,
                 "ticks_per_frame": 40,
                 "nominal_resolution_ms": 1,
             }
-            or performance.get("capture_argv")
-            != [
+            and performance.get("capture_argv")
+            == [
                 "-p",
                 "<plan-bound-client:port>",
                 "-f",
@@ -2019,20 +2185,62 @@ def _validate_persisted_spec(
                 "40",
                 "<private-partial.mid>",
             ]
-            or performance.get("synchronization_boundary")
-            != "process-start alignment only; not sample-accurate WAV/MIDI synchronization"
-            or pathlib.Path(performance.get("midi_output", {}).get("path", ""))
-            != resolved["midi_final"]
-            or pathlib.Path(performance.get("manifest_output", {}).get("path", ""))
-            != resolved["manifest_final"]
-            or resolved["midi_partial"].parent != final.parent
-            or resolved["manifest_partial"].parent != final.parent
-            or resolved["midi_partial"].name
-            != f".{final.stem}.{session_id}.partial.mid"
-            or resolved["manifest_partial"].name
-            != f".{final.stem}.{session_id}.partial.take.json"
-        ):
+            and pathlib.Path(performance.get("midi_output", {}).get("path", ""))
+            == resolved["midi_final"]
+            and pathlib.Path(performance.get("manifest_output", {}).get("path", ""))
+            == resolved["manifest_final"]
+            and resolved["midi_partial"].parent == final.parent
+            and resolved["manifest_partial"].parent == final.parent
+            and resolved["midi_partial"].name
+            == f".{final.stem}.{session_id}.partial.mid"
+            and resolved["manifest_partial"].name
+            == f".{final.stem}.{session_id}.partial.take.json"
+        )
+        if not valid_common:
             raise RecordingError("performance recording plan or paths are invalid")
+        if modern_performance:
+            if (
+                performance.get("synchronization_boundary")
+                != "bounded audio process-spawn alignment; not sample-accurate WAV/MIDI synchronization"
+                or not isinstance(performance.get("ffmpeg"), dict)
+                or performance.get("audio_capture")
+                != {
+                    "sample_rate_hz": 48_000,
+                    "sources": ["motu-voice", "roland-fp-30x-usb-audio"],
+                    "maximum_spawn_spread_ns": MAX_AUDIO_SPAWN_SPREAD_NS,
+                    "stems": "private-temporary-not-published",
+                }
+                or performance.get("mix")
+                != {
+                    "method": "offline-ffmpeg-amix",
+                    "inputs": ["motu-voice", "roland-fp-30x-usb-audio"],
+                    "duration": "shortest",
+                    "normalize": True,
+                    "sample_rate_hz": 48_000,
+                    "sample_format": "s32le",
+                    "channels": 2,
+                }
+                or resolved["voice_partial"].parent != final.parent
+                or resolved["roland_partial"].parent != final.parent
+                or resolved["voice_partial"].name
+                != f".{final.stem}.{session_id}.voice.partial.wav"
+                or resolved["roland_partial"].name
+                != f".{final.stem}.{session_id}.roland.partial.wav"
+                or (
+                    "mix_raw_partial" in resolved
+                    and (
+                        resolved["mix_raw_partial"].parent != final.parent
+                        or resolved["mix_raw_partial"].name
+                        != f".{final.stem}.{session_id}.mix.partial.s32le"
+                    )
+                )
+            ):
+                raise RecordingError("modern performance recording plan or paths are invalid")
+        elif (
+            performance.get("synchronization_boundary")
+            != "process-start alignment only; not sample-accurate WAV/MIDI synchronization"
+        ):
+            raise RecordingError("legacy performance recording plan is invalid")
     raw_state_root = plan.get("state_root")
     if not isinstance(raw_state_root, str) or CONTROL_RE.search(raw_state_root):
         raise RecordingError("recording state root is invalid")
@@ -2122,6 +2330,7 @@ def _validate_performance_manifest(
     artifacts: dict[str, Any],
 ) -> dict[str, Any]:
     manifest = _safe_json_read(path, maximum_bytes=MAX_JSON_BYTES, require_private=True)
+    modern = _is_modern_performance_plan(spec["plan_identity"])
     expected_fields = {
         "schema_version",
         "kind",
@@ -2137,11 +2346,21 @@ def _validate_performance_manifest(
         "does_not_establish",
     }
     timeline = manifest.get("capture_timeline_offsets_ns")
-    timeline_fields = {
+    legacy_timeline_fields = {
         "midi_spawn_requested_offset_ns",
         "midi_running_observed_offset_ns",
         "audio_spawn_requested_offset_ns",
         "audio_running_observed_offset_ns",
+        "session_ready_offset_ns",
+    }
+    modern_timeline_fields = {
+        "midi_spawn_requested_offset_ns",
+        "midi_running_observed_offset_ns",
+        "voice_spawn_requested_offset_ns",
+        "roland_spawn_requested_offset_ns",
+        "audio_spawn_spread_ns",
+        "voice_running_observed_offset_ns",
+        "roland_running_observed_offset_ns",
         "session_ready_offset_ns",
     }
     midi_count_fields = {
@@ -2164,16 +2383,11 @@ def _validate_performance_manifest(
         or manifest.get("plan_sha256") != spec["plan_sha256"]
         or not _non_negative_integer(manifest.get("worker_capture_epoch_monotonic_ns"))
         or not isinstance(timeline, dict)
-        or set(timeline) != timeline_fields
-        or any(not _non_negative_integer(timeline.get(field)) for field in timeline_fields)
-        or [
-            timeline.get("midi_spawn_requested_offset_ns"),
-            timeline.get("midi_running_observed_offset_ns"),
-            timeline.get("audio_spawn_requested_offset_ns"),
-            timeline.get("audio_running_observed_offset_ns"),
-            timeline.get("session_ready_offset_ns"),
-        ]
-        != sorted(timeline.values())
+        or set(timeline) != (modern_timeline_fields if modern else legacy_timeline_fields)
+        or any(
+            not _non_negative_integer(timeline.get(field))
+            for field in (modern_timeline_fields if modern else legacy_timeline_fields)
+        )
         or manifest.get("midi_timing")
         != {
             "basis": "SMPTE",
@@ -2182,12 +2396,23 @@ def _validate_performance_manifest(
             "nominal_resolution_ms": 1,
         }
         or manifest.get("synchronization_boundary")
-        != "process-start alignment only; not sample-accurate WAV/MIDI synchronization"
+        != (
+            "bounded audio process-spawn alignment; not sample-accurate WAV/MIDI synchronization"
+            if modern
+            else "process-start alignment only; not sample-accurate WAV/MIDI synchronization"
+        )
         or manifest.get("artifacts")
-        != {
-            "vocal_wav": artifacts.get("vocal_wav"),
-            "roland_midi_smf": artifacts.get("roland_midi_smf"),
-        }
+        != (
+            {
+                "mix_wav": artifacts.get("mix_wav"),
+                "roland_midi_smf": artifacts.get("roland_midi_smf"),
+            }
+            if modern
+            else {
+                "vocal_wav": artifacts.get("vocal_wav"),
+                "roland_midi_smf": artifacts.get("roland_midi_smf"),
+            }
+        )
         or not isinstance(manifest.get("midi_event_counts"), dict)
         or set(manifest.get("midi_event_counts", {})) != midi_count_fields
         or any(
@@ -2213,6 +2438,32 @@ def _validate_performance_manifest(
         or manifest.get("does_not_establish") != artifacts.get("does_not_establish")
     ):
         raise RecordingError("performance take manifest is invalid")
+    if modern:
+        ordered = [
+            timeline["midi_spawn_requested_offset_ns"],
+            timeline["midi_running_observed_offset_ns"],
+            timeline["voice_spawn_requested_offset_ns"],
+            timeline["roland_spawn_requested_offset_ns"],
+            timeline["voice_running_observed_offset_ns"],
+            timeline["roland_running_observed_offset_ns"],
+            timeline["session_ready_offset_ns"],
+        ]
+        if (
+            ordered != sorted(ordered)
+            or timeline["audio_spawn_spread_ns"]
+            != timeline["roland_spawn_requested_offset_ns"]
+            - timeline["voice_spawn_requested_offset_ns"]
+            or timeline["audio_spawn_spread_ns"] > MAX_AUDIO_SPAWN_SPREAD_NS
+        ):
+            raise RecordingError("performance audio spawn receipt is invalid")
+    elif [
+        timeline.get("midi_spawn_requested_offset_ns"),
+        timeline.get("midi_running_observed_offset_ns"),
+        timeline.get("audio_spawn_requested_offset_ns"),
+        timeline.get("audio_running_observed_offset_ns"),
+        timeline.get("session_ready_offset_ns"),
+    ] != sorted(timeline.values()):
+        raise RecordingError("legacy performance timeline is invalid")
     return manifest
 
 
@@ -2250,6 +2501,7 @@ def _validate_result(result: dict[str, Any], spec: dict[str, Any]) -> None:
     maximum_duration = int(capture["maximum_duration_seconds"])
     if status == "completed":
         if spec["plan_identity"]["session_type"] == "piano-vocal-performance":
+            modern = _is_modern_performance_plan(spec["plan_identity"])
             expected = common | {
                 "started_at",
                 "completed_at",
@@ -2270,11 +2522,26 @@ def _validate_result(result: dict[str, Any], spec: dict[str, Any]) -> None:
             processes = result.get("processes")
             if (
                 not isinstance(processes, dict)
-                or set(processes) != {"audio", "midi", "forced_kill"}
+                or set(processes)
+                != (
+                    {"voice", "roland", "midi", "mix", "forced_kill"}
+                    if modern
+                    else {"audio", "midi", "forced_kill"}
+                )
                 or processes.get("forced_kill") is not False
             ):
                 raise RecordingError("completed performance process receipt is invalid")
-            for name, accepted in (("audio", {0, -signal.SIGINT}), ("midi", {0})):
+            child_specs = (
+                (
+                    ("voice", {0, -signal.SIGINT}),
+                    ("roland", {0, -signal.SIGINT}),
+                    ("midi", {0}),
+                    ("mix", {0}),
+                )
+                if modern
+                else (("audio", {0, -signal.SIGINT}), ("midi", {0}))
+            )
+            for name, accepted in child_specs:
                 child = processes.get(name)
                 if (
                     not isinstance(child, dict)
@@ -2288,14 +2555,15 @@ def _validate_result(result: dict[str, Any], spec: dict[str, Any]) -> None:
                 ):
                     raise RecordingError("completed performance child receipt is invalid")
             artifacts = result.get("artifacts")
-            if not isinstance(artifacts, dict) or set(artifacts) != {
-                "vocal_wav",
-                "roland_midi_smf",
-                "take_manifest",
-            }:
+            artifact_keys = (
+                {"mix_wav", "roland_midi_smf", "take_manifest"}
+                if modern
+                else {"vocal_wav", "roland_midi_smf", "take_manifest"}
+            )
+            if not isinstance(artifacts, dict) or set(artifacts) != artifact_keys:
                 raise RecordingError("completed performance artifacts are invalid")
             _assert_artifact_binding_current(
-                artifacts["vocal_wav"],
+                artifacts["mix_wav"] if modern else artifacts["vocal_wav"],
                 expected_path=pathlib.Path(spec["paths"]["final"]),
                 maximum_bytes=maximum_bytes,
                 detail_fields=ARTIFACT_DETAIL_FIELDS,
@@ -2415,10 +2683,20 @@ def _validate_result(result: dict[str, Any], spec: dict[str, Any]) -> None:
         raise RecordingError("failed recording result fields are invalid")
     if performance_failure_fields:
         inventory = result.get("performance_artifacts")
-        if (
-            not isinstance(inventory, dict)
-            or set(inventory)
-            != {
+        modern = _is_modern_performance_plan(spec["plan_identity"])
+        expected_inventory = (
+            ({
+                "mix_partial",
+                "mix_final",
+                "voice_stem_partial",
+                "roland_stem_partial",
+                "midi_partial",
+                "midi_final",
+                "manifest_partial",
+                "manifest_final",
+            } | ({"mix_raw_partial"} if "mix_raw_partial" in spec["paths"] else set()))
+            if modern
+            else {
                 "wav_partial",
                 "wav_final",
                 "midi_partial",
@@ -2426,6 +2704,10 @@ def _validate_result(result: dict[str, Any], spec: dict[str, Any]) -> None:
                 "manifest_partial",
                 "manifest_final",
             }
+        )
+        if (
+            not isinstance(inventory, dict)
+            or set(inventory) != expected_inventory
             or inventory != _performance_path_inventory(spec)
         ):
             raise RecordingError("failed performance artifact inventory is invalid")
@@ -2467,6 +2749,7 @@ def _bounded_path_binding(
 
 def _performance_path_inventory(spec: dict[str, Any]) -> dict[str, Any]:
     capture_maximum = int(spec["plan_identity"]["capture"]["maximum_file_bytes"])
+    modern = _is_modern_performance_plan(spec["plan_identity"])
     limits = {
         "wav_partial": ("partial", capture_maximum),
         "wav_final": ("final", capture_maximum),
@@ -2475,6 +2758,19 @@ def _performance_path_inventory(spec: dict[str, Any]) -> dict[str, Any]:
         "manifest_partial": ("manifest_partial", MAX_JSON_BYTES),
         "manifest_final": ("manifest_final", MAX_JSON_BYTES),
     }
+    if modern:
+        limits = {
+            "mix_partial": ("partial", capture_maximum),
+            "mix_final": ("final", capture_maximum),
+            "voice_stem_partial": ("voice_partial", capture_maximum),
+            "roland_stem_partial": ("roland_partial", capture_maximum),
+            "midi_partial": ("midi_partial", MIDI.MAX_MIDI_BYTES),
+            "midi_final": ("midi_final", MIDI.MAX_MIDI_BYTES),
+            "manifest_partial": ("manifest_partial", MAX_JSON_BYTES),
+            "manifest_final": ("manifest_final", MAX_JSON_BYTES),
+        }
+        if "mix_raw_partial" in spec["paths"]:
+            limits["mix_raw_partial"] = ("mix_raw_partial", capture_maximum)
     return {
         label: _bounded_path_binding(pathlib.Path(spec["paths"][key]), maximum)
         for label, (key, maximum) in limits.items()
@@ -2544,6 +2840,34 @@ def _restricted_environment() -> dict[str, str]:
     return environment
 
 
+def _capture_partial_started(path: pathlib.Path) -> bool:
+    """Recognize a regular capture file that has progressed beyond a WAV header."""
+
+    try:
+        observed = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISREG(observed.st_mode) and observed.st_size > 44
+
+
+def _recording_startup_ready(
+    spec: dict[str, Any], *, worker_ready_path: pathlib.Path
+) -> bool:
+    """Use the plan's actual live capture artifacts for bounded start readiness."""
+
+    plan = spec["plan_identity"]
+    paths = spec["paths"]
+    if plan["session_type"] != "piano-vocal-performance":
+        return _capture_partial_started(pathlib.Path(paths["partial"]))
+    if _is_modern_performance_plan(plan):
+        audio_paths = (paths["voice_partial"], paths["roland_partial"])
+    else:
+        audio_paths = (paths["partial"],)
+    return worker_ready_path.is_file() and all(
+        _capture_partial_started(pathlib.Path(path)) for path in audio_paths
+    )
+
+
 def start_session(
     name: str,
     maximum_seconds: int,
@@ -2589,7 +2913,14 @@ def start_session(
         ):
             raise RecordingError("recording source changed between plan and start")
         midi_source: str | None = None
+        roland_source_name: str | None = None
         if session_type == "piano-vocal-performance":
+            roland_source_name = _roland_audio_source_name_for_contract(contract["source"])
+            roland_identity = identity.get("roland_audio", {})
+            if hashlib.sha256(roland_source_name.encode("utf-8")).hexdigest() != roland_identity.get(
+                "node_name_sha256"
+            ):
+                raise RecordingError("Roland audio source changed between plan and start")
             midi_source = _midi_address_for_contract()
             if midi_source != identity.get("midi", {}).get("address"):
                 raise RecordingError("Roland MIDI source changed between plan and start")
@@ -2611,10 +2942,33 @@ def start_session(
             if performance
             else None
         )
+        voice_partial = (
+            output_path.parent / f".{output_path.stem}.{session_id}.voice.partial.wav"
+            if performance
+            else None
+        )
+        roland_partial = (
+            output_path.parent / f".{output_path.stem}.{session_id}.roland.partial.wav"
+            if performance
+            else None
+        )
+        mix_raw_partial = (
+            output_path.parent / f".{output_path.stem}.{session_id}.mix.partial.s32le"
+            if performance
+            else None
+        )
         candidates = [partial_path, output_path]
         candidates.extend(
             path
-            for path in (midi_partial, midi_final, manifest_partial, manifest_final)
+            for path in (
+                voice_partial,
+                roland_partial,
+                mix_raw_partial,
+                midi_partial,
+                midi_final,
+                manifest_partial,
+                manifest_final,
+            )
             if path is not None
         )
         if any(path.exists() or path.is_symlink() for path in candidates):
@@ -2626,7 +2980,6 @@ def start_session(
             "created_at": utc_now(),
             "plan_sha256": plan["plan_sha256"],
             "plan_identity": plan["identity"],
-            "source_name": source_name,
             "paths": {
                 "partial": str(partial_path),
                 "final": str(output_path),
@@ -2635,14 +2988,23 @@ def start_session(
         }
         if performance:
             spec["midi_source"] = midi_source
+            spec["source_names"] = {
+                "voice": source_name,
+                "roland": roland_source_name,
+            }
             spec["paths"].update(
                 {
+                    "voice_partial": str(voice_partial),
+                    "roland_partial": str(roland_partial),
+                    "mix_raw_partial": str(mix_raw_partial),
                     "midi_partial": str(midi_partial),
                     "midi_final": str(midi_final),
                     "manifest_partial": str(manifest_partial),
                     "manifest_final": str(manifest_final),
                 }
             )
+        else:
+            spec["source_name"] = source_name
         _atomic_private_json(paths["spec"], spec, create_only=True)
         spec_binding = _safe_regular_binding(paths["spec"], require_private=True)
         state = {
@@ -2728,10 +3090,7 @@ def start_session(
         plan["identity"]["capture"]["startup_timeout_seconds"] * startup_windows
     )
     while time.monotonic() < deadline:
-        ready_observed = partial_path.is_file() and partial_path.stat().st_size > 44
-        if session_type == "piano-vocal-performance":
-            ready_observed = ready_observed and paths["ready"].is_file()
-        if ready_observed:
+        if _recording_startup_ready(spec, worker_ready_path=paths["ready"]):
             return {
                 "schema_version": 1,
                 "kind": "audio_recording_start_receipt",
@@ -2850,6 +3209,11 @@ def recover_session(
 
 def _validate_spec(spec: dict[str, Any]) -> None:
     _validate_persisted_spec(spec)
+    if (
+        _is_modern_performance_plan(spec["plan_identity"])
+        and "mix_raw_partial" not in spec["paths"]
+    ):
+        raise RecordingError("pre-raw modern performance spec is recovery-only")
     if spec["plan_identity"].get("contracts") != contract_bindings():
         raise RecordingError(
             "recording implementation contracts changed after planning"
@@ -2860,21 +3224,37 @@ def _validate_spec(spec: dict[str, Any]) -> None:
         spec["plan_identity"].get("session_type") == "piano-vocal-performance"
     )
     if performance_mode:
+        if not _is_modern_performance_plan(spec["plan_identity"]):
+            raise RecordingError("legacy performance takes are readable but cannot be captured")
         if spec["plan_identity"]["performance"].get("arecordmidi") != arecordmidi_binding():
             raise RecordingError("arecordmidi changed after planning")
+        if spec["plan_identity"]["performance"].get("ffmpeg") != ffmpeg_binding():
+            raise RecordingError("ffmpeg changed after planning")
         if (
             spec.get("midi_source")
             != spec["plan_identity"]["source"]["identity"]["midi"]["address"]
         ):
             raise RecordingError("private Roland MIDI source does not match the plan")
-    source_name = spec["source_name"]
     identity = spec["plan_identity"].get("source", {}).get("identity")
-    if performance_mode and isinstance(identity, dict):
-        identity = identity.get("audio")
-    if not isinstance(identity, dict) or hashlib.sha256(
-        source_name.encode("utf-8")
-    ).hexdigest() != identity.get("node_name_sha256"):
-        raise RecordingError("private recording source does not match the plan")
+    if performance_mode:
+        if not isinstance(identity, dict):
+            raise RecordingError("private performance sources do not match the plan")
+        for role, identity_key in (("voice", "audio"), ("roland", "roland_audio")):
+            source_name = spec["source_names"].get(role)
+            observed_identity = identity.get(identity_key)
+            if (
+                not isinstance(source_name, str)
+                or not isinstance(observed_identity, dict)
+                or hashlib.sha256(source_name.encode("utf-8")).hexdigest()
+                != observed_identity.get("node_name_sha256")
+            ):
+                raise RecordingError("private performance sources do not match the plan")
+    else:
+        source_name = spec["source_name"]
+        if not isinstance(identity, dict) or hashlib.sha256(
+            source_name.encode("utf-8")
+        ).hexdigest() != identity.get("node_name_sha256"):
+            raise RecordingError("private recording source does not match the plan")
 
 
 def _validate_recorded_wave(
@@ -3049,22 +3429,41 @@ def _validate_live_preconditions(spec: dict[str, Any]) -> None:
         capture["free_space_reserve_bytes"]
     )
     if performance:
-        required += MIDI.MAX_MIDI_BYTES + MAX_JSON_BYTES
+        required += 2 * int(capture["maximum_file_bytes"]) + MIDI.MAX_MIDI_BYTES + MAX_JSON_BYTES
     if free_bytes < required:
         raise RecordingError("free space fell below the recording budget")
 
 
 def _parecord_argv(
-    spec: dict[str, Any], parecord_path: pathlib.Path, partial: pathlib.Path
+    spec: dict[str, Any],
+    parecord_path: pathlib.Path,
+    partial: pathlib.Path,
+    *,
+    source_name: str | None = None,
+    stream_role: str | None = None,
 ) -> list[str]:
     plan = spec["plan_identity"]
     capture = plan["capture"]
     process = plan["process"]
     session_id = spec["session_id"]
+    if source_name is None:
+        source_names = spec.get("source_names")
+        source_name = (
+            source_names.get("voice")
+            if isinstance(source_names, dict)
+            else spec.get("source_name")
+        )
+    if not isinstance(source_name, str) or not source_name:
+        raise RecordingError("recording capture source name is invalid")
+    stream_name = f"{process['stream_name_prefix']}-{session_id}"
+    if stream_role is not None:
+        if stream_role not in {"voice", "roland"}:
+            raise RecordingError("performance capture stream role is invalid")
+        stream_name = f"{stream_name}-{stream_role}"
     return [
         str(parecord_path),
         "--record",
-        f"--device={spec['source_name']}",
+        f"--device={source_name}",
         f"--rate={capture['sample_rate_hz']}",
         f"--format={capture['sample_format']}",
         f"--channels={capture['channels']}",
@@ -3073,7 +3472,7 @@ def _parecord_argv(
         "--no-remap",
         "--file-format=wav",
         f"--client-name={process['client_name']}",
-        f"--stream-name={process['stream_name_prefix']}-{session_id}",
+        f"--stream-name={stream_name}",
         str(partial),
     ]
 
@@ -3179,12 +3578,19 @@ def _stop_capture_children(
 
 
 def _performance_child_exit_codes_clean(returncodes: list[int]) -> bool:
-    """Require arecordmidi to finalize normally after the bounded SIGINT stop."""
+    """Require two audio children and arecordmidi to finalise cleanly.
 
+    The two-child form remains accepted for regression checks of the retired
+    legacy worker receipt. New workers always pass three children.
+    """
+
+    if len(returncodes) == 2:
+        return returncodes[0] in {0, -signal.SIGINT} and returncodes[1] == 0
     return (
-        len(returncodes) == 2
+        len(returncodes) == 3
         and returncodes[0] in {0, -signal.SIGINT}
-        and returncodes[1] == 0
+        and returncodes[1] in {0, -signal.SIGINT}
+        and returncodes[2] == 0
     )
 
 
@@ -3218,10 +3624,14 @@ def _performance_worker_run(
     spec: dict[str, Any],
     parecord_path: pathlib.Path,
     arecordmidi_path: pathlib.Path,
+    ffmpeg_path: pathlib.Path,
 ) -> dict[str, Any]:
     plan = spec["plan_identity"]
     capture = plan["capture"]
-    paths = {key: lexical_absolute(pathlib.Path(value)) for key, value in spec["paths"].items()}
+    paths = {
+        key: lexical_absolute(pathlib.Path(value))
+        for key, value in spec["paths"].items()
+    }
     ready_path = _session_paths(
         paths["result"].parent, spec["session_id"]
     )["ready"]
@@ -3230,6 +3640,9 @@ def _performance_worker_run(
     output_paths = [
         paths["partial"],
         paths["final"],
+        paths["voice_partial"],
+        paths["roland_partial"],
+        paths["mix_raw_partial"],
         paths["midi_partial"],
         paths["midi_final"],
         paths["manifest_partial"],
@@ -3261,13 +3674,18 @@ def _performance_worker_run(
     maximum_stderr = int(load_catalog("piano-vocal-performance")["capture"]["maximum_stderr_bytes"])
     children: list[subprocess.Popen[bytes]] = []
     midi_process: subprocess.Popen[bytes] | None = None
-    audio_process: subprocess.Popen[bytes] | None = None
+    voice_process: subprocess.Popen[bytes] | None = None
+    roland_process: subprocess.Popen[bytes] | None = None
     timeline: dict[str, int] = {}
     ready = False
     stop_reason = "startup-failed"
     returncodes: list[int] = []
     forced_kill = False
-    with tempfile.TemporaryFile() as audio_stderr, tempfile.TemporaryFile() as midi_stderr:
+    with (
+        tempfile.TemporaryFile() as voice_stderr,
+        tempfile.TemporaryFile() as roland_stderr,
+        tempfile.TemporaryFile() as midi_stderr,
+    ):
         try:
             timeline["midi_spawn_requested_offset_ns"] = time.monotonic_ns() - epoch_ns
             midi_process = _spawn_capture_child(
@@ -3292,22 +3710,65 @@ def _performance_worker_run(
             else:
                 midi_started = False
             if midi_started and midi_process.poll() is None:
-                timeline["audio_spawn_requested_offset_ns"] = time.monotonic_ns() - epoch_ns
-                audio_process = _spawn_capture_child(
-                    _parecord_argv(spec, parecord_path, paths["partial"]), audio_stderr
+                timeline["voice_spawn_requested_offset_ns"] = time.monotonic_ns() - epoch_ns
+                voice_process = _spawn_capture_child(
+                    _parecord_argv(
+                        spec,
+                        parecord_path,
+                        paths["voice_partial"],
+                        source_name=spec["source_names"]["voice"],
+                        stream_role="voice",
+                    ),
+                    voice_stderr,
                 )
-                children.insert(0, audio_process)
+                # Keep every successfully spawned child in the bounded cleanup
+                # set before attempting the next spawn.  In particular, a
+                # Roland-spawn failure must not leave the voice capture alive.
+                children.append(voice_process)
+                timeline["roland_spawn_requested_offset_ns"] = time.monotonic_ns() - epoch_ns
+                timeline["audio_spawn_spread_ns"] = (
+                    timeline["roland_spawn_requested_offset_ns"]
+                    - timeline["voice_spawn_requested_offset_ns"]
+                )
+                if timeline["audio_spawn_spread_ns"] > MAX_AUDIO_SPAWN_SPREAD_NS:
+                    raise RecordingError("parallel audio spawn spread exceeded its bound")
+                roland_process = _spawn_capture_child(
+                    _parecord_argv(
+                        spec,
+                        parecord_path,
+                        paths["roland_partial"],
+                        source_name=spec["source_names"]["roland"],
+                        stream_role="roland",
+                    ),
+                    roland_stderr,
+                )
+                children.append(roland_process)
+                children = [voice_process, roland_process, midi_process]
                 audio_deadline = time.monotonic() + int(capture["startup_timeout_seconds"])
+                voice_started = False
+                roland_started = False
                 while time.monotonic() < audio_deadline:
-                    if audio_process.poll() is not None or midi_process.poll() is not None:
+                    if (
+                        voice_process.poll() is not None
+                        or roland_process.poll() is not None
+                        or midi_process.poll() is not None
+                    ):
                         stop_reason = "capture-child-exited"
                         break
                     try:
-                        ready = paths["partial"].stat().st_size > 44
+                        voice_started = paths["voice_partial"].stat().st_size > 44
                     except FileNotFoundError:
-                        ready = False
+                        voice_started = False
+                    if voice_started and "voice_running_observed_offset_ns" not in timeline:
+                        timeline["voice_running_observed_offset_ns"] = time.monotonic_ns() - epoch_ns
+                    try:
+                        roland_started = paths["roland_partial"].stat().st_size > 44
+                    except FileNotFoundError:
+                        roland_started = False
+                    if roland_started and "roland_running_observed_offset_ns" not in timeline:
+                        timeline["roland_running_observed_offset_ns"] = time.monotonic_ns() - epoch_ns
+                    ready = voice_started and roland_started
                     if ready:
-                        timeline["audio_running_observed_offset_ns"] = time.monotonic_ns() - epoch_ns
                         timeline["session_ready_offset_ns"] = time.monotonic_ns() - epoch_ns
                         _atomic_private_json(
                             ready_path,
@@ -3329,16 +3790,23 @@ def _performance_worker_run(
                     if stop_requested:
                         stop_reason = "requested-stop"
                         break
-                    if audio_process.poll() is not None or midi_process.poll() is not None:
+                    if (
+                        voice_process.poll() is not None
+                        or roland_process.poll() is not None
+                        or midi_process.poll() is not None
+                    ):
                         stop_reason = "capture-child-exited"
                         break
                     time.sleep(0.02)
         finally:
-            returncodes, forced_kill = _stop_capture_children(
-                children, int(capture["stop_grace_seconds"])
-            )
-        audio_stderr.seek(0)
-        audio_error = audio_stderr.read(maximum_stderr + 1)
+            if children:
+                returncodes, forced_kill = _stop_capture_children(
+                    children, int(capture["stop_grace_seconds"])
+                )
+        voice_stderr.seek(0)
+        voice_error = voice_stderr.read(maximum_stderr + 1)
+        roland_stderr.seek(0)
+        roland_error = roland_stderr.read(maximum_stderr + 1)
         midi_stderr.seek(0)
         midi_error = midi_stderr.read(maximum_stderr + 1)
     if (
@@ -3346,24 +3814,30 @@ def _performance_worker_run(
         or stop_reason not in {"requested-stop", "maximum-duration"}
         or not _performance_child_exit_codes_clean(returncodes)
         or forced_kill
-        or len(audio_error) > maximum_stderr
+        or len(voice_error) > maximum_stderr
+        or len(roland_error) > maximum_stderr
         or len(midi_error) > maximum_stderr
     ):
         raise RecordingError(
-            "audio/MIDI capture children did not terminate through the bounded clean path "
+            "parallel audio/MIDI capture children did not terminate through the bounded clean path "
             f"(ready={str(ready).lower()}, stop_reason={stop_reason}, "
             f"returncodes={returncodes}, forced_kill={str(forced_kill).lower()}, "
-            f"audio_stderr_bytes={len(audio_error)}, midi_stderr_bytes={len(midi_error)})"
+            f"voice_stderr_bytes={len(voice_error)}, roland_stderr_bytes={len(roland_error)}, "
+            f"midi_stderr_bytes={len(midi_error)})"
         )
-    paths["partial"].chmod(0o600)
+    paths["voice_partial"].chmod(0o600)
+    paths["roland_partial"].chmod(0o600)
     paths["midi_partial"].chmod(0o600)
-    for partial in (paths["partial"], paths["midi_partial"]):
+    for partial in (paths["voice_partial"], paths["roland_partial"], paths["midi_partial"]):
         descriptor = os.open(partial, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-    audio_artifact = _validate_recorded_wave(paths["partial"], capture)
+    voice_artifact = _validate_recorded_wave(paths["voice_partial"], capture)
+    roland_artifact = _validate_recorded_wave(paths["roland_partial"], capture)
+    if voice_artifact["frames"] != roland_artifact["frames"]:
+        raise RecordingError("parallel audio stems have unequal frame counts")
     try:
         midi_meta = MIDI.validate_smf(paths["midi_partial"])
     except MIDI.MidiCaptureError as exc:
@@ -3374,9 +3848,94 @@ def _performance_worker_run(
         require_private=True,
         include_identity=True,
     )
-    audio_final = _link_no_replace_keep_partial(
-        paths["partial"], paths["final"], audio_artifact, maximum_bytes=int(capture["maximum_file_bytes"])
-    ) | {key: audio_artifact[key] for key in ARTIFACT_DETAIL_FIELDS}
+    mix_argv = [
+        str(ffmpeg_path),
+        "-hide_banner",
+        "-nostdin",
+        "-v",
+        "error",
+        "-n",
+        "-i",
+        str(paths["voice_partial"]),
+        "-i",
+        str(paths["roland_partial"]),
+        "-filter_complex",
+        "[0:a][1:a]amix=inputs=2:duration=shortest:dropout_transition=0:normalize=1,aformat=sample_fmts=s32:sample_rates=48000:channel_layouts=stereo[mix]",
+        "-map",
+        "[mix]",
+        "-c:a",
+        "pcm_s32le",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-f",
+        "s32le",
+        str(paths["mix_raw_partial"]),
+    ]
+    with tempfile.TemporaryFile() as mix_stderr:
+        mix_process = _spawn_capture_child(mix_argv, mix_stderr)
+        mix_timeout = max(30, int(capture["maximum_duration_seconds"]) * 2)
+        mix_forced_kill = False
+        try:
+            mix_returncode = mix_process.wait(timeout=mix_timeout)
+        except subprocess.TimeoutExpired:
+            _signal_owned_child_group(mix_process, signal.SIGKILL)
+            mix_returncode = mix_process.wait(timeout=5)
+            mix_forced_kill = True
+        mix_stderr.seek(0)
+        mix_error = mix_stderr.read(maximum_stderr + 1)
+    if mix_returncode != 0 or mix_forced_kill or len(mix_error) > maximum_stderr:
+        raise RecordingError("offline ffmpeg mix did not complete through its bounded clean path")
+    paths["mix_raw_partial"].chmod(0o600)
+    raw_artifact = _safe_regular_binding(
+        paths["mix_raw_partial"],
+        maximum_bytes=int(capture["maximum_file_bytes"]),
+        require_private=True,
+        include_identity=True,
+    )
+    expected_raw_bytes = int(voice_artifact["frames"]) * 2 * 4
+    if raw_artifact["bytes"] != expected_raw_bytes:
+        raise RecordingError("offline raw mix size does not match parallel audio stems")
+    raw_descriptor = os.open(
+        paths["mix_raw_partial"], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+    wave_descriptor = os.open(
+        paths["partial"],
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        with os.fdopen(raw_descriptor, "rb", closefd=True) as raw_stream:
+            raw_descriptor = -1
+            with os.fdopen(wave_descriptor, "wb", closefd=True) as wave_stream:
+                wave_descriptor = -1
+                with wave.open(wave_stream, "wb") as writer:
+                    writer.setnchannels(2)
+                    writer.setsampwidth(4)
+                    writer.setframerate(48_000)
+                    remaining = expected_raw_bytes
+                    while remaining:
+                        chunk = raw_stream.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise RecordingError("offline raw mix ended before expected frame count")
+                        writer.writeframesraw(chunk)
+                        remaining -= len(chunk)
+                    if raw_stream.read(1):
+                        raise RecordingError("offline raw mix exceeded expected frame count")
+                wave_stream.flush()
+                os.fsync(wave_stream.fileno())
+    finally:
+        if raw_descriptor >= 0:
+            os.close(raw_descriptor)
+        if wave_descriptor >= 0:
+            os.close(wave_descriptor)
+    mix_artifact = _validate_recorded_wave(paths["partial"], capture)
+    if mix_artifact["frames"] != voice_artifact["frames"]:
+        raise RecordingError("offline mix frame count does not match parallel audio stems")
+    mix_final = _link_no_replace_keep_partial(
+        paths["partial"], paths["final"], mix_artifact, maximum_bytes=int(capture["maximum_file_bytes"])
+    ) | {key: mix_artifact[key] for key in ARTIFACT_DETAIL_FIELDS}
     midi_final = _link_no_replace_keep_partial(
         paths["midi_partial"], paths["midi_final"], midi_artifact, maximum_bytes=MIDI.MAX_MIDI_BYTES
     )
@@ -3389,12 +3948,13 @@ def _performance_worker_run(
         "capture_timeline_offsets_ns": timeline,
         "midi_timing": plan["performance"]["timing"],
         "synchronization_boundary": plan["performance"]["synchronization_boundary"],
-        "artifacts": {"vocal_wav": audio_final, "roland_midi_smf": midi_final},
+        "artifacts": {"mix_wav": mix_final, "roland_midi_smf": midi_final},
         "midi_event_counts": midi_meta["event_counts"],
         "midi_note_velocity": midi_meta["note_velocity"],
         "does_not_establish": [
             "musical-tempo",
             "sample-accurate-wav-midi-synchronization",
+            "software-monitoring-or-production-mix-activation",
             "hardware-or-ipad-verification",
             "subjective-recording-quality",
         ],
@@ -3413,7 +3973,14 @@ def _performance_worker_run(
     )
     # The durable manifest link above is the commit point.  Cleanup after it is
     # best-effort and must not downgrade a committed take to failed-preserved.
-    for partial in (paths["partial"], paths["midi_partial"], paths["manifest_partial"]):
+    for partial in (
+        paths["partial"],
+        paths["voice_partial"],
+        paths["roland_partial"],
+        paths["mix_raw_partial"],
+        paths["midi_partial"],
+        paths["manifest_partial"],
+    ):
         try:
             partial.unlink()
         except FileNotFoundError:
@@ -3430,11 +3997,13 @@ def _performance_worker_run(
         "completed_at": utc_now(),
         "plan_sha256": spec["plan_sha256"],
         "processes": {
-            "audio": {"returncode": returncodes[0], "stderr_bytes": len(audio_error), "stderr_sha256": hashlib.sha256(audio_error).hexdigest()},
-            "midi": {"returncode": returncodes[1], "stderr_bytes": len(midi_error), "stderr_sha256": hashlib.sha256(midi_error).hexdigest()},
+            "voice": {"returncode": returncodes[0], "stderr_bytes": len(voice_error), "stderr_sha256": hashlib.sha256(voice_error).hexdigest()},
+            "roland": {"returncode": returncodes[1], "stderr_bytes": len(roland_error), "stderr_sha256": hashlib.sha256(roland_error).hexdigest()},
+            "midi": {"returncode": returncodes[2], "stderr_bytes": len(midi_error), "stderr_sha256": hashlib.sha256(midi_error).hexdigest()},
+            "mix": {"returncode": mix_returncode, "stderr_bytes": len(mix_error), "stderr_sha256": hashlib.sha256(mix_error).hexdigest()},
             "forced_kill": forced_kill,
         },
-        "artifacts": {"vocal_wav": audio_final, "roland_midi_smf": midi_final, "take_manifest": manifest_final},
+        "artifacts": {"mix_wav": mix_final, "roland_midi_smf": midi_final, "take_manifest": manifest_final},
         "midi_event_counts": midi_meta["event_counts"],
         "does_not_establish": manifest["does_not_establish"],
     }
@@ -3458,7 +4027,12 @@ def worker_run(
         arecordmidi_path = pathlib.Path(
             spec["plan_identity"]["performance"]["arecordmidi"]["resolved"]["path"]
         )
-        return _performance_worker_run(spec, parecord_path, arecordmidi_path)
+        ffmpeg_path = pathlib.Path(
+            spec["plan_identity"]["performance"]["ffmpeg"]["resolved"]["path"]
+        )
+        return _performance_worker_run(
+            spec, parecord_path, arecordmidi_path, ffmpeg_path
+        )
     partial = lexical_absolute(pathlib.Path(spec["paths"]["partial"]))
     final = lexical_absolute(pathlib.Path(spec["paths"]["final"]))
     if partial.parent != final.parent:
