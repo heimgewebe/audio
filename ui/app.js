@@ -3294,12 +3294,20 @@ function markTransientInteraction() {
   state.interactionUntil = window.performance.now() + INTERACTION_GRACE_MS;
 }
 
+function recordingPlaybackActive() {
+  return [...document.querySelectorAll("audio.recording-player")].some(
+    (audio) => !audio.paused && !audio.ended,
+  );
+}
+
 function autoRefreshBlocked() {
   return (
     !byId("dialog-backdrop").hidden ||
     state.loading ||
     state.recordingActionPending ||
     state.whaleActionPending ||
+    state.replayPlaying ||
+    recordingPlaybackActive() ||
     window.performance.now() < state.interactionUntil
   );
 }
