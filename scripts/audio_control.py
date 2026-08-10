@@ -1778,22 +1778,41 @@ class AudioControl:
                         )
                     validate_recording_library_action(report, operation, session_id)
                     snapshot = self._readback_after_mutation()
-                    current_library = self.recording_library()
+                    targeted_result = self.runner.run(
+                        [
+                            sys.executable,
+                            str(RECORDING_PRODUCT_SCRIPT),
+                            "probe",
+                            "--state-root",
+                            str(RECORDING_STATE_ROOT),
+                            "--session-id",
+                            session_id,
+                        ],
+                        timeout=15,
+                    )
+                    targeted_report = parse_json_output(
+                        targeted_result, label="Recorderbibliotheks-Readback"
+                    )
+                    if targeted_result.returncode != 0:
+                        raise ControlError(
+                            safe_error_message(
+                                targeted_report,
+                                "Bibliotheksaktion konnte nicht gezielt zurückgelesen werden.",
+                            )
+                        )
+                    validate_recording_product_probe(targeted_report)
                 except Exception:
                     try:
                         self._readback_after_mutation()
                     except Exception:
                         pass
                     raise
-                current = next(
-                    (
-                        item
-                        for item in current_library["items"]
-                        if item.get("session_id") == session_id
-                    ),
-                    None,
-                )
-                if not isinstance(current, dict) or current.get("library") != report["library"]:
+                current = targeted_report.get("session")
+                if (
+                    not isinstance(current, dict)
+                    or current.get("session_id") != session_id
+                    or current.get("library") != report["library"]
+                ):
                     raise ControlError(
                         "Bibliotheksaktion wurde nicht durch aktuellen Bibliothekszustand bestätigt."
                     )

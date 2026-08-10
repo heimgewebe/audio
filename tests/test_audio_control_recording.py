@@ -403,6 +403,36 @@ class AudioControlRecordingTests(unittest.TestCase):
                             },
                         },
                     )
+                if (
+                    script == "recording_product.py"
+                    and argv[2] == "probe"
+                    and "--session-id" in argv
+                ):
+                    self.calls.append((tuple(argv), timeout))
+                    return self.result(
+                        argv,
+                        {
+                            "schema_version": 1,
+                            "kind": "audio_recording_product_probe",
+                            "status": "completed",
+                            "active_session_id": None,
+                            "session": {
+                                "session_id": self.SESSION_ID,
+                                "session_type": "voice-recording",
+                                "plan_sha256": self.PLAN_SHA,
+                                "library": {
+                                    "schema_version": 1,
+                                    "kind": "audio_recording_library_metadata",
+                                    "session_id": self.SESSION_ID,
+                                    "category": "practice",
+                                    "trashed": False,
+                                    "updated_at": "2026-08-10T20:00:00+00:00",
+                                    "trashed_at": None,
+                                },
+                            },
+                            "read_only": True,
+                        },
+                    )
                 return super().run(argv, timeout=timeout)
 
         runner = LibraryActionRunner()
@@ -425,11 +455,9 @@ class AudioControlRecordingTests(unittest.TestCase):
             mock.patch.object(
                 controller,
                 "recording_library",
-                return_value={
-                    "items": [
-                        {"session_id": runner.SESSION_ID, "library": expected_library}
-                    ]
-                },
+                side_effect=AssertionError(
+                    "mutation readback must not use the capped library listing"
+                ),
             ),
         ):
             result = controller.perform_recording_action(
@@ -448,6 +476,15 @@ class AudioControlRecordingTests(unittest.TestCase):
         )
         self.assertIn("categorize", call)
         self.assertIn("--category", call)
+        probe_call = next(
+            call
+            for call, _timeout in runner.calls
+            if pathlib.Path(call[1]).name == "recording_product.py"
+            and call[2] == "probe"
+        )
+        self.assertEqual(
+            probe_call[probe_call.index("--session-id") + 1], runner.SESSION_ID
+        )
 
         with self.assertRaisesRegex(MODULE.ControlError, "Aufnahmekategorie"):
             controller.perform_recording_action(
