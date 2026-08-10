@@ -605,6 +605,7 @@ class RecordingSessionTest(unittest.TestCase):
                 "sample_rate_hz": 48_000,
                 "sources": ["motu-voice", "roland-fp-30x-usb-audio"],
                 "maximum_spawn_spread_ns": MODULE.MAX_AUDIO_SPAWN_SPREAD_NS,
+                "maximum_frame_difference": MODULE.MAX_AUDIO_FRAME_DIFFERENCE_FRAMES,
                 "stems": "private-temporary-not-published",
             },
         )
@@ -821,6 +822,15 @@ class RecordingSessionTest(unittest.TestCase):
         target.chmod(0o600)
         partial.symlink_to(target)
         self.assertFalse(MODULE._midi_capture_process_ready(FakeChild(None), partial))
+
+    def test_performance_mix_accepts_bounded_tail_difference_and_rejects_larger_drift(self) -> None:
+        self.assertEqual(MODULE._performance_mix_frame_count(48_000, 48_000), 48_000)
+        self.assertEqual(
+            MODULE._performance_mix_frame_count(48_000, 47_760),
+            47_760,
+        )
+        with self.assertRaisesRegex(MODULE.RecordingError, "bounded frame difference"):
+            MODULE._performance_mix_frame_count(48_000, 48_000 - MODULE.MAX_AUDIO_FRAME_DIFFERENCE_FRAMES - 1)
 
     def test_modern_performance_startup_requires_both_audio_stems_and_ready_receipt(self) -> None:
         spec = self.persisted_spec(session_type="piano-vocal-performance")
@@ -1158,6 +1168,26 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertEqual(blockers, [f"laboratory-gate:{gate}"])
         self.assertEqual(projection["invalidated"][gate], "physical-state-changed")
         self.assertEqual(projection["state_sha256"], "c" * 64)
+
+    def test_live_performance_preconditions_reserve_four_audio_artifacts(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance", maximum_seconds=1)
+        plan = spec["plan_identity"]
+        maximum = int(plan["capture"]["maximum_file_bytes"])
+        reserve = int(plan["capture"]["free_space_reserve_bytes"])
+        contract = MODULE.load_catalog("piano-vocal-performance")
+        with (
+            mock.patch.object(MODULE, "load_catalog", return_value=contract),
+            mock.patch.object(MODULE, "_physical_projection", return_value=(plan["physical"], [])),
+            mock.patch.object(MODULE, "_laboratory_projection", return_value=(plan["laboratory"], [])),
+            mock.patch.object(MODULE, "_source_projection", return_value=(plan["source"], [])),
+            mock.patch.object(
+                MODULE.shutil,
+                "disk_usage",
+                return_value=MODULE.shutil._ntuple_diskusage(0, 0, reserve + 3 * maximum + MODULE.MIDI.MAX_MIDI_BYTES + MODULE.MAX_JSON_BYTES),
+            ),
+        ):
+            with self.assertRaisesRegex(MODULE.RecordingError, "free space fell below"):
+                MODULE._validate_live_preconditions(spec)
 
     def test_live_preconditions_reject_source_identity_drift(self) -> None:
         physical = {"state_path": str(self.base / "physical.json")}

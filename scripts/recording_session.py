@@ -42,6 +42,7 @@ PARECORD_PATH = pathlib.Path("/usr/bin/parecord")
 ARECORDMIDI_PATH = pathlib.Path("/usr/bin/arecordmidi")
 FFMPEG_PATH = pathlib.Path("/usr/bin/ffmpeg")
 MAX_AUDIO_SPAWN_SPREAD_NS = 5_000_000
+MAX_AUDIO_FRAME_DIFFERENCE_FRAMES = 4_800  # 100 ms at 48 kHz
 MAX_JSON_BYTES = 524_288
 MAX_BINDING_BYTES = 64_000_000
 PARECORD_WAV_FSIZE_FLOOR_BYTES = 64 * 1024 * 1024
@@ -1440,6 +1441,7 @@ def build_plan(
                 "sample_rate_hz": 48_000,
                 "sources": ["motu-voice", "roland-fp-30x-usb-audio"],
                 "maximum_spawn_spread_ns": MAX_AUDIO_SPAWN_SPREAD_NS,
+                "maximum_frame_difference": MAX_AUDIO_FRAME_DIFFERENCE_FRAMES,
                 "stems": "private-temporary-not-published",
             },
             "mix": {
@@ -2208,6 +2210,7 @@ def _validate_persisted_spec(
                     "sample_rate_hz": 48_000,
                     "sources": ["motu-voice", "roland-fp-30x-usb-audio"],
                     "maximum_spawn_spread_ns": MAX_AUDIO_SPAWN_SPREAD_NS,
+                    "maximum_frame_difference": MAX_AUDIO_FRAME_DIFFERENCE_FRAMES,
                     "stems": "private-temporary-not-published",
                 }
                 or performance.get("mix")
@@ -3429,7 +3432,7 @@ def _validate_live_preconditions(spec: dict[str, Any]) -> None:
         capture["free_space_reserve_bytes"]
     )
     if performance:
-        required += 2 * int(capture["maximum_file_bytes"]) + MIDI.MAX_MIDI_BYTES + MAX_JSON_BYTES
+        required += 3 * int(capture["maximum_file_bytes"]) + MIDI.MAX_MIDI_BYTES + MAX_JSON_BYTES
     if free_bytes < required:
         raise RecordingError("free space fell below the recording budget")
 
@@ -3618,6 +3621,27 @@ def _midi_capture_process_ready(
         and stat.S_IMODE(observed.st_mode) == 0o600
         and observed.st_size <= MIDI.MAX_MIDI_BYTES
     )
+
+
+def _performance_mix_frame_count(voice_frames: int, roland_frames: int) -> int:
+    """Return the shortest valid stem length within the bounded tail tolerance."""
+
+    if (
+        isinstance(voice_frames, bool)
+        or not isinstance(voice_frames, int)
+        or voice_frames < 1
+        or isinstance(roland_frames, bool)
+        or not isinstance(roland_frames, int)
+        or roland_frames < 1
+    ):
+        raise RecordingError("parallel audio stem frame counts are invalid")
+    difference = abs(voice_frames - roland_frames)
+    if difference > MAX_AUDIO_FRAME_DIFFERENCE_FRAMES:
+        raise RecordingError(
+            "parallel audio stems exceed the bounded frame difference "
+            f"({difference}>{MAX_AUDIO_FRAME_DIFFERENCE_FRAMES})"
+        )
+    return min(voice_frames, roland_frames)
 
 
 def _performance_worker_run(
@@ -3836,8 +3860,9 @@ def _performance_worker_run(
             os.close(descriptor)
     voice_artifact = _validate_recorded_wave(paths["voice_partial"], capture)
     roland_artifact = _validate_recorded_wave(paths["roland_partial"], capture)
-    if voice_artifact["frames"] != roland_artifact["frames"]:
-        raise RecordingError("parallel audio stems have unequal frame counts")
+    mix_frames = _performance_mix_frame_count(
+        int(voice_artifact["frames"]), int(roland_artifact["frames"])
+    )
     try:
         midi_meta = MIDI.validate_smf(paths["midi_partial"])
     except MIDI.MidiCaptureError as exc:
@@ -3894,7 +3919,7 @@ def _performance_worker_run(
         require_private=True,
         include_identity=True,
     )
-    expected_raw_bytes = int(voice_artifact["frames"]) * 2 * 4
+    expected_raw_bytes = mix_frames * 2 * 4
     if raw_artifact["bytes"] != expected_raw_bytes:
         raise RecordingError("offline raw mix size does not match parallel audio stems")
     raw_descriptor = os.open(
@@ -3931,8 +3956,8 @@ def _performance_worker_run(
         if wave_descriptor >= 0:
             os.close(wave_descriptor)
     mix_artifact = _validate_recorded_wave(paths["partial"], capture)
-    if mix_artifact["frames"] != voice_artifact["frames"]:
-        raise RecordingError("offline mix frame count does not match parallel audio stems")
+    if mix_artifact["frames"] != mix_frames:
+        raise RecordingError("offline mix frame count does not match the bounded shortest stem")
     mix_final = _link_no_replace_keep_partial(
         paths["partial"], paths["final"], mix_artifact, maximum_bytes=int(capture["maximum_file_bytes"])
     ) | {key: mix_artifact[key] for key in ARTIFACT_DETAIL_FIELDS}
