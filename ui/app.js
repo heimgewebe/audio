@@ -1086,12 +1086,14 @@ async function postRecordingAction(payload) {
 }
 
 async function requestRecordingPlan({ autoRenameCollision = true } = {}) {
+  const attemptedNames = new Set();
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const input = {
       mode: state.recordingDraft.mode,
       name: state.recordingDraft.name,
       maximumSeconds: state.recordingDraft.maximumSeconds,
     };
+    attemptedNames.add(input.name);
     const result = await postRecordingAction({
       operation: "plan",
       mode: input.mode,
@@ -1111,7 +1113,7 @@ async function requestRecordingPlan({ autoRenameCollision = true } = {}) {
     ) {
       state.recordingDraft = {
         ...state.recordingDraft,
-        name: nextAutomaticTakeName(input.mode, [input.name]),
+        name: nextAutomaticTakeName(input.mode, attemptedNames),
       };
       state.recordingPlan = null;
       state.recordingPlanInput = null;
