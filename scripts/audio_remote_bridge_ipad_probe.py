@@ -83,16 +83,29 @@ def run_probe() -> dict[str, Any]:
     health = json.loads(health_response["body"].decode("utf-8"))
     require(health.get("kind") == "audio_remote_bridge_health", "wrong bridge health identity")
     require(
-        health.get("projection") == "read-only-plus-whale-actions",
-        "bridge projection does not expose the scoped whale contract",
+        health.get("projection") == "read-only-plus-scoped-actions",
+        "bridge projection does not expose the scoped action contract",
     )
     require(health.get("effect_authority") is True, "scoped whale authority is missing")
     require(
-        health.get("effect_scope") == ["whale:start", "whale:mode", "whale:stop"],
+        health.get("effect_scope")
+        == [
+            "whale:start",
+            "whale:mode",
+            "whale:stop",
+            "recording:plan",
+            "recording:start",
+            "recording:stop",
+            "recording:recover",
+        ],
         "remote effect scope is broader or incomplete",
     )
     remote_action = health.get("remote_action")
     require(isinstance(remote_action, dict), "remote action contract is missing")
+    require(
+        remote_action.get("recording_action_route") == "/bridge/v1/actions/recording",
+        "remote recording action route is missing",
+    )
     require(remote_action.get("backend_token_exposed") is False, "backend token exposure is enabled")
     require(remote_action.get("tailscale_identity_required") is True, "Tailscale identity is not required")
     require(remote_action.get("session_identity_bound") is True, "session is not identity-bound")
@@ -133,13 +146,17 @@ def run_probe() -> dict[str, Any]:
         headers={"Origin": BASE_URL, "Content-Type": "application/json"},
         body=b"{}",
     )
-    require(session_response["status"] == 200, "remote whale session is unavailable")
+    require(session_response["status"] == 200, "remote action session is unavailable")
     require(
         session_response["headers"].get("x-audio-remote-effects") == "whale-v1",
-        "remote whale capability marker is missing",
+        "remote action capability marker is missing",
     )
     session = json.loads(session_response["body"].decode("utf-8"))
     require(session.get("kind") == "audio_remote_bridge_session", "wrong session identity")
+    require(
+        session.get("effect_scope") == ["whale", "recording"],
+        "remote action session lacks the recorder scope",
+    )
     session_token = session.get("session_token")
     require(isinstance(session_token, str) and len(session_token) >= 32, "session token is missing")
     require("action_token" not in session, "backend-style action token leaked into session")
@@ -158,6 +175,29 @@ def run_probe() -> dict[str, Any]:
     require(
         negative_action_response["status"] == 400,
         "invalid scoped whale action did not fail before effect dispatch",
+    )
+
+    invalid_recording = json.dumps(
+        {
+            "operation": "plan",
+            "mode": "voice",
+            "name": "../forbidden.wav",
+            "maximum_seconds": 60,
+        }
+    ).encode("utf-8")
+    negative_recording_response = fetch(
+        "/bridge/v1/actions/recording",
+        method="POST",
+        headers={
+            "Origin": BASE_URL,
+            "Content-Type": "application/json",
+            "X-Audio-Bridge-Session": session_token,
+        },
+        body=invalid_recording,
+    )
+    require(
+        negative_recording_response["status"] == 400,
+        "invalid scoped recording action did not fail before effect dispatch",
     )
 
     post_response = fetch("/api/v1/health", method="POST")
@@ -189,8 +229,17 @@ def run_probe() -> dict[str, Any]:
             "snapshot_redactions": redactions,
             "generic_post_status": post_response["status"],
             "invalid_whale_action_status": negative_action_response["status"],
+            "invalid_recording_action_status": negative_recording_response["status"],
             "effect_authority": True,
-            "effect_scope": ["whale:start", "whale:mode", "whale:stop"],
+            "effect_scope": [
+                "whale:start",
+                "whale:mode",
+                "whale:stop",
+                "recording:plan",
+                "recording:start",
+                "recording:stop",
+                "recording:recover",
+            ],
             "session_identity_bound": True,
             "backend_action_token_exposed": False,
             "backend_remote_exposure": False,
@@ -204,6 +253,7 @@ def run_probe() -> dict[str, Any]:
         },
         "does_not_establish": [
             "successful remote whale effect",
+            "successful remote recording effect",
             "Safari renderer behavior",
             "PWA home-screen installation",
         ],

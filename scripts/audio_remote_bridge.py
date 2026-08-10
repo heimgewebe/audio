@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Fail-closed remote projection with one scoped Buckelwal action channel.
+"""Fail-closed remote projection with narrowly scoped audio action channels.
 
 The canonical Audio Control service remains loopback-only on 127.0.0.1:8765.
 This separate loopback service exposes a read-only projection plus exactly the
-typed Buckelwal start/mode/stop actions for the private Tailnet frontend. It is
+typed Buckelwal and recorder actions for the private Tailnet frontend. It is
 not an open proxy and never exposes the backend action token.
 """
 
@@ -30,17 +30,24 @@ from typing import Any
 
 CONTRACT_ID = "audiozentrale-remote-bridge-v1"
 BRIDGE_HEADER = "read-only-v1"
-BRIDGE_ACTION_HEADER = "whale-action-v1"
+BRIDGE_WHALE_ACTION_HEADER = "whale-action-v1"
+BRIDGE_RECORDING_ACTION_HEADER = "recording-action-v1"
 REMOTE_EFFECTS_HEADER = "X-Audio-Remote-Effects"
-REMOTE_EFFECTS_VALUE = "whale-v1"
+REMOTE_WHALE_EFFECTS_VALUE = "whale-v1"
+REMOTE_RECORDING_EFFECTS_VALUE = "recording-v1"
 REMOTE_SESSION_ROUTE = "/bridge/v1/session"
 REMOTE_WHALE_ACTION_ROUTE = "/bridge/v1/actions/whale"
+REMOTE_RECORDING_ACTION_ROUTE = "/bridge/v1/actions/recording"
 REMOTE_ACTION_TOKEN_HEADER = "X-Audio-Bridge-Session"
 REMOTE_ACTION_SESSION_TTL_SECONDS = 15 * 60
 REMOTE_ACTION_SESSION_CAPACITY = 8
 MAX_ACTION_BODY_BYTES = 512
+MAX_RECORDING_ACTION_BODY_BYTES = 1024
 WHALE_ACTION_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
 WHALE_ACTION_OPERATIONS = frozenset({"start", "mode", "stop"})
+RECORDING_ACTION_MODES = frozenset({"voice", "piano-vocal"})
+RECORDING_ACTION_OPERATIONS = frozenset({"plan", "start", "stop", "recover"})
+RECORDING_SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 REMOTE_TAILNET_HOST = "heim-pc.tail6dbb90.ts.net:9443"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
@@ -473,6 +480,69 @@ def validate_whale_action_payload(payload: bytes) -> dict[str, str]:
     return {"operation": str(operation), "mode": str(mode)}
 
 
+def _validated_recording_name(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 128
+        or value in {".", ".."}
+        or pathlib.PurePath(value).name != value
+        or "/" in value
+        or "\\" in value
+        or not value.lower().endswith(".wav")
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise RequestRejected("remote recording name is not a safe WAV filename")
+    return value
+
+
+def _validated_recording_duration(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 14_400:
+        raise RequestRejected("remote recording duration is outside the size contract")
+    return value
+
+
+def validate_recording_action_payload(payload: bytes) -> dict[str, Any]:
+    if not payload or len(payload) > MAX_RECORDING_ACTION_BODY_BYTES:
+        raise RequestRejected("remote recording action body is outside the size contract")
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RequestRejected("remote recording action body is invalid JSON") from error
+    if not isinstance(decoded, dict):
+        raise RequestRejected("remote recording action body must be an object")
+    operation = decoded.get("operation")
+    if operation not in RECORDING_ACTION_OPERATIONS:
+        raise RequestRejected("remote recording operation is not allowlisted")
+    if operation == "plan":
+        required = {"operation", "mode", "name", "maximum_seconds"}
+    elif operation == "start":
+        required = {"operation", "mode", "name", "maximum_seconds", "expected_plan_sha256"}
+    else:
+        required = {"operation", "session_id"}
+    if set(decoded) != required:
+        raise RequestRejected("remote recording action fields do not match the operation contract")
+    if operation in {"plan", "start"}:
+        mode = decoded.get("mode")
+        if mode not in RECORDING_ACTION_MODES:
+            raise RequestRejected("remote recording mode is not allowlisted")
+        result: dict[str, Any] = {
+            "operation": str(operation),
+            "mode": str(mode),
+            "name": _validated_recording_name(decoded.get("name")),
+            "maximum_seconds": _validated_recording_duration(decoded.get("maximum_seconds")),
+        }
+        if operation == "start":
+            plan_sha256 = decoded.get("expected_plan_sha256")
+            if not isinstance(plan_sha256, str) or SHA256_RE.fullmatch(plan_sha256) is None:
+                raise RequestRejected("remote recording start plan SHA-256 is invalid")
+            result["expected_plan_sha256"] = plan_sha256
+        return result
+    session_id = decoded.get("session_id")
+    if not isinstance(session_id, str) or RECORDING_SESSION_ID_RE.fullmatch(session_id) is None:
+        raise RequestRejected("remote recording session id is invalid")
+    return {"operation": str(operation), "session_id": session_id}
+
+
 def backend_request_headers(
     headers: Any,
     *,
@@ -578,7 +648,7 @@ def _bounded_backend_payload(response: http.client.HTTPResponse) -> tuple[list[t
     return headers, payload
 
 
-def read_backend_action_token() -> str:
+def read_backend_action_token(effect: str) -> str:
     connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT_SECONDS)
     try:
         connection.putrequest("GET", "/api/v1/snapshot?refresh=1", skip_host=True, skip_accept_encoding=True)
@@ -596,12 +666,23 @@ def read_backend_action_token() -> str:
         if not isinstance(snapshot, dict) or snapshot.get("kind") != "audio_control_snapshot":
             raise BackendFailure("backend snapshot identity is invalid")
         capabilities = snapshot.get("capabilities")
-        whale = snapshot.get("whale")
         service = snapshot.get("service")
-        if not isinstance(capabilities, dict) or capabilities.get("whale_control") is not True:
-            raise BackendFailure("backend whale control is not actionable")
-        if not isinstance(whale, dict) or whale.get("status") != "ok":
-            raise BackendFailure("backend whale status is not actionable")
+        if not isinstance(capabilities, dict):
+            raise BackendFailure("backend capabilities are unavailable")
+        if effect == "whale":
+            whale = snapshot.get("whale")
+            if capabilities.get("whale_control") is not True:
+                raise BackendFailure("backend whale control is not actionable")
+            if not isinstance(whale, dict) or whale.get("status") != "ok":
+                raise BackendFailure("backend whale status is not actionable")
+        elif effect == "recording":
+            recording = snapshot.get("recording")
+            if capabilities.get("recording_control") is not True:
+                raise BackendFailure("backend recording control is not actionable")
+            if not isinstance(recording, dict) or recording.get("actionable") is not True:
+                raise BackendFailure("backend recorder is not actionable")
+        else:
+            raise BackendFailure("backend effect is not allowlisted")
         token = service.get("action_token") if isinstance(service, dict) else None
         if not isinstance(token, str) or not 16 <= len(token) <= 512:
             raise BackendFailure("backend action token is unavailable")
@@ -615,7 +696,7 @@ def read_backend_action_token() -> str:
 
 
 def write_backend_whale_action(action: dict[str, str]) -> tuple[int, bytes, int]:
-    token = read_backend_action_token()
+    token = read_backend_action_token("whale")
     body = json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
     connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=70.0)
     try:
@@ -647,6 +728,56 @@ def write_backend_whale_action(action: dict[str, str]) -> tuple[int, bytes, int]
         raise
     except (OSError, TimeoutError, http.client.HTTPException) as error:
         raise BackendFailure("backend whale action is unavailable") from error
+    finally:
+        connection.close()
+
+
+def write_backend_recording_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
+    token = read_backend_action_token("recording")
+    body = json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=55.0)
+    try:
+        connection.putrequest("POST", "/api/v1/actions/recording", skip_host=True, skip_accept_encoding=True)
+        connection.putheader("Host", f"{BACKEND_HOST}:{BACKEND_PORT}")
+        connection.putheader("Connection", "close")
+        connection.putheader("Origin", f"http://{BACKEND_HOST}:{BACKEND_PORT}")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", str(len(body)))
+        connection.putheader("X-Audio-Control-Token", token)
+        connection.endheaders(body)
+        response = connection.getresponse()
+        headers, payload = _bounded_backend_payload(response)
+        content_type = next((value for name, value in headers if name.lower() == "content-type"), "")
+        if content_type.lower().split(";", 1)[0].strip() != "application/json":
+            raise BackendFailure("backend recording action response is not JSON")
+        scrubbed, redactions = encode_scrubbed_json(payload)
+        if response.status == HTTPStatus.OK:
+            decoded = json.loads(scrubbed.decode("utf-8"))
+            if (
+                not isinstance(decoded, dict)
+                or decoded.get("kind") != "audio_control_recording_action_result"
+                or decoded.get("operation") != action["operation"]
+            ):
+                raise BackendFailure("backend recording action lacks bound result identity")
+            if action["operation"] == "plan":
+                plan = decoded.get("plan")
+                if (
+                    not isinstance(plan, dict)
+                    or not isinstance(plan.get("ready"), bool)
+                    or not isinstance(plan.get("plan_sha256"), str)
+                    or SHA256_RE.fullmatch(plan["plan_sha256"]) is None
+                    or plan.get("mode") != action["mode"]
+                ):
+                    raise BackendFailure("backend recording plan lacks bound plan readback")
+            else:
+                snapshot = decoded.get("snapshot")
+                if not isinstance(snapshot, dict) or snapshot.get("kind") != "audio_control_snapshot":
+                    raise BackendFailure("backend recording action lacks authoritative readback")
+        return response.status, scrubbed, redactions
+    except BackendFailure:
+        raise
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        raise BackendFailure("backend recording action is unavailable") from error
     finally:
         connection.close()
 
@@ -747,6 +878,14 @@ class AudioRemoteBridgeHTTPServer(ThreadingHTTPServer):
             raise ActionBusy("another remote whale action is already in progress")
         try:
             return write_backend_whale_action(action)
+        finally:
+            self._action_lock.release()
+
+    def execute_recording_action(self, action: dict[str, Any]) -> tuple[int, bytes, int]:
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("another remote audio action is already in progress")
+        try:
+            return write_backend_recording_action(action)
         finally:
             self._action_lock.release()
 
@@ -881,14 +1020,23 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
                     "kind": "audio_remote_bridge_health",
                     "contract_id": CONTRACT_ID,
                     "status": "serving",
-                    "projection": "read-only-plus-whale-actions",
+                    "projection": "read-only-plus-scoped-actions",
                     "effect_authority": True,
-                    "effect_scope": ["whale:start", "whale:mode", "whale:stop"],
-                    "effect_exclusions": ["recording", "profiles", "routing", "devices", "system"],
+                    "effect_scope": [
+                        "whale:start",
+                        "whale:mode",
+                        "whale:stop",
+                        "recording:plan",
+                        "recording:start",
+                        "recording:stop",
+                        "recording:recover",
+                    ],
+                    "effect_exclusions": ["profiles", "routing", "devices", "system"],
                     "allowed_methods": ["GET", "HEAD", "POST"],
                     "remote_action": {
                         "session_route": REMOTE_SESSION_ROUTE,
                         "action_route": REMOTE_WHALE_ACTION_ROUTE,
+                        "recording_action_route": REMOTE_RECORDING_ACTION_ROUTE,
                         "session_ttl_seconds": REMOTE_ACTION_SESSION_TTL_SECONDS,
                         "token_header": REMOTE_ACTION_TOKEN_HEADER,
                         "backend_token_exposed": False,
@@ -960,8 +1108,11 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
                 {
                     "schema_version": 1,
                     "kind": "audio_remote_bridge_session",
-                    "effect_scope": ["whale"],
-                    "allowed_operations": sorted(WHALE_ACTION_OPERATIONS),
+                    "effect_scope": ["whale", "recording"],
+                    "allowed_operations": {
+                        "whale": sorted(WHALE_ACTION_OPERATIONS),
+                        "recording": sorted(RECORDING_ACTION_OPERATIONS),
+                    },
                     "session_token": token,
                     "expires_at_unix": expires,
                 },
@@ -973,7 +1124,7 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
         self._send_headers(
             HTTPStatus.OK,
             content_length=len(payload),
-            remote_effect=REMOTE_EFFECTS_VALUE,
+            remote_effect=REMOTE_WHALE_EFFECTS_VALUE,
         )
         self.wfile.write(payload)
 
@@ -1030,8 +1181,66 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
             status,
             content_length=len(response_payload),
             redactions=redactions,
-            bridge_marker=BRIDGE_ACTION_HEADER,
-            remote_effect=REMOTE_EFFECTS_VALUE,
+            bridge_marker=BRIDGE_WHALE_ACTION_HEADER,
+            remote_effect=REMOTE_WHALE_EFFECTS_VALUE,
+        )
+        self.wfile.write(response_payload)
+
+    def _serve_recording_action(self) -> None:
+        try:
+            validate_remote_tailnet_origin(self.headers)
+            identity_sha256 = validated_tailscale_identity(self.headers)
+        except ActionDenied as error:
+            self._send_error(HTTPStatus.FORBIDDEN, str(error))
+            return
+        token_values = self.headers.get_all(REMOTE_ACTION_TOKEN_HEADER, [])
+        if (
+            len(token_values) != 1
+            or not self.server.action_session_valid(token_values[0], identity_sha256)
+        ):
+            self._send_error(HTTPStatus.FORBIDDEN, "remote recording action session is invalid or expired")
+            return
+        if self.headers.get_all("Transfer-Encoding", []):
+            self._send_error(HTTPStatus.BAD_REQUEST, "chunked remote recording bodies are forbidden")
+            return
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote recording action requires one Content-Length")
+            return
+        try:
+            length = int(lengths[0], 10)
+        except ValueError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote recording Content-Length is invalid")
+            return
+        if not 1 <= length <= MAX_RECORDING_ACTION_BODY_BYTES:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote recording body is outside the size contract")
+            return
+        content_types = self.headers.get_all("Content-Type", [])
+        if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
+            self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "remote recording action requires application/json")
+            return
+        payload = self.rfile.read(length)
+        if len(payload) != length:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote recording action body is incomplete")
+            return
+        try:
+            action = validate_recording_action_payload(payload)
+            status, response_payload, redactions = self.server.execute_recording_action(action)
+        except RequestRejected as error:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except ActionBusy as error:
+            self._send_error(HTTPStatus.CONFLICT, str(error))
+            return
+        except BackendFailure as error:
+            self._send_error(HTTPStatus.BAD_GATEWAY, str(error))
+            return
+        self._send_headers(
+            status,
+            content_length=len(response_payload),
+            redactions=redactions,
+            bridge_marker=BRIDGE_RECORDING_ACTION_HEADER,
+            remote_effect=REMOTE_RECORDING_EFFECTS_VALUE,
         )
         self.wfile.write(response_payload)
 
@@ -1088,6 +1297,9 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
         if self.path == REMOTE_WHALE_ACTION_ROUTE:
             self._serve_whale_action()
             return
+        if self.path == REMOTE_RECORDING_ACTION_ROUTE:
+            self._serve_recording_action()
+            return
         self._method_not_allowed()
 
     do_PUT = _method_not_allowed
@@ -1131,7 +1343,15 @@ def main(argv: list[str] | None = None) -> int:
                     "contract_id": CONTRACT_ID,
                     "status": "ok",
                     "effect_authority": True,
-                    "effect_scope": ["whale:start", "whale:mode", "whale:stop"],
+                    "effect_scope": [
+                        "whale:start",
+                        "whale:mode",
+                        "whale:stop",
+                        "recording:plan",
+                        "recording:start",
+                        "recording:stop",
+                        "recording:recover",
+                    ],
                 },
                 sort_keys=True,
                 separators=(",", ":"),

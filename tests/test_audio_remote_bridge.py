@@ -51,11 +51,19 @@ class ContractTests(unittest.TestCase):
         self.assertIs(contract["bridge"]["effect_authority"], True)
         self.assertEqual(
             contract["bridge"]["effect_scope"],
-            ["whale:start", "whale:mode", "whale:stop"],
+            [
+                "whale:start",
+                "whale:mode",
+                "whale:stop",
+                "recording:plan",
+                "recording:start",
+                "recording:stop",
+                "recording:recover",
+            ],
         )
         self.assertEqual(
             contract["bridge"]["effect_exclusions"],
-            ["recording", "profiles", "routing", "devices", "system"],
+            ["profiles", "routing", "devices", "system"],
         )
         self.assertIs(contract["bridge"]["backend_remote_exposure"], False)
         for name, value in contract["runtime_acceptance"].items():
@@ -109,6 +117,9 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(remote_action["session_route"], MODULE.REMOTE_SESSION_ROUTE)
         self.assertEqual(remote_action["session_method"], "POST")
         self.assertEqual(remote_action["action_route"], MODULE.REMOTE_WHALE_ACTION_ROUTE)
+        self.assertEqual(
+            remote_action["recording_action_route"], MODULE.REMOTE_RECORDING_ACTION_ROUTE
+        )
         self.assertEqual(remote_action["tailnet_host"], MODULE.REMOTE_TAILNET_HOST)
         self.assertEqual(remote_action["session_header"], MODULE.REMOTE_ACTION_TOKEN_HEADER)
         self.assertIs(remote_action["tailscale_identity_required"], True)
@@ -241,6 +252,45 @@ class TargetValidationTests(unittest.TestCase):
         with self.assertRaises(MODULE.BridgeError):
             MODULE.encode_scrubbed_json(b"not-json")
 
+    def test_recording_payload_validation_is_exact_and_fail_closed(self):
+        plan = MODULE.validate_recording_action_payload(
+            json.dumps(
+                {
+                    "operation": "plan",
+                    "mode": "piano-vocal",
+                    "name": "take-01.wav",
+                    "maximum_seconds": 600,
+                }
+            ).encode()
+        )
+        self.assertEqual(plan["mode"], "piano-vocal")
+        start = dict(plan)
+        start["operation"] = "start"
+        start["expected_plan_sha256"] = "a" * 64
+        self.assertEqual(
+            MODULE.validate_recording_action_payload(json.dumps(start).encode()), start
+        )
+        for operation in ("stop", "recover"):
+            self.assertEqual(
+                MODULE.validate_recording_action_payload(
+                    json.dumps(
+                        {"operation": operation, "session_id": "b" * 24}
+                    ).encode()
+                ),
+                {"operation": operation, "session_id": "b" * 24},
+            )
+        rejected = (
+            {"operation": "plan", "mode": "voice", "name": "../x.wav", "maximum_seconds": 60},
+            {"operation": "plan", "mode": "unknown", "name": "x.wav", "maximum_seconds": 60},
+            {"operation": "start", "mode": "voice", "name": "x.wav", "maximum_seconds": 60, "expected_plan_sha256": "bad"},
+            {"operation": "stop"},
+            {"operation": "recover", "session_id": "bad"},
+            {"operation": "stop", "session_id": "c" * 24, "extra": True},
+        )
+        for payload in rejected:
+            with self.subTest(payload=payload), self.assertRaises(MODULE.RequestRejected):
+                MODULE.validate_recording_action_payload(json.dumps(payload).encode())
+
     def test_configuration_is_fixed_loopback_only(self):
         MODULE.validate_configuration("127.0.0.1", 8766, "127.0.0.1", 8765)
         for args in (
@@ -289,10 +339,7 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                 "body": body,
             }
         )
-        if self.path != "/api/v1/actions/whale":
-            status = 404
-            response = b"{}\n"
-        else:
+        if self.path == "/api/v1/actions/whale":
             action = json.loads(body.decode("utf-8"))
             operation = action["operation"]
             mode = action.get("mode", "organic")
@@ -305,7 +352,7 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                     "snapshot": {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True},
+                        "capabilities": {"whale_control": True, "recording_control": True},
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -317,10 +364,50 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                                 "voice_mode": mode,
                             },
                         },
+                        "recording": {"actionable": True, "status": "idle"},
                     },
                 },
                 sort_keys=True,
             ).encode("utf-8")
+        elif self.path == "/api/v1/actions/recording":
+            action = json.loads(body.decode("utf-8"))
+            operation = action["operation"]
+            status = 200
+            if operation == "plan":
+                result = {
+                    "kind": "audio_control_recording_action_result",
+                    "operation": "plan",
+                    "mode": action["mode"],
+                    "plan": {
+                        "ready": True,
+                        "mode": action["mode"],
+                        "plan_sha256": "d" * 64,
+                    },
+                }
+            else:
+                result = {
+                    "kind": "audio_control_recording_action_result",
+                    "operation": operation,
+                    "session_id": action.get("session_id", "e" * 24),
+                    "snapshot": {
+                        "kind": "audio_control_snapshot",
+                        "schema_version": 1,
+                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "service": {
+                            "action_token": "local-secret-value",
+                            "authority": "local-backend",
+                        },
+                        "whale": {"status": "ok", "service": {"active": False}},
+                        "recording": {
+                            "actionable": True,
+                            "status": "running" if operation == "start" else "completed",
+                        },
+                    },
+                }
+            response = json.dumps(result, sort_keys=True).encode("utf-8")
+        else:
+            status = 404
+            response = b"{}\n"
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(response)))
@@ -354,12 +441,13 @@ class BridgeHTTPTests(unittest.TestCase):
                     {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True},
+                        "capabilities": {"whale_control": True, "recording_control": True},
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
                         },
                         "whale": {"status": "ok", "service": {"active": False}},
+                        "recording": {"actionable": True, "status": "idle"},
                         "nested": {"private_key": "hidden", "ok": True},
                     }
                 ).encode(),
@@ -371,12 +459,13 @@ class BridgeHTTPTests(unittest.TestCase):
                     {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True},
+                        "capabilities": {"whale_control": True, "recording_control": True},
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
                         },
                         "whale": {"status": "ok", "service": {"active": False}},
+                        "recording": {"actionable": True, "status": "idle"},
                         "refresh": True,
                     }
                 ).encode(),
@@ -560,11 +649,19 @@ class BridgeHTTPTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
-        self.assertEqual(headers[MODULE.REMOTE_EFFECTS_HEADER], MODULE.REMOTE_EFFECTS_VALUE)
+        self.assertEqual(
+            headers[MODULE.REMOTE_EFFECTS_HEADER], MODULE.REMOTE_WHALE_EFFECTS_VALUE
+        )
         session = json.loads(payload)
         self.assertEqual(session["kind"], "audio_remote_bridge_session")
-        self.assertEqual(session["effect_scope"], ["whale"])
-        self.assertEqual(set(session["allowed_operations"]), {"start", "mode", "stop"})
+        self.assertEqual(session["effect_scope"], ["whale", "recording"])
+        self.assertEqual(
+            set(session["allowed_operations"]["whale"]), {"start", "mode", "stop"}
+        )
+        self.assertEqual(
+            set(session["allowed_operations"]["recording"]),
+            {"plan", "start", "stop", "recover"},
+        )
         self.assertNotIn("action_token", session)
         self.assertGreaterEqual(len(session["session_token"]), 32)
         return session["session_token"]
@@ -658,7 +755,7 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(response_headers["X-Audio-Remote-Bridge"], "whale-action-v1")
         self.assertEqual(
-            response_headers[MODULE.REMOTE_EFFECTS_HEADER], MODULE.REMOTE_EFFECTS_VALUE
+            response_headers[MODULE.REMOTE_EFFECTS_HEADER], MODULE.REMOTE_WHALE_EFFECTS_VALUE
         )
         decoded = json.loads(payload)
         self.assertEqual(decoded["kind"], "audio_control_action_result")
@@ -717,18 +814,130 @@ class BridgeHTTPTests(unittest.TestCase):
         )
         self.assertEqual(status, 405)
 
+    def test_remote_recording_plan_uses_scoped_session_and_hides_backend_token(self):
+        token = self.issue_remote_session()
+        before = len(FakeBackendHandler.records)
+        action = {
+            "operation": "plan",
+            "mode": "piano-vocal",
+            "name": "ipad-take.wav",
+            "maximum_seconds": 600,
+        }
+        status, response_headers, payload = self.request(
+            "POST",
+            MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+            headers={
+                **self.remote_headers(),
+                "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+                "Content-Type": "application/json",
+                MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+            },
+            body=json.dumps(action).encode(),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            response_headers["X-Audio-Remote-Bridge"], "recording-action-v1"
+        )
+        self.assertEqual(
+            response_headers[MODULE.REMOTE_EFFECTS_HEADER],
+            MODULE.REMOTE_RECORDING_EFFECTS_VALUE,
+        )
+        decoded = json.loads(payload)
+        self.assertEqual(decoded["kind"], "audio_control_recording_action_result")
+        self.assertEqual(decoded["operation"], "plan")
+        self.assertTrue(decoded["plan"]["ready"])
+        self.assertNotIn(b"local-secret-value", payload)
+        records = FakeBackendHandler.records[before:]
+        self.assertEqual([record["method"] for record in records], ["GET", "POST"])
+        self.assertEqual(records[1]["path"], "/api/v1/actions/recording")
+        self.assertEqual(
+            records[1]["headers"]["x-audio-control-token"], "local-secret-value"
+        )
+        self.assertEqual(json.loads(records[1]["body"]), action)
+
+    def test_remote_recording_requires_exact_session_identity_and_payload(self):
+        token = self.issue_remote_session(identity="owner@example.test")
+        headers = {
+            **self.remote_headers(identity="owner@example.test"),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        valid_stop = {"operation": "stop", "session_id": "f" * 24}
+        cases = (
+            ({**headers, "Origin": "https://evil.example"}, valid_stop, 403),
+            ({**headers, "Tailscale-User-Login": "other@example.test"}, valid_stop, 403),
+            ({**headers, MODULE.REMOTE_ACTION_TOKEN_HEADER: "x" * 40}, valid_stop, 403),
+            (headers, {"operation": "stop"}, 400),
+            (headers, {"operation": "recover", "session_id": "bad"}, 400),
+            (headers, {"operation": "plan", "mode": "voice", "name": "../x.wav", "maximum_seconds": 60}, 400),
+        )
+        for candidate_headers, action, expected in cases:
+            before = len(FakeBackendHandler.records)
+            with self.subTest(action=action, expected=expected):
+                status, _response_headers, _payload = self.request(
+                    "POST",
+                    MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+                    headers=candidate_headers,
+                    body=json.dumps(action).encode(),
+                )
+                self.assertEqual(status, expected)
+                self.assertEqual(len(FakeBackendHandler.records), before)
+
+    def test_remote_recording_and_whale_share_one_effect_lock(self):
+        token = self.issue_remote_session()
+        headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        before = len(FakeBackendHandler.records)
+        self.assertTrue(self.bridge._action_lock.acquire(blocking=False))
+        try:
+            status, _response_headers, _payload = self.request(
+                "POST",
+                MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+                headers=headers,
+                body=json.dumps(
+                    {
+                        "operation": "plan",
+                        "mode": "voice",
+                        "name": "locked.wav",
+                        "maximum_seconds": 60,
+                    }
+                ).encode(),
+            )
+        finally:
+            self.bridge._action_lock.release()
+        self.assertEqual(status, 409)
+        self.assertEqual(len(FakeBackendHandler.records), before)
+
     def test_bridge_health_is_local_contract_truth_only(self):
         status, headers, payload = self.request("GET", "/bridge/v1/health")
         self.assertEqual(status, 200)
         self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
         health = json.loads(payload)
         self.assertEqual(health["contract_id"], "audiozentrale-remote-bridge-v1")
-        self.assertEqual(health["projection"], "read-only-plus-whale-actions")
+        self.assertEqual(health["projection"], "read-only-plus-scoped-actions")
         self.assertIs(health["effect_authority"], True)
         self.assertEqual(
-            health["effect_scope"], ["whale:start", "whale:mode", "whale:stop"]
+            health["effect_scope"],
+            [
+                "whale:start",
+                "whale:mode",
+                "whale:stop",
+                "recording:plan",
+                "recording:start",
+                "recording:stop",
+                "recording:recover",
+            ],
         )
-        self.assertIn("recording", health["effect_exclusions"])
+        self.assertNotIn("recording", health["effect_exclusions"])
+        self.assertEqual(
+            health["remote_action"]["recording_action_route"],
+            MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+        )
         self.assertIs(health["remote_action"]["backend_token_exposed"], False)
         self.assertIs(health["remote_action"]["tailscale_identity_required"], True)
         self.assertIs(health["remote_action"]["session_identity_bound"], True)

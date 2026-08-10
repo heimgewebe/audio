@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "4363627f7fc4753b0bb4e9409358e98ee0aed131b2636eb57d30650b45bf4ecd"
+    "sha256": "8656552d770d154fc0c6e2dd05dde0bf865c770bc2b45a8dc5a992187fda37af"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -84,10 +84,13 @@
     "effect_scope": [
       "whale:start",
       "whale:mode",
-      "whale:stop"
+      "whale:stop",
+      "recording:plan",
+      "recording:start",
+      "recording:stop",
+      "recording:recover"
     ],
     "effect_exclusions": [
-      "recording",
       "profiles",
       "routing",
       "devices",
@@ -118,7 +121,21 @@
       "action_response_marker": "whale-action-v1",
       "effects_header": "X-Audio-Remote-Effects",
       "effects_value": "whale-v1",
-      "session_method": "POST"
+      "session_method": "POST",
+      "recording_action_route": "/bridge/v1/actions/recording",
+      "recording_max_body_bytes": 1024,
+      "recording_operations": [
+        "plan",
+        "start",
+        "stop",
+        "recover"
+      ],
+      "recording_modes": [
+        "voice",
+        "piano-vocal"
+      ],
+      "recording_action_response_marker": "recording-action-v1",
+      "recording_effects_value": "recording-v1"
     }
   },
   "tailscale_serve": {
