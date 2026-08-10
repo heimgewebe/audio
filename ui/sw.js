@@ -18,7 +18,7 @@
  */
 
 const CACHE_PREFIX = "audiozentrale-app-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v2`;
+const CACHE_NAME = `${CACHE_PREFIX}v3`;
 
 /* Feste Liste. Sie enthält bewusst keine WAV-Datei und keinen /api/-Pfad. */
 const APP_SHELL = Object.freeze([

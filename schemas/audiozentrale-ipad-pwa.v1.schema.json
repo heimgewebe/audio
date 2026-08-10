@@ -90,7 +90,10 @@
     "schema_binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256"],
+      "required": [
+        "path",
+        "sha256"
+      ],
       "properties": {
         "path": {
           "const": "schemas/audiozentrale-ipad-pwa.v1.schema.json"
@@ -141,7 +144,13 @@
     "icon": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "route", "pixel_size", "mime_type", "sha256"],
+      "required": [
+        "path",
+        "route",
+        "pixel_size",
+        "mime_type",
+        "sha256"
+      ],
       "properties": {
         "path": {
           "$ref": "#/$defs/repository_path"
@@ -151,7 +160,11 @@
         },
         "pixel_size": {
           "type": "integer",
-          "enum": [180, 192, 512]
+          "enum": [
+            180,
+            192,
+            512
+          ]
         },
         "mime_type": {
           "const": "image/png"
@@ -256,7 +269,10 @@
         },
         "backend_authority": {
           "type": "string",
-          "enum": ["none", "heim-pc-backend"]
+          "enum": [
+            "none",
+            "heim-pc-backend"
+          ]
         },
         "native_hardware_authority": {
           "const": false
@@ -278,7 +294,12 @@
     "runtime_modes": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["default", "persistence", "storage_key", "modes"],
+      "required": [
+        "default",
+        "persistence",
+        "storage_key",
+        "modes"
+      ],
       "properties": {
         "default": {
           "const": "remote-audiozentrale"
@@ -292,7 +313,10 @@
         "modes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["local-device", "remote-audiozentrale"],
+          "required": [
+            "local-device",
+            "remote-audiozentrale"
+          ],
           "properties": {
             "local-device": {
               "allOf": [
@@ -341,7 +365,12 @@
     "probe": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "detects", "invoked_automatically", "proves"],
+      "required": [
+        "id",
+        "detects",
+        "invoked_automatically",
+        "proves"
+      ],
       "properties": {
         "id": {
           "$ref": "#/$defs/id"
@@ -429,7 +458,7 @@
           "const": "audiozentrale-app-shell-"
         },
         "cache_name": {
-          "const": "audiozentrale-app-shell-v1"
+          "const": "audiozentrale-app-shell-v3"
         },
         "registration": {
           "const": "secure-contexts-only"

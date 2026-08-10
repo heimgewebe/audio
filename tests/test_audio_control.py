@@ -1316,7 +1316,7 @@ class AudioControlTests(unittest.TestCase):
                 self.assertEqual(controls.count(f'"{label}"'), 1)
                 self.assertNotIn(f">{label}</button>", html)
 
-        permission_start = javascript.index("function recordingActionsAllowed()")
+        permission_start = javascript.index("function localRecordingActionsAllowed()")
         permission_end = javascript.index("function recordingStatusLabel", permission_start)
         permission = javascript[permission_start:permission_end]
         self.assertIn("state.snapshot?.recording?.actionable === true", permission)
@@ -1328,6 +1328,8 @@ class AudioControlTests(unittest.TestCase):
         action = javascript[action_start:action_end]
         self.assertIn("if (!recordingActionsAllowed())", action)
         self.assertIn('"X-Audio-Control-Token": state.snapshot.service.action_token', action)
+        self.assertIn('"X-Audio-Bridge-Session": state.remoteWhaleSessionToken', action)
+        self.assertIn('/bridge/v1/actions/recording', action)
 
     def test_task_workspace_focus_reuses_the_live_panel_dom(self):
         html = (ROOT / "ui" / "index.html").read_text()

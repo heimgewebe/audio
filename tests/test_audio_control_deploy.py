@@ -431,11 +431,18 @@ class AudioControlDeployTests(unittest.TestCase):
             "schema_version": 1,
             "kind": "audio_remote_bridge_health",
             "status": "serving",
-            "projection": "read-only-plus-whale-actions",
+            "projection": "read-only-plus-scoped-actions",
             "effect_authority": True,
-            "effect_scope": ["whale:start", "whale:mode", "whale:stop"],
+            "effect_scope": [
+                "whale:start",
+                "whale:mode",
+                "whale:stop",
+                "recording:plan",
+                "recording:start",
+                "recording:stop",
+                "recording:recover",
+            ],
             "effect_exclusions": [
-                "recording",
                 "profiles",
                 "routing",
                 "devices",
@@ -445,6 +452,7 @@ class AudioControlDeployTests(unittest.TestCase):
             "remote_action": {
                 "session_route": "/bridge/v1/session",
                 "action_route": "/bridge/v1/actions/whale",
+                "recording_action_route": "/bridge/v1/actions/recording",
                 "session_ttl_seconds": 900,
                 "token_header": "X-Audio-Bridge-Session",
                 "backend_token_exposed": False,
@@ -458,7 +466,7 @@ class AudioControlDeployTests(unittest.TestCase):
             },
         }
 
-    def test_remote_bridge_verifier_accepts_only_scoped_whale_health(self):
+    def test_remote_bridge_verifier_accepts_only_scoped_action_health(self):
         payload = self.scoped_remote_bridge_health()
         body = json.dumps(payload).encode("utf-8")
 
@@ -497,11 +505,11 @@ class AudioControlDeployTests(unittest.TestCase):
             },
             "scope-expanded": {
                 **payload,
-                "effect_scope": [*payload["effect_scope"], "recording:start"],
+                "effect_scope": [*payload["effect_scope"], "routing:apply"],
             },
             "exclusions-weakened": {
                 **payload,
-                "effect_exclusions": ["profiles", "routing", "devices", "system"],
+                "effect_exclusions": ["profiles", "routing", "devices"],
             },
             "backend-token-exposed": {
                 **payload,

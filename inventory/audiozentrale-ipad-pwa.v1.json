@@ -5,7 +5,7 @@
   "status": "specified-not-physically-verified",
   "schema_binding": {
     "path": "schemas/audiozentrale-ipad-pwa.v1.schema.json",
-    "sha256": "0a264069b026f96257afe37f69511f33461a5f01e8ae4dcbe4a7fc30a1a93335"
+    "sha256": "26b621a18e9d577b7d7d8b081e286e062857e28234d219af970109cd102d6a63"
   },
   "surface": {
     "canonical_frontend": [
@@ -87,9 +87,9 @@
         "requires": [
           "the private Tailscale Serve frontend on HTTPS 9443",
           "the loopback-only Audiozentrale remote bridge",
-          "an identity-bound short-lived bridge session before scoped whale effects"
+          "an identity-bound short-lived bridge session before scoped whale and recording effects"
         ],
-        "boundary": "The Heim-PC backend stays authoritative for state. The remote bridge is read-only except for the explicitly typed Buckelwal start/mode/stop channel; recorder, profiles, routing, devices and system effects remain remote-denied."
+        "boundary": "The Heim-PC backend stays authoritative for state. The remote bridge is read-only except for the explicitly typed Buckelwal start/mode/stop and recorder plan/start/stop/recover channels; profiles, routing, devices and system effects remain remote-denied."
       }
     }
   },
@@ -138,7 +138,7 @@
     "route": "/sw.js",
     "scope": "/",
     "cache_prefix": "audiozentrale-app-shell-",
-    "cache_name": "audiozentrale-app-shell-v1",
+    "cache_name": "audiozentrale-app-shell-v3",
     "registration": "secure-contexts-only",
     "app_shell_strategy": "network-first-cache-fallback-static-only",
     "app_shell_routes": [
@@ -170,7 +170,7 @@
       "playback, routing and device-control responses",
       "live telemetry and snapshot responses",
       "WAV and other audio payloads",
-      "bridge session and scoped whale-action responses"
+      "bridge session and scoped whale/recording action responses"
     ],
     "absent_capabilities": [
       "background sync",
@@ -187,8 +187,8 @@
     "api_cache_control": "no-store",
     "remote_mode_requires": [
       "private Tailscale Serve HTTPS transport terminated outside the loopback control service",
-      "a loopback-only bridge that requires Tailscale identity plus a bound short-lived session for whale effects",
-      "an exact host and Same-Origin gate for the scoped whale POST endpoint"
+      "a loopback-only bridge that requires Tailscale identity plus a bound short-lived session for whale and recording effects",
+      "an exact host and Same-Origin gate for the scoped whale and recording POST endpoints"
     ],
     "remote_bridge_proven": false
   },

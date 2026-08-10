@@ -127,8 +127,8 @@ const RUNTIME_MODES = {
     label: "Fern-Audiozentrale",
     authority:
       "Das Heim-PC-Backend ist autoritativ. Fernzugriff ist ausschließlich über " +
-      "einen separat verifizierten sicheren Read-only-Bridge zulässig; der lokale " +
-      "Control-Dienst bleibt Loopback-only und ist niemals der Ferntransport.",
+      "eine separat verifizierte private Bridge zulässig; nur eng typisierte Wal- und " +
+      "Recorderaktionen dürfen wirken. Der lokale Control-Dienst bleibt Loopback-only.",
     backend: true,
   },
   [LOCAL_MODE]: {
@@ -155,6 +155,7 @@ const state = {
   appShellReloadPending: false,
   remoteBridgeProjection: null,
   remoteWhaleActionObserved: false,
+  remoteActionScopes: [],
   remoteWhaleSessionToken: null,
   remoteWhaleSessionExpiresAt: 0,
   remoteWhaleSessionError: null,
@@ -455,8 +456,8 @@ function renderRuntimeMode() {
     "Ferntransport",
     state.remoteBridgeProjection === true
       ? remoteWhaleSessionFresh()
-        ? "Private Bridge · Buckelwal steuerbar; sonst read-only"
-        : "Private Bridge · read-only; Wal-Fernsession nicht belegt"
+        ? "Private Bridge · Wal + Recorder eng freigegeben; sonst read-only"
+        : "Private Bridge · scoped Session nicht belegt"
       : "nicht in aktueller Antwort belegt · Control bleibt Loopback-only",
   );
   detailRow(
@@ -525,6 +526,7 @@ function stopRemoteActivity() {
   state.recordingActionPending = false;
   state.whaleActionPending = false;
   state.remoteWhaleActionObserved = false;
+  state.remoteActionScopes = [];
   state.remoteWhaleSessionToken = null;
   state.remoteWhaleSessionExpiresAt = 0;
   state.remoteWhaleSessionError = null;
@@ -636,7 +638,11 @@ async function fetchJson(url, options = {}) {
     throw new Error("Der lokale Control-Dienst ist nicht erreichbar.");
   }
   const bridgeMarker = response.headers.get("X-Audio-Remote-Bridge");
-  if (bridgeMarker === "read-only-v1" || bridgeMarker === "whale-action-v1") {
+  if (
+    bridgeMarker === "read-only-v1" ||
+    bridgeMarker === "whale-action-v1" ||
+    bridgeMarker === "recording-action-v1"
+  ) {
     // Fail closed for the page lifetime: once a remote projection was observed,
     // later responses may not silently turn the page into local authority.
     state.remoteBridgeProjection = true;
@@ -798,10 +804,12 @@ function renderTruth() {
   byId("truth-executable").textContent = executable.length ? executable.join(" + ") : "read-only";
   byId("truth-executable-detail").textContent = executable.length
     ? remoteWhaleActionsAllowed()
-      ? "Walstimme über private, eng begrenzte Tailnet-Bridge; Recorder bleibt lokal"
-      : "Wirkende Aktionen nur über den lokalen Loopback-Dienst mit frischem Aktionstoken"
+      ? "Walstimme und Recorder über private, eng begrenzte Tailnet-Bridge"
+      : remoteRecordingActionsAllowed()
+        ? "Recorder über private, eng begrenzte Tailnet-Bridge"
+        : "Wirkende Aktionen nur über den lokalen Loopback-Dienst mit frischem Aktionstoken"
     : state.remoteBridgeProjection === true
-      ? "Read-only-Bridge erkannt; keine Audiowirkung"
+      ? "Private Bridge erkannt; ohne scoped Session keine Audiowirkung"
       : "Replay lokal; wirkende Audioaktionen nicht autorisiert";
 
 }
@@ -814,7 +822,7 @@ function directLoopbackControlOrigin() {
   );
 }
 
-function recordingActionsAllowed() {
+function localRecordingActionsAllowed() {
   return Boolean(
     directLoopbackControlOrigin() &&
       backendAllowed() &&
@@ -824,6 +832,20 @@ function recordingActionsAllowed() {
       typeof state.snapshot?.service?.action_token === "string" &&
       state.snapshot.service.action_token.length >= 16
   );
+}
+
+function remoteRecordingActionsAllowed() {
+  return Boolean(
+    backendAllowed() &&
+      state.snapshot?.capabilities?.recording_control === true &&
+      state.snapshot?.recording?.actionable === true &&
+      remoteWhaleSessionFresh() &&
+      state.remoteActionScopes.includes("recording")
+  );
+}
+
+function recordingActionsAllowed() {
+  return localRecordingActionsAllowed() || remoteRecordingActionsAllowed();
 }
 
 function localWhaleActionsAllowed() {
@@ -845,7 +867,8 @@ function remoteWhaleSessionFresh() {
       typeof state.remoteWhaleSessionToken === "string" &&
       state.remoteWhaleSessionToken.length >= 32 &&
       Number.isInteger(state.remoteWhaleSessionExpiresAt) &&
-      state.remoteWhaleSessionExpiresAt > Math.floor(Date.now() / 1000) + 30
+      state.remoteWhaleSessionExpiresAt > Math.floor(Date.now() / 1000) + 30 &&
+      state.remoteActionScopes.includes("whale")
   );
 }
 
@@ -867,6 +890,7 @@ async function ensureRemoteWhaleSession({ force = false } = {}) {
   if (!force && remoteWhaleSessionFresh()) return true;
   state.remoteWhaleSessionToken = null;
   state.remoteWhaleSessionExpiresAt = 0;
+  state.remoteActionScopes = [];
   try {
     const session = await fetchJson("/bridge/v1/session", {
       method: "POST",
@@ -878,6 +902,7 @@ async function ensureRemoteWhaleSession({ force = false } = {}) {
       session?.kind !== "audio_remote_bridge_session" ||
       !Array.isArray(session.effect_scope) ||
       !session.effect_scope.includes("whale") ||
+      !session.effect_scope.includes("recording") ||
       typeof session.session_token !== "string" ||
       session.session_token.length < 32 ||
       !Number.isInteger(session.expires_at_unix)
@@ -886,11 +911,13 @@ async function ensureRemoteWhaleSession({ force = false } = {}) {
     }
     state.remoteWhaleSessionToken = session.session_token;
     state.remoteWhaleSessionExpiresAt = session.expires_at_unix;
+    state.remoteActionScopes = [...session.effect_scope];
     state.remoteWhaleSessionError = null;
     return remoteWhaleSessionFresh();
   } catch (error) {
     state.remoteWhaleSessionToken = null;
     state.remoteWhaleSessionExpiresAt = 0;
+    state.remoteActionScopes = [];
     state.remoteWhaleSessionError =
       error instanceof Error ? error.message : "Wal-Fernsession ist nicht verfügbar.";
     return false;
@@ -962,19 +989,33 @@ async function postRecordingAction(payload) {
   if (!recordingActionsAllowed()) {
     throw new Error(
       state.remoteBridgeProjection === true
-        ? "Die aktuelle Verbindung ist ausdrücklich read-only."
+        ? state.remoteWhaleSessionError || "Recorder ist auf dieser privaten Fernverbindung nicht autorisiert."
         : "Der lokale Voice-Recorder ist nicht für Aktionen freigeschaltet.",
     );
   }
-  return fetchJson("/api/v1/actions/recording", {
-    method: "POST",
-    timeoutMs: 55000,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Audio-Control-Token": state.snapshot.service.action_token,
-    },
-    body: JSON.stringify(payload),
-  });
+  if (localRecordingActionsAllowed()) {
+    return fetchJson("/api/v1/actions/recording", {
+      method: "POST",
+      timeoutMs: 55000,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Audio-Control-Token": state.snapshot.service.action_token,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+  if (remoteRecordingActionsAllowed()) {
+    return fetchJson("/bridge/v1/actions/recording", {
+      method: "POST",
+      timeoutMs: 55000,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Audio-Bridge-Session": state.remoteWhaleSessionToken,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+  throw new Error("Recorderaktion ist nicht autorisiert.");
 }
 
 async function runRecordingAction(payload) {
@@ -1112,11 +1153,11 @@ function renderRecordingControls(card, recording) {
       controls,
       "p",
       "recording-plan",
-      `Modus derzeit blockiert: ${
+      `${selectedMode.blocker === "exact-midi-gate-requires-plan" ? "Planprüfung erforderlich" : "Modus derzeit blockiert"}: ${
         selectedMode.blocker === "roland-midi-source-not-observed"
           ? "Roland-MIDI-Quelle nicht beobachtet"
           : selectedMode.blocker === "exact-midi-gate-requires-plan"
-            ? "exakter MIDI-Port und arecordmidi werden erst im Plan geprüft"
+            ? "exakter MIDI-Port und arecordmidi werden im Plan gebunden"
           : selectedMode.blocker
       }`,
     );
@@ -1230,8 +1271,8 @@ function renderRecordingControls(card, recording) {
       "p",
       "read-only-boundary",
       state.remoteBridgeProjection === true
-        ? "Diese Verbindung ist eine verifizierte Read-only-Bridge. Recorderaktionen bleiben lokal gesperrt."
-        : "Recorderaktionen sind nur am autoritativen lokalen Backend mit Aktionstoken möglich.",
+        ? "Private Bridge erkannt. Recorderaktionen benötigen eine gültige, identitätsgebundene Fernsession."
+        : "Recorderaktionen sind nur am autoritativen lokalen Backend oder über die scoped private Bridge möglich.",
     );
   }
   card.append(controls);

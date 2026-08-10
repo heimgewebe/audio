@@ -102,7 +102,8 @@ class ContractTests(unittest.TestCase):
             any("identity-bound short-lived bridge session" in item for item in remote["requires"])
         )
         self.assertIn("Buckelwal start/mode/stop", remote["boundary"])
-        self.assertIn("recorder, profiles, routing, devices and system effects remain remote-denied", remote["boundary"])
+        self.assertIn("recorder plan/start/stop/recover channels", remote["boundary"])
+        self.assertIn("profiles, routing, devices and system effects remain remote-denied", remote["boundary"])
 
     def test_contract_records_loopback_is_not_a_remote_transport(self):
         transport = self.contract["transport"]
@@ -277,14 +278,16 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('response.headers.get("X-Audio-Remote-Bridge")', self.app)
         self.assertIn('bridgeMarker === "read-only-v1"', self.app)
         self.assertIn('bridgeMarker === "whale-action-v1"', self.app)
+        self.assertIn('bridgeMarker === "recording-action-v1"', self.app)
         self.assertIn('response.headers.get("X-Audio-Remote-Effects") === "whale-v1"', self.app)
         self.assertIn('fetchJson("/bridge/v1/session"', self.app)
         session_loader = self.app.split('fetchJson("/bridge/v1/session"', 1)[1].split("});", 1)[0]
         self.assertIn('method: "POST"', session_loader)
         self.assertIn('body: "{}"', session_loader)
         self.assertIn('fetchJson("/bridge/v1/actions/whale"', self.app)
+        self.assertIn('fetchJson("/bridge/v1/actions/recording"', self.app)
         self.assertIn('"X-Audio-Bridge-Session": state.remoteWhaleSessionToken', self.app)
-        self.assertIn("Recorder bleibt lokal", self.app)
+        self.assertIn("Recorderaktionen dürfen wirken", self.app)
 
     def test_local_mode_denies_native_hardware_authority_in_the_surface(self):
         for token in ("MOTU", "ALSA", "PipeWire", "Roland"):
@@ -308,15 +311,22 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
             with self.subTest(token=broadened):
                 self.assertNotIn(broadened, helper)
 
-        gate = self.app.split("function recordingActionsAllowed() {", 1)[1].split(
+        local_gate = self.app.split("function localRecordingActionsAllowed() {", 1)[1].split(
             "\n}", 1
         )[0]
-        self.assertIn("directLoopbackControlOrigin() &&", gate)
-        self.assertIn("backendAllowed() &&", gate)
-        self.assertIn("state.remoteBridgeProjection !== true", gate)
-        self.assertIn("recording_control === true", gate)
-        self.assertIn("recording?.actionable === true", gate)
-        self.assertIn("action_token.length >= 16", gate)
+        self.assertIn("directLoopbackControlOrigin() &&", local_gate)
+        self.assertIn("backendAllowed() &&", local_gate)
+        self.assertIn("state.remoteBridgeProjection !== true", local_gate)
+        self.assertIn("recording_control === true", local_gate)
+        self.assertIn("recording?.actionable === true", local_gate)
+        self.assertIn("action_token.length >= 16", local_gate)
+
+        remote_gate = self.app.split("function remoteRecordingActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("remoteWhaleSessionFresh()", remote_gate)
+        self.assertIn('state.remoteActionScopes.includes("recording")', remote_gate)
+        self.assertNotIn("action_token", remote_gate)
 
     def test_remote_bridge_observation_stays_sticky_for_page_lifetime(self):
         fetch_block = self.app.split("async function fetchJson(url, options = {}) {", 1)[1].split(
@@ -325,6 +335,7 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('const bridgeMarker = response.headers.get("X-Audio-Remote-Bridge")', fetch_block)
         self.assertIn('bridgeMarker === "read-only-v1"', fetch_block)
         self.assertIn('bridgeMarker === "whale-action-v1"', fetch_block)
+        self.assertIn('bridgeMarker === "recording-action-v1"', fetch_block)
         self.assertIn("state.remoteBridgeProjection = true;", fetch_block)
         self.assertIn('response.headers.get("X-Audio-Remote-Effects") === "whale-v1"', fetch_block)
         self.assertIn("state.remoteWhaleActionObserved = true;", fetch_block)
@@ -341,12 +352,14 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         )[0]
         self.assertIn("if (!recordingActionsAllowed())", post)
         self.assertIn('return fetchJson("/api/v1/actions/recording"', post)
+        self.assertIn('return fetchJson("/bridge/v1/actions/recording"', post)
+        self.assertIn('"X-Audio-Bridge-Session"', post)
         self.assertLess(
             post.index("if (!recordingActionsAllowed())"),
             post.index('return fetchJson("/api/v1/actions/recording"'),
         )
 
-    def test_only_whale_actions_gain_scoped_remote_effect_authority(self):
+    def test_whale_and_recording_actions_gain_scoped_remote_effect_authority(self):
         local_gate = self.app.split("function localWhaleActionsAllowed() {", 1)[1].split(
             "\n}", 1
         )[0]
@@ -369,11 +382,25 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('"X-Audio-Bridge-Session"', router)
         self.assertNotIn("/api/v1/actions/recording", router)
 
-        recorder_gate = self.app.split("function recordingActionsAllowed() {", 1)[1].split(
+        local_recorder_gate = self.app.split("function localRecordingActionsAllowed() {", 1)[1].split(
             "\n}", 1
         )[0]
-        self.assertIn("directLoopbackControlOrigin() &&", recorder_gate)
-        self.assertIn("state.remoteBridgeProjection !== true", recorder_gate)
+        self.assertIn("directLoopbackControlOrigin() &&", local_recorder_gate)
+        self.assertIn("state.remoteBridgeProjection !== true", local_recorder_gate)
+
+        remote_recorder_gate = self.app.split("function remoteRecordingActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("remoteWhaleSessionFresh()", remote_recorder_gate)
+        self.assertIn('state.remoteActionScopes.includes("recording")', remote_recorder_gate)
+        self.assertNotIn("action_token", remote_recorder_gate)
+
+        recorder_router = self.app.split("async function postRecordingAction(payload) {", 1)[1].split(
+            "\nasync function runRecordingAction", 1
+        )[0]
+        self.assertIn('/api/v1/actions/recording', recorder_router)
+        self.assertIn('/bridge/v1/actions/recording', recorder_router)
+        self.assertIn('"X-Audio-Bridge-Session"', recorder_router)
 
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
         controls = self.app.split("function renderRecordingControls(", 1)[1].split(
