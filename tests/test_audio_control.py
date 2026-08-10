@@ -1306,7 +1306,8 @@ class AudioControlTests(unittest.TestCase):
         recent_start = javascript.index("function renderRecordingRecentTakes()")
         recent_end = javascript.index("function captureRecorderInteraction", recent_start)
         recent = javascript[recent_start:recent_end]
-        self.assertIn("library.items.slice(0, 3)", recent)
+        self.assertIn('item.status === "completed"', recent)
+        self.assertIn(".slice(0, 3)", recent)
         self.assertIn('item.status === "completed"', recent)
         self.assertIn("audio.src = item.audio_url", recent)
         self.assertIn('"Klavier + Gesang · WAV + MIDI"', javascript)

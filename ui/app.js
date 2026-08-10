@@ -1324,7 +1324,9 @@ function renderRecordingRecentTakes() {
     );
     return;
   }
-  const items = Array.isArray(library.items) ? library.items.slice(0, 3) : [];
+  const items = Array.isArray(library.items)
+    ? library.items.filter((item) => item.status === "completed").slice(0, 3)
+    : [];
   if (!items.length) {
     target.replaceChildren(
       element("div", "empty-state", "Noch keine Aufnahme vorhanden."),
