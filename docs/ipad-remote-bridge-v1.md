@@ -13,7 +13,7 @@ Der bestehende Tailscale-Serve-Eintrag auf HTTPS 443 gehört einer anderen Anwen
 Es existieren genau zwei wirkende Fernpfade:
 
 - `POST /bridge/v1/actions/whale` akzeptiert ausschließlich `start`, `mode` und `stop`; `start` und `mode` sind auf `morph`, `organic`, `realistic` und `ufo` begrenzt.
-- `POST /bridge/v1/actions/recording` akzeptiert ausschließlich `plan`, `start`, `stop` und `recover`. `plan`/`start` sind auf `voice` und `piano-vocal`, sichere einzelne `.wav`-Namen und eine begrenzte Dauer beschränkt. `start` verlangt den exakten, zuvor vom Recorder gelieferten Plan-SHA-256. `stop` und `recover` verlangen remote immer eine explizite 24-stellige Session-ID.
+- `POST /bridge/v1/actions/recording` akzeptiert ausschließlich `plan`, `start`, `stop`, `recover`, `categorize`, `trash` und `restore`. `plan`/`start` sind auf `voice` und `piano-vocal`, sichere einzelne `.wav`-Namen und eine begrenzte Dauer beschränkt. `start` verlangt den exakten, zuvor vom Recorder gelieferten Plan-SHA-256. `stop`, `recover`, `categorize`, `trash` und `restore` verlangen remote immer eine explizite 24-stellige Session-ID; `categorize` akzeptiert zusätzlich nur die feste Bibliotheks-Kategorienliste. `trash` ist ein wiederherstellbarer Bibliothekszustand und vernichtet keine WAV-, MIDI- oder Manifestbytes.
 
 Profile, Routing, Geräte-, Lautstärke- und Systemaktionen bleiben remote gesperrt. Wal- und Recorderwirkungen teilen sich einen nichtblockierenden Bridge-Effekt-Lock; parallele Wirkung wird vor Backendkontakt abgewiesen.
 

@@ -2598,6 +2598,54 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   background: rgba(185, 230, 181, 0.05);
 }
 
+.library-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.library-toolbar label,
+.recording-library-category {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.library-toolbar select,
+.recording-category-select {
+  width: 100%;
+  min-height: 42px;
+}
+
+.library-delete-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.recording-library-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.recording-library-category {
+  min-width: min(220px, 100%);
+  flex: 1 1 180px;
+}
+
+.recording-take.is-trashed {
+  opacity: 0.82;
+}
+
+.danger-button {
+  border-color: rgba(229, 140, 140, 0.42);
+}
+
 .recording-take {
   align-content: start;
 }
@@ -2662,7 +2710,8 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
 }
 
 @media (max-width: 680px) {
-  .recording-draft {
+  .recording-draft,
+  .library-toolbar {
     grid-template-columns: 1fr;
   }
 }

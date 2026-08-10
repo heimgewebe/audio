@@ -89,7 +89,7 @@
           "the loopback-only Audiozentrale remote bridge",
           "an identity-bound short-lived bridge session before scoped whale and recording effects"
         ],
-        "boundary": "The Heim-PC backend stays authoritative for state. The remote bridge is read-only except for the explicitly typed Buckelwal start/mode/stop and recorder plan/start/stop/recover channels; profiles, routing, devices and system effects remain remote-denied."
+        "boundary": "The Heim-PC backend stays authoritative for state. The remote bridge is read-only except for the explicitly typed Buckelwal start/mode/stop, recorder plan/start/stop/recover and recording-library categorize/trash/restore channels; profiles, routing, devices and system effects remain remote-denied."
       }
     }
   },

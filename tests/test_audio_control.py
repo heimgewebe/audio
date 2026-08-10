@@ -193,6 +193,8 @@ class FakeRunner:
                         "kind": "audio_recording_product_library",
                         "items": [],
                         "count": 0,
+                        "active_count": 0,
+                        "trashed_count": 0,
                         "skipped_invalid": 0,
                         "truncated": False,
                         "read_only": True,
@@ -1277,6 +1279,13 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('document.querySelectorAll("audio.recording-player")', javascript)
         self.assertIn("!audio.paused && !audio.ended", javascript)
         self.assertIn("runWhaleAction", javascript)
+        self.assertIn("function recordingLibraryActionsAllowed()", javascript)
+        self.assertIn("localRecordingLibraryActionsAllowed()", javascript)
+        self.assertIn("remoteRecordingLibraryActionsAllowed()", javascript)
+        library_gate_start = javascript.index("function localRecordingLibraryActionsAllowed()")
+        library_gate_end = javascript.index("function localWhaleActionsAllowed()", library_gate_start)
+        library_gate = javascript[library_gate_start:library_gate_end]
+        self.assertNotIn("recording?.actionable", library_gate)
         self.assertIn("function whaleActionsAllowed()", javascript)
         self.assertIn("directLoopbackControlOrigin()", javascript)
         self.assertIn("state.remoteBridgeProjection !== true", javascript)
@@ -1295,6 +1304,12 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('id="view-aufnehmen" data-view="aufnehmen"', html)
         self.assertIn('id="recording-live-host"', html)
         self.assertIn('id="recording-recent-takes"', html)
+        self.assertIn('id="library-view"', html)
+        self.assertIn('id="library-category-filter"', html)
+        self.assertIn('id="library-sort"', html)
+        self.assertIn('"Löschen"', javascript)
+        self.assertIn('"Wiederherstellen"', javascript)
+        self.assertIn('window.confirm(', javascript)
         self.assertIn('id="recording-recent-title">Letzte Takes</h3>', html)
         self.assertIn('href="#material">Alle Aufnahmen</a>', html)
         self.assertEqual(html.count('id="recorder-workspace"'), 1)
@@ -1346,7 +1361,10 @@ class AudioControlTests(unittest.TestCase):
         action_start = javascript.index("async function postRecordingAction(")
         action_end = javascript.index("async function runRecordingAction", action_start)
         action = javascript[action_start:action_end]
-        self.assertIn("if (!recordingActionsAllowed())", action)
+        self.assertIn("RECORDING_LIBRARY_ACTIONS.has(payload?.operation)", action)
+        self.assertIn("recordingLibraryActionsAllowed()", action)
+        self.assertIn("recordingActionsAllowed()", action)
+        self.assertIn("if (!allowed)", action)
         self.assertIn('"X-Audio-Control-Token": state.snapshot.service.action_token', action)
         self.assertIn('"X-Audio-Bridge-Session": state.remoteWhaleSessionToken', action)
         self.assertIn('/bridge/v1/actions/recording', action)

@@ -223,8 +223,14 @@
         </section>
 
         <section class="view" id="view-material" data-view="material" hidden>
-          <article class="depth-panel" id="material-library" data-depth-panel data-workspace-panel data-focus-title="Takes und Klänge" data-focus-summary="Bibliotheksobjekte bleiben unveränderlich; Bearbeitung würde später ein neues Objekt erzeugen.">
+          <article class="depth-panel" id="material-library" data-depth-panel data-workspace-panel data-focus-title="Takes und Klänge" data-focus-summary="Takes bleiben unveränderlich; Kategorien und Papierkorb sind getrennte Bibliotheksmetadaten.">
             <header class="depth-heading"><div><p class="eyebrow">Aufnahmen und Klänge</p><h2>Material</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <div class="library-toolbar" aria-label="Aufnahmen sortieren und filtern">
+              <label>Ansicht<select id="library-view"><option value="active">Aktive Aufnahmen</option><option value="trash">Papierkorb</option><option value="all">Alle</option></select></label>
+              <label>Kategorie<select id="library-category-filter"><option value="all">Alle Kategorien</option><option value="unsorted">Unsortiert</option><option value="song">Song</option><option value="practice">Übung</option><option value="idea">Idee</option><option value="test">Test</option><option value="finished">Fertig</option></select></label>
+              <label>Sortierung<select id="library-sort"><option value="newest">Neueste zuerst</option><option value="oldest">Älteste zuerst</option><option value="name">Name A–Z</option><option value="duration">Dauer</option><option value="category">Kategorie</option></select></label>
+            </div>
+            <p class="library-delete-note">„Löschen“ verschiebt einen Take in den Papierkorb. Die unveränderlichen Audio- und MIDI-Dateien werden dabei nicht endgültig vernichtet und können wiederhergestellt werden.</p>
             <div class="library-summary" id="library-takes"></div>
             <div class="depth-detail" hidden><div class="section-heading compact"><h3>Klangsysteme</h3></div><div class="sound-grid" id="sound-library"></div></div>
           </article>

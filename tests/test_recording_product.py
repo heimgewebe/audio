@@ -289,6 +289,55 @@ class RecordingProductTests(unittest.TestCase):
         )
         self.assertNotIn("artifacts", projection)
 
+    def test_library_metadata_is_atomic_recoverable_and_preserves_category(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            root.chmod(0o700)
+            session_id, paths, spec, state = self.synthetic_session(root)
+            paths["result"].write_text("{}", encoding="utf-8")
+            paths["result"].chmod(0o600)
+            with (
+                mock.patch.object(MODULE.REC, "_read_session", return_value=(paths, spec, state)),
+                mock.patch.object(MODULE, "_result_projection", return_value={"status": "completed"}),
+            ):
+                categorized = MODULE.mutate_library(
+                    session_id, "categorize", state_root=root, category="practice"
+                )
+                self.assertTrue(categorized["changed"])
+                self.assertEqual(categorized["library"]["category"], "practice")
+                metadata_path = root / f"{session_id}.library.json"
+                self.assertEqual(metadata_path.stat().st_mode & 0o777, 0o600)
+                trashed = MODULE.mutate_library(session_id, "trash", state_root=root)
+                self.assertTrue(trashed["library"]["trashed"])
+                self.assertIsNotNone(trashed["library"]["trashed_at"])
+                restored = MODULE.mutate_library(session_id, "restore", state_root=root)
+                self.assertFalse(restored["library"]["trashed"])
+                self.assertIsNone(restored["library"]["trashed_at"])
+                self.assertEqual(restored["library"]["category"], "practice")
+
+    def test_trashed_take_is_not_playable_or_exportable_until_restored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            root.chmod(0o700)
+            for function in (MODULE.verified_media, MODULE.verified_midi):
+                with (
+                    self.subTest(function=function.__name__),
+                    mock.patch.object(
+                        MODULE, "_read_library_metadata", return_value={"trashed": True}
+                    ),
+                    self.assertRaisesRegex(MODULE.RecordingProductError, "Papierkorb"),
+                ):
+                    function("a" * 24, state_root=root)
+
+    def test_library_metadata_rejects_unknown_category_before_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            root.chmod(0o700)
+            with self.assertRaisesRegex(MODULE.RecordingProductError, "kategorie"):
+                MODULE.mutate_library(
+                    "a" * 24, "categorize", state_root=root, category="private-arbitrary"
+                )
+
     def test_modern_performance_projects_mix_wav_not_a_voice_stem(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

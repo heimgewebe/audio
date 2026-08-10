@@ -59,6 +59,9 @@ class ContractTests(unittest.TestCase):
                 "recording:start",
                 "recording:stop",
                 "recording:recover",
+                "recording:categorize",
+                "recording:trash",
+                "recording:restore",
             ],
         )
         self.assertEqual(
@@ -289,7 +292,7 @@ class TargetValidationTests(unittest.TestCase):
         self.assertEqual(
             MODULE.validate_recording_action_payload(json.dumps(start).encode()), start
         )
-        for operation in ("stop", "recover"):
+        for operation in ("stop", "recover", "trash", "restore"):
             self.assertEqual(
                 MODULE.validate_recording_action_payload(
                     json.dumps(
@@ -298,12 +301,23 @@ class TargetValidationTests(unittest.TestCase):
                 ),
                 {"operation": operation, "session_id": "b" * 24},
             )
+        categorized = {
+            "operation": "categorize",
+            "session_id": "b" * 24,
+            "category": "practice",
+        }
+        self.assertEqual(
+            MODULE.validate_recording_action_payload(json.dumps(categorized).encode()),
+            categorized,
+        )
         rejected = (
             {"operation": "plan", "mode": "voice", "name": "../x.wav", "maximum_seconds": 60},
             {"operation": "plan", "mode": "unknown", "name": "x.wav", "maximum_seconds": 60},
             {"operation": "start", "mode": "voice", "name": "x.wav", "maximum_seconds": 60, "expected_plan_sha256": "bad"},
             {"operation": "stop"},
             {"operation": "recover", "session_id": "bad"},
+            {"operation": "categorize", "session_id": "c" * 24, "category": "arbitrary"},
+            {"operation": "trash", "session_id": "c" * 24, "extra": True},
             {"operation": "stop", "session_id": "c" * 24, "extra": True},
         )
         for payload in rejected:
@@ -811,7 +825,7 @@ class BridgeHTTPTests(unittest.TestCase):
         )
         self.assertEqual(
             set(session["allowed_operations"]["recording"]),
-            {"plan", "start", "stop", "recover"},
+            {"plan", "start", "stop", "recover", "categorize", "trash", "restore"},
         )
         self.assertNotIn("action_token", session)
         self.assertGreaterEqual(len(session["session_token"]), 32)
@@ -1082,6 +1096,9 @@ class BridgeHTTPTests(unittest.TestCase):
                 "recording:start",
                 "recording:stop",
                 "recording:recover",
+                "recording:categorize",
+                "recording:trash",
+                "recording:restore",
             ],
         )
         self.assertNotIn("recording", health["effect_exclusions"])

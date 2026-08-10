@@ -365,6 +365,99 @@ class AudioControlRecordingTests(unittest.TestCase):
                     {"operation": "stop", "session_id": malformed.SESSION_ID}
                 )
 
+    def test_library_actions_are_typed_and_require_exact_metadata_readback(self):
+        class LibraryActionRunner(RecordingActionRunner):
+            def run(self, argv, *, timeout):
+                script = pathlib.Path(argv[1]).name if len(argv) > 1 else ""
+                if script == "recording_product.py" and argv[2] in {
+                    "categorize",
+                    "trash",
+                    "restore",
+                }:
+                    operation = argv[2]
+                    self.calls.append((tuple(argv), timeout))
+                    category = (
+                        argv[argv.index("--category") + 1]
+                        if "--category" in argv
+                        else "practice"
+                    )
+                    trashed = operation == "trash"
+                    return self.result(
+                        argv,
+                        {
+                            "schema_version": 1,
+                            "kind": "audio_recording_library_action_result",
+                            "operation": operation,
+                            "session_id": self.SESSION_ID,
+                            "changed": True,
+                            "library": {
+                                "schema_version": 1,
+                                "kind": "audio_recording_library_metadata",
+                                "session_id": self.SESSION_ID,
+                                "category": category,
+                                "trashed": trashed,
+                                "updated_at": "2026-08-10T20:00:00+00:00",
+                                "trashed_at": (
+                                    "2026-08-10T20:00:00+00:00" if trashed else None
+                                ),
+                            },
+                        },
+                    )
+                return super().run(argv, timeout=timeout)
+
+        runner = LibraryActionRunner()
+        controller = self.controller(runner)
+        expected_library = {
+            "schema_version": 1,
+            "kind": "audio_recording_library_metadata",
+            "session_id": runner.SESSION_ID,
+            "category": "practice",
+            "trashed": False,
+            "updated_at": "2026-08-10T20:00:00+00:00",
+            "trashed_at": None,
+        }
+        with (
+            mock.patch.object(
+                controller,
+                "_readback_after_mutation",
+                return_value=stopped_snapshot(runner.SESSION_ID, runner.PLAN_SHA),
+            ),
+            mock.patch.object(
+                controller,
+                "recording_library",
+                return_value={
+                    "items": [
+                        {"session_id": runner.SESSION_ID, "library": expected_library}
+                    ]
+                },
+            ),
+        ):
+            result = controller.perform_recording_action(
+                {
+                    "operation": "categorize",
+                    "session_id": runner.SESSION_ID,
+                    "category": "practice",
+                }
+            )
+        self.assertEqual(result["operation"], "categorize")
+        self.assertEqual(result["library"]["category"], "practice")
+        call = next(
+            call
+            for call, _timeout in runner.calls
+            if pathlib.Path(call[1]).name == "recording_product.py"
+        )
+        self.assertIn("categorize", call)
+        self.assertIn("--category", call)
+
+        with self.assertRaisesRegex(MODULE.ControlError, "Aufnahmekategorie"):
+            controller.perform_recording_action(
+                {
+                    "operation": "categorize",
+                    "session_id": runner.SESSION_ID,
+                    "category": "arbitrary",
+                }
+            )
+
     def test_access_log_drops_request_line_and_user_controlled_content(self):
         handler = object.__new__(MODULE.AudioControlHandler)
         handler.client_address = ("127.0.0.1", 12345)
@@ -416,6 +509,9 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertIn('mode: state.recordingDraft.mode', javascript)
         self.assertIn('"Stereo-Mix WAV: Gesang + echter Roland-Klang · MIDI zusätzlich"', javascript)
         self.assertIn('state.remoteBridgeProjection !== true', javascript)
+        self.assertIn('operation: "categorize"', javascript)
+        self.assertIn('operation: "trash"', javascript)
+        self.assertIn('operation: "restore"', javascript)
 
 
 if __name__ == "__main__":
