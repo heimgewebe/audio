@@ -171,7 +171,7 @@
         <section class="view" id="view-spielen" data-view="spielen" hidden></section>
 
         <section class="workspace-staging" id="task-workspace-staging" hidden>
-          <article class="depth-panel" id="setup-playing" tabindex="-1" data-depth-panel data-workspace-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Buckelwal-Instrument mit lokaler Start-, Stop- und Modussteuerung; Fernzugriff bleibt read-only.">
+          <article class="depth-panel" id="setup-playing" tabindex="-1" data-depth-panel data-workspace-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Buckelwal-Instrument mit lokaler oder eng typisierter privater Fernsteuerung; der lokale Control-Dienst bleibt Loopback-only.">
             <header class="depth-heading"><div><p class="eyebrow">Instrument</p><h2>Buckelwal</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="play-intro-stat"></div>
             <div id="whale-control"></div>
@@ -210,7 +210,7 @@
             <div class="depth-detail" hidden><p class="callout">Profilpläne bleiben nebenwirkungsfrei. Sie zeigen Voraussetzungen, führen aber kein Apply aus.</p></div>
           </article>
 
-          <article class="depth-panel" id="setup-recording" data-depth-panel data-workspace-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile und Recorderzustand sind sichtbar; wirkende Voice-Recorder-Aktionen bleiben an das autoritative lokale Backend und ein frisches Aktionstoken gebunden.">
+          <article class="depth-panel" id="setup-recording" data-depth-panel data-workspace-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile, Recorderzustand und letzte Takes sind sichtbar; Recorderaktionen laufen lokal oder eng typisiert über die private Tailnet-Bridge.">
             <header class="depth-heading"><div><p class="eyebrow">Aufnahmeplanung</p><h2>Aufnehmen</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="recording-workspace-host" id="recording-live-host"></div>
             <div class="callout" id="recording-boundary"></div>
@@ -278,7 +278,7 @@
               <legend class="sr-only">Laufzeitmodus wählen</legend>
               <label class="runtime-mode-option" for="runtime-mode-remote">
                 <input id="runtime-mode-remote" type="radio" name="runtime-mode" value="remote-audiozentrale" aria-describedby="runtime-mode-remote-description" checked>
-                <span><strong>Fern-Audiozentrale</strong><small id="runtime-mode-remote-description">Das Heim-PC-Backend ist autoritativ. Fernzugriff ist nur über einen separat verifizierten sicheren Read-only-Bridge zulässig; der lokale Control-Dienst bleibt Loopback-only und ist ausdrücklich kein Ferntransport.</small></span>
+                <span><strong>Fern-Audiozentrale</strong><small id="runtime-mode-remote-description">Das Heim-PC-Backend ist autoritativ. Fernzugriff läuft über die private Tailnet-Bridge; nur eng typisierte Wal- und Recorderaktionen dürfen wirken. Der lokale Control-Dienst bleibt Loopback-only und ist kein Ferntransport.</small></span>
               </label>
               <label class="runtime-mode-option" for="runtime-mode-local">
                 <input id="runtime-mode-local" type="radio" name="runtime-mode" value="local-device" aria-describedby="runtime-mode-local-description">
