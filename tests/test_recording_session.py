@@ -656,6 +656,24 @@ class RecordingSessionTest(unittest.TestCase):
             ):
                 MODULE._validate_spec(spec)
 
+    def test_pre_bounded_tail_modern_performance_spec_is_readable_but_not_runnable(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance")
+        identity = spec["plan_identity"]
+        identity["performance"]["audio_capture"].pop("maximum_frame_difference")
+        spec["plan_sha256"] = MODULE.canonical_sha256(identity)
+
+        MODULE._validate_persisted_spec(spec, state_root=self.state)
+        self.assertEqual(
+            MODULE._performance_audio_capture_generation(identity),
+            "pre-bounded-tail-v1",
+        )
+        with (
+            mock.patch.object(MODULE, "contract_bindings", return_value=identity["contracts"]),
+            mock.patch.object(MODULE, "parecord_binding", return_value=identity["parecord"]),
+        ):
+            with self.assertRaisesRegex(MODULE.RecordingError, "pre-bounded-tail"):
+                MODULE._validate_spec(spec)
+
     def test_modern_performance_spec_rejects_missing_roland_audio_identity(self) -> None:
         spec = self.persisted_spec(session_type="piano-vocal-performance")
         source = spec["plan_identity"]["source"]["identity"]

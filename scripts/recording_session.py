@@ -1716,6 +1716,29 @@ def _is_modern_performance_plan(plan: Any) -> bool:
     }.issubset(performance)
 
 
+def _performance_audio_capture_generation(plan: Any) -> str | None:
+    """Classify persisted modern performance capture policy without rewriting history."""
+
+    performance = plan.get("performance") if isinstance(plan, dict) else None
+    capture = performance.get("audio_capture") if isinstance(performance, dict) else None
+    if not isinstance(capture, dict):
+        return None
+    current = {
+        "sample_rate_hz": 48_000,
+        "sources": ["motu-voice", "roland-fp-30x-usb-audio"],
+        "maximum_spawn_spread_ns": MAX_AUDIO_SPAWN_SPREAD_NS,
+        "maximum_frame_difference": MAX_AUDIO_FRAME_DIFFERENCE_FRAMES,
+        "stems": "private-temporary-not-published",
+    }
+    if capture == current:
+        return "bounded-tail-v1"
+    historical = dict(current)
+    historical.pop("maximum_frame_difference")
+    if capture == historical:
+        return "pre-bounded-tail-v1"
+    return None
+
+
 def _validate_planned_source_projection(source: Any, contract: dict[str, Any]) -> None:
     source_contract = contract["source"] if "source" in contract else contract
     kind = source_contract["kind"]
@@ -2205,14 +2228,7 @@ def _validate_persisted_spec(
                 performance.get("synchronization_boundary")
                 != "bounded audio process-spawn alignment; not sample-accurate WAV/MIDI synchronization"
                 or not isinstance(performance.get("ffmpeg"), dict)
-                or performance.get("audio_capture")
-                != {
-                    "sample_rate_hz": 48_000,
-                    "sources": ["motu-voice", "roland-fp-30x-usb-audio"],
-                    "maximum_spawn_spread_ns": MAX_AUDIO_SPAWN_SPREAD_NS,
-                    "maximum_frame_difference": MAX_AUDIO_FRAME_DIFFERENCE_FRAMES,
-                    "stems": "private-temporary-not-published",
-                }
+                or _performance_audio_capture_generation(plan) is None
                 or performance.get("mix")
                 != {
                     "method": "offline-ffmpeg-amix",
@@ -3217,6 +3233,12 @@ def _validate_spec(spec: dict[str, Any]) -> None:
         and "mix_raw_partial" not in spec["paths"]
     ):
         raise RecordingError("pre-raw modern performance spec is recovery-only")
+    if (
+        _is_modern_performance_plan(spec["plan_identity"])
+        and _performance_audio_capture_generation(spec["plan_identity"])
+        != "bounded-tail-v1"
+    ):
+        raise RecordingError("pre-bounded-tail modern performance spec is recovery-only")
     if spec["plan_identity"].get("contracts") != contract_bindings():
         raise RecordingError(
             "recording implementation contracts changed after planning"
