@@ -1067,6 +1067,9 @@ REMOTE_BRIDGE_EFFECT_SCOPE = [
     "recording:start",
     "recording:stop",
     "recording:recover",
+    "recording:categorize",
+    "recording:trash",
+    "recording:restore",
 ]
 REMOTE_BRIDGE_EFFECT_EXCLUSIONS = [
     "profiles",
