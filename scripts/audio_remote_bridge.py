@@ -59,6 +59,7 @@ MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
 MAX_BACKEND_HEADER_BYTES = 32_768
 MAX_RESPONSE_BYTES = 1_048_576
+MAX_RECORDING_AUDIO_STREAM_BYTES = 6_000_000_000
 MAX_CONCURRENT_REQUESTS = 8
 MAX_CONDITIONAL_HEADER_BYTES = 4096
 MAX_RANGE_HEADER_BYTES = 128
@@ -105,9 +106,11 @@ FIXED_API_ROUTES = frozenset(
         "/api/v1/telemetry",
         "/api/v1/replay",
         "/api/v1/whale/lesson",
+        "/api/v1/recordings",
     }
 )
 PROFILE_PLAN_RE = re.compile(r"^/api/v1/profiles/([^/]+)/plan$")
+RECORDING_AUDIO_RE = re.compile(r"^/api/v1/recordings/([0-9a-f]{24})/audio$")
 PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 FORBIDDEN_ENCODED_PATH_RE = re.compile(r"%(?:2f|5c)", re.IGNORECASE)
 SENSITIVE_KEY_TERMS = (
@@ -400,6 +403,11 @@ def validate_request_target(raw_target: str) -> tuple[str, bool]:
         if query not in {"", "refresh=1"}:
             raise RouteDenied("snapshot query is not allowed")
         return path + ("?refresh=1" if query else ""), True
+    recording_audio = RECORDING_AUDIO_RE.fullmatch(path)
+    if recording_audio:
+        if query:
+            raise RouteDenied("recording audio accepts no query")
+        return f"/api/v1/recordings/{recording_audio.group(1)}/audio", True
     match = PROFILE_PLAN_RE.fullmatch(path)
     if match:
         if query:
@@ -628,6 +636,110 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         raise
     except (OSError, TimeoutError, http.client.HTTPException) as error:
         raise BackendFailure("backend is unavailable") from error
+    finally:
+        connection.close()
+
+
+def stream_backend_recording_audio(
+    handler: "AudioRemoteBridgeHandler",
+    target: str,
+    incoming_headers: Any,
+    *,
+    head_only: bool,
+) -> None:
+    connection = http.client.HTTPConnection(
+        BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT_SECONDS
+    )
+    response_started = False
+    try:
+        connection.putrequest(
+            "HEAD" if head_only else "GET",
+            target,
+            skip_host=True,
+            skip_accept_encoding=True,
+        )
+        for name, value in backend_request_headers(
+            incoming_headers, allow_range=True
+        ).items():
+            connection.putheader(name, value)
+        connection.endheaders()
+        response = connection.getresponse()
+        headers = response.getheaders()
+        header_bytes = sum(
+            len(name.encode("latin-1", errors="replace"))
+            + len(value.encode("latin-1", errors="replace"))
+            + 4
+            for name, value in headers
+        )
+        if header_bytes > MAX_BACKEND_HEADER_BYTES:
+            raise BackendFailure("backend headers exceed bridge limit")
+        content_type = next(
+            (value for name, value in headers if name.lower() == "content-type"), ""
+        ).lower().split(";", 1)[0].strip()
+        filtered = [
+            (name, value)
+            for name, value in headers
+            if name.lower() in FORWARDED_RESPONSE_HEADERS
+        ]
+        if response.status in {
+            HTTPStatus.OK,
+            HTTPStatus.PARTIAL_CONTENT,
+            HTTPStatus.NOT_MODIFIED,
+            HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+        }:
+            if content_type != "audio/wav":
+                raise BackendFailure("backend recording media response is not WAV audio")
+            length_values = [
+                value for name, value in headers if name.lower() == "content-length"
+            ]
+            if len(length_values) != 1 or not length_values[0].isdigit():
+                raise BackendFailure("backend recording media length is invalid")
+            length = int(length_values[0], 10)
+            if not 0 <= length <= MAX_RECORDING_AUDIO_STREAM_BYTES:
+                raise BackendFailure("backend recording media exceeds stream contract")
+            response_started = True
+            handler._send_headers(
+                response.status,
+                content_length=length,
+                backend_headers=filtered,
+            )
+            if head_only or length == 0:
+                return
+            remaining = length
+            while remaining:
+                chunk = response.read(min(64 * 1024, remaining))
+                if not chunk:
+                    raise BackendFailure("backend recording media ended early")
+                handler.wfile.write(chunk)
+                remaining -= len(chunk)
+            return
+        payload = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(payload) > MAX_RESPONSE_BYTES:
+            raise BackendFailure("backend recording error response exceeds bridge limit")
+        redactions = 0
+        if content_type == "application/json":
+            payload, redactions = encode_scrubbed_json(payload)
+        elif payload:
+            raise BackendFailure("backend recording error response has unsafe content type")
+        response_started = True
+        handler._send_headers(
+            response.status,
+            content_length=len(payload),
+            backend_headers=filtered,
+            redactions=redactions,
+        )
+        if not head_only:
+            handler.wfile.write(payload)
+    except (RequestRejected, BackendFailure):
+        if response_started:
+            handler.close_connection = True
+            return
+        raise
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        if response_started:
+            handler.close_connection = True
+            return
+        raise BackendFailure("backend recording media is unavailable") from error
     finally:
         connection.close()
 
@@ -1265,6 +1377,11 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
             return
         try:
             target, _is_api = validate_request_target(self.path)
+            if RECORDING_AUDIO_RE.fullmatch(target):
+                stream_backend_recording_audio(
+                    self, target, self.headers, head_only=head_only
+                )
+                return
             status, headers, payload, redactions = read_backend_response(target, self.headers)
         except RouteDenied as error:
             self._send_error(HTTPStatus.NOT_FOUND, str(error), head_only=head_only)

@@ -2607,6 +2607,49 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   margin-top: 10px;
 }
 
+.recording-recent {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.recording-recent-heading {
+  align-items: end;
+}
+
+.recording-recent-heading a {
+  text-decoration: none;
+}
+
+.recording-recent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recording-recent-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.recording-recent-card-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.recording-recent-card-head strong,
+.recording-recent-card-head small {
+  display: block;
+}
+
+.recording-recent-card-head small {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
 @media (max-width: 680px) {
   .recording-draft {
     grid-template-columns: 1fr;

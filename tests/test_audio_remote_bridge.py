@@ -215,6 +215,16 @@ class TargetValidationTests(unittest.TestCase):
             MODULE.validate_request_target("/api/v1/profiles/desktop-mixed/plan"),
             ("/api/v1/profiles/desktop-mixed/plan", True),
         )
+        self.assertEqual(
+            MODULE.validate_request_target("/api/v1/recordings"),
+            ("/api/v1/recordings", True),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target(
+                "/api/v1/recordings/0123456789abcdef01234567/audio"
+            ),
+            ("/api/v1/recordings/0123456789abcdef01234567/audio", True),
+        )
 
     def test_unknown_queries_and_separator_bypasses_fail_closed(self):
         rejected = (
@@ -225,6 +235,9 @@ class TargetValidationTests(unittest.TestCase):
             "/api/v1/profiles/a%2Fb/plan",
             "/api/v1/profiles/a%5Cb/plan",
             "/api/v1/profiles/a\\b/plan",
+            "/api/v1/recordings/0123456789abcdef01234567/audio?x=1",
+            "/api/v1/recordings/0123456789abcdef0123456g/audio",
+            "/api/v1/recordings/%2e%2e/audio",
             "http://example.invalid/app.js",
         )
         for target in rejected:
@@ -326,6 +339,25 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+    def do_HEAD(self) -> None:
+        type(self).records.append(
+            {
+                "method": "HEAD",
+                "path": self.path,
+                "headers": {name.lower(): value for name, value in self.headers.items()},
+            }
+        )
+        status, headers, body = type(self).routes.get(
+            self.path,
+            (404, [("Content-Type", "application/json; charset=utf-8")], b"{}\n"),
+        )
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
 
 
     def do_POST(self) -> None:
@@ -480,6 +512,38 @@ class BridgeHTTPTests(unittest.TestCase):
                 [("Content-Type", "application/json; charset=utf-8")],
                 b"not-json",
             ),
+            "/api/v1/recordings": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_recording_product_library",
+                        "read_only": True,
+                        "count": 1,
+                        "items": [
+                            {
+                                "session_id": "0123456789abcdef01234567",
+                                "name": "take.wav",
+                                "status": "completed",
+                                "audio_url": "/api/v1/recordings/0123456789abcdef01234567/audio",
+                            }
+                        ],
+                    }
+                ).encode(),
+            ),
+            "/api/v1/recordings/0123456789abcdef01234567/audio": (
+                206,
+                [
+                    ("Content-Type", "audio/wav"),
+                    ("Cache-Control", "no-cache"),
+                    ("ETag", '"recording"'),
+                    ("Accept-Ranges", "bytes"),
+                    ("Content-Range", "bytes 0-3/16"),
+                    ("Set-Cookie", "drop=1"),
+                ],
+                b"RIFF",
+            ),
             "/app.js": (
                 200,
                 [
@@ -603,6 +667,52 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(record["path"], "/whale-learning-reference.wav")
         self.assertEqual(backend_headers["range"], "bytes=0-3")
         self.assertNotIn("authorization", backend_headers)
+
+    def test_recording_library_and_verified_audio_are_read_only_remote_projection(self):
+        status, headers, payload = self.request("GET", "/api/v1/recordings")
+        self.assertEqual(status, 200)
+        library = json.loads(payload)
+        self.assertEqual(library["kind"], "audio_recording_product_library")
+        self.assertEqual(library["count"], 1)
+        self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
+
+        path = "/api/v1/recordings/0123456789abcdef01234567/audio"
+        status, headers, payload = self.request(
+            "GET",
+            path,
+            headers={"Range": "bytes=0-3", "Authorization": "drop-this"},
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(payload, b"RIFF")
+        self.assertEqual(headers["Content-Type"], "audio/wav")
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertEqual(headers["Content-Range"], "bytes 0-3/16")
+        self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
+        self.assertNotIn("Set-Cookie", headers)
+        record = FakeBackendHandler.records[-1]
+        self.assertEqual(record["path"], path)
+        self.assertEqual(record["headers"]["range"], "bytes=0-3")
+        self.assertNotIn("authorization", record["headers"])
+
+        status, head_headers, head_payload = self.request(
+            "HEAD", path, headers={"Range": "bytes=0-3"}
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(head_payload, b"")
+        self.assertEqual(int(head_headers["Content-Length"]), 4)
+        self.assertEqual(FakeBackendHandler.records[-1]["method"], "HEAD")
+
+    def test_recording_audio_invalid_identity_never_reaches_backend(self):
+        before = len(FakeBackendHandler.records)
+        for path in (
+            "/api/v1/recordings/short/audio",
+            "/api/v1/recordings/0123456789abcdef0123456g/audio",
+            "/api/v1/recordings/0123456789abcdef01234567/audio?download=1",
+        ):
+            with self.subTest(path=path):
+                status, _headers, _payload = self.request("GET", path)
+                self.assertEqual(status, 404)
+        self.assertEqual(len(FakeBackendHandler.records), before)
 
     def test_invalid_backend_json_is_not_forwarded(self):
         status, headers, payload = self.request("GET", "/api/v1/replay")
