@@ -433,15 +433,7 @@ class AudioControlDeployTests(unittest.TestCase):
             "status": "serving",
             "projection": "read-only-plus-scoped-actions",
             "effect_authority": True,
-            "effect_scope": [
-                "whale:start",
-                "whale:mode",
-                "whale:stop",
-                "recording:plan",
-                "recording:start",
-                "recording:stop",
-                "recording:recover",
-            ],
+            "effect_scope": list(MODULE.REMOTE_BRIDGE_EFFECT_SCOPE),
             "effect_exclusions": [
                 "profiles",
                 "routing",
@@ -465,6 +457,20 @@ class AudioControlDeployTests(unittest.TestCase):
                 "remote_exposure": False,
             },
         }
+
+    def test_remote_bridge_effect_scope_matches_release_contract(self):
+        contract = json.loads(
+            (ROOT / "inventory" / "audiozentrale-remote-bridge.v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            MODULE.REMOTE_BRIDGE_EFFECT_SCOPE, contract["bridge"]["effect_scope"]
+        )
+        self.assertEqual(
+            self.scoped_remote_bridge_health()["effect_scope"],
+            MODULE.REMOTE_BRIDGE_EFFECT_SCOPE,
+        )
 
     def test_remote_bridge_verifier_accepts_only_scoped_action_health(self):
         payload = self.scoped_remote_bridge_health()
