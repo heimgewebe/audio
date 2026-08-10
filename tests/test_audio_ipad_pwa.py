@@ -417,7 +417,13 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("!writable", plan_disable)
         self.assertNotIn("actionable", plan_disable)
         self.assertNotIn("selectedRecordingModeActionable", self.app)
-        self.assertIn("!recordingPlanMatchesDraft()", start_disable)
+        self.assertNotIn("recordingPlanMatchesDraft()", start_disable)
+        self.assertIn("runRecordingStart();", controls)
+        self.assertIn("await requestRecordingPlan({ autoRenameCollision: true })", self.app)
+        self.assertIn("RECORDING_COLLISION_BLOCKERS", self.app)
+        self.assertIn("const attemptedNames = new Set();", self.app)
+        self.assertIn("attemptedNames.add(input.name);", self.app)
+        self.assertIn("nextAutomaticTakeName(input.mode, attemptedNames)", self.app)
         self.assertIn("modeButton.disabled = active || state.recordingActionPending", controls)
         mode_change = controls.split('modeButton.addEventListener("click"', 1)[1].split(
             "});", 1

@@ -147,6 +147,67 @@ const CAPABILITY_STATE_LABELS = {
   unknown: "nicht ermittelbar",
 };
 
+const RECORDING_COLLISION_BLOCKERS = new Set([
+  "output-already-exists",
+  "midi-output-already-exists",
+  "manifest-output-already-exists",
+]);
+
+function automaticTakeName(mode, date = new Date(), suffix = 0) {
+  const pad = (value) => String(value).padStart(2, "0");
+  const stamp =
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
+    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  const prefix = mode === "piano-vocal" ? "klavier-gesang" : "gesang";
+  const tail = Number.isInteger(suffix) && suffix > 1 ? `-${suffix}` : "";
+  return `${prefix}-${stamp}${tail}.wav`;
+}
+
+function recordingUsedNames() {
+  const names = new Set();
+  for (const item of state.recordingLibrary?.items || []) {
+    if (typeof item?.name === "string" && item.name) names.add(item.name);
+  }
+  const sessionName = state.snapshot?.recording?.session?.name;
+  if (typeof sessionName === "string" && sessionName) names.add(sessionName);
+  return names;
+}
+
+function nextAutomaticTakeName(mode, excludedNames = []) {
+  const used = recordingUsedNames();
+  for (const name of excludedNames) {
+    if (typeof name === "string" && name) used.add(name);
+  }
+  const now = new Date();
+  for (let suffix = 0; suffix < 1000; suffix += 1) {
+    const candidate = automaticTakeName(mode, now, suffix < 2 ? 0 : suffix);
+    if (!used.has(candidate)) return candidate;
+  }
+  return automaticTakeName(mode, now, 1000 + (Date.now() % 100000));
+}
+
+function ensureAutomaticTakeNameFree() {
+  if (state.recordingDraft.automaticName !== true) return false;
+  if (state.snapshot?.recording?.session?.active === true) return false;
+  const used = recordingUsedNames();
+  if (!used.has(state.recordingDraft.name)) return false;
+  state.recordingDraft = {
+    ...state.recordingDraft,
+    name: nextAutomaticTakeName(state.recordingDraft.mode, [state.recordingDraft.name]),
+  };
+  state.recordingPlan = null;
+  state.recordingPlanInput = null;
+  return true;
+}
+
+function recordingCollisionOnly(blockers) {
+  return (
+    Array.isArray(blockers) &&
+    blockers.length > 0 &&
+    blockers.every((blocker) => RECORDING_COLLISION_BLOCKERS.has(blocker))
+  );
+}
+
 const state = {
   snapshot: null,
   runtimeMode: DEFAULT_RUNTIME_MODE,
@@ -163,7 +224,12 @@ const state = {
   recordingLibraryError: null,
   recordingPlan: null,
   recordingPlanInput: null,
-  recordingDraft: { mode: "voice", name: "voice-take.wav", maximumSeconds: 600 },
+  recordingDraft: {
+    mode: "voice",
+    name: automaticTakeName("voice"),
+    maximumSeconds: 600,
+    automaticName: true,
+  },
   recordingActionPending: false,
   whaleActionPending: false,
   whaleModeDraft: null,
@@ -1019,20 +1085,102 @@ async function postRecordingAction(payload) {
   throw new Error("Recorderaktion ist nicht autorisiert.");
 }
 
+async function requestRecordingPlan({ autoRenameCollision = true } = {}) {
+  const attemptedNames = new Set();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const input = {
+      mode: state.recordingDraft.mode,
+      name: state.recordingDraft.name,
+      maximumSeconds: state.recordingDraft.maximumSeconds,
+    };
+    attemptedNames.add(input.name);
+    const result = await postRecordingAction({
+      operation: "plan",
+      mode: input.mode,
+      name: input.name,
+      maximum_seconds: input.maximumSeconds,
+    });
+    if (result.operation !== "plan" || !result.plan) {
+      throw new Error("Recorder lieferte keinen gebundenen Aufnahmeplan.");
+    }
+    const blockers = result.plan?.readiness?.blockers || [];
+    if (
+      result.plan?.ready !== true &&
+      autoRenameCollision &&
+      state.recordingDraft.automaticName === true &&
+      recordingCollisionOnly(blockers) &&
+      attempt < 2
+    ) {
+      state.recordingDraft = {
+        ...state.recordingDraft,
+        name: nextAutomaticTakeName(input.mode, attemptedNames),
+      };
+      state.recordingPlan = null;
+      state.recordingPlanInput = null;
+      continue;
+    }
+    state.recordingPlan = result.plan;
+    state.recordingPlanInput = input;
+    return { result, input };
+  }
+  throw new Error("Für den nächsten Take konnte kein freier Dateiname gefunden werden.");
+}
+
+async function runRecordingStart() {
+  if (state.recordingActionPending) return;
+  state.recordingActionPending = true;
+  syncRemoteControls();
+  renderActiveLanes({ preserveDraft: false });
+  try {
+    let plan = state.recordingPlan;
+    let input = state.recordingPlanInput;
+    if (!recordingPlanMatchesDraft()) {
+      const planned = await requestRecordingPlan({ autoRenameCollision: true });
+      plan = planned.result.plan;
+      input = planned.input;
+    }
+    const blockers = plan?.readiness?.blockers || [];
+    if (plan?.ready !== true || typeof plan.plan_sha256 !== "string") {
+      showNotice(
+        `Aufnahme kann noch nicht starten: ${blockers.join(" · ") || "Plan nicht startbereit"}.`,
+        "info",
+      );
+      return;
+    }
+    const result = await postRecordingAction({
+      operation: "start",
+      mode: input.mode,
+      name: input.name,
+      maximum_seconds: input.maximumSeconds,
+      expected_plan_sha256: plan.plan_sha256,
+    });
+    if (result.snapshot?.kind !== "audio_control_snapshot") {
+      throw new Error("Recorderstart lieferte keinen autoritativen Readback.");
+    }
+    state.snapshot = result.snapshot;
+    state.recordingPlan = null;
+    state.recordingPlanInput = null;
+    await loadRecordingLibrary({ render: false });
+    showNotice("Aufnahme läuft; Planprüfung und Start wurden bestätigt.", "success");
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : "Recorderstart wurde abgewiesen.");
+  } finally {
+    state.recordingActionPending = false;
+    syncRemoteControls();
+    if (state.snapshot) renderAll({ preserveRecorderDraft: false });
+  }
+}
+
 async function runRecordingAction(payload) {
   if (state.recordingActionPending) return;
   state.recordingActionPending = true;
   syncRemoteControls();
   renderActiveLanes({ preserveDraft: false });
   try {
-    const result = await postRecordingAction(payload);
-    if (result.operation === "plan") {
-      state.recordingPlan = result.plan;
-      state.recordingPlanInput = {
-        name: state.recordingDraft.name,
-        maximumSeconds: state.recordingDraft.maximumSeconds,
-        mode: state.recordingDraft.mode,
-      };
+    let result;
+    if (payload.operation === "plan") {
+      const planned = await requestRecordingPlan({ autoRenameCollision: true });
+      result = planned.result;
       const blockers = result.plan?.readiness?.blockers || [];
       showNotice(
         result.plan?.ready
@@ -1041,6 +1189,7 @@ async function runRecordingAction(payload) {
         result.plan?.ready ? "success" : "info",
       );
     } else {
+      result = await postRecordingAction(payload);
       if (result.snapshot?.kind !== "audio_control_snapshot") {
         throw new Error("Recorderaktion lieferte keinen autoritativen Readback.");
       }
@@ -1130,7 +1279,14 @@ function renderRecordingControls(card, recording) {
     );
     modeButton.disabled = active || state.recordingActionPending;
     modeButton.addEventListener("click", () => {
-      state.recordingDraft = { ...state.recordingDraft, mode: mode.id };
+      const automaticName = state.recordingDraft.automaticName === true;
+      state.recordingDraft = {
+        ...state.recordingDraft,
+        mode: mode.id,
+        name: automaticName
+          ? nextAutomaticTakeName(mode.id, [state.recordingDraft.name])
+          : state.recordingDraft.name,
+      };
       state.recordingPlan = null;
       state.recordingPlanInput = null;
       renderActiveLanes({ preserveDraft: false });
@@ -1153,12 +1309,14 @@ function renderRecordingControls(card, recording) {
     appendText(
       controls,
       "p",
-      "recording-plan",
-      `${selectedMode.blocker === "exact-midi-gate-requires-plan" ? "Planprüfung erforderlich" : "Modus derzeit blockiert"}: ${
+      selectedMode.blocker === "exact-midi-gate-requires-plan"
+        ? "recording-product-hint"
+        : "recording-plan",
+      `${selectedMode.blocker === "exact-midi-gate-requires-plan" ? "Automatische Startprüfung" : "Modus derzeit blockiert"}: ${
         selectedMode.blocker === "roland-midi-source-not-observed"
           ? "Roland-MIDI-Quelle nicht beobachtet"
           : selectedMode.blocker === "exact-midi-gate-requires-plan"
-            ? "exakter MIDI-Port und arecordmidi werden im Plan gebunden"
+            ? "exakter MIDI-Port und arecordmidi werden beim Start automatisch gebunden"
           : selectedMode.blocker
       }`,
     );
@@ -1206,27 +1364,26 @@ function renderRecordingControls(card, recording) {
   startButton.disabled =
     !writable ||
     active ||
-    state.recordingActionPending ||
-    !recordingPlanMatchesDraft();
+    state.recordingActionPending;
   stopButton.disabled = !writable || !active || state.recordingActionPending;
   recoverButton.disabled =
     !writable ||
     state.recordingActionPending ||
     !(session?.recovery_required === true || session?.cleanup_required === true);
 
-  const invalidatePlan = () => {
+  const invalidatePlan = ({ nameEdited = false } = {}) => {
     const parsedDuration = Number.parseInt(durationInput.value, 10);
     state.recordingDraft = {
       mode: state.recordingDraft.mode,
       name: nameInput.value,
       maximumSeconds: Number.isInteger(parsedDuration) ? parsedDuration : 0,
+      automaticName: nameEdited ? false : state.recordingDraft.automaticName === true,
     };
     state.recordingPlan = null;
     state.recordingPlanInput = null;
-    startButton.disabled = true;
   };
-  nameInput.addEventListener("input", invalidatePlan);
-  durationInput.addEventListener("input", invalidatePlan);
+  nameInput.addEventListener("input", () => invalidatePlan({ nameEdited: true }));
+  durationInput.addEventListener("input", () => invalidatePlan());
   planButton.addEventListener("click", () => {
     invalidatePlan();
     runRecordingAction({
@@ -1237,14 +1394,8 @@ function renderRecordingControls(card, recording) {
     });
   });
   startButton.addEventListener("click", () => {
-    if (!recordingPlanMatchesDraft()) return;
-    runRecordingAction({
-      operation: "start",
-      mode: state.recordingDraft.mode,
-      name: state.recordingDraft.name,
-      maximum_seconds: state.recordingDraft.maximumSeconds,
-      expected_plan_sha256: state.recordingPlan.plan_sha256,
-    });
+    invalidatePlan();
+    runRecordingStart();
   });
   stopButton.addEventListener("click", () =>
     runRecordingAction({ operation: "stop", session_id: session?.session_id }),
@@ -1286,6 +1437,7 @@ async function loadRecordingLibrary({ render = true } = {}) {
       timeoutMs: 15000,
     });
     state.recordingLibraryError = null;
+    ensureAutomaticTakeNameFree();
   } catch (error) {
     state.recordingLibrary = null;
     state.recordingLibraryError =
