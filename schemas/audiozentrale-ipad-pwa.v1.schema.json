@@ -458,7 +458,7 @@
           "const": "audiozentrale-app-shell-"
         },
         "cache_name": {
-          "const": "audiozentrale-app-shell-v4"
+          "const": "audiozentrale-app-shell-v5"
         },
         "registration": {
           "const": "secure-contexts-only"

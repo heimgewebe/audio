@@ -5,7 +5,7 @@
   "status": "specified-not-physically-verified",
   "schema_binding": {
     "path": "schemas/audiozentrale-ipad-pwa.v1.schema.json",
-    "sha256": "9539ad19addbd0390da8790eaebc1e5a1f84ae25481a519dbda0db7cd9036516"
+    "sha256": "47b665722b36e4f316c65c74743970f5a8f24e7a63af649a92fa01976913aa23"
   },
   "surface": {
     "canonical_frontend": [
@@ -138,7 +138,7 @@
     "route": "/sw.js",
     "scope": "/",
     "cache_prefix": "audiozentrale-app-shell-",
-    "cache_name": "audiozentrale-app-shell-v4",
+    "cache_name": "audiozentrale-app-shell-v5",
     "registration": "secure-contexts-only",
     "app_shell_strategy": "network-first-cache-fallback-static-only",
     "app_shell_routes": [
@@ -169,7 +169,7 @@
       "Qobuz and other provider state",
       "playback, routing and device-control responses",
       "live telemetry and snapshot responses",
-      "WAV and other audio payloads",
+      "WAV, MIDI and other audio payloads",
       "bridge session and scoped whale/recording action responses"
     ],
     "absent_capabilities": [

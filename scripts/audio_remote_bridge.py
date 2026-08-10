@@ -110,7 +110,7 @@ FIXED_API_ROUTES = frozenset(
     }
 )
 PROFILE_PLAN_RE = re.compile(r"^/api/v1/profiles/([^/]+)/plan$")
-RECORDING_AUDIO_RE = re.compile(r"^/api/v1/recordings/([0-9a-f]{24})/audio$")
+RECORDING_MEDIA_RE = re.compile(r"^/api/v1/recordings/([0-9a-f]{24})/(audio|midi)$")
 PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 FORBIDDEN_ENCODED_PATH_RE = re.compile(r"%(?:2f|5c)", re.IGNORECASE)
 SENSITIVE_KEY_TERMS = (
@@ -403,11 +403,14 @@ def validate_request_target(raw_target: str) -> tuple[str, bool]:
         if query not in {"", "refresh=1"}:
             raise RouteDenied("snapshot query is not allowed")
         return path + ("?refresh=1" if query else ""), True
-    recording_audio = RECORDING_AUDIO_RE.fullmatch(path)
-    if recording_audio:
+    recording_media = RECORDING_MEDIA_RE.fullmatch(path)
+    if recording_media:
         if query:
-            raise RouteDenied("recording audio accepts no query")
-        return f"/api/v1/recordings/{recording_audio.group(1)}/audio", True
+            raise RouteDenied("recording media accepts no query")
+        return (
+            f"/api/v1/recordings/{recording_media.group(1)}/{recording_media.group(2)}",
+            True,
+        )
     match = PROFILE_PLAN_RE.fullmatch(path)
     if match:
         if query:
@@ -640,13 +643,17 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         connection.close()
 
 
-def stream_backend_recording_audio(
+def stream_backend_recording_artifact(
     handler: "AudioRemoteBridgeHandler",
     target: str,
     incoming_headers: Any,
     *,
     head_only: bool,
 ) -> None:
+    media = RECORDING_MEDIA_RE.fullmatch(target)
+    if media is None:
+        raise RequestRejected("recording media target is invalid")
+    expected_content_type = "audio/wav" if media.group(2) == "audio" else "audio/midi"
     connection = http.client.HTTPConnection(
         BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT_SECONDS
     )
@@ -687,8 +694,8 @@ def stream_backend_recording_audio(
             HTTPStatus.NOT_MODIFIED,
             HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
         }:
-            if content_type != "audio/wav":
-                raise BackendFailure("backend recording media response is not WAV audio")
+            if content_type != expected_content_type:
+                raise BackendFailure("backend recording media response has an invalid type")
             length_values = [
                 value for name, value in headers if name.lower() == "content-length"
             ]
@@ -1377,8 +1384,8 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
             return
         try:
             target, _is_api = validate_request_target(self.path)
-            if RECORDING_AUDIO_RE.fullmatch(target):
-                stream_backend_recording_audio(
+            if RECORDING_MEDIA_RE.fullmatch(target):
+                stream_backend_recording_artifact(
                     self, target, self.headers, head_only=head_only
                 )
                 return

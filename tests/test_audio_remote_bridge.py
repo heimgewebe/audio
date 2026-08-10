@@ -225,6 +225,12 @@ class TargetValidationTests(unittest.TestCase):
             ),
             ("/api/v1/recordings/0123456789abcdef01234567/audio", True),
         )
+        self.assertEqual(
+            MODULE.validate_request_target(
+                "/api/v1/recordings/0123456789abcdef01234567/midi"
+            ),
+            ("/api/v1/recordings/0123456789abcdef01234567/midi", True),
+        )
 
     def test_unknown_queries_and_separator_bypasses_fail_closed(self):
         rejected = (
@@ -544,6 +550,17 @@ class BridgeHTTPTests(unittest.TestCase):
                 ],
                 b"RIFF",
             ),
+            "/api/v1/recordings/0123456789abcdef01234567/midi": (
+                206,
+                [
+                    ("Content-Type", "audio/midi"),
+                    ("Cache-Control", "no-cache"),
+                    ("ETag", '"midi"'),
+                    ("Accept-Ranges", "bytes"),
+                    ("Content-Range", "bytes 0-3/16"),
+                ],
+                b"MThd",
+            ),
             "/app.js": (
                 200,
                 [
@@ -712,6 +729,30 @@ class BridgeHTTPTests(unittest.TestCase):
             with self.subTest(path=path):
                 status, _headers, _payload = self.request("GET", path)
                 self.assertEqual(status, 404)
+        self.assertEqual(len(FakeBackendHandler.records), before)
+
+    def test_recording_midi_is_a_verified_read_only_media_route(self):
+        path = "/api/v1/recordings/0123456789abcdef01234567/midi"
+        status, headers, payload = self.request(
+            "GET", path, headers={"Range": "bytes=0-3", "Authorization": "drop-this"}
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(payload, b"MThd")
+        self.assertEqual(headers["Content-Type"], "audio/midi")
+        self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
+        record = FakeBackendHandler.records[-1]
+        self.assertEqual(record["method"], "GET")
+        self.assertEqual(record["path"], path)
+        self.assertNotIn("authorization", record["headers"])
+        before = len(FakeBackendHandler.records)
+        for invalid in (
+            "/api/v1/recordings/short/midi",
+            "/api/v1/recordings/0123456789abcdef0123456g/midi",
+            "/api/v1/recordings/0123456789abcdef01234567/midi?download=1",
+        ):
+            with self.subTest(invalid=invalid):
+                response, _headers, _body = self.request("GET", invalid)
+                self.assertEqual(response, 404)
         self.assertEqual(len(FakeBackendHandler.records), before)
 
     def test_invalid_backend_json_is_not_forwarded(self):

@@ -58,7 +58,7 @@
         "fixed_api_routes",
         "snapshot_queries",
         "profile_plan_pattern",
-        "recording_audio_pattern",
+        "recording_media_pattern",
         "request_header_forward",
         "backend_headers_synthesized",
         "response_header_forward",
@@ -117,8 +117,8 @@
         "profile_plan_pattern": {
           "const": "/api/v1/profiles/{profile_id}/plan"
         },
-        "recording_audio_pattern": {
-          "const": "/api/v1/recordings/{session_id}/audio"
+        "recording_media_pattern": {
+          "const": "/api/v1/recordings/{session_id}/{audio|midi}"
         },
         "request_header_forward": {
           "const": [

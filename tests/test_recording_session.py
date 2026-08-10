@@ -112,7 +112,21 @@ class RecordingSessionTest(unittest.TestCase):
                 "usb": usb,
             }
             midi["fingerprint"] = MODULE.canonical_sha256(midi)
-            performance = {"audio": audio, "midi": midi}
+            roland_audio = {
+                "node_name_sha256": "9" * 64,
+                "sample_format": "s24le",
+                "sample_rate_hz": 44_100,
+                "channels": channels,
+                "muted": False,
+                "unity_volume": True,
+                "source_kind": "usb-audio",
+                "vendor_id": "0582",
+                "product_id": "01b1",
+                "serial_sha256": "a" * 64,
+                "bus_path_sha256": "b" * 64,
+            }
+            roland_audio["fingerprint"] = MODULE.canonical_sha256(roland_audio)
+            performance = {"audio": audio, "roland_audio": roland_audio, "midi": midi}
             performance["fingerprint"] = MODULE.canonical_sha256(performance)
             return performance
         else:
@@ -222,6 +236,14 @@ class RecordingSessionTest(unittest.TestCase):
                 return_value={
                     "launcher": "/usr/bin/arecordmidi",
                     "resolved": {"path": "/usr/bin/arecordmidi", "sha256": "a" * 64},
+                },
+            ),
+            mock.patch.object(
+                MODULE,
+                "ffmpeg_binding",
+                return_value={
+                    "launcher": "/usr/bin/ffmpeg",
+                    "resolved": {"path": "/usr/bin/ffmpeg", "sha256": "c" * 64},
                 },
             ),
         ):
@@ -576,6 +598,23 @@ class RecordingSessionTest(unittest.TestCase):
             ["-p", "<plan-bound-client:port>", "-f", "25", "-t", "40", "<private-partial.mid>"],
         )
         self.assertEqual(performance["arecordmidi"]["resolved"]["sha256"], "a" * 64)
+        self.assertEqual(performance["ffmpeg"]["resolved"]["sha256"], "c" * 64)
+        self.assertEqual(
+            performance["audio_capture"],
+            {
+                "sample_rate_hz": 48_000,
+                "sources": ["motu-voice", "roland-fp-30x-usb-audio"],
+                "maximum_spawn_spread_ns": MODULE.MAX_AUDIO_SPAWN_SPREAD_NS,
+                "maximum_frame_difference": MODULE.MAX_AUDIO_FRAME_DIFFERENCE_FRAMES,
+                "stems": "private-temporary-not-published",
+            },
+        )
+        self.assertEqual(performance["mix"]["method"], "offline-ffmpeg-amix")
+        self.assertEqual(performance["mix"]["duration"], "shortest")
+        self.assertTrue(performance["mix"]["normalize"])
+        self.assertEqual(plan["identity"]["monitoring"]["mode"], "hardware-direct")
+        self.assertFalse(plan["identity"]["monitoring"]["software_loopback"])
+        self.assertIn("roland_audio", plan["identity"]["source"]["identity"])
         (self.output / "take-01.mid").write_bytes(b"occupied")
         blocked = self.ready_plan(session_type="piano-vocal-performance")
         self.assertIn("midi-output-already-exists", blocked["readiness"]["blockers"])
@@ -587,6 +626,144 @@ class RecordingSessionTest(unittest.TestCase):
         spec["plan_sha256"] = MODULE.canonical_sha256(spec["plan_identity"])
         with self.assertRaisesRegex(MODULE.RecordingError, "performance recording plan"):
             MODULE._validate_persisted_spec(spec, state_root=self.state)
+
+    def test_legacy_performance_spec_remains_readable_but_not_modernized(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance")
+        identity = spec["plan_identity"]
+        performance = identity["performance"]
+        for field in ("ffmpeg", "audio_capture", "mix"):
+            performance.pop(field)
+        performance["synchronization_boundary"] = (
+            "process-start alignment only; not sample-accurate WAV/MIDI synchronization"
+        )
+        source = identity["source"]["identity"]
+        source.pop("roland_audio")
+        unbound = {"audio": source["audio"], "midi": source["midi"]}
+        source["fingerprint"] = MODULE.canonical_sha256(unbound)
+        identity["source"]["identity_sha256"] = MODULE.canonical_sha256(source)
+        spec.pop("source_names")
+        spec["source_name"] = "legacy-voice"
+        spec["paths"].pop("voice_partial")
+        spec["paths"].pop("roland_partial")
+        spec["paths"].pop("mix_raw_partial")
+        spec["plan_sha256"] = MODULE.canonical_sha256(identity)
+        MODULE._validate_persisted_spec(spec, state_root=self.state)
+        with self.assertRaisesRegex(MODULE.RecordingError, "legacy performance takes"):
+            with mock.patch.object(
+                MODULE, "contract_bindings", return_value=identity["contracts"]
+            ), mock.patch.object(
+                MODULE, "parecord_binding", return_value=identity["parecord"]
+            ):
+                MODULE._validate_spec(spec)
+
+    def test_modern_performance_spec_rejects_missing_roland_audio_identity(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance")
+        source = spec["plan_identity"]["source"]["identity"]
+        source.pop("roland_audio")
+        source["fingerprint"] = MODULE.canonical_sha256(
+            {"audio": source["audio"], "midi": source["midi"]}
+        )
+        spec["plan_identity"]["source"]["identity_sha256"] = MODULE.canonical_sha256(source)
+        spec["plan_sha256"] = MODULE.canonical_sha256(spec["plan_identity"])
+        with self.assertRaisesRegex(MODULE.RecordingError, "modern performance recording source"):
+            MODULE._validate_persisted_spec(spec, state_root=self.state)
+
+    def test_completed_legacy_performance_result_with_vocal_wav_and_midi_remains_valid(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance")
+        identity = spec["plan_identity"]
+        for field in ("ffmpeg", "audio_capture", "mix"):
+            identity["performance"].pop(field)
+        identity["performance"]["synchronization_boundary"] = (
+            "process-start alignment only; not sample-accurate WAV/MIDI synchronization"
+        )
+        source = identity["source"]["identity"]
+        source.pop("roland_audio")
+        source["fingerprint"] = MODULE.canonical_sha256(
+            {"audio": source["audio"], "midi": source["midi"]}
+        )
+        identity["source"]["identity_sha256"] = MODULE.canonical_sha256(source)
+        spec.pop("source_names")
+        spec["source_name"] = "legacy-voice"
+        spec["paths"].pop("voice_partial")
+        spec["paths"].pop("roland_partial")
+        spec["paths"].pop("mix_raw_partial")
+        spec["plan_sha256"] = MODULE.canonical_sha256(identity)
+        MODULE._validate_persisted_spec(spec, state_root=self.state)
+
+        final = pathlib.Path(spec["paths"]["final"])
+        midi_final = pathlib.Path(spec["paths"]["midi_final"])
+        manifest_final = pathlib.Path(spec["paths"]["manifest_final"])
+        self.write_wave(final)
+        midi_final.write_bytes(
+            b"MThd"
+            + struct.pack(">IHHH", 6, 0, 1, MODULE.MIDI.SMPTE_DIVISION)
+            + b"MTrk"
+            + struct.pack(">I", 4)
+            + b"\x00\xff\x2f\x00"
+        )
+        midi_final.chmod(0o600)
+        vocal = MODULE._validate_recorded_wave(final, identity["capture"])
+        midi = MODULE._safe_regular_binding(
+            midi_final,
+            maximum_bytes=MODULE.MIDI.MAX_MIDI_BYTES,
+            require_private=True,
+            include_identity=True,
+        )
+        midi_meta = MODULE.MIDI.validate_smf(midi_final)
+        does_not_establish = ["legacy-performance-readability"]
+        MODULE._atomic_private_json(
+            manifest_final,
+            {
+                "schema_version": 1,
+                "kind": "piano_vocal_performance_take_manifest",
+                "session_id": spec["session_id"],
+                "plan_sha256": spec["plan_sha256"],
+                "worker_capture_epoch_monotonic_ns": 1,
+                "capture_timeline_offsets_ns": {
+                    "midi_spawn_requested_offset_ns": 0,
+                    "midi_running_observed_offset_ns": 1,
+                    "audio_spawn_requested_offset_ns": 2,
+                    "audio_running_observed_offset_ns": 3,
+                    "session_ready_offset_ns": 4,
+                },
+                "midi_timing": identity["performance"]["timing"],
+                "synchronization_boundary": identity["performance"]["synchronization_boundary"],
+                "artifacts": {"vocal_wav": vocal, "roland_midi_smf": midi},
+                "midi_event_counts": midi_meta["event_counts"],
+                "midi_note_velocity": midi_meta["note_velocity"],
+                "does_not_establish": does_not_establish,
+            },
+            create_only=True,
+        )
+        manifest = MODULE._safe_regular_binding(
+            manifest_final,
+            maximum_bytes=MODULE.MAX_JSON_BYTES,
+            require_private=True,
+            include_identity=True,
+        )
+        result = {
+            "schema_version": 1,
+            "kind": "audio_recording_result",
+            "session_id": spec["session_id"],
+            "status": "completed",
+            "reason": "requested-stop",
+            "started_at": "2026-07-31T00:00:00+00:00",
+            "completed_at": "2026-07-31T00:00:01+00:00",
+            "plan_sha256": spec["plan_sha256"],
+            "processes": {
+                "audio": {"returncode": 0, "stderr_bytes": 0, "stderr_sha256": hashlib.sha256(b"").hexdigest()},
+                "midi": {"returncode": 0, "stderr_bytes": 0, "stderr_sha256": hashlib.sha256(b"").hexdigest()},
+                "forced_kill": False,
+            },
+            "artifacts": {
+                "vocal_wav": vocal,
+                "roland_midi_smf": midi,
+                "take_manifest": manifest,
+            },
+            "midi_event_counts": midi_meta["event_counts"],
+            "does_not_establish": does_not_establish,
+        }
+        MODULE._validate_result(result, spec)
 
     def test_capture_child_group_is_owned_and_bounded_cleanup_reaps_it(self) -> None:
         with tempfile.TemporaryFile() as stderr:
@@ -646,6 +823,33 @@ class RecordingSessionTest(unittest.TestCase):
         partial.symlink_to(target)
         self.assertFalse(MODULE._midi_capture_process_ready(FakeChild(None), partial))
 
+    def test_performance_mix_accepts_bounded_tail_difference_and_rejects_larger_drift(self) -> None:
+        self.assertEqual(MODULE._performance_mix_frame_count(48_000, 48_000), 48_000)
+        self.assertEqual(
+            MODULE._performance_mix_frame_count(48_000, 47_760),
+            47_760,
+        )
+        with self.assertRaisesRegex(MODULE.RecordingError, "bounded frame difference"):
+            MODULE._performance_mix_frame_count(48_000, 48_000 - MODULE.MAX_AUDIO_FRAME_DIFFERENCE_FRAMES - 1)
+
+    def test_modern_performance_startup_requires_both_audio_stems_and_ready_receipt(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance")
+        voice = pathlib.Path(spec["paths"]["voice_partial"])
+        roland = pathlib.Path(spec["paths"]["roland_partial"])
+        ready = self.state / ".performance.ready.json"
+        MODULE.ensure_private_directory(self.state)
+
+        voice.write_bytes(b"v" * 45)
+        self.assertFalse(
+            MODULE._recording_startup_ready(spec, worker_ready_path=ready)
+        )
+        roland.write_bytes(b"r" * 45)
+        self.assertFalse(
+            MODULE._recording_startup_ready(spec, worker_ready_path=ready)
+        )
+        ready.write_bytes(b"{}")
+        self.assertTrue(MODULE._recording_startup_ready(spec, worker_ready_path=ready))
+
     def test_mid_publication_failure_preserves_uncommitted_siblings_without_manifest(self) -> None:
         wav_partial = self.output / ".song.partial.wav"
         wav_final = self.output / "song.wav"
@@ -701,10 +905,17 @@ class RecordingSessionTest(unittest.TestCase):
             def poll():
                 return None
 
+            @staticmethod
+            def wait(*, timeout):
+                return 0
+
         def fake_spawn(argv, _stderr):
             output = pathlib.Path(argv[-1])
             if output.suffix == ".mid":
                 output.write_bytes(silent_smf)
+                output.chmod(0o600)
+            elif output.suffix == ".s32le":
+                output.write_bytes(b"\0" * 1000 * 2 * 4)
                 output.chmod(0o600)
             else:
                 self.write_wave(output)
@@ -727,13 +938,14 @@ class RecordingSessionTest(unittest.TestCase):
                 _spec,
                 pathlib.Path("/fixture/parecord"),
                 pathlib.Path("/fixture/arecordmidi"),
+                pathlib.Path("/fixture/ffmpeg"),
             )
 
         with (
             mock.patch.object(MODULE, "worker_run", side_effect=run_performance),
             mock.patch.object(MODULE, "_spawn_capture_child", side_effect=fake_spawn),
             mock.patch.object(
-                MODULE, "_stop_capture_children", return_value=([0, 0], False)
+                MODULE, "_stop_capture_children", return_value=([0, 0, 0], False)
             ),
             mock.patch.object(
                 MODULE.time,
@@ -760,9 +972,50 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertTrue(pathlib.Path(spec["paths"]["final"]).is_file())
         self.assertTrue(pathlib.Path(spec["paths"]["midi_final"]).is_file())
         self.assertFalse(pathlib.Path(spec["paths"]["manifest_final"]).exists())
-        self.assertIsNotNone(result["performance_artifacts"]["wav_final"])
+        self.assertIsNotNone(result["performance_artifacts"]["mix_final"])
         self.assertIsNotNone(result["performance_artifacts"]["midi_final"])
         self.assertIsNone(result["performance_artifacts"]["manifest_final"])
+
+    def test_roland_spawn_failure_stops_the_already_started_voice_capture(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance")
+        midi_partial = pathlib.Path(spec["paths"]["midi_partial"])
+
+        class FakeProcess:
+            def poll(self):
+                return None
+
+        midi_process = FakeProcess()
+        voice_process = FakeProcess()
+        spawned = []
+
+        def fake_spawn(argv, _stderr):
+            spawned.append(argv)
+            if len(spawned) == 1:
+                midi_partial.touch()
+                midi_partial.chmod(0o600)
+                return midi_process
+            if len(spawned) == 2:
+                return voice_process
+            raise OSError("injected Roland spawn failure")
+
+        cleanup = mock.Mock(return_value=([0, 0], False))
+        with (
+            mock.patch.object(MODULE, "_spawn_capture_child", side_effect=fake_spawn),
+            mock.patch.object(MODULE, "_stop_capture_children", cleanup),
+            mock.patch.object(MODULE.resource, "setrlimit"),
+            mock.patch.object(MODULE.os, "umask"),
+            mock.patch.object(MODULE.signal, "signal"),
+        ):
+            with self.assertRaisesRegex(OSError, "Roland spawn failure"):
+                MODULE._performance_worker_run(
+                    spec,
+                    pathlib.Path("/fixture/parecord"),
+                    pathlib.Path("/fixture/arecordmidi"),
+                    pathlib.Path("/fixture/ffmpeg"),
+                )
+
+        self.assertEqual(cleanup.call_count, 1)
+        self.assertEqual(cleanup.call_args.args[0], [midi_process, voice_process])
 
     def test_source_projection_ignores_volatile_observation_metadata(self) -> None:
         identity = self.source_identity()
@@ -916,6 +1169,26 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertEqual(projection["invalidated"][gate], "physical-state-changed")
         self.assertEqual(projection["state_sha256"], "c" * 64)
 
+    def test_live_performance_preconditions_reserve_four_audio_artifacts(self) -> None:
+        spec = self.persisted_spec(session_type="piano-vocal-performance", maximum_seconds=1)
+        plan = spec["plan_identity"]
+        maximum = int(plan["capture"]["maximum_file_bytes"])
+        reserve = int(plan["capture"]["free_space_reserve_bytes"])
+        contract = MODULE.load_catalog("piano-vocal-performance")
+        with (
+            mock.patch.object(MODULE, "load_catalog", return_value=contract),
+            mock.patch.object(MODULE, "_physical_projection", return_value=(plan["physical"], [])),
+            mock.patch.object(MODULE, "_laboratory_projection", return_value=(plan["laboratory"], [])),
+            mock.patch.object(MODULE, "_source_projection", return_value=(plan["source"], [])),
+            mock.patch.object(
+                MODULE.shutil,
+                "disk_usage",
+                return_value=MODULE.shutil._ntuple_diskusage(0, 0, reserve + 3 * maximum + MODULE.MIDI.MAX_MIDI_BYTES + MODULE.MAX_JSON_BYTES),
+            ),
+        ):
+            with self.assertRaisesRegex(MODULE.RecordingError, "free space fell below"):
+                MODULE._validate_live_preconditions(spec)
+
     def test_live_preconditions_reject_source_identity_drift(self) -> None:
         physical = {"state_path": str(self.base / "physical.json")}
         laboratory = {"state_path": str(self.base / "laboratory.json")}
@@ -1004,7 +1277,6 @@ class RecordingSessionTest(unittest.TestCase):
             "created_at": "2026-07-31T00:00:00+00:00",
             "plan_sha256": MODULE.canonical_sha256(plan_identity),
             "plan_identity": plan_identity,
-            "source_name": "redacted",
             "paths": {
                 "partial": str(self.output / f".{final.stem}.{session_id}.partial.wav"),
                 "final": str(final),
@@ -1021,8 +1293,18 @@ class RecordingSessionTest(unittest.TestCase):
                 {"name": manifest_final.name, "path": str(manifest_final)}
             )
             spec["midi_source"] = "24:0"
+            spec["source_names"] = {"voice": "redacted-voice", "roland": "redacted-roland"}
             spec["paths"].update(
                 {
+                    "voice_partial": str(
+                        self.output / f".{final.stem}.{session_id}.voice.partial.wav"
+                    ),
+                    "roland_partial": str(
+                        self.output / f".{final.stem}.{session_id}.roland.partial.wav"
+                    ),
+                    "mix_raw_partial": str(
+                        self.output / f".{final.stem}.{session_id}.mix.partial.s32le"
+                    ),
                     "midi_partial": str(
                         self.output / f".{final.stem}.{session_id}.partial.mid"
                     ),
@@ -1035,6 +1317,8 @@ class RecordingSessionTest(unittest.TestCase):
                 }
             )
             spec["plan_sha256"] = MODULE.canonical_sha256(plan_identity)
+        else:
+            spec["source_name"] = "redacted"
         return spec
 
     def completed_result(self, spec: dict[str, object]) -> dict[str, object]:

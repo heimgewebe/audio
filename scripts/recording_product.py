@@ -88,7 +88,12 @@ def _result_projection(result: dict[str, Any], spec: dict[str, Any]) -> dict[str
         started_at = result.get("started_at")
         completed_at = result.get("completed_at")
         artifacts = result.get("artifacts") if performance else None
-        artifact = artifacts.get("vocal_wav") if isinstance(artifacts, dict) else result.get("artifact")
+        modern_performance = REC._is_modern_performance_plan(spec["plan_identity"])
+        artifact = (
+            artifacts.get("mix_wav" if modern_performance else "vocal_wav")
+            if isinstance(artifacts, dict)
+            else result.get("artifact")
+        )
         final_path = pathlib.Path(spec["paths"]["final"])
         try:
             REC._validate_binding_shape(
@@ -145,7 +150,7 @@ def _result_projection(result: dict[str, Any], spec: dict[str, Any]) -> dict[str
         )
         if performance:
             projection["artifacts"] = {
-                "vocal_wav": projection.pop("artifact"),
+                "mix_wav" if modern_performance else "vocal_wav": projection.pop("artifact"),
                 "roland_midi_smf": {
                     "sha256": artifacts["roland_midi_smf"]["sha256"],
                     "bytes": artifacts["roland_midi_smf"]["bytes"],
@@ -238,6 +243,11 @@ def _session_projection(
         if identity["session_type"] == "piano-vocal-performance"
         else source_identity
     )
+    roland_audio_identity = (
+        source_identity.get("roland_audio", {})
+        if identity["session_type"] == "piano-vocal-performance"
+        else {}
+    )
     return {
         "session_id": session_id,
         "session_type": identity["session_type"],
@@ -274,6 +284,10 @@ def _session_projection(
                 if identity["session_type"] == "piano-vocal-performance"
                 else False
             ),
+            "roland_audio_bound": isinstance(roland_audio_identity, dict)
+            and bool(roland_audio_identity),
+            "roland_audio_sample_rate_hz": roland_audio_identity.get("sample_rate_hz"),
+            "roland_audio_sample_format": roland_audio_identity.get("sample_format"),
         },
         "physical": {
             "rode_nt1a_connected": facts.get("rode_nt1a_connected"),
@@ -418,8 +432,16 @@ def verified_media(
     session_type = status.get("session_type")
     artifact = None
     if isinstance(result, dict):
+        modern_performance = (
+            session_type == "piano-vocal-performance"
+            and isinstance(result, dict)
+            and isinstance(result.get("artifacts"), dict)
+            and result["artifacts"].get("mix_wav") is not None
+        )
         artifact = (
-            result.get("artifacts", {}).get("vocal_wav")
+            result.get("artifacts", {}).get(
+                "mix_wav" if modern_performance else "vocal_wav"
+            )
             if session_type == "piano-vocal-performance"
             else result.get("artifact")
         )
@@ -452,13 +474,57 @@ def verified_media(
     }
 
 
+def verified_midi(
+    session_id: str, *, state_root: pathlib.Path = DEFAULT_STATE_ROOT
+) -> dict[str, Any]:
+    """Return the current private MIDI binding for one completed performance take."""
+
+    if not SESSION_ID_RE.fullmatch(session_id):
+        raise RecordingProductError("Ungültige Recorder-Sitzungs-ID.")
+    root = _private_state_root(state_root)
+    if root is None:
+        raise RecordingProductError("Recorderzustand ist noch nicht angelegt.")
+    try:
+        status = REC.session_status(state_root=root, session_id=session_id)
+    except REC.RecordingError as exc:
+        raise RecordingProductError("MIDI-Take ist nicht vollständig verifiziert lesbar.") from exc
+    result = status.get("result")
+    midi_final = status.get("midi_final")
+    artifacts = result.get("artifacts") if isinstance(result, dict) else None
+    artifact = artifacts.get("roland_midi_smf") if isinstance(artifacts, dict) else None
+    if (
+        status.get("session_type") != "piano-vocal-performance"
+        or status.get("status") != "completed"
+        or not isinstance(result, dict)
+        or result.get("status") != "completed"
+        or not isinstance(midi_final, dict)
+        or "error" in midi_final
+        or not isinstance(artifact, dict)
+        or artifact.get("sha256") != midi_final.get("sha256")
+        or artifact.get("bytes") != midi_final.get("bytes")
+    ):
+        raise RecordingProductError("Roland-MIDI ist nicht als finaler Performance-Take gebunden.")
+    return {
+        "schema_version": 1,
+        "kind": "audio_recording_product_midi_binding",
+        "session_id": session_id,
+        "path": midi_final["path"],
+        "sha256": midi_final["sha256"],
+        "bytes": midi_final["bytes"],
+        "mode": midi_final["mode"],
+        "device": midi_final["device"],
+        "inode": midi_final["inode"],
+        "verified_current": True,
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("probe", "library", "media"):
+    for name in ("probe", "library", "media", "midi"):
         item = sub.add_parser(name)
         item.add_argument("--state-root", type=pathlib.Path, default=DEFAULT_STATE_ROOT)
-        if name in {"probe", "media"}:
+        if name in {"probe", "media", "midi"}:
             item.add_argument("--session-id")
         if name == "library":
             item.add_argument("--limit", type=int, default=24)
@@ -472,10 +538,14 @@ def main(argv: list[str] | None = None) -> int:
             result = probe(state_root=args.state_root, session_id=args.session_id)
         elif args.command == "library":
             result = library(state_root=args.state_root, limit=args.limit)
-        else:
+        elif args.command == "media":
             if not args.session_id:
                 raise RecordingProductError("Media-Readback benötigt eine Sitzungs-ID.")
             result = verified_media(args.session_id, state_root=args.state_root)
+        else:
+            if not args.session_id:
+                raise RecordingProductError("MIDI-Readback benötigt eine Sitzungs-ID.")
+            result = verified_midi(args.session_id, state_root=args.state_root)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except (OSError, RecordingProductError, REC.RecordingError, ValueError) as exc:

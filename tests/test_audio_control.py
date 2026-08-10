@@ -1310,7 +1310,11 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn(".slice(0, 3)", recent)
         self.assertIn('item.status === "completed"', recent)
         self.assertIn("audio.src = item.audio_url", recent)
-        self.assertIn('"Klavier + Gesang · WAV + MIDI"', javascript)
+        self.assertIn('"Klavier + Gesang · Stereo-Mix WAV + MIDI"', javascript)
+        self.assertIn('"Stereo-Mix WAV: Gesang + echter Roland-Klang · MIDI zusätzlich"', javascript)
+        self.assertIn('"Klavier: MIDI-only · Gesang WAV (Legacy-Take)"', javascript)
+        self.assertIn('"WAV sichern"', javascript)
+        self.assertIn('"MIDI sichern"', javascript)
         self.assertIn("renderRecordingRecentTakes();", javascript)
 
         controls_start = javascript.index("function renderRecordingControls(")

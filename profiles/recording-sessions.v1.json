@@ -66,7 +66,7 @@
       }
     },
     "piano-vocal-performance": {
-      "purpose": "Record RØDE NT1-A through the serial-bound MOTU M2 and the unique Roland FP-30X ALSA MIDI performance as one plan-bound take.",
+      "purpose": "Record RØDE NT1-A through the serial-bound MOTU M2 together with the real Roland FP-30X USB audio and the unique Roland ALSA MIDI performance as one plan-bound take.",
       "profile": "voice-recording",
       "required_physical_facts": {
         "rode_nt1a_connected": true,
@@ -78,7 +78,8 @@
         "motu_input_gain_reference": "non-empty-string"
       },
       "required_laboratory_gates": [
-        "voice-level-measurement"
+        "voice-level-measurement",
+        "resampling-decision"
       ],
       "capture": {
         "sample_rate_hz": 48000,
@@ -96,7 +97,7 @@
         "maximum_stderr_bytes": 65536
       },
       "source": {
-        "kind": "motu-voice-with-roland-midi",
+        "kind": "motu-voice-with-roland-audio-and-midi",
         "audio": {
           "kind": "motu-voice",
           "vendor_id": "07fd",
@@ -107,6 +108,21 @@
             "s32le"
           ],
           "required_sample_rate_hz": 48000,
+          "required_channels": 2,
+          "requires_unmuted": true,
+          "requires_unity_volume": true
+        },
+        "roland_audio": {
+          "kind": "usb-audio",
+          "device": "roland_fp_30x",
+          "vendor_id": "0582",
+          "product_id": "01b1",
+          "node_name_prefix": "alsa_input.usb-Roland_",
+          "required_sample_formats": [
+            "s24le",
+            "s32le"
+          ],
+          "required_sample_rate_hz": 44100,
           "required_channels": 2,
           "requires_unmuted": true,
           "requires_unity_volume": true
