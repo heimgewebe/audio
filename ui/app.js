@@ -1177,10 +1177,25 @@ async function requestRecordingPlan({ autoRenameCollision = true } = {}) {
   throw new Error("Für den nächsten Take konnte kein freier Dateiname gefunden werden.");
 }
 
+function syncRecordingLibraryControls() {
+  const target = byId("library-takes");
+  if (!target) return;
+  target.setAttribute("aria-busy", String(state.recordingActionPending));
+  // renderLibrary baut den autorisierungsabhängigen Endzustand neu; alte
+  // Controls werden hier deshalb nie pauschal wieder freigeschaltet.
+  if (!state.recordingActionPending) return;
+  for (const control of target.querySelectorAll(
+    ".recording-category-select, .recording-take button",
+  )) {
+    control.disabled = true;
+  }
+}
+
 async function runRecordingStart() {
   if (state.recordingActionPending) return;
   state.recordingActionPending = true;
   syncRemoteControls();
+  syncRecordingLibraryControls();
   renderActiveLanes({ preserveDraft: false });
   try {
     let plan = state.recordingPlan;
@@ -1226,6 +1241,7 @@ async function runRecordingAction(payload) {
   if (state.recordingActionPending) return;
   state.recordingActionPending = true;
   syncRemoteControls();
+  syncRecordingLibraryControls();
   renderActiveLanes({ preserveDraft: false });
   try {
     let result;
@@ -2586,6 +2602,7 @@ function renderLibrary() {
     cards.push(pending);
   }
   target.replaceChildren(...cards);
+  syncRecordingLibraryControls();
 }
 
 async function loadReplay() {

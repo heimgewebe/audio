@@ -1369,6 +1369,67 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('"X-Audio-Bridge-Session": state.remoteWhaleSessionToken', action)
         self.assertIn('/bridge/v1/actions/recording', action)
 
+    def test_recording_library_controls_lock_while_an_action_is_pending(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        helper_start = javascript.index("function syncRecordingLibraryControls()")
+        helper_end = javascript.index("async function runRecordingStart()", helper_start)
+        helper = javascript[helper_start:helper_end]
+        self.assertEqual(javascript.count("syncRecordingLibraryControls();"), 3)
+        start_end = javascript.index("async function runRecordingAction(", helper_end)
+        start = javascript[helper_end:start_end]
+        action_end = javascript.index("function renderRecordingControls(", start_end)
+        action = javascript[start_end:action_end]
+        for operation in (start, action):
+            self.assertLess(
+                operation.index("syncRecordingLibraryControls();"),
+                operation.index("try {"),
+            )
+        library_start = javascript.index("function renderLibrary()")
+        library_end = javascript.index("async function loadReplay()", library_start)
+        library = javascript[library_start:library_end]
+        self.assertLess(
+            library.index("target.replaceChildren(...cards);"),
+            library.index("syncRecordingLibraryControls();"),
+        )
+
+        harness = f"""
+{helper}
+const attributes = {{}};
+const controls = [{{ disabled: false }}, {{ disabled: false }}, {{ disabled: false }}];
+const target = {{
+  setAttribute(name, value) {{ attributes[name] = value; }},
+  querySelectorAll(selector) {{
+    if (selector !== ".recording-category-select, .recording-take button") {{
+      throw new Error(`unexpected selector: ${{selector}}`);
+    }}
+    return controls;
+  }},
+}};
+const state = {{ recordingActionPending: true }};
+function byId(id) {{ return id === "library-takes" ? target : null; }}
+syncRecordingLibraryControls();
+const pending = {{ busy: attributes["aria-busy"], disabled: controls.map((control) => control.disabled) }};
+state.recordingActionPending = false;
+syncRecordingLibraryControls();
+const settled = {{ busy: attributes["aria-busy"], disabled: controls.map((control) => control.disabled) }};
+process.stdout.write(JSON.stringify({{ pending, settled }}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["pending"],
+            {"busy": "true", "disabled": [True, True, True]},
+        )
+        self.assertEqual(
+            result["settled"],
+            {"busy": "false", "disabled": [True, True, True]},
+        )
+
     def test_task_workspace_focus_reuses_the_live_panel_dom(self):
         html = (ROOT / "ui" / "index.html").read_text()
         javascript = (ROOT / "ui" / "app.js").read_text()
