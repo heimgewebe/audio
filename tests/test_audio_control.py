@@ -1880,6 +1880,58 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
             javascript[renderer_all_start:renderer_all_end],
         )
 
+    def test_telemetry_ui_separates_active_levels_from_read_only_authority(self):
+        html = (ROOT / "ui" / "index.html").read_text()
+        self.assertIn("Read-only-Kern · keine Steuerwirkung", html)
+        self.assertIn("aktiver PipeWire-Pegelobserver", html)
+        self.assertIn("geteilten PipeWire-Capture-Strom", html)
+        self.assertNotIn("Passiv beobachtet · nicht wirkend", html)
+
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        helpers_start = javascript.index("function hasActivePipeWireLevel(")
+        helpers_end = javascript.index("function finiteTelemetryNumber(", helpers_start)
+        helpers = javascript[helpers_start:helpers_end]
+        harness = f"""
+{helpers}
+const active = {{
+  id: "audio-levels",
+  availability: "live",
+  value: {{ source: "active-pipewire-shared-capture" }},
+}};
+const stale = {{ ...active, availability: "stale" }};
+const passive = {{
+  ...active,
+  value: {{ source: "external-passive-level-file" }},
+}};
+process.stdout.write(JSON.stringify({{
+  active: telemetryObservationSummary([active]),
+  stale: telemetryObservationSummary([stale]),
+  passive: telemetryObservationSummary([passive]),
+  missing: telemetryObservationSummary([]),
+  activeSource: telemetryLevelSourceLabel(active),
+  passiveSource: telemetryLevelSourceLabel(passive),
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertIn("Pegel aktiv via PipeWire", result["active"])
+        for case in ("stale", "passive", "missing"):
+            with self.subTest(case=case):
+                self.assertNotIn("Pegel aktiv", result[case])
+                self.assertIn("read-only/ohne Steuerwirkung", result[case])
+        self.assertEqual(result["activeSource"], "Quelle: PipeWire Shared Capture")
+        self.assertEqual(result["passiveSource"], "Quelle: externe Pegeldatei")
+        self.assertIn(
+            "Telemetriekern: passive-observation · read-only · keine Steuerwirkung",
+            javascript,
+        )
+        self.assertNotIn("passiv beobachtet", javascript)
+
     def test_specification_is_bound_to_exact_base_revision(self):
         text = (ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md").read_text()
         self.assertIn(MODULE.SPEC_BASE_REVISION, text)

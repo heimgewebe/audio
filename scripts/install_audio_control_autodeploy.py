@@ -19,6 +19,7 @@ DEPLOY_SCRIPT = ROOT / "scripts" / "audio_control_deploy.py"
 UNIT_ROOT = ROOT / "systemd" / "user"
 UNIT_FILES = (
     "audio-control-ui-v1.service",
+    "audio-control-level-observer-v1.service",
     "audio-control-deploy.service",
     "audio-control-deploy.timer",
 )

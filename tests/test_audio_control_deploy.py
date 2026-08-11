@@ -27,12 +27,16 @@ class AudioControlDeployTests(unittest.TestCase):
     ) -> None:
         files = {
             "scripts/audio_control.py": b"print('control')\n",
+            "scripts/audio_level_observer.py": b"print('observer')\n",
+            "scripts/audio_live_telemetry.py": b"print('telemetry')\n",
             "scripts/audio_remote_bridge.py": b"print('bridge')\n",
             "scripts/audio_remote_bridge_tailscale.py": b"print('tailscale')\n",
             "scripts/audio_remote_bridge_ipad_probe.py": b"print('ipad probe')\n",
             "inventory/audiozentrale-remote-bridge.v1.json": b"{}\n",
             "schemas/audiozentrale-remote-bridge.v1.schema.json": b"{}\n",
             "systemd/user/audio-remote-bridge-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
+            "systemd/user/audio-control-level-observer-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
+            "systemd/user/audio-control-ui-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "inventory/audiozentrale-ipad-pwa.v1.json": b"{}\n",
             "schemas/audiozentrale-ipad-pwa.v1.schema.json": b"{}\n",
             "scripts/audio_telemetry_replay.py": b"def load_replay_contract(): return {}\n",
@@ -59,6 +63,8 @@ class AudioControlDeployTests(unittest.TestCase):
             "ui/icon-192.png": b"PNG-192\n",
             "ui/icon-512.png": b"PNG-512\n",
             "tests/test_audio_control.py": b"import unittest\n",
+            "tests/test_audio_level_observer.py": b"import unittest\n",
+            "tests/test_audio_live_telemetry.py": b"import unittest\n",
             "tests/test_audio_ipad_pwa.py": b"import unittest\n",
             "tests/test_audio_remote_bridge.py": b"import unittest\n",
         }
@@ -156,6 +162,24 @@ class AudioControlDeployTests(unittest.TestCase):
             "systemd/user/audio-remote-bridge-v1.service", MODULE.RUNTIME_FILES
         )
         commit = "7" * 40
+        for missing in sorted(expected):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
+
+    def test_level_observer_runtime_files_are_release_critical(self):
+        expected = set(MODULE.LEVEL_OBSERVER_CRITICAL_RELEASE_FILES)
+        self.assertIn(
+            "systemd/user/audio-control-level-observer-v1.service",
+            MODULE.RUNTIME_FILES,
+        )
+        commit = "6" * 40
         for missing in sorted(expected):
             with self.subTest(missing=missing):
                 with tempfile.TemporaryDirectory() as directory:
@@ -1202,11 +1226,19 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertEqual(switched, [new_commit, old_commit])
 
     def test_runtime_environment_is_port_bound_and_fail_closed(self):
-        payload = MODULE.runtime_environment_payload("127.0.0.1", 9876).decode()
+        with mock.patch.dict(
+            MODULE.os.environ, {"XDG_RUNTIME_DIR": "/run/user/1234"}
+        ):
+            payload = MODULE.runtime_environment_payload("127.0.0.1", 9876).decode()
         self.assertIn('AUDIO_CONTROL_HOST="127.0.0.1"', payload)
         self.assertIn('AUDIO_CONTROL_PORT="9876"', payload)
         self.assertIn(
             f'AUDIO_CONTROL_MANAGED_BY="{MODULE.UI_MANAGED_BY}"', payload
+        )
+        self.assertIn(
+            'AUDIO_TELEMETRY_LEVEL_SOURCE="/run/user/1234/'
+            'audio-control-level-observer/levels.json"',
+            payload,
         )
         with self.assertRaises(MODULE.DeployError):
             MODULE.runtime_environment_payload("0.0.0.0", 9876)
@@ -1419,8 +1451,12 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertIn("%h/.config/systemd/user", deploy)
         self.assertNotIn("%h/.config/audio-control-ui", deploy)
         self.assertIn("%h/.local/state/audio-control-deploy", deploy)
-        self.assertEqual(len(MODULE.RUNTIME_FILES), 5)
+        self.assertEqual(len(MODULE.RUNTIME_FILES), 6)
         self.assertIn("systemd/user/audio-remote-bridge-v1.service", MODULE.RUNTIME_FILES)
+        self.assertIn(
+            "systemd/user/audio-control-level-observer-v1.service",
+            MODULE.RUNTIME_FILES,
+        )
         self.assertEqual(MODULE.DEFAULT_RELEASE_RETENTION, 3)
         self.assertIn("OnUnitActiveSec=60s", timer)
         self.assertIn("Persistent=true", timer)

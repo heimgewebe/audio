@@ -765,6 +765,69 @@ class RealCollectorTests(unittest.TestCase):
                     with self.assertRaises(MODULE.TelemetryError):
                         collector.sample(None)
 
+    def test_active_pipewire_level_source_is_identified_and_must_be_fresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "levels.json"
+            collector = MODULE.LevelSourceCollector(source_path=path)
+            payload = {
+                "kind": "audio_level_observation",
+                "observer": MODULE.ACTIVE_LEVEL_OBSERVER_ID,
+                "observer_mode": MODULE.ACTIVE_LEVEL_OBSERVER_MODE,
+                "capture_transport": "pipewire-native-shared-stream",
+                "source_selection": "pipewire-default-source",
+                "sequence": 1,
+                "observed_at_unix": 1_700_000_000.0,
+                "peak_dbfs": -6.0,
+                "rms_dbfs": -12.0,
+                "channel": "FL/FR",
+            }
+            context = MODULE.CollectorContext(None, 100.0, 1_700_000_001.0)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            value = collector.sample(context)
+
+            self.assertEqual(value["source"], "active-pipewire-shared-capture")
+            self.assertEqual(value["observer"], MODULE.ACTIVE_LEVEL_OBSERVER_ID)
+            self.assertEqual(value["source_selection"], "pipewire-default-source")
+
+            with self.assertRaisesRegex(MODULE.TelemetryError, "not advanced"):
+                collector.sample(context)
+            collector.reset()
+            self.assertEqual(
+                collector.sample(context)["source"], "active-pipewire-shared-capture"
+            )
+
+            payload["observed_at_unix"] = 1_699_999_990.0
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.TelemetryError, "stale"):
+                collector.sample(context)
+
+    def test_active_level_source_rejects_false_identity_and_future_timestamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "levels.json"
+            collector = MODULE.LevelSourceCollector(source_path=path)
+            context = MODULE.CollectorContext(None, 100.0, 1_700_000_000.0)
+            payload = {
+                "kind": "audio_level_observation",
+                "observer": "unknown-observer",
+                "observer_mode": MODULE.ACTIVE_LEVEL_OBSERVER_MODE,
+                "capture_transport": "pipewire-native-shared-stream",
+                "source_selection": "pipewire-default-source",
+                "sequence": 1,
+                "observed_at_unix": 1_700_000_000.0,
+                "peak_dbfs": -6.0,
+                "rms_dbfs": -12.0,
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.TelemetryError, "identity"):
+                collector.sample(context)
+
+            payload["observer"] = MODULE.ACTIVE_LEVEL_OBSERVER_ID
+            payload["observed_at_unix"] = 1_700_000_010.0
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.TelemetryError, "future"):
+                collector.sample(context)
+
     def test_bounded_reader_rejects_oversized_files(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "big"

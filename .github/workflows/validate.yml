@@ -24,5 +24,6 @@ jobs:
         run: >-
           systemd-analyze --user verify
           systemd/user/audio-control-ui-v1.service
+          systemd/user/audio-control-level-observer-v1.service
           systemd/user/audio-control-deploy.service
           systemd/user/audio-control-deploy.timer

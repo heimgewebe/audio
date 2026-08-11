@@ -2,6 +2,7 @@ check:
     bash tests/test-audio-safety.sh
     bash scripts/check-audio-safety .
     python3 scripts/audio_control.py check
+    python3 scripts/audio_level_observer.py check
     python3 scripts/audio_live_telemetry.py check
     ./scripts/audio-product-model check
     ./scripts/audio-telemetry-replay check
@@ -15,6 +16,9 @@ product-model-check:
 
 telemetry-live-check:
     python3 scripts/audio_live_telemetry.py check
+
+telemetry-level-observer-check:
+    python3 scripts/audio_level_observer.py check
 
 telemetry-live-safety:
     python3 scripts/audio_live_telemetry.py safety

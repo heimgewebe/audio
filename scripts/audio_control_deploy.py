@@ -30,10 +30,20 @@ DEFAULT_REMOTE = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_UNIT = "audio-control-ui-v1.service"
 REMOTE_BRIDGE_UNIT = "audio-remote-bridge-v1.service"
+LEVEL_OBSERVER_UNIT = "audio-control-level-observer-v1.service"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 UI_RUNTIME_ENV = DEFAULT_STATE_ROOT / "runtime.env"
 UI_MANAGED_BY = "audio-control-autodeploy-v1"
+LEVEL_OBSERVER_RUNTIME_DIRECTORY = "audio-control-level-observer"
+LEVEL_OBSERVER_RELEASE_SENTINEL = "tests/test_audio_level_observer.py"
+LEVEL_OBSERVER_CRITICAL_RELEASE_FILES = (
+    "scripts/audio_level_observer.py",
+    "scripts/audio_live_telemetry.py",
+    "tests/test_audio_live_telemetry.py",
+    f"systemd/user/{LEVEL_OBSERVER_UNIT}",
+    "systemd/user/audio-control-ui-v1.service",
+)
 RUNTIME_FILES = {
     "scripts/audio_control_deploy.py": (
         pathlib.Path.home() / ".local" / "libexec" / "audio-control-deploy.py",
@@ -41,6 +51,14 @@ RUNTIME_FILES = {
     ),
     "systemd/user/audio-control-ui-v1.service": (
         pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-control-ui-v1.service",
+        0o600,
+    ),
+    f"systemd/user/{LEVEL_OBSERVER_UNIT}": (
+        pathlib.Path.home()
+        / ".config"
+        / "systemd"
+        / "user"
+        / "audio-control-level-observer-v1.service",
         0o600,
     ),
     "systemd/user/audio-remote-bridge-v1.service": (
@@ -356,12 +374,34 @@ def validate_ui_endpoint(host: str, port: int) -> None:
         raise DeployError("UI-Port muss zwischen 1024 und 65535 liegen.")
 
 
+def level_source_runtime_path() -> pathlib.Path:
+    runtime_root = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if not runtime_root:
+        runtime_root = f"/run/user/{os.getuid()}"
+    root = pathlib.Path(os.path.normpath(runtime_root))
+    if not root.is_absolute() or str(root) == "/":
+        raise DeployError("XDG_RUNTIME_DIR ist kein sicherer absoluter Pfad.")
+    return root / LEVEL_OBSERVER_RUNTIME_DIRECTORY / "levels.json"
+
+
+def environment_file_line(name: str, value: str) -> str:
+    if any(character in value for character in "\n\r\0"):
+        raise DeployError(f"Ungültiger Laufzeitwert für {name}.")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{name}="{escaped}"\n'
+
+
 def runtime_environment_payload(host: str, port: int) -> bytes:
     validate_ui_endpoint(host, port)
-    return (
-        f'AUDIO_CONTROL_HOST="{host}"\n'
-        f'AUDIO_CONTROL_PORT="{port}"\n'
-        f'AUDIO_CONTROL_MANAGED_BY="{UI_MANAGED_BY}"\n'
+    return "".join(
+        [
+            environment_file_line("AUDIO_CONTROL_HOST", host),
+            environment_file_line("AUDIO_CONTROL_PORT", str(port)),
+            environment_file_line("AUDIO_CONTROL_MANAGED_BY", UI_MANAGED_BY),
+            environment_file_line(
+                "AUDIO_TELEMETRY_LEVEL_SOURCE", str(level_source_runtime_path())
+            ),
+        ]
     ).encode("utf-8")
 
 
@@ -391,6 +431,7 @@ def reconcile_runtime_environment(
                 "mode": "0o600",
                 "host": host,
                 "port": port,
+                "level_source": str(level_source_runtime_path()),
             }, None
     backup = {
         "path": str(path),
@@ -405,6 +446,7 @@ def reconcile_runtime_environment(
         "mode": "0o600",
         "host": host,
         "port": port,
+        "level_source": str(level_source_runtime_path()),
     }, backup
 
 
@@ -604,6 +646,8 @@ def extract_commit(repository: pathlib.Path, commit: str, destination: pathlib.P
 def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
     required = [
         release / "scripts" / "audio_control.py",
+        release / "scripts" / "audio_level_observer.py",
+        release / "scripts" / "audio_live_telemetry.py",
         release / "scripts" / "audio_remote_bridge.py",
         release / "scripts" / "audio_remote_bridge_tailscale.py",
         release / "inventory" / "audiozentrale-remote-bridge.v1.json",
@@ -620,6 +664,8 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         release / "inventory" / "audiozentrale-ipad-pwa.v1.json",
         release / "schemas" / "audiozentrale-ipad-pwa.v1.schema.json",
         release / "tests" / "test_audio_control.py",
+        release / "tests" / "test_audio_level_observer.py",
+        release / "tests" / "test_audio_live_telemetry.py",
         release / "tests" / "test_audio_ipad_pwa.py",
         release / "tests" / "test_audio_remote_bridge.py",
     ]
@@ -634,6 +680,27 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         ),
         run_command(
             [sys.executable, "-m", "unittest", "tests/test_audio_control.py"],
+            cwd=release,
+            timeout=180,
+        ),
+        run_command(
+            [sys.executable, "scripts/audio_level_observer.py", "check"],
+            cwd=release,
+            timeout=30,
+        ),
+        run_command(
+            [sys.executable, "scripts/audio_live_telemetry.py", "check"],
+            cwd=release,
+            timeout=60,
+        ),
+        run_command(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "tests/test_audio_level_observer.py",
+                "tests/test_audio_live_telemetry.py",
+            ],
             cwd=release,
             timeout=180,
         ),
@@ -688,6 +755,8 @@ def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
     if not (release / REMOTE_BRIDGE_RELEASE_SENTINEL).is_file():
         remote_bridge_paths = set(REMOTE_BRIDGE_CRITICAL_RELEASE_FILES)
         paths = [relative for relative in paths if relative not in remote_bridge_paths]
+    if (release / LEVEL_OBSERVER_RELEASE_SENTINEL).is_file():
+        paths.extend(LEVEL_OBSERVER_CRITICAL_RELEASE_FILES)
     paths.extend(relative for relative in RUNTIME_FILES if (release / relative).exists())
     return tuple(dict.fromkeys(paths))
 
@@ -1419,6 +1488,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             ui_unit_updated = (
                 "systemd/user/audio-control-ui-v1.service" in updated_sources
             )
+            level_observer_unit_updated = (
+                f"systemd/user/{LEVEL_OBSERVER_UNIT}" in updated_sources
+            )
             bridge_unit_updated = (
                 "systemd/user/audio-remote-bridge-v1.service" in updated_sources
             )
@@ -1430,6 +1502,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 changed
                 or bool(runtime_environment.get("changed"))
                 or ui_unit_updated
+                or level_observer_unit_updated
             )
             if restart_required:
                 service_activation_attempted = True

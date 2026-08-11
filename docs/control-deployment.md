@@ -25,13 +25,18 @@ autoritative Commitidentität.
 6. Host, Port und Laufzeitverwalter werden atomar in
    `~/.local/state/audio-control-deploy/runtime.env` gebunden. Version 1 bleibt
    absichtlich auf `127.0.0.1` beschränkt; der Port ist zwischen 1024 und 65535
-   konfigurierbar.
+   konfigurierbar. Dieselbe Datei bindet
+   `AUDIO_TELEMETRY_LEVEL_SOURCE` an die private JSON-Ausgabe des
+   Pegelbeobachters unter `$XDG_RUNTIME_DIR/audio-control-level-observer`.
 7. Deployskript und systemd-Units werden bei jedem Lauf gegen den gebundenen
    Release abgeglichen. Byte- oder Modusdrift wird auch dann repariert, wenn der
    Zielcommit unverändert ist; ein bereits identischer Stand bleibt ohne
    Unit-Prüfung und ohne Neustart wirkungsfrei.
 8. Der persistente Dienst `audio-control-ui-v1.service` wird bei einem neuen
-   Release, geänderter Laufzeitkonfiguration oder geänderter UI-Unit neu gestartet.
+   Release, geänderter Laufzeitkonfiguration oder geänderter UI-/Observer-Unit
+   neu gestartet. Seine `Wants=`-/`PartOf=`-Kopplung startet dabei auch
+   `audio-control-level-observer-v1.service` revisionsgebunden und beendet ihn
+   zusammen mit der UI.
 9. Das Deployment gilt erst als erfolgreich, wenn HTML, JavaScript und CSS
    bytegenau zum Release passen und `/api/v1/health` zusätzlich exakt den
    Zielcommit als laufende Backendrevision bestätigt.
