@@ -1,6 +1,7 @@
 [Unit]
 Description=Lokale Audiozentrale
-After=network.target
+After=network.target audio-control-level-observer-v1.service
+Wants=audio-control-level-observer-v1.service
 StartLimitIntervalSec=30
 StartLimitBurst=5
 ConditionPathExists=%h/.local/share/audio-control-ui/current/scripts/audio_control.py

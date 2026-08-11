@@ -6,6 +6,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 INDEX_PATH = ROOT / "ui" / "index.html"
 DEPLOY_UNIT_PATH = ROOT / "systemd" / "user" / "audio-control-deploy.service"
 UI_UNIT_PATH = ROOT / "systemd" / "user" / "audio-control-ui-v1.service"
+LEVEL_OBSERVER_UNIT_PATH = (
+    ROOT / "systemd" / "user" / "audio-control-level-observer-v1.service"
+)
 LEGACY_INDEX_BLOB_SHA = "4a1e80316512a24f780359c8f7e45194226c4f88"
 DEPLOYMENT_CONTRACT_PATTERN = (
     r'<meta\s+name="audio-control-deployment-contract"\s+'
@@ -48,6 +51,15 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
             address_families(UI_UNIT_PATH),
             {"AF_UNIX", "AF_INET"},
         )
+
+    def test_level_observer_is_pipewire_only_and_coupled_to_the_ui_lifecycle(self):
+        self.assertEqual(address_families(LEVEL_OBSERVER_UNIT_PATH), {"AF_UNIX"})
+        observer = LEVEL_OBSERVER_UNIT_PATH.read_text(encoding="utf-8")
+        ui = UI_UNIT_PATH.read_text(encoding="utf-8")
+        self.assertIn("PartOf=audio-control-ui-v1.service", observer)
+        self.assertIn("RuntimeDirectory=audio-control-level-observer", observer)
+        self.assertIn("--target auto", observer)
+        self.assertIn("Wants=audio-control-level-observer-v1.service", ui)
 
 
 if __name__ == "__main__":

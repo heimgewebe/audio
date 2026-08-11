@@ -1,21 +1,25 @@
-# Live-Telemetrie v1 – passiv, begrenzt, absturzisoliert
+# Live-Telemetrie v1 – begrenzt und absturzisoliert
 
-Dieses Dokument beschreibt die passive Live-Telemetrie der lokalen
-Audiozentrale: die exakte Sicherheitsgrenze, die Ströme und ihr Schema, den
-Endpunkt, die Belegläufe über eine und acht Stunden, die Interpretation der
-Belege, die Grenzen und den Rollback.
+Dieses Dokument beschreibt die Live-Telemetrie der lokalen Audiozentrale. Der
+Telemetriekern bleibt passiv; für echte Peak-/RMS-Werte läuft davor ein klar
+getrennter **aktiver** PipeWire-Beobachter. Beschrieben werden die exakten
+Sicherheitsgrenzen, die Ströme und ihr Schema, der Endpunkt, die Belegläufe über
+eine und acht Stunden, die Interpretation der Belege, die Grenzen und der
+Rollback.
 
 Beteiligte Dateien:
 
 - `scripts/audio_live_telemetry.py` – abhängigkeitsfreier Telemetriekern,
+- `scripts/audio_level_observer.py` – aktiver PipeWire-Pegelbeobachter,
 - `scripts/audio_telemetry_soak.py` – begrenzte Soak- und Lastprüfung,
 - `scripts/audio_control.py` – read-only Endpunkt und Dienstlebenszyklus,
 - `ui/index.html`, `ui/app.js`, `ui/styles.css` – kompaktes Telemetriepanel.
 
 ## 1. Sicherheitsgrenze (exakt)
 
-Die Telemetrie **beobachtet ausschließlich**. Sie identifiziert beobachtete
-Knoten und Verbindungen, verändert aber nichts.
+Der in `audio_live_telemetry.py` laufende Telemetriekern **beobachtet
+ausschließlich**. Er identifiziert beobachtete Knoten und Verbindungen,
+verändert aber nichts.
 
 Erlaubt ist genau:
 
@@ -27,13 +31,15 @@ Erlaubt ist genau:
 | eigene Prozess-CPU-Zeit lesen | `/proc/self/stat` |
 | ALSA-Sequencer-Clients und -Ports lesen | `/proc/asound/seq/clients` |
 | Rawmidi-Bytezähler lesen | `/proc/asound/card*/midi*` |
-| Pegel lesen, falls extern bereitgestellt | Datei aus `AUDIO_TELEMETRY_LEVEL_SOURCE` |
+| Pegel lesen, falls extern bereitgestellt | begrenzte Datei aus `AUDIO_TELEMETRY_LEVEL_SOURCE` |
 
 Ausdrücklich verboten und im Code hart abgewiesen:
 
 - Standardgeräte, Routen, Profile, Lautstärken oder Links ändern
   (`wpctl set-*`, `pactl set-*`, `pw-cli set-param`, `pw-link`, `pw-metadata`),
-- einen Aufnahme- oder Wiedergabestrom öffnen (`pw-record`, `pw-cat`, `arecord`),
+- einen Aufnahme- oder Wiedergabestrom öffnen (`pw-record`, `pw-cat`, `arecord`);
+  der nachfolgend beschriebene separate Pegelbeobachter ist nicht Teil dieser
+  passiven Grenze,
 - eine ALSA-Sequencer-Subskription anlegen. **`aseqdump` wird bewusst nicht
   verwendet**: es abonniert einen Port und verändert damit den beobachteten
   MIDI-Graphen. Die MIDI-Aktivität kommt deshalb nur aus `/proc`.
@@ -44,14 +50,57 @@ Die Allowlist `PASSIVE_COMMANDS` ist die einzige Stelle, an der externe
 Programme entstehen. `assert_passive_argv()` weist alles andere ab, auch wenn
 ein verbotenes Verb in einem sonst erlaubten Vektor auftaucht.
 
-Die Beobachtung ist vollständig reversibel: sie hinterlässt keinen Zustand.
-Der Beobachter trägt die feste Identität `audio-control-telemetry-v1`;
-`owned_nodes` und `owned_links` sind in v1 leer. Ein späterer, separat
-hostfreigegebener Beobachtungsknoten dürfte nur unter dieser Identität angelegt
-und ausschließlich identitätsgebunden zurückgenommen werden. Ohne eigene
-Ressourcen ist Rollback ein No-op. Das Beenden der Telemetrie ist ein reiner
-Threadstopp. Sein Zeitbudget liegt oberhalb des längsten passiven
-Subprozess-Timeouts einschließlich Kill-Grace.
+Die passive Kernbeobachtung ist vollständig reversibel: sie hinterlässt keinen
+Zustand. Sie trägt die feste Identität `audio-control-telemetry-v1`;
+`owned_nodes` und `owned_links` bleiben für diesen Kern leer. Das Beenden des
+Kerns ist ein reiner Threadstopp. Sein Zeitbudget liegt oberhalb des längsten
+passiven Subprozess-Timeouts einschließlich Kill-Grace.
+
+### 1.1 Aktiver Pegelbeobachter
+
+Peak und RMS benötigen echte Samples. Der separate Dienst
+`audio-control-level-observer-v1.service` öffnet deshalb bewusst einen aktiven
+nativen PipeWire-Capture-Stream. PipeWire/WirePlumber erzeugen für diesen Stream
+einen flüchtigen Knoten und mindestens einen flüchtigen Link zur Quelle. Der
+gesamte Pegelmesspfad ist damit **nicht passiv**. Der Observer ändert aber weder
+Defaultquelle noch Profile, Lautstärken oder produktive Routen und hinterlegt
+keine dauerhafte PipeWire-Konfiguration.
+
+Der Stream verwendet `target=auto`. Damit wählt WirePlumber die aktuelle
+PipeWire-Defaultquelle; auf dem vorgesehenen System ist das die MOTU-M2-Quelle.
+Eine flüchtige Node-ID wie `109` wird nicht gespeichert. Ein ausdrücklich
+konfigurierter stabiler `node.name` bleibt über die Kommandozeilenoption
+`--target` möglich, die ausgelieferte Unit folgt aber automatisch dem Default.
+Der Observer greift nie direkt oder exklusiv auf ALSA zu. PipeWire bleibt der
+Shared-Capture-Pfad, sodass Recorder und Voice-Capture parallel eigene Streams
+öffnen können.
+
+`pw-cat` liefert 48 kHz, Stereo `FL/FR` und `f32`. Der Observer berechnet pro
+500-ms-Fenster Sample-Peak und RMS aus den tatsächlich empfangenen Samples. Bei
+exakter digitaler Null wird der dokumentierte Darstellungsboden `-160 dBFS`
+ausgegeben; Übersteuerungen werden bei `0 dBFS` begrenzt und zusätzlich über
+`clipping` und `clipped_samples` kenntlich gemacht. Es werden weder Zufalls-,
+Fallback- noch aus Graphdaten abgeleitete Pegel erzeugt.
+
+Jedes Fenster ersetzt atomar eine private, auf 8 KiB begrenzte JSON-Datei unter
+`$XDG_RUNTIME_DIR/audio-control-level-observer/levels.json`. Der Deployer trägt
+diesen absoluten Pfad in `runtime.env` als `AUDIO_TELEMETRY_LEVEL_SOURCE` ein.
+Der passive Dateicollector prüft Schema, Observeridentität, fortschreitende
+Sequenz und Zeitstempel; eine unveränderte, mehr als drei Sekunden alte oder aus
+der Zukunft datierte Beobachtung wird abgewiesen. `RuntimeDirectory=` entfernt
+die Datei bei Dienstende. Bei
+Capture-Stillstand, Geräteverlust oder `pw-cat`-Ende schlägt der Observer
+begrenzt fehl und systemd startet ihn neu; das Panel fällt in dieser Zeit auf
+`stale`/`unavailable`, statt den letzten Wert als neu auszugeben.
+
+Der Observer ist mit `Wants=` und `PartOf=` an den UI-Dienst gekoppelt, läuft
+mit `Restart=on-failure`, 64 MiB Speichergrenze, 10 % CPU-Quota und 100 ms
+PipeWire-Latenz. Der Deployer installiert beide Units revisionsgebunden und
+startet die UI auch bei reparierter Observer-Unit neu. Der vorhandene
+`level_analyzer.py` bleibt der Offline-WAV-Analysator; der vorhandene
+`voice_capture_observer.py` erzeugt kurze gebundene Mess-WAVs. Beide sind
+absichtlich keine wiederverwendbaren Dauer-Meter und würden unnötige Dateien
+beziehungsweise einen zweiten Lifecycle einführen.
 
 ## 2. Ströme und Schema
 
@@ -61,7 +110,7 @@ eigenem begrenztem Puffer:
 | Strom-ID | Inhalt | Quelle | Intervall | Stale ab |
 | --- | --- | --- | --- | --- |
 | `device-graph` | Knoten-, Link- und Gerätezahl, Inhaltsdigest sowie `baseline`/`none`/`changed`-Ereignis | `pw-dump` | 2 s | 8000 ms |
-| `audio-levels` | Peak und RMS in dBFS | externe Pegelquelle | 1 s | 3000 ms |
+| `audio-levels` | Peak und RMS in dBFS | aktive PipeWire-Messung, passiv aus JSON gelesen | 1 s | 3000 ms |
 | `midi-activity` | Sequencer-Clients, Ports, Rawmidi-Bytes und Delta | `/proc/asound` | 1 s | 6000 ms |
 | `transport` | `running`, `idle` oder `unknown` | abgeleitet aus `device-graph` | 1 s | 6000 ms |
 | `cpu-load` | Systemlast, CPU-Sekunden und -Prozent des Dienstes | `/proc` | 2 s | 8000 ms |
@@ -242,7 +291,7 @@ just telemetry-soak-summary /tmp/audio-telemetry-soak-8h.v1.json
 
 | Feld | Bedeutung |
 | --- | --- |
-| `evidence_class` | `synthetic-accelerated` = beschleunigte Simulation, `live-observed` = echte passive Beobachtung. |
+| `evidence_class` | `synthetic-accelerated` = beschleunigte Simulation, `live-observed` = echte Laufzeitbeobachtung; das allein behauptet keinen vollständig passiven Pegelpfad. |
 | `live_proof` | Nur `true`, wenn die Laufzeit vollständig war, mindestens ein Strom `live` war, kein Sicherheitscheck fehlschlug und der globale XRun-Delta exakt null blieb. |
 | `live_proof_reason` | Klartext, warum ein Lauf etwas beweist oder eben nicht. |
 | `queue_bounds.max_buffer_depth` | Muss `<= stream_capacity` sein. |
@@ -275,10 +324,11 @@ Ehrlichkeitsregeln, die die Harness einhält:
 
 ## 8. Grenzen
 
-- **Peak und RMS sind ohne externe Quelle nicht beobachtbar.** Ein echter
-  Pegelwert bräuchte einen Signalabgriff, also einen zusätzlichen Link – das
-  verletzt die passive Grenze. Ohne `AUDIO_TELEMETRY_LEVEL_SOURCE` bleibt der
-  Strom ausdrücklich `unavailable` mit Begründung, statt Werte zu erfinden.
+- **Peak und RMS sind ohne aktive Samplequelle nicht beobachtbar.** Der
+  ausgelieferte PipeWire-Observer stellt den erforderlichen flüchtigen Stream
+  und Link bereit. Ohne laufenden Observer oder ohne
+  `AUDIO_TELEMETRY_LEVEL_SOURCE` bleibt der Strom ausdrücklich `unavailable`
+  mit Begründung, statt Werte zu erfinden.
 - `transport` ist aus dem Graphen abgeleitet (`running_node_count > 0`), nicht
   aus einem globalen Transportobjekt; PipeWire hat keines.
 - XRun-Zähler stammen aus einem Batch-Snapshot von `pw-top`. Der Parser bindet
@@ -304,23 +354,30 @@ Ehrlichkeitsregeln, die die Harness einhält:
 
 ## 9. Rollback
 
-Die Telemetrie ist additiv und hinterlässt keinen Systemzustand.
+Die Telemetrie ist additiv. Der Pegelbeobachter hinterlässt keinen dauerhaften
+PipeWire-Zustand, erzeugt während seiner Laufzeit aber ehrlich sichtbar einen
+eigenen Capture-Knoten und dessen Link.
 
-1. **Zur Laufzeit abschalten:** Control-Dienst beenden (`just control-stop`).
-   Mit ihm endet die Telemetrie deterministisch; `stop()` joint alle
-   Sammlerthreads. Es bleibt kein Prozess und keine Datei zurück.
-2. **Pegelquelle entfernen:** `AUDIO_TELEMETRY_LEVEL_SOURCE` löschen. Der Strom
-   fällt auf `unavailable` zurück, sonst ändert sich nichts.
+1. **Zur Laufzeit abschalten:** `systemctl --user stop
+   audio-control-ui-v1.service`. Durch `PartOf=` endet auch der Pegelbeobachter,
+   PipeWire entfernt Stream und Link, und `RuntimeDirectory=` entfernt die
+   Pegeldatei. Der UI-Kern joint zusätzlich alle Sammlerthreads.
+2. **Nur Pegel abschalten:** `systemctl --user stop
+   audio-control-level-observer-v1.service`. Der Strom fällt auf
+   `stale`/`unavailable` zurück; die übrige UI bleibt verfügbar. Ein späterer
+   UI-Neustart startet den per `Wants=` gekoppelten Observer wieder.
 3. **Panel entfernen:** Das Panel `id="live-telemetry"` aus `ui/index.html`
    entfernen. Dann schlägt `python3 scripts/audio_control.py check` bewusst an,
    solange die Bindung in `validate_repository_contract()` nicht mit entfernt
    wird.
-4. **Vollständig zurücknehmen:** Die Dateien `scripts/audio_live_telemetry.py`
-   und `scripts/audio_telemetry_soak.py` löschen, den Endpunkt
+4. **Vollständig zurücknehmen:** Zusätzlich zum Pegelobserver und seiner Unit
+   die Dateien `scripts/audio_live_telemetry.py` und
+   `scripts/audio_telemetry_soak.py` löschen, den Endpunkt
    `/api/v1/telemetry`, den `LIVE_TELEMETRY`-Import, den Lebenszyklusaufruf in
    `serve()` und die Panelbindung aus `scripts/audio_control.py` entfernen sowie
    die Telemetrieteile aus `ui/`. Es sind keine Migrationen, Zustandsdateien
    oder Systemänderungen rückabzuwickeln.
 
-Zu keinem Zeitpunkt verändert ein Rollback Standardgeräte, Routen, Profile,
-Lautstärken oder Links – weil die Telemetrie sie nie verändert hat.
+Ein Rollback verändert keine Standardgeräte, Profile, Lautstärken oder
+produktiven Routen. Er beendet lediglich den identifizierten Observerprozess;
+PipeWire nimmt dessen eigenen flüchtigen Stream und Link zurück.

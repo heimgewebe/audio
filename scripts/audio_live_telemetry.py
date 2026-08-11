@@ -111,6 +111,10 @@ PROC_SEQ_CLIENTS = pathlib.Path("/proc/asound/seq/clients")
 PROC_ASOUND = pathlib.Path("/proc/asound")
 
 LEVEL_SOURCE_ENVIRONMENT = "AUDIO_TELEMETRY_LEVEL_SOURCE"
+ACTIVE_LEVEL_OBSERVER_ID = "audio-control-level-observer-v1"
+ACTIVE_LEVEL_OBSERVER_MODE = "active-pipewire-shared-capture"
+MAX_ACTIVE_LEVEL_SOURCE_AGE_SECONDS = 3.0
+MAX_ACTIVE_LEVEL_SOURCE_FUTURE_SECONDS = 1.0
 
 _SEQ_CLIENT_RE = re.compile(r'^Client\s+(\d+)\s*:\s*"(.*?)"')
 _SEQ_PORT_RE = re.compile(r"^\s+Port\s+(\d+)\s*:")
@@ -1198,12 +1202,14 @@ class MidiActivityCollector(Collector):
 
 
 class LevelSourceCollector(Collector):
-    """Read peak/RMS from an explicitly configured passive level source.
+    """Passively read peak/RMS from an explicitly configured level file.
 
     Peak and RMS cannot be observed without a signal tap. Opening a capture
     stream would create a link and leave the passive boundary, so this collector
-    only reads a bounded JSON file that an external observer may write. Without
-    that file the stream stays explicitly unavailable instead of inventing data.
+    only reads a bounded JSON file that an external observer may write. The
+    deployed producer identifies itself honestly as an active PipeWire shared-
+    capture observer. Without that file the stream stays explicitly unavailable
+    instead of inventing data.
     """
 
     name = "passive-level-source"
@@ -1215,6 +1221,10 @@ class LevelSourceCollector(Collector):
 
     def __init__(self, source_path: pathlib.Path | None = None) -> None:
         self._explicit_path = source_path
+        self._last_active_observation: tuple[int, float] | None = None
+
+    def reset(self) -> None:
+        self._last_active_observation = None
 
     def _path(self) -> pathlib.Path:
         if self._explicit_path is not None:
@@ -1235,6 +1245,39 @@ class LevelSourceCollector(Collector):
             raise TelemetryError("level source is not readable JSON") from error
         if not isinstance(value, dict):
             raise TelemetryError("level source is not a JSON object")
+        observer = value.get("observer")
+        observer_mode = value.get("observer_mode")
+        active_observer = observer is not None or observer_mode is not None
+        observation_identity: tuple[int, float] | None = None
+        if active_observer:
+            if (
+                value.get("kind") != "audio_level_observation"
+                or observer != ACTIVE_LEVEL_OBSERVER_ID
+                or observer_mode != ACTIVE_LEVEL_OBSERVER_MODE
+                or value.get("capture_transport") != "pipewire-native-shared-stream"
+                or value.get("source_selection")
+                not in {"pipewire-default-source", "explicit-pipewire-target"}
+            ):
+                raise TelemetryError("active level source identity is invalid")
+            observed_at = value.get("observed_at_unix")
+            if (
+                isinstance(observed_at, bool)
+                or not isinstance(observed_at, (int, float))
+                or not float("-inf") < float(observed_at) < float("inf")
+            ):
+                raise TelemetryError("active level source timestamp is invalid")
+            wall_now = time.time() if context is None else context.wall_now
+            source_age = wall_now - float(observed_at)
+            if source_age > MAX_ACTIVE_LEVEL_SOURCE_AGE_SECONDS:
+                raise TelemetryError("active level source observation is stale")
+            if source_age < -MAX_ACTIVE_LEVEL_SOURCE_FUTURE_SECONDS:
+                raise TelemetryError("active level source observation is from the future")
+            sequence = value.get("sequence")
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+                raise TelemetryError("active level source sequence is invalid")
+            observation_identity = (sequence, float(observed_at))
+            if observation_identity == self._last_active_observation:
+                raise TelemetryError("active level source observation has not advanced")
         peak = value.get("peak_dbfs")
         rms = value.get("rms_dbfs")
         for name, candidate in (("peak_dbfs", peak), ("rms_dbfs", rms)):
@@ -1244,12 +1287,20 @@ class LevelSourceCollector(Collector):
                 raise TelemetryError(f"level source {name} is outside the dBFS range")
         if float(rms) > float(peak):
             raise TelemetryError("level source RMS exceeds its peak")
+        if observation_identity is not None:
+            self._last_active_observation = observation_identity
         channel = value.get("channel")
         return {
             "peak_dbfs": round(float(peak), 3),
             "rms_dbfs": round(float(rms), 3),
             "channel": _clip(str(channel), 40) if isinstance(channel, str) else None,
-            "source": "external-passive-level-file",
+            "source": (
+                "active-pipewire-shared-capture"
+                if active_observer
+                else "external-passive-level-file"
+            ),
+            "observer": observer if active_observer else None,
+            "source_selection": value.get("source_selection") if active_observer else None,
             "clipping": float(peak) >= -0.1,
         }
 

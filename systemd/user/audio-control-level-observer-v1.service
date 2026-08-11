@@ -1,0 +1,36 @@
+[Unit]
+Description=Aktiver PipeWire-Pegelbeobachter der Audiozentrale
+Documentation=file:%h/.local/share/audio-control-ui/current/docs/audio-live-telemetry-v1.md
+After=pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+Before=audio-control-ui-v1.service
+PartOf=audio-control-ui-v1.service
+StartLimitIntervalSec=30
+StartLimitBurst=5
+ConditionPathExists=%h/.local/share/audio-control-ui/current/scripts/audio_level_observer.py
+
+[Service]
+Type=simple
+RuntimeDirectory=audio-control-level-observer
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_level_observer.py run --output %t/audio-control-level-observer/levels.json --target auto
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=5s
+KillMode=mixed
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+Nice=10
+CPUQuota=10%
+MemoryMax=67108864
+TasksMax=8
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20
