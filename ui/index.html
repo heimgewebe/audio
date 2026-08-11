@@ -148,10 +148,10 @@
             id="live-telemetry"
             data-depth-panel
             data-focus-title="Live-Telemetrie"
-            data-focus-summary="Passiv beobachtete Ströme mit eigener Sequenz, Frische und Fehlerlage; keine Geräte-, Routen- oder Linkwirkung."
+            data-focus-summary="Read-only-Telemetriekern mit eigener Sequenz, Frische und Fehlerlage; ein aktiver PipeWire-Pegelobserver wird bei verfügbarem Live-Strom separat ausgewiesen."
           >
             <header class="depth-heading">
-              <div><p class="eyebrow">Passiv beobachtet · nicht wirkend</p><h2>Live-Telemetrie</h2></div>
+              <div><p class="eyebrow">Read-only-Kern · keine Steuerwirkung</p><h2>Live-Telemetrie</h2></div>
               <div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div>
             </header>
             <p class="telemetry-authority" id="telemetry-authority" role="status" aria-live="polite">Telemetrie wird gelesen.</p>
@@ -159,7 +159,7 @@
             <div class="depth-detail" hidden>
               <div class="section-heading compact"><h3>Kanäle und Grenzen</h3></div>
               <dl class="service-list" id="telemetry-detail"></dl>
-              <p class="read-only-boundary">Die Telemetrie liest nur. Sie ändert keine Standardgeräte, Routen, Profile, Lautstärken oder Verbindungen und öffnet keinen Audiostrom.</p>
+              <p class="read-only-boundary">Der Telemetriekern ist read-only und hat keine Steuerwirkung: Er ändert keine Standardgeräte, Routen, Profile, Lautstärken oder produktiven Verbindungen. Nur der getrennte Pegelobserver öffnet zur Messung einen geteilten PipeWire-Capture-Strom.</p>
             </div>
           </article>
         </section>

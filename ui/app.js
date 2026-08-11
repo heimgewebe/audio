@@ -2720,6 +2720,32 @@ function resetReplay() {
   renderReplay();
 }
 
+function hasActivePipeWireLevel(streams) {
+  return streams.some(
+    (stream) =>
+      stream?.id === "audio-levels" &&
+      stream.availability === "live" &&
+      stream.value?.source === "active-pipewire-shared-capture",
+  );
+}
+
+function telemetryObservationSummary(streams) {
+  return hasActivePipeWireLevel(streams)
+    ? "Pegel aktiv via PipeWire · Telemetriekern read-only/ohne Steuerwirkung"
+    : "Telemetriekern read-only/ohne Steuerwirkung";
+}
+
+function telemetryLevelSourceLabel(stream) {
+  if (stream?.id !== "audio-levels") return null;
+  if (stream.value?.source === "active-pipewire-shared-capture") {
+    return "Quelle: PipeWire Shared Capture";
+  }
+  if (stream.value?.source === "external-passive-level-file") {
+    return "Quelle: externe Pegeldatei";
+  }
+  return null;
+}
+
 function finiteTelemetryNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -2792,6 +2818,8 @@ function telemetryCard(stream) {
       stream.age_ms === null || stream.age_ms === undefined ? "offen" : `${stream.age_ms} ms`
     } · verworfen ${stream.dropped_total}`,
   );
+  const levelSource = telemetryLevelSourceLabel(stream);
+  if (levelSource) appendText(card, "small", "", levelSource);
   if (stream.error) {
     appendText(card, "small", "telemetry-error", stream.error);
   }
@@ -2820,7 +2848,7 @@ function renderTelemetry() {
   const summary = telemetry.summary || {};
   const streams = telemetry.streams || [];
   authority.textContent = telemetry.running
-    ? `${summary.live_count}/${summary.stream_count} Ströme live · ${summary.stale_count} veraltet · ${summary.unavailable_count} nicht verfügbar · passiv beobachtet`
+    ? `${summary.live_count}/${summary.stream_count} Ströme live · ${summary.stale_count} veraltet · ${summary.unavailable_count} nicht verfügbar · ${telemetryObservationSummary(streams)}`
     : "Telemetriesammler laufen nicht; Ströme werden ausdrücklich als veraltet gezeigt.";
   grid.replaceChildren(...streams.map(telemetryCard));
   const control = telemetry.control_channel || {};
@@ -2842,7 +2870,11 @@ function renderTelemetry() {
       : `${Math.max(0, Date.now() - state.telemetryUpdatedAt)} ms`,
   );
   detailRow(detail, "Laufzeit", `${telemetry.uptime_seconds} s`);
-  detailRow(detail, "Grenze", "passive-observation · keine Wirkung");
+  detailRow(
+    detail,
+    "Grenze",
+    "Telemetriekern: passive-observation · read-only · keine Steuerwirkung",
+  );
 }
 
 async function loadTelemetry() {
