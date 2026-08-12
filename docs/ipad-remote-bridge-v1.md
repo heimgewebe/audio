@@ -47,6 +47,7 @@ Die Runtimeabnahme benötigt mindestens:
 - revisionsgebundenen Serve-Readback für HTTPS 9443 bei unverändertem übrigen Serve-Zustand,
 - HTTPS-Readback aus dem Tailnet,
 - Sessionnachweis mit verifizierter Tailscale-Identität und den Scopes `whale` und `recording`,
+- ein Recorder-Backend-Zeitbudget der Bridge, das größer als der gebundene Worst-Case aus Recorderaktion plus WAV- und optionaler MIDI-Nachprüfung ist; ein bereits erfolgreicher Stop darf nicht allein durch einen kürzeren Bridge-Timeout als Remote-Fehler erscheinen,
 - negative, wirkungsfreie Abweisung ungültiger Wal- und Recorderpayloads,
 - einen erfolgreichen echten Recorder-`plan` über die Tailnet-Bridge mit lokal autoritativem Plan-Hash,
 - für eine vollständige Wirkungsabnahme zusätzlich einen kontrollierten Recorder-Start/Stop mit realem Take sowie den bestehenden Wal-Readback,

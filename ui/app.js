@@ -165,6 +165,48 @@ const RECORDING_COLLISION_BLOCKERS = new Set([
   "manifest-output-already-exists",
 ]);
 
+const RECORDING_PREFLIGHT_LABELS = Object.freeze({
+  output: "Zieldatei",
+  physical: "Mikrofon und MOTU",
+  laboratory: "Pegelabnahme",
+  source: "Audio- und MIDI-Quellen",
+  tools: "Recorder-Werkzeuge",
+  storage: "Speicherplatz",
+  session: "Recorder-Zustand",
+});
+
+const RECORDING_BLOCKER_LABELS = Object.freeze({
+  "output-root-not-ready": "Aufnahmeordner ist nicht bereit",
+  "output-already-exists": "WAV-Dateiname ist bereits belegt",
+  "midi-output-already-exists": "MIDI-Dateiname ist bereits belegt",
+  "manifest-output-already-exists": "Take-Manifest ist bereits belegt",
+  "physical-state-invalid": "Vor-Ort-Zustand ist nicht sicher lesbar",
+  "laboratory-state-invalid": "Pegelabnahme ist nicht sicher lesbar",
+  "motu-source-not-unique": "MOTU-Mikrofonquelle fehlt oder ist nicht eindeutig",
+  "roland-audio-source-not-unique": "Roland-Audioquelle fehlt oder ist nicht eindeutig",
+  "roland-midi-source-not-unique": "Roland-MIDI-Port fehlt oder ist nicht eindeutig",
+  "performance-source-invalid": "Klavier-und-Gesang-Quellen passen nicht zum Aufnahmevertrag",
+  "production-mix-graph-not-ready": "Produktions-Mix ist noch nicht bereit",
+  "parecord-unavailable": "Audio-Recorder parecord ist nicht verfügbar",
+  "arecordmidi-unavailable": "MIDI-Recorder arecordmidi ist nicht verfügbar",
+  "ffmpeg-unavailable": "Mix-Werkzeug ffmpeg ist nicht verfügbar",
+  "free-space-unknown": "Freier Speicherplatz kann nicht sicher bestimmt werden",
+  "free-space-insufficient": "Nicht genug freier Speicherplatz für diesen Take",
+  "active-session-requires-status-or-recovery": "Eine frühere Aufnahme muss zuerst abgeschlossen oder wiederhergestellt werden",
+});
+
+const RECORDING_SOURCE_FIELD_LABELS = Object.freeze({
+  sample_rate_hz: "Abtastrate",
+  sample_format: "Sample-Format",
+  channels: "Kanalzahl",
+  muted: "Stummschaltung",
+  unity_volume: "Quelllautstärke",
+  vendor_id: "Herstellerkennung",
+  product_id: "Gerätekennung",
+  address: "MIDI-Portadresse",
+  upstream_roles: "Quellrollen",
+});
+
 function automaticTakeName(mode, date = new Date(), suffix = 0) {
   const pad = (value) => String(value).padStart(2, "0");
   const stamp =
@@ -218,6 +260,40 @@ function recordingCollisionOnly(blockers) {
     blockers.length > 0 &&
     blockers.every((blocker) => RECORDING_COLLISION_BLOCKERS.has(blocker))
   );
+}
+
+function recordingBlockerLabel(blocker) {
+  if (typeof blocker !== "string" || !blocker) return "Unbekanntes Start-Gate";
+  if (RECORDING_BLOCKER_LABELS[blocker]) return RECORDING_BLOCKER_LABELS[blocker];
+  if (blocker.startsWith("physical-fact:")) {
+    const fact = blocker.slice("physical-fact:".length);
+    return `${PHYSICAL_FACT_LABELS[fact] || fact} fehlt oder passt nicht`;
+  }
+  if (blocker.startsWith("laboratory-gate:")) {
+    const gate = blocker.slice("laboratory-gate:".length);
+    return gate === "voice-level-measurement"
+      ? "Mikrofonpegel wurde noch nicht gültig abgenommen"
+      : `Laborprüfung ${gate} ist noch offen`;
+  }
+  const sourceField = blocker.match(
+    /^(motu|roland-audio|roland-midi|production-mix)-source:(.+)$/,
+  );
+  if (sourceField) {
+    const source = {
+      motu: "MOTU",
+      "roland-audio": "Roland-Audio",
+      "roland-midi": "Roland-MIDI",
+      "production-mix": "Produktions-Mix",
+    }[sourceField[1]];
+    return `${source}: ${RECORDING_SOURCE_FIELD_LABELS[sourceField[2]] || sourceField[2]} passt nicht`;
+  }
+  if (blocker.endsWith("-source-query-failed")) {
+    return "Aufnahmequelle konnte nicht sicher abgefragt werden";
+  }
+  if (blocker.endsWith("-source-not-unique")) {
+    return "Aufnahmequelle fehlt oder ist nicht eindeutig";
+  }
+  return `Technisches Start-Gate: ${blocker}`;
 }
 
 const state = {
@@ -1264,7 +1340,7 @@ async function runRecordingAction(payload) {
       state.recordingPlan = null;
       state.recordingPlanInput = null;
       await loadRecordingLibrary({ render: false });
-      showNotice(
+      let actionMessage =
         {
           start: "Aufnahme läuft; der Start wurde durch Recorder-Readback bestätigt.",
           stop: "Take wurde gestoppt und Recorder-Readback bestätigt.",
@@ -1272,9 +1348,25 @@ async function runRecordingAction(payload) {
           categorize: "Kategorie wurde gespeichert und exakt zurückgelesen.",
           trash: "Take wurde in den Papierkorb verschoben.",
           restore: "Take wurde aus dem Papierkorb wiederhergestellt.",
-        }[result.operation] || "Recorderaktion bestätigt.",
-        "success",
-      );
+        }[result.operation] || "Recorderaktion bestätigt.";
+      let actionTone = "success";
+      const verification = result.verification;
+      if (result.operation === "stop" || result.operation === "recover") {
+        if (verification?.status === "verified") {
+          actionMessage = verification.midi
+            ? "Take finalisiert; WAV und Roland-MIDI wurden als aktuelle Dateien verifiziert."
+            : "Take finalisiert; die WAV-Datei wurde als aktuelle Datei verifiziert.";
+        } else if (verification?.status === "unverified") {
+          actionMessage =
+            "Take wurde beendet, aber die aktuelle Ergebnisdatei konnte nicht vollständig verifiziert werden.";
+          actionTone = "info";
+        } else if (verification?.status === "not-completed") {
+          actionMessage =
+            "Recorder wurde beendet; es liegt noch kein vollständig finalisierter Take vor.";
+          actionTone = "info";
+        }
+      }
+      showNotice(actionMessage, actionTone);
     }
   } catch (error) {
     showNotice(
@@ -1483,9 +1575,43 @@ function renderRecordingControls(card, recording) {
       "p",
       plan.ready ? "recording-plan ready" : "recording-plan",
       plan.ready
-        ? `Plan ${shortRevision(plan.plan_sha256)} · Quelle gebunden · alle Start-Gates erfüllt`
-        : `Plan blockiert: ${(plan.readiness?.blockers || []).join(" · ") || "unbekanntes Gate"}`,
+        ? `Startprüfung ${shortRevision(plan.plan_sha256)} vollständig · Aufnahme ist bereit`
+        : "Startprüfung blockiert · offene Punkte stehen direkt darunter",
     );
+    const checks = Array.isArray(plan.readiness?.checks) ? plan.readiness.checks : [];
+    if (checks.length) {
+      const checklist = element("ul", "recording-preflight");
+      checklist.setAttribute("aria-label", "Startprüfung");
+      for (const check of checks) {
+        const ready = check?.status === "ready";
+        const item = element(
+          "li",
+          `recording-preflight-item ${ready ? "ready" : "blocked"}`,
+        );
+        appendText(item, "span", "recording-preflight-mark", ready ? "✓" : "!").setAttribute(
+          "aria-hidden",
+          "true",
+        );
+        const copy = element("span", "recording-preflight-copy");
+        appendText(
+          copy,
+          "strong",
+          "",
+          RECORDING_PREFLIGHT_LABELS[check.id] || check.id || "Startprüfung",
+        );
+        appendText(
+          copy,
+          "small",
+          "",
+          ready
+            ? "bereit"
+            : (check.blockers || []).map(recordingBlockerLabel).join(" · ") || "noch offen",
+        );
+        item.append(copy);
+        checklist.append(item);
+      }
+      controls.append(checklist);
+    }
   }
   if (!writable) {
     appendText(

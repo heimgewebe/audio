@@ -1290,6 +1290,15 @@ def maximum_file_bytes(capture: dict[str, Any], maximum_seconds: int) -> int:
     )
 
 
+def _readiness_check(check_id: str, blockers: list[str]) -> dict[str, Any]:
+    unique = sorted(set(blockers))
+    return {
+        "id": check_id,
+        "status": "blocked" if unique else "ready",
+        "blockers": unique,
+    }
+
+
 def build_plan(
     name: str,
     maximum_seconds: int,
@@ -1317,7 +1326,10 @@ def build_plan(
         )
     root = lexical_absolute(output_root)
     state_root = lexical_absolute(state_root)
-    blockers: list[str] = []
+    output_blockers: list[str] = []
+    tool_blockers: list[str] = []
+    storage_blockers: list[str] = []
+    session_blockers: list[str] = []
     output_path = root / name
     midi_output_path = output_path.with_suffix(".mid")
     manifest_output_path = output_path.with_suffix(".take.json")
@@ -1326,14 +1338,14 @@ def build_plan(
         root = _validate_output_root(root)
         root_ready = True
     except RecordingError:
-        blockers.append("output-root-not-ready")
+        output_blockers.append("output-root-not-ready")
     if output_path.exists() or output_path.is_symlink():
-        blockers.append("output-already-exists")
+        output_blockers.append("output-already-exists")
     if session_type == "piano-vocal-performance":
         if midi_output_path.exists() or midi_output_path.is_symlink():
-            blockers.append("midi-output-already-exists")
+            output_blockers.append("midi-output-already-exists")
         if manifest_output_path.exists() or manifest_output_path.is_symlink():
-            blockers.append("manifest-output-already-exists")
+            output_blockers.append("manifest-output-already-exists")
     physical, physical_blockers = _physical_projection(
         lexical_absolute(physical_state), contract["required_physical_facts"]
     )
@@ -1343,25 +1355,22 @@ def build_plan(
         contract["required_laboratory_gates"],
     )
     source, source_blockers = _source_projection(contract["source"], source_snapshot_fn)
-    blockers.extend(physical_blockers)
-    blockers.extend(laboratory_blockers)
-    blockers.extend(source_blockers)
     try:
         recorder = parecord_binding()
     except RecordingError:
         recorder = None
-        blockers.append("parecord-unavailable")
+        tool_blockers.append("parecord-unavailable")
     midi_recorder: dict[str, Any] | None = None
     mixer: dict[str, Any] | None = None
     if session_type == "piano-vocal-performance":
         try:
             midi_recorder = arecordmidi_binding()
         except RecordingError:
-            blockers.append("arecordmidi-unavailable")
+            tool_blockers.append("arecordmidi-unavailable")
         try:
             mixer = ffmpeg_binding()
         except RecordingError:
-            blockers.append("ffmpeg-unavailable")
+            tool_blockers.append("ffmpeg-unavailable")
     required_bytes = maximum_file_bytes(capture, maximum_seconds)
     required_session_bytes = required_bytes + (
         3 * required_bytes + MIDI.MAX_MIDI_BYTES + MAX_JSON_BYTES
@@ -1373,13 +1382,13 @@ def build_plan(
         try:
             free_bytes = int(disk_usage_fn(root).free)
         except (OSError, ValueError, TypeError):
-            blockers.append("free-space-unknown")
+            storage_blockers.append("free-space-unknown")
         else:
             if free_bytes < required_session_bytes + capture["free_space_reserve_bytes"]:
-                blockers.append("free-space-insufficient")
+                storage_blockers.append("free-space-insufficient")
     active_path = state_root / "active.json"
     if active_path.exists() or active_path.is_symlink():
-        blockers.append("active-session-requires-status-or-recovery")
+        session_blockers.append("active-session-requires-status-or-recovery")
     identity = {
         "schema_version": 1,
         "kind": "audio_recording_plan_identity",
@@ -1456,7 +1465,22 @@ def build_plan(
             "synchronization_boundary": "bounded audio process-spawn alignment; not sample-accurate WAV/MIDI synchronization",
         }
     plan_sha = canonical_sha256(identity)
-    blockers = sorted(set(blockers))
+    readiness_checks = [
+        _readiness_check("output", output_blockers),
+        _readiness_check("physical", physical_blockers),
+        _readiness_check("laboratory", laboratory_blockers),
+        _readiness_check("source", source_blockers),
+        _readiness_check("tools", tool_blockers),
+        _readiness_check("storage", storage_blockers),
+        _readiness_check("session", session_blockers),
+    ]
+    blockers = sorted(
+        {
+            blocker
+            for check in readiness_checks
+            for blocker in check["blockers"]
+        }
+    )
     return {
         "schema_version": 1,
         "kind": "audio_recording_plan",
@@ -1465,6 +1489,7 @@ def build_plan(
         "identity": identity,
         "readiness": {
             "blockers": blockers,
+            "checks": readiness_checks,
             "free_bytes": free_bytes,
             "required_file_bytes": required_session_bytes,
             "required_free_bytes": required_session_bytes + capture["free_space_reserve_bytes"],
