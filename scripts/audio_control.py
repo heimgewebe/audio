@@ -10,6 +10,7 @@ import http.client
 import importlib.util
 import ipaddress
 import json
+import math
 import os
 import pathlib
 import re
@@ -170,6 +171,15 @@ RECORDING_LIBRARY_CATEGORIES = frozenset(
     {"unsorted", "song", "practice", "idea", "test", "finished"}
 )
 RECORDING_LIBRARY_OPERATIONS = frozenset({"categorize", "trash", "restore"})
+RECORDING_READINESS_CHECK_IDS = (
+    "output",
+    "physical",
+    "laboratory",
+    "source",
+    "tools",
+    "storage",
+    "session",
+)
 ONSITE_WARNING_CODES = frozenset({"voice-source-not-motu"})
 PROFILE_AREAS = {
     "desktop-mixed": "listening",
@@ -788,8 +798,50 @@ def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> di
         raise ControlError("Recorderplan enthält keine gültige Quellenbindung.")
     readiness = require_mapping(report.get("readiness"), label="Recorderplan readiness")
     blockers = require_list(readiness.get("blockers"), label="Recorderplan blockers")
-    if not all(isinstance(item, str) and item for item in blockers):
+    if (
+        not all(isinstance(item, str) and item for item in blockers)
+        or blockers != sorted(set(blockers))
+    ):
         raise ControlError("Recorderplan enthält ungültige Blocker.")
+    checks = require_list(readiness.get("checks"), label="Recorderplan checks")
+    if len(checks) != len(RECORDING_READINESS_CHECK_IDS):
+        raise ControlError("Recorderplan enthält keine vollständige Startprüfung.")
+    projected_checks: list[dict[str, Any]] = []
+    observed_check_ids: list[str] = []
+    check_blockers: set[str] = set()
+    for raw_check in checks:
+        check = require_mapping(raw_check, label="Recorderplan check")
+        if set(check) != {"id", "status", "blockers"}:
+            raise ControlError("Recorderplan enthält eine ungültige Startprüfung.")
+        check_id = check.get("id")
+        status = check.get("status")
+        nested_blockers = require_list(
+            check.get("blockers"), label="Recorderplan check blockers"
+        )
+        if (
+            not isinstance(check_id, str)
+            or check_id not in RECORDING_READINESS_CHECK_IDS
+            or status not in {"ready", "blocked"}
+            or not all(isinstance(item, str) and item for item in nested_blockers)
+            or nested_blockers != sorted(set(nested_blockers))
+            or (status == "ready") != (len(nested_blockers) == 0)
+        ):
+            raise ControlError("Recorderplan enthält eine widersprüchliche Startprüfung.")
+        observed_check_ids.append(check_id)
+        check_blockers.update(nested_blockers)
+        projected_checks.append(
+            {
+                "id": check_id,
+                "status": status,
+                "blockers": list(nested_blockers),
+            }
+        )
+    if tuple(observed_check_ids) != RECORDING_READINESS_CHECK_IDS:
+        raise ControlError("Recorderplan enthält keine kanonische Startprüfreihenfolge.")
+    if check_blockers != set(blockers):
+        raise ControlError("Recorderplan widerspricht sich bei den Startblockern.")
+    if report["ready"] != all(check["status"] == "ready" for check in projected_checks):
+        raise ControlError("Recorderplan widerspricht sich beim Bereitschaftsstatus.")
     audio_identity = (
         source_identity.get("audio")
         if mode == "piano-vocal" and isinstance(source_identity, dict)
@@ -828,6 +880,7 @@ def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> di
         "monitoring": identity.get("monitoring"),
         "readiness": {
             "blockers": blockers,
+            "checks": projected_checks,
             "free_bytes": readiness.get("free_bytes"),
             "required_file_bytes": readiness.get("required_file_bytes"),
             "required_free_bytes": readiness.get("required_free_bytes"),
@@ -867,6 +920,12 @@ def validate_recording_media_binding(report: dict[str, Any], session_id: str) ->
         or not isinstance(report.get("device"), int)
         or isinstance(report.get("inode"), bool)
         or not isinstance(report.get("inode"), int)
+        or report.get("channels") != 2
+        or report.get("sample_rate_hz") != 48_000
+        or isinstance(report.get("duration_seconds"), bool)
+        or not isinstance(report.get("duration_seconds"), (int, float))
+        or not math.isfinite(float(report["duration_seconds"]))
+        or not 0 < float(report["duration_seconds"]) <= 14_400
     ):
         raise ControlError("Take ist nicht als aktuelles unveränderliches Medium gebunden.")
 
@@ -1990,13 +2049,63 @@ class AudioControl:
                     raise ControlError(
                         "Recorderabschluss wurde nicht durch aktuellen Recorderzustand bestätigt."
                     )
-                return {
+                verification: dict[str, Any] | None = None
+                if operation in {"stop", "recover"}:
+                    terminal_status = report["status"]
+                    if terminal_status == "completed":
+                        try:
+                            media = self.verified_recording_media(session_id)
+                            midi: dict[str, Any] | None = None
+                            if report["session_type"] == "piano-vocal-performance":
+                                midi = self.verified_recording_midi(session_id)
+                        except ControlError:
+                            verification = {
+                                "status": "unverified",
+                                "reason": "current-artifact-verification-failed",
+                                "media": None,
+                                "midi": None,
+                            }
+                        else:
+                            verification = {
+                                "status": "verified",
+                                "reason": None,
+                                "media": {
+                                    key: media[key]
+                                    for key in (
+                                        "sha256",
+                                        "bytes",
+                                        "channels",
+                                        "sample_rate_hz",
+                                        "duration_seconds",
+                                        "verified_current",
+                                    )
+                                },
+                                "midi": (
+                                    {
+                                        key: midi[key]
+                                        for key in ("sha256", "bytes", "verified_current")
+                                    }
+                                    if midi is not None
+                                    else None
+                                ),
+                            }
+                    else:
+                        verification = {
+                            "status": "not-completed",
+                            "reason": f"terminal-status:{terminal_status}",
+                            "media": None,
+                            "midi": None,
+                        }
+                response = {
                     "schema_version": 1,
                     "kind": "audio_control_recording_action_result",
                     "operation": operation,
                     "session_id": session_id,
                     "snapshot": snapshot,
                 }
+                if verification is not None:
+                    response["verification"] = verification
+                return response
             finally:
                 self._snapshot_lock.release()
         finally:

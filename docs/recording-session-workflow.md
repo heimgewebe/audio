@@ -93,6 +93,7 @@ Wichtig sind:
 
 - `ready: true`: alle maschinell prüfbaren Voraussetzungen gelten.
 - `readiness.blockers`: konkrete Gründe, weshalb nicht gestartet wird.
+- `readiness.checks`: sieben kanonische Prüfgruppen (`output`, `physical`, `laboratory`, `source`, `tools`, `storage`, `session`). Jede Gruppe ist ausdrücklich `ready` oder `blocked` und führt ausschließlich ihre eigenen Blocker. Die flache Blockerliste muss exakt der Vereinigung dieser Gruppen entsprechen.
 - `plan_sha256`: die Freigabe für exakt diesen Zustand und Sitzungstyp.
 - `required_file_bytes` und `required_free_bytes`: Dateibudget plus Reserve.
 
@@ -118,7 +119,8 @@ scripts/audio-record recover
 ```
 
 - `status` beobachtet nur und liest den Sitzungstyp aus dem privaten Spec.
-- `stop` signalisiert ausschließlich den exakt gebundenen Prozess.
+- `stop` signalisiert ausschließlich den exakt gebundenen Prozess. Die Audiozentrale liest danach den autoritativen Recorderzustand zurück. Ist der Take `completed`, wird zusätzlich die aktuell veröffentlichte WAV gegen den gebundenen Ergebnisbeleg geprüft; bei `piano-vocal-performance` wird auch die Roland-MIDI-Datei geprüft. Der Aktions-Readback gibt nur pfadfreie Prüfmetadaten weiter.
+- Schlägt diese zusätzliche Medienprüfung nach einem bereits bestätigten Stop fehl, wird der Stop nicht rückwirkend als fehlgeschlagen ausgegeben: der Ergebnisstatus lautet ausdrücklich `unverified`. Wiedergabe und Export bleiben zusätzlich durch ihre eigene aktuelle Medienprüfung geschützt.
 - `recover` räumt einen terminalen Sitzungszeiger auf oder markiert eine verwaiste Teilaufnahme als `failed-preserved`.
 - Bei PID-Wiederverwendung oder Identitätsabweichung bleibt Recovery geschlossen.
 

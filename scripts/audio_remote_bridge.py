@@ -59,6 +59,11 @@ DEFAULT_PORT = 8766
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = 8765
 BACKEND_TIMEOUT_SECONDS = 6.0
+# Recorder stop may spend up to 45 s in the bounded recorder action and then
+# verify the final WAV plus optional Roland MIDI, each with a 30 s bound.
+# The bridge must outlive that backend contract so a successful stop cannot be
+# misreported remotely merely because post-stop verification is still running.
+RECORDING_BACKEND_TIMEOUT_SECONDS = 120.0
 REQUEST_IO_TIMEOUT_SECONDS = 6.0
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
@@ -867,7 +872,9 @@ def write_backend_whale_action(action: dict[str, str]) -> tuple[int, bytes, int]
 def write_backend_recording_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
     token = read_backend_action_token("recording")
     body = json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=55.0)
+    connection = http.client.HTTPConnection(
+        BACKEND_HOST, BACKEND_PORT, timeout=RECORDING_BACKEND_TIMEOUT_SECONDS
+    )
     try:
         connection.putrequest("POST", "/api/v1/actions/recording", skip_host=True, skip_accept_encoding=True)
         connection.putheader("Host", f"{BACKEND_HOST}:{BACKEND_PORT}")

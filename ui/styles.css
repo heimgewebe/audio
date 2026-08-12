@@ -2598,6 +2598,55 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   background: rgba(185, 230, 181, 0.05);
 }
 
+.recording-preflight {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recording-preflight-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.recording-preflight-item.ready {
+  border-color: var(--mint-border);
+}
+
+.recording-preflight-item.blocked {
+  border-color: rgba(225, 185, 104, 0.28);
+}
+
+.recording-preflight-mark {
+  font-weight: 800;
+  text-align: center;
+}
+
+.recording-preflight-item.ready .recording-preflight-mark {
+  color: var(--mint-strong);
+}
+
+.recording-preflight-item.blocked .recording-preflight-mark {
+  color: var(--amber);
+}
+
+.recording-preflight-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.recording-preflight-copy small {
+  color: var(--muted-bright);
+}
+
 .library-toolbar {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

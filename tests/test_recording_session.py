@@ -317,6 +317,16 @@ class RecordingSessionTest(unittest.TestCase):
             48_000 * 2 * 4 * 10 + 1_048_576,
         )
 
+    def test_plan_exposes_canonical_structured_readiness_checks(self) -> None:
+        plan = self.ready_plan()
+        checks = plan["readiness"]["checks"]
+        self.assertEqual(
+            [check["id"] for check in checks],
+            ["output", "physical", "laboratory", "source", "tools", "storage", "session"],
+        )
+        self.assertTrue(all(check == {"id": check["id"], "status": "ready", "blockers": []} for check in checks))
+        self.assertEqual(plan["readiness"]["blockers"], [])
+
     def test_catalog_exposes_four_explicit_session_contracts(self) -> None:
         contracts = {name: MODULE.load_catalog(name) for name in MODULE.SESSION_TYPES}
         self.assertEqual(
@@ -1065,6 +1075,9 @@ class RecordingSessionTest(unittest.TestCase):
     def test_plan_blocks_low_space_existing_output_and_active_pointer(self) -> None:
         low = self.ready_plan(free=1)
         self.assertIn("free-space-insufficient", low["readiness"]["blockers"])
+        storage = next(check for check in low["readiness"]["checks"] if check["id"] == "storage")
+        self.assertEqual(storage["status"], "blocked")
+        self.assertEqual(storage["blockers"], ["free-space-insufficient"])
         (self.output / "take-01.wav").write_bytes(b"occupied")
         occupied = self.ready_plan()
         self.assertIn("output-already-exists", occupied["readiness"]["blockers"])

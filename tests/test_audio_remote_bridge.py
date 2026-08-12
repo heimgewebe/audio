@@ -979,6 +979,12 @@ class BridgeHTTPTests(unittest.TestCase):
         )
         self.assertEqual(status, 405)
 
+    def test_recording_backend_timeout_covers_stop_and_artifact_verification_budget(self):
+        self.assertGreater(
+            MODULE.RECORDING_BACKEND_TIMEOUT_SECONDS,
+            45 + 30 + 30,
+        )
+
     def test_remote_recording_plan_uses_scoped_session_and_hides_backend_token(self):
         token = self.issue_remote_session()
         before = len(FakeBackendHandler.records)

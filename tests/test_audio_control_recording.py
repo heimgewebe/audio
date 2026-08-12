@@ -13,9 +13,12 @@ class RecordingActionRunner(FakeRunner):
     PLAN_SHA = "e" * 64
     SESSION_ID = "f" * 24
 
-    def __init__(self, *, malformed_terminal=False):
+    def __init__(
+        self, *, malformed_terminal=False, terminal_session_type="voice-recording"
+    ):
         super().__init__()
         self.malformed_terminal = malformed_terminal
+        self.terminal_session_type = terminal_session_type
 
     def voice_plan(self, argv):
         session_type = argv[argv.index("--session-type") + 1]
@@ -87,6 +90,10 @@ class RecordingActionRunner(FakeRunner):
                 "identity": identity,
                 "readiness": {
                     "blockers": [],
+                    "checks": [
+                        {"id": check_id, "status": "ready", "blockers": []}
+                        for check_id in MODULE.RECORDING_READINESS_CHECK_IDS
+                    ],
                     "free_bytes": 10_000_000_000,
                     "required_file_bytes": 250_000_000,
                     "required_free_bytes": 1_250_000_000,
@@ -96,6 +103,43 @@ class RecordingActionRunner(FakeRunner):
 
     def run(self, argv, *, timeout):
         script = pathlib.Path(argv[1]).name if len(argv) > 1 else ""
+        if script == "recording_product.py" and argv[2] == "media":
+            self.calls.append((tuple(argv), timeout))
+            return self.result(
+                argv,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_recording_product_media_binding",
+                    "session_id": self.SESSION_ID,
+                    "path": "/private/take.wav",
+                    "sha256": "1" * 64,
+                    "bytes": 123456,
+                    "mode": "0600",
+                    "device": 7,
+                    "inode": 11,
+                    "channels": 2,
+                    "sample_rate_hz": 48_000,
+                    "duration_seconds": 3.25,
+                    "verified_current": True,
+                },
+            )
+        if script == "recording_product.py" and argv[2] == "midi":
+            self.calls.append((tuple(argv), timeout))
+            return self.result(
+                argv,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_recording_product_midi_binding",
+                    "session_id": self.SESSION_ID,
+                    "path": "/private/take.mid",
+                    "sha256": "2" * 64,
+                    "bytes": 4567,
+                    "mode": "0600",
+                    "device": 7,
+                    "inode": 12,
+                    "verified_current": True,
+                },
+            )
         if script == "audio-record":
             operation = argv[2]
             self.calls.append((tuple(argv), timeout))
@@ -123,7 +167,7 @@ class RecordingActionRunner(FakeRunner):
                             "schema_version": 1,
                             "kind": "foreign_receipt",
                             "session_id": self.SESSION_ID,
-                            "session_type": "voice-recording",
+                            "session_type": self.terminal_session_type,
                             "status": "completed",
                         },
                     )
@@ -133,7 +177,7 @@ class RecordingActionRunner(FakeRunner):
                         "schema_version": 1,
                         "kind": "audio_recording_status",
                         "session_id": self.SESSION_ID,
-                        "session_type": "voice-recording",
+                        "session_type": self.terminal_session_type,
                         "status": "completed",
                     },
                 )
@@ -214,6 +258,11 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertTrue(plan["physical"]["rode_nt1a_connected"])
         self.assertEqual(plan["physical"]["motu_phantom_48v"], "on")
         self.assertTrue(plan["laboratory"]["voice_level_measurement"])
+        self.assertEqual(
+            [check["id"] for check in plan["readiness"]["checks"]],
+            list(MODULE.RECORDING_READINESS_CHECK_IDS),
+        )
+        self.assertTrue(all(check["status"] == "ready" for check in plan["readiness"]["checks"]))
         serialized = json.dumps(plan)
         self.assertNotIn('"path"', serialized)
         self.assertNotIn(str(MODULE.RECORDING_OUTPUT_ROOT), serialized)
@@ -222,6 +271,31 @@ class AudioControlRecordingTests(unittest.TestCase):
         )
         self.assertIn("--session-type", plan_call)
         self.assertIn("voice-recording", plan_call)
+
+    def test_recording_plan_rejects_inconsistent_structured_preflight(self):
+        runner = RecordingActionRunner()
+        original = runner.voice_plan
+
+        def inconsistent(argv):
+            result = original(argv)
+            payload = json.loads(result.stdout)
+            payload["readiness"]["checks"][0] = {
+                "id": "output",
+                "status": "blocked",
+                "blockers": ["output-already-exists"],
+            }
+            return runner.result(argv, payload)
+
+        runner.voice_plan = inconsistent
+        with self.assertRaisesRegex(MODULE.ControlError, "Startblockern"):
+            self.controller(runner).perform_recording_action(
+                {
+                    "operation": "plan",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 600,
+                }
+            )
 
     def test_recording_intent_rejects_generic_fields_paths_and_bad_hash_before_effect(self):
         for name in ("../take.wav", r"nested\take.wav", "take.txt"):
@@ -352,6 +426,10 @@ class AudioControlRecordingTests(unittest.TestCase):
             )
         self.assertEqual(result["operation"], "stop")
         self.assertFalse(result["snapshot"]["recording"]["session"]["active"])
+        self.assertEqual(result["verification"]["status"], "verified")
+        self.assertTrue(result["verification"]["media"]["verified_current"])
+        self.assertNotIn("path", result["verification"]["media"])
+        self.assertIsNone(result["verification"]["midi"])
 
         malformed = RecordingActionRunner(malformed_terminal=True)
         malformed_controller = self.controller(malformed)
@@ -364,6 +442,66 @@ class AudioControlRecordingTests(unittest.TestCase):
                 malformed_controller.perform_recording_action(
                     {"operation": "stop", "session_id": malformed.SESSION_ID}
                 )
+
+    def test_piano_vocal_stop_verifies_both_audio_and_midi_without_paths(self):
+        runner = RecordingActionRunner(
+            terminal_session_type="piano-vocal-performance"
+        )
+        controller = self.controller(runner)
+        with mock.patch.object(
+            controller,
+            "_readback_after_mutation",
+            return_value=stopped_snapshot(runner.SESSION_ID, runner.PLAN_SHA),
+        ):
+            result = controller.perform_recording_action(
+                {"operation": "stop", "session_id": runner.SESSION_ID}
+            )
+        verification = result["verification"]
+        self.assertEqual(verification["status"], "verified")
+        self.assertTrue(verification["media"]["verified_current"])
+        self.assertTrue(verification["midi"]["verified_current"])
+        self.assertNotIn("path", json.dumps(verification))
+        product_commands = [
+            call[0][2]
+            for call in runner.calls
+            if pathlib.Path(call[0][1]).name == "recording_product.py"
+        ]
+        self.assertEqual(product_commands, ["media", "midi"])
+
+    def test_stop_preserves_successful_side_effect_when_current_media_verification_fails(self):
+        class UnverifiedMediaRunner(RecordingActionRunner):
+            def run(self, argv, *, timeout):
+                script = pathlib.Path(argv[1]).name if len(argv) > 1 else ""
+                if script == "recording_product.py" and argv[2] == "media":
+                    self.calls.append((tuple(argv), timeout))
+                    return self.result(
+                        argv,
+                        {
+                            "schema_version": 1,
+                            "kind": "audio_recording_product_error",
+                            "error": "private implementation detail must not escape",
+                        },
+                        returncode=2,
+                    )
+                return super().run(argv, timeout=timeout)
+
+        runner = UnverifiedMediaRunner()
+        controller = self.controller(runner)
+        with mock.patch.object(
+            controller,
+            "_readback_after_mutation",
+            return_value=stopped_snapshot(runner.SESSION_ID, runner.PLAN_SHA),
+        ):
+            result = controller.perform_recording_action(
+                {"operation": "stop", "session_id": runner.SESSION_ID}
+            )
+        self.assertEqual(result["operation"], "stop")
+        self.assertEqual(result["verification"]["status"], "unverified")
+        self.assertEqual(
+            result["verification"]["reason"],
+            "current-artifact-verification-failed",
+        )
+        self.assertNotIn("private implementation detail", json.dumps(result))
 
     def test_library_actions_are_typed_and_require_exact_metadata_readback(self):
         class LibraryActionRunner(RecordingActionRunner):

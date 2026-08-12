@@ -1335,6 +1335,25 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('"WAV sichern"', javascript)
         self.assertIn('"MIDI sichern"', javascript)
         self.assertIn("renderRecordingRecentTakes();", javascript)
+        for label in (
+            "Zieldatei",
+            "Mikrofon und MOTU",
+            "Pegelabnahme",
+            "Audio- und MIDI-Quellen",
+            "Recorder-Werkzeuge",
+            "Speicherplatz",
+            "Recorder-Zustand",
+        ):
+            self.assertIn(f'"{label}"', javascript)
+        self.assertIn('element("ul", "recording-preflight")', javascript)
+        self.assertIn(
+            '"Take finalisiert; die WAV-Datei wurde als aktuelle Datei verifiziert."',
+            javascript,
+        )
+        self.assertIn(
+            '"Take finalisiert; WAV und Roland-MIDI wurden als aktuelle Dateien verifiziert."',
+            javascript,
+        )
 
         controls_start = javascript.index("function renderRecordingControls(")
         controls_end = javascript.index("async function loadRecordingLibrary", controls_start)
