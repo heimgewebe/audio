@@ -20,12 +20,26 @@ class AudioRecorderUXTests(unittest.TestCase):
         self.assertIn("window.clearInterval(state.recordingClockTimer)", self.app)
         self.assertIn("state.recordingClockTimer = null", self.app)
 
-    def test_live_meter_is_explicitly_aggregated(self):
-        self.assertIn('candidate.value?.source === "active-pipewire-shared-capture"', self.app)
-        self.assertIn('source.textContent = "MOTU-Eingang · aggregierter Live-Pegel"', self.app)
+    def test_live_meter_is_aggregated_and_never_claims_unbound_hardware(self):
+        self.assertIn('stream.value?.source !== "active-pipewire-shared-capture"', self.app)
+        self.assertIn('"PipeWire-Standard-Eingang · aggregierter Live-Pegel"', self.app)
+        self.assertIn('"PipeWire-Eingang · aggregierter Live-Pegel"', self.app)
         self.assertIn('observation.clipping ? " · Clipping" : ""', self.app)
+        self.assertNotIn("MOTU-Eingang · aggregierter Live-Pegel", self.app)
         self.assertNotIn("Stimme · aggregierter Live-Pegel", self.app)
         self.assertNotIn("Klavier · aggregierter Live-Pegel", self.app)
+
+    def test_live_meter_exposes_stale_unavailable_and_unverified_states(self):
+        for message in (
+            "Live-Pegel nicht verfügbar",
+            "Pegel veraltet",
+            "Pegel startet",
+            "Pegel nicht verfügbar",
+            "Pegelquelle nicht verifiziert",
+            "Pegel unvollständig",
+        ):
+            self.assertIn(f'"{message}"', self.app)
+        self.assertNotIn('value.textContent = "Pegel wird gelesen"', self.app)
 
     def test_technical_controls_are_progressive(self):
         self.assertIn('element("details", "recording-advanced")', self.app)

@@ -1186,21 +1186,70 @@ function formatRecordingElapsed(startedAt, nowMs = Date.now()) {
     : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-function recordingLiveLevelObservation(telemetry = state.telemetry) {
-  const stream = (telemetry?.streams || []).find(
-    (candidate) =>
-      candidate?.id === "audio-levels" &&
-      candidate.availability === "live" &&
-      candidate.value?.source === "active-pipewire-shared-capture",
-  );
-  const peak = finiteTelemetryNumber(stream?.value?.peak_dbfs);
-  const rms = finiteTelemetryNumber(stream?.value?.rms_dbfs);
-  if (peak === null || rms === null) return null;
+function recordingLiveLevelState(telemetry = state.telemetry) {
+  const stream = (telemetry?.streams || []).find((candidate) => candidate?.id === "audio-levels");
+  if (!stream) {
+    return {
+      status: "unavailable",
+      observation: null,
+      label: "Live-Pegel nicht verfügbar",
+      detail: "Kein aktueller Pegelbeleg",
+    };
+  }
+  if (stream.availability !== "live") {
+    const status = stream.availability || "unavailable";
+    return {
+      status,
+      observation: null,
+      label:
+        status === "stale"
+          ? "Pegel veraltet"
+          : status === "starting"
+            ? "Pegel startet"
+            : "Pegel nicht verfügbar",
+      detail:
+        status === "stale"
+          ? "Letzte Pegelmessung ist nicht mehr frisch"
+          : status === "starting"
+            ? "Live-Telemetrie baut die Pegelmessung auf"
+            : "Live-Telemetrie meldet keinen aktuellen Pegel",
+    };
+  }
+  if (stream.value?.source !== "active-pipewire-shared-capture") {
+    return {
+      status: "unverified-source",
+      observation: null,
+      label: "Pegelquelle nicht verifiziert",
+      detail: "Kein belegter Shared-Capture-Pegel",
+    };
+  }
+  const peak = finiteTelemetryNumber(stream.value?.peak_dbfs);
+  const rms = finiteTelemetryNumber(stream.value?.rms_dbfs);
+  if (peak === null || rms === null) {
+    return {
+      status: "incomplete",
+      observation: null,
+      label: "Pegel unvollständig",
+      detail: "Peak und RMS sind nicht vollständig lesbar",
+    };
+  }
   return {
-    peak,
-    rms,
-    clipping: stream.value?.clipping === true,
+    status: "live",
+    observation: {
+      peak,
+      rms,
+      clipping: stream.value?.clipping === true,
+    },
+    label: null,
+    detail:
+      stream.value?.source_selection === "pipewire-default-source"
+        ? "PipeWire-Standard-Eingang · aggregierter Live-Pegel"
+        : "PipeWire-Eingang · aggregierter Live-Pegel",
   };
+}
+
+function recordingLiveLevelObservation(telemetry = state.telemetry) {
+  return recordingLiveLevelState(telemetry).observation;
 }
 
 function updateRecordingLiveStage(nowMs = Date.now()) {
@@ -1213,17 +1262,18 @@ function updateRecordingLiveStage(nowMs = Date.now()) {
   const source = byId("recording-live-level-source");
   const stage = byId("recording-live-stage");
   if (!meter || !value || !source || !stage) return;
-  const observation = recordingLiveLevelObservation();
+  const levelState = recordingLiveLevelState();
+  const observation = levelState.observation;
   if (!observation) {
     meter.removeAttribute("value");
-    value.textContent = "Pegel wird gelesen";
-    source.textContent = "MOTU-Eingang · aggregierter Pegel";
+    value.textContent = levelState.label;
+    source.textContent = levelState.detail;
     stage.classList.remove("is-clipping");
     return;
   }
   meter.value = dbProgress(observation.peak);
   value.textContent = `Peak ${observation.peak.toFixed(1)} dBFS · RMS ${observation.rms.toFixed(1)} dBFS${observation.clipping ? " · Clipping" : ""}`;
-  source.textContent = "MOTU-Eingang · aggregierter Live-Pegel";
+  source.textContent = levelState.detail;
   stage.classList.toggle("is-clipping", observation.clipping);
 }
 
