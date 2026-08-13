@@ -61,16 +61,22 @@ class AudioRecorderUXTests(unittest.TestCase):
         self.assertNotIn('element("audio", "recording-player")', self.app)
         self.assertEqual(self.app.count("appendTakeListenButton(card, item);"), 2)
         self.assertIn('"Anhören"', self.app)
-        self.assertIn("function playRecordingTake(item)", self.app)
+        self.assertIn("function playRecordingTake(item, trigger = null)", self.app)
 
     def test_global_player_reuses_existing_playback_and_refresh_contracts(self):
         self.assertIn("function recordingPlaybackActive()", self.app)
         self.assertIn('document.querySelectorAll("audio.recording-player")', self.app)
-        self.assertIn("function clearGlobalTakePlayer()", self.app)
+        self.assertIn("function clearGlobalTakePlayer({ restoreFocus = false } = {})", self.app)
         self.assertIn('byId("global-take-player-close").addEventListener', self.app)
         self.assertIn('byId("global-take-player-audio").setAttribute("aria-label"', self.app)
         self.assertIn('audio.removeAttribute("src")', self.app)
         self.assertIn('audio.removeAttribute("aria-label")', self.app)
+        self.assertIn("recordingPlayerReturnFocus: null", self.app)
+        self.assertIn("function clearGlobalTakePlayer({ restoreFocus = false } = {})", self.app)
+        self.assertIn('!returnFocus.closest("[hidden]")', self.app)
+        self.assertIn('byId("main-content")', self.app)
+        self.assertIn("returnTarget?.focus({ preventScroll: true })", self.app)
+        self.assertIn("clearGlobalTakePlayer({ restoreFocus: true })", self.app)
 
     def test_global_player_is_cleared_only_on_proven_stale_or_trashed_take(self):
         self.assertIn("function reconcileGlobalTakePlayer()", self.app)

@@ -312,6 +312,7 @@ const state = {
   recordingLibraryError: null,
   recordingPlayerSessionId: null,
   recordingPlayerAudioUrl: null,
+  recordingPlayerReturnFocus: null,
   libraryView: "active",
   libraryCategory: "all",
   librarySort: "newest",
@@ -1912,7 +1913,8 @@ function renderGlobalTakePlayer(item) {
   document.body.classList.add("take-player-active");
 }
 
-function clearGlobalTakePlayer() {
+function clearGlobalTakePlayer({ restoreFocus = false } = {}) {
+  const returnFocus = state.recordingPlayerReturnFocus;
   const audio = byId("global-take-player-audio");
   if (audio) {
     audio.pause();
@@ -1922,12 +1924,20 @@ function clearGlobalTakePlayer() {
   }
   state.recordingPlayerSessionId = null;
   state.recordingPlayerAudioUrl = null;
+  state.recordingPlayerReturnFocus = null;
   const player = byId("global-take-player");
   if (player) player.hidden = true;
   document.body.classList.remove("take-player-active");
+  if (restoreFocus) {
+    const returnTarget =
+      returnFocus?.isConnected && !returnFocus.closest("[hidden]")
+        ? returnFocus
+        : byId("main-content");
+    returnTarget?.focus({ preventScroll: true });
+  }
 }
 
-function playRecordingTake(item) {
+function playRecordingTake(item, trigger = null) {
   if (
     item?.status !== "completed" ||
     item.library?.trashed === true ||
@@ -1937,6 +1947,7 @@ function playRecordingTake(item) {
   }
   const audio = byId("global-take-player-audio");
   if (!audio) return;
+  if (trigger?.isConnected) state.recordingPlayerReturnFocus = trigger;
   const sameTake =
     state.recordingPlayerSessionId === item.session_id &&
     state.recordingPlayerAudioUrl === item.audio_url;
@@ -1993,7 +2004,9 @@ function appendTakeListenButton(parent, item) {
   );
   listen.type = "button";
   listen.setAttribute("aria-label", `${globalTakePlayerItemName(item)} anhören`);
-  listen.addEventListener("click", () => playRecordingTake(item));
+  listen.addEventListener("click", (event) =>
+    playRecordingTake(item, event.currentTarget),
+  );
   parent.append(listen);
 }
 
@@ -4065,7 +4078,9 @@ function wireEvents() {
   byId("replay-step").addEventListener("click", stepReplay);
   byId("replay-reset").addEventListener("click", resetReplay);
   byId("dialog-close").addEventListener("click", closeDialog);
-  byId("global-take-player-close").addEventListener("click", clearGlobalTakePlayer);
+  byId("global-take-player-close").addEventListener("click", () =>
+    clearGlobalTakePlayer({ restoreFocus: true }),
+  );
   byId("dialog-backdrop").addEventListener("click", (event) => {
     if (event.target === byId("dialog-backdrop")) closeDialog();
   });
