@@ -7,6 +7,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class AudioRecorderUXTests(unittest.TestCase):
     def setUp(self):
         self.app = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+        self.styles = (ROOT / "ui" / "styles.css").read_text(encoding="utf-8")
 
     def test_recorder_states_are_explicit(self):
         for state in ("idle", "ready", "blocked", "recording", "completed", "recovery-required"):
@@ -47,6 +49,45 @@ class AudioRecorderUXTests(unittest.TestCase):
         self.assertIn('"● Aufnahme starten"', self.app)
         self.assertIn('"■ Aufnahme stoppen"', self.app)
         self.assertIn("session?.recovery_required === true || session?.cleanup_required === true", self.app)
+
+
+    def test_take_playback_uses_one_persistent_native_player(self):
+        self.assertIn('id="global-take-player"', self.html)
+        self.assertIn('id="global-take-player-audio"', self.html)
+        self.assertIn('</main>\n\n      <section\n        class="global-take-player"', self.html)
+        self.assertIn('</section>\n    </div>\n\n    <div class="dialog-backdrop"', self.html)
+        self.assertIn('class="recording-player"', self.html)
+        self.assertEqual(self.html.count('class="recording-player"'), 1)
+        self.assertNotIn('element("audio", "recording-player")', self.app)
+        self.assertEqual(self.app.count("appendTakeListenButton(card, item);"), 2)
+        self.assertIn('"Anhören"', self.app)
+        self.assertIn("function playRecordingTake(item)", self.app)
+
+    def test_global_player_reuses_existing_playback_and_refresh_contracts(self):
+        self.assertIn("function recordingPlaybackActive()", self.app)
+        self.assertIn('document.querySelectorAll("audio.recording-player")', self.app)
+        self.assertIn("function clearGlobalTakePlayer()", self.app)
+        self.assertIn('byId("global-take-player-close").addEventListener', self.app)
+        self.assertIn('byId("global-take-player-audio").setAttribute("aria-label"', self.app)
+        self.assertIn('audio.removeAttribute("src")', self.app)
+        self.assertIn('audio.removeAttribute("aria-label")', self.app)
+
+    def test_global_player_is_cleared_only_on_proven_stale_or_trashed_take(self):
+        self.assertIn("function reconcileGlobalTakePlayer()", self.app)
+        self.assertIn("state.recordingLibrary.truncated !== true", self.app)
+        self.assertIn('current.status !== "completed"', self.app)
+        self.assertIn("current.library?.trashed === true", self.app)
+        self.assertIn("current.audio_url !== state.recordingPlayerAudioUrl", self.app)
+        self.assertIn('result.operation === "trash"', self.app)
+        self.assertIn("payload.session_id === state.recordingPlayerSessionId", self.app)
+
+    def test_global_player_reserves_safe_area_without_custom_audio_engine(self):
+        self.assertIn("body.take-player-active main", self.styles)
+        self.assertIn("var(--safe-bottom)", self.styles)
+        self.assertIn(".global-take-player", self.styles)
+        self.assertIn(".recording-playback-note", self.styles)
+        self.assertNotIn("waveform", self.app.lower())
+        self.assertNotIn("audioContext", self.app)
 
 
 if __name__ == "__main__":

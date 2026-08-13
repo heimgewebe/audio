@@ -2299,6 +2299,10 @@ main {
   padding-bottom: calc(30px + var(--safe-bottom));
 }
 
+body.take-player-active main {
+  padding-bottom: calc(150px + var(--safe-bottom));
+}
+
 .topbar {
   padding-top: calc(10px + var(--safe-top));
 }
@@ -2317,6 +2321,10 @@ main {
     padding-right: calc(12px + var(--safe-right));
     padding-left: calc(12px + var(--safe-left));
     padding-bottom: calc(24px + var(--safe-bottom));
+  }
+
+  body.take-player-active main {
+    padding-bottom: calc(180px + var(--safe-bottom));
   }
 
   /* Die Kopfleiste absorbiert den oberen Rand bereits im Seitenstreifen. */
@@ -2817,9 +2825,80 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   align-content: start;
 }
 
+.recording-listen-button {
+  margin-top: 10px;
+}
+
+.recording-playback-note {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
 .recording-player {
   width: 100%;
-  margin-top: 10px;
+}
+
+.global-take-player {
+  position: fixed;
+  z-index: 90;
+  right: calc(16px + var(--safe-right, 0px));
+  bottom: calc(16px + var(--safe-bottom, 0px));
+  left: calc(192px + var(--safe-left, 0px));
+  display: grid;
+  max-width: 760px;
+  margin-left: auto;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: rgba(15, 24, 23, 0.97);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(14px);
+}
+
+.global-take-player-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.global-take-player-copy > div {
+  min-width: 0;
+}
+
+.global-take-player-copy .eyebrow {
+  margin-bottom: 1px;
+}
+
+.global-take-player-copy strong,
+.global-take-player-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-take-player-copy small {
+  color: var(--muted);
+}
+
+.global-take-player .recording-player {
+  margin-top: 8px;
+}
+
+.global-take-player-close {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 900px) {
+  .global-take-player {
+    right: calc(12px + var(--safe-right));
+    bottom: calc(12px + var(--safe-bottom));
+    left: calc(12px + var(--safe-left));
+  }
 }
 
 .recording-take-exports {

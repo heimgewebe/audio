@@ -310,6 +310,8 @@ const state = {
   remoteWhaleSessionError: null,
   recordingLibrary: null,
   recordingLibraryError: null,
+  recordingPlayerSessionId: null,
+  recordingPlayerAudioUrl: null,
   libraryView: "active",
   libraryCategory: "all",
   librarySort: "newest",
@@ -694,11 +696,7 @@ function stopRemoteActivity() {
   state.remoteWhaleSessionExpiresAt = 0;
   state.remoteWhaleSessionError = null;
   state.whaleModeDraft = null;
-  for (const audio of document.querySelectorAll("audio.recording-player")) {
-    audio.pause();
-    audio.removeAttribute("src");
-    audio.load();
-  }
+  clearGlobalTakePlayer();
   // Kein gelesener Zustand darf als Kennzahl stehen bleiben.
   byId("diagnostic-badge").hidden = true;
   byId("diagnostic-badge").textContent = "0";
@@ -1478,6 +1476,12 @@ async function runRecordingAction(payload) {
       state.recordingPlanInput = null;
       if (["stop", "recover"].includes(result.operation)) state.recordingDetailsOpen = false;
       await loadRecordingLibrary({ render: false });
+      if (
+        result.operation === "trash" &&
+        payload.session_id === state.recordingPlayerSessionId
+      ) {
+        clearGlobalTakePlayer();
+      }
       let actionMessage =
         {
           start: "Aufnahme läuft; der Start wurde durch Recorder-Readback bestätigt.",
@@ -1854,6 +1858,7 @@ async function loadRecordingLibrary({ render = true } = {}) {
       timeoutMs: 15000,
     });
     state.recordingLibraryError = null;
+    reconcileGlobalTakePlayer();
     ensureAutomaticTakeNameFree();
   } catch (error) {
     state.recordingLibrary = null;
@@ -1888,6 +1893,108 @@ function recordingTakeProduct(item) {
   return item.result?.artifacts?.mix_wav
     ? "Klavier + Gesang · Stereo-Mix WAV + MIDI"
     : "Klavier: MIDI-only · Gesang WAV (Legacy-Take)";
+}
+
+function globalTakePlayerItemName(item) {
+  return item.name || `Take ${shortRevision(item.session_id)}`;
+}
+
+function renderGlobalTakePlayer(item) {
+  const player = byId("global-take-player");
+  if (!player) return;
+  const name = globalTakePlayerItemName(item);
+  byId("global-take-player-title").textContent = name;
+  byId("global-take-player-audio").setAttribute("aria-label", `${name} abspielen`);
+  const duration = recordingTakeDuration(item);
+  byId("global-take-player-meta").textContent =
+    `${recordingTakeProduct(item)}${duration ? ` · ${duration}` : ""}`;
+  player.hidden = false;
+  document.body.classList.add("take-player-active");
+}
+
+function clearGlobalTakePlayer() {
+  const audio = byId("global-take-player-audio");
+  if (audio) {
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.removeAttribute("aria-label");
+    audio.load();
+  }
+  state.recordingPlayerSessionId = null;
+  state.recordingPlayerAudioUrl = null;
+  const player = byId("global-take-player");
+  if (player) player.hidden = true;
+  document.body.classList.remove("take-player-active");
+}
+
+function playRecordingTake(item) {
+  if (
+    item?.status !== "completed" ||
+    item.library?.trashed === true ||
+    typeof item.audio_url !== "string"
+  ) {
+    return;
+  }
+  const audio = byId("global-take-player-audio");
+  if (!audio) return;
+  const sameTake =
+    state.recordingPlayerSessionId === item.session_id &&
+    state.recordingPlayerAudioUrl === item.audio_url;
+  if (!sameTake) {
+    audio.pause();
+    audio.src = item.audio_url;
+    audio.load();
+    state.recordingPlayerSessionId = item.session_id;
+    state.recordingPlayerAudioUrl = item.audio_url;
+  } else if (audio.ended) {
+    audio.currentTime = 0;
+  }
+  renderGlobalTakePlayer(item);
+  const playback = audio.play();
+  if (playback && typeof playback.catch === "function") {
+    playback.catch(() =>
+      showNotice(
+        "Wiedergabe konnte nicht gestartet werden; der Take bleibt im Player geöffnet.",
+        "info",
+      ),
+    );
+  }
+}
+
+function reconcileGlobalTakePlayer() {
+  if (!state.recordingPlayerSessionId || !state.recordingLibrary) return;
+  const items = Array.isArray(state.recordingLibrary.items)
+    ? state.recordingLibrary.items
+    : [];
+  const current = items.find(
+    (item) => item.session_id === state.recordingPlayerSessionId,
+  );
+  if (!current) {
+    if (state.recordingLibrary.truncated !== true) clearGlobalTakePlayer();
+    return;
+  }
+  if (
+    current.status !== "completed" ||
+    current.library?.trashed === true ||
+    current.audio_url !== state.recordingPlayerAudioUrl
+  ) {
+    clearGlobalTakePlayer();
+    return;
+  }
+  renderGlobalTakePlayer(current);
+}
+
+function appendTakeListenButton(parent, item) {
+  if (item.status !== "completed" || typeof item.audio_url !== "string") return;
+  const listen = element(
+    "button",
+    "secondary-button recording-listen-button",
+    "Anhören",
+  );
+  listen.type = "button";
+  listen.setAttribute("aria-label", `${globalTakePlayerItemName(item)} anhören`);
+  listen.addEventListener("click", () => playRecordingTake(item));
+  parent.append(listen);
 }
 
 function appendTakeExports(parent, item) {
@@ -1958,17 +2065,7 @@ function renderRecordingRecentTakes() {
         recordingStatusLabel(item.status),
       );
       card.append(head);
-      if (item.status === "completed" && typeof item.audio_url === "string") {
-        const audio = element("audio", "recording-player");
-        audio.controls = true;
-        audio.preload = "metadata";
-        audio.src = item.audio_url;
-        audio.setAttribute(
-          "aria-label",
-          `Take ${item.name || shortRevision(item.session_id)} abspielen`,
-        );
-        card.append(audio);
-      }
+      appendTakeListenButton(card, item);
       appendTakeExports(card, item);
       return card;
     }),
@@ -2861,20 +2958,12 @@ function renderLibrary() {
     card.append(meta);
 
     if (!trashed && item.status === "completed" && typeof item.audio_url === "string") {
-      const audio = element("audio", "recording-player");
-      audio.controls = true;
-      audio.preload = "none";
-      audio.src = item.audio_url;
-      audio.setAttribute(
-        "aria-label",
-        `Verifizierten Take ${item.name || shortRevision(item.session_id)} abspielen`,
-      );
-      card.append(audio);
+      appendTakeListenButton(card, item);
       appendText(
         card,
         "small",
-        "",
-        "Wiedergabe: Backend hasht den aktuell geöffneten finalen Take erneut; keine Browser-Mikrofonaufnahme.",
+        "recording-playback-note",
+        "Wiedergabe: Der zentrale Player öffnet ausschließlich den vom Backend erneut verifizierten finalen Take; keine Browser-Mikrofonaufnahme.",
       );
     }
     if (!trashed) appendTakeExports(card, item);
@@ -3976,6 +4065,7 @@ function wireEvents() {
   byId("replay-step").addEventListener("click", stepReplay);
   byId("replay-reset").addEventListener("click", resetReplay);
   byId("dialog-close").addEventListener("click", closeDialog);
+  byId("global-take-player-close").addEventListener("click", clearGlobalTakePlayer);
   byId("dialog-backdrop").addEventListener("click", (event) => {
     if (event.target === byId("dialog-backdrop")) closeDialog();
   });
