@@ -5,7 +5,7 @@ const ROUTES = {
   hoeren: { title: "Hören", eyebrow: "Wiedergabe und Referenzweg" },
   aufnehmen: { title: "Aufnehmen", eyebrow: "Recorder und Takes" },
   spielen: { title: "Spielen", eyebrow: "Instrumente und Klang" },
-  material: { title: "Material", eyebrow: "Takes, Klänge und Replay" },
+  material: { title: "Bibliothek", eyebrow: "Aufnahmen, Klänge und Replay" },
   system: { title: "System", eyebrow: "Betrieb und Integration" },
 };
 
@@ -322,6 +322,8 @@ const state = {
     automaticName: true,
   },
   recordingActionPending: false,
+  recordingDetailsOpen: false,
+  recordingClockTimer: null,
   whaleActionPending: false,
   whaleModeDraft: null,
   replay: null,
@@ -668,6 +670,10 @@ function stopRemoteActivity() {
   if (state.timer) {
     window.clearInterval(state.timer);
     state.timer = null;
+  }
+  if (state.recordingClockTimer) {
+    window.clearInterval(state.recordingClockTimer);
+    state.recordingClockTimer = null;
   }
   stopTelemetryPolling();
   stopReplay();
@@ -1152,6 +1158,84 @@ function recordingStatusLabel(value) {
   );
 }
 
+function recordingPresentationState(recording, plan = null) {
+  const session = recording?.session || null;
+  if (
+    session?.recovery_required === true ||
+    session?.status === "recovery-required" ||
+    session?.status === "identity-mismatch"
+  ) {
+    return "recovery-required";
+  }
+  if (session?.active === true || recording?.status === "running") return "recording";
+  if (session?.status === "completed") return "completed";
+  if (plan?.ready === true) return "ready";
+  if (plan?.ready === false) return "blocked";
+  return "idle";
+}
+
+function formatRecordingElapsed(startedAt, nowMs = Date.now()) {
+  const startedMs = Date.parse(startedAt || "");
+  if (!Number.isFinite(startedMs) || !Number.isFinite(nowMs)) return "00:00";
+  const totalSeconds = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function recordingLiveLevelObservation(telemetry = state.telemetry) {
+  const stream = (telemetry?.streams || []).find(
+    (candidate) =>
+      candidate?.id === "audio-levels" &&
+      candidate.availability === "live" &&
+      candidate.value?.source === "active-pipewire-shared-capture",
+  );
+  const peak = finiteTelemetryNumber(stream?.value?.peak_dbfs);
+  const rms = finiteTelemetryNumber(stream?.value?.rms_dbfs);
+  if (peak === null || rms === null) return null;
+  return {
+    peak,
+    rms,
+    clipping: stream.value?.clipping === true,
+  };
+}
+
+function updateRecordingLiveStage(nowMs = Date.now()) {
+  const session = state.snapshot?.recording?.session || null;
+  const timer = byId("recording-running-time");
+  if (timer) timer.textContent = formatRecordingElapsed(session?.started_at, nowMs);
+
+  const meter = byId("recording-live-level");
+  const value = byId("recording-live-level-value");
+  const source = byId("recording-live-level-source");
+  const stage = byId("recording-live-stage");
+  if (!meter || !value || !source || !stage) return;
+  const observation = recordingLiveLevelObservation();
+  if (!observation) {
+    meter.removeAttribute("value");
+    value.textContent = "Pegel wird gelesen";
+    source.textContent = "MOTU-Eingang · aggregierter Pegel";
+    stage.classList.remove("is-clipping");
+    return;
+  }
+  meter.value = dbProgress(observation.peak);
+  value.textContent = `Peak ${observation.peak.toFixed(1)} dBFS · RMS ${observation.rms.toFixed(1)} dBFS${observation.clipping ? " · Clipping" : ""}`;
+  source.textContent = "MOTU-Eingang · aggregierter Live-Pegel";
+  stage.classList.toggle("is-clipping", observation.clipping);
+}
+
+function syncRecordingClock() {
+  if (state.recordingClockTimer) window.clearInterval(state.recordingClockTimer);
+  state.recordingClockTimer = null;
+  updateRecordingLiveStage();
+  if (state.snapshot?.recording?.session?.active === true) {
+    state.recordingClockTimer = window.setInterval(updateRecordingLiveStage, 250);
+  }
+}
+
 function recordingPlanMatchesDraft() {
   const plan = state.recordingPlan;
   const input = state.recordingPlanInput;
@@ -1283,6 +1367,7 @@ async function runRecordingStart() {
     }
     const blockers = plan?.readiness?.blockers || [];
     if (plan?.ready !== true || typeof plan.plan_sha256 !== "string") {
+      state.recordingDetailsOpen = true;
       showNotice(
         `Aufnahme kann noch nicht starten: ${blockers.join(" · ") || "Plan nicht startbereit"}.`,
         "info",
@@ -1302,6 +1387,7 @@ async function runRecordingStart() {
     state.snapshot = result.snapshot;
     state.recordingPlan = null;
     state.recordingPlanInput = null;
+    state.recordingDetailsOpen = false;
     await loadRecordingLibrary({ render: false });
     showNotice("Aufnahme läuft; Planprüfung und Start wurden bestätigt.", "success");
   } catch (error) {
@@ -1322,6 +1408,7 @@ async function runRecordingAction(payload) {
   try {
     let result;
     if (payload.operation === "plan") {
+      state.recordingDetailsOpen = true;
       const planned = await requestRecordingPlan({ autoRenameCollision: true });
       result = planned.result;
       const blockers = result.plan?.readiness?.blockers || [];
@@ -1339,6 +1426,7 @@ async function runRecordingAction(payload) {
       state.snapshot = result.snapshot;
       state.recordingPlan = null;
       state.recordingPlanInput = null;
+      if (["stop", "recover"].includes(result.operation)) state.recordingDetailsOpen = false;
       await loadRecordingLibrary({ render: false });
       let actionMessage =
         {
@@ -1385,15 +1473,40 @@ function renderRecordingControls(card, recording) {
   const monitoring = contract.monitoring || {};
   const levels = contract.levels || {};
   const session = recording.session || null;
+  const writable = recordingActionsAllowed();
+  const active = session?.active === true;
+  const activeMode =
+    session?.session_type === "piano-vocal-performance" ? "piano-vocal" : "voice";
+  const selectedMode = (recording.modes || []).find(
+    (mode) => mode.id === (active ? activeMode : state.recordingDraft.mode),
+  );
+  const startActionLabel = "Aufnahme starten";
+  const stopActionLabel = "Stop";
+  const recoveryActionLabel = "Recovery";
+  const pianoVocalProduct = "Stereo-Mix WAV: Gesang + echter Roland-Klang · MIDI zusätzlich";
   const controls = element("section", "recording-controls");
   controls.setAttribute("aria-label", "Aufnahme");
-  appendText(controls, "p", "eyebrow", "Recorder");
+  controls.dataset.recordingState = recordingPresentationState(recording, state.recordingPlan);
+
+  const productHead = element("div", "recording-product-head");
+  const productCopy = element("div");
+  appendText(productCopy, "p", "eyebrow", active ? "Aufnahme" : "Recorder");
   appendText(
-    controls,
-    "strong",
+    productCopy,
+    "h3",
     "",
-    recordingStatusLabel(recording.status),
+    active ? selectedMode?.label || "Aufnahme" : "Was möchtest du aufnehmen?",
   );
+  appendText(
+    productCopy,
+    "p",
+    "recording-product-hint",
+    active
+      ? "Der Recorder läuft. Technische Details bleiben darunter verfügbar."
+      : "Startprüfung, Quellenbindung und Dateiname werden beim Start automatisch geprüft.",
+  );
+  productHead.append(productCopy);
+  controls.append(productHead);
 
   const facts = element("dl", "truth-list recording-truth");
   detailRow(
@@ -1424,154 +1537,175 @@ function renderRecordingControls(card, recording) {
     );
     detailRow(facts, "Plan", shortRevision(session.plan_sha256));
   }
-  controls.append(facts);
 
-  const writable = recordingActionsAllowed();
-  const active = session?.active === true;
-  const modeSwitch = element("div", "recording-mode-switch");
-  modeSwitch.setAttribute("role", "group");
-  modeSwitch.setAttribute("aria-label", "Aufnahmemodus");
-  for (const mode of recording.modes || []) {
-    const modeButton = element("button", "secondary-button", mode.label);
-    modeButton.type = "button";
-    modeButton.dataset.recordingMode = mode.id;
-    modeButton.setAttribute(
-      "aria-pressed",
-      String(state.recordingDraft.mode === mode.id),
+  if (active) {
+    const stage = element("section", "recording-live-stage");
+    stage.id = "recording-live-stage";
+    stage.setAttribute("aria-label", "Laufende Aufnahme");
+    appendText(stage, "span", "recording-live-indicator", "● Aufnahme läuft");
+    const elapsed = appendText(stage, "strong", "recording-running-time", "00:00");
+    elapsed.id = "recording-running-time";
+    const meter = element("progress", "recording-live-meter");
+    meter.id = "recording-live-level";
+    meter.max = 120;
+    meter.setAttribute("aria-label", "Aggregierter Live-Eingangspegel");
+    stage.append(meter);
+    const meterCopy = element("div", "recording-live-meter-copy");
+    const meterValue = appendText(meterCopy, "strong", "", "Pegel wird gelesen");
+    meterValue.id = "recording-live-level-value";
+    const meterSource = appendText(
+      meterCopy,
+      "small",
+      "",
+      "MOTU-Eingang · aggregierter Pegel",
     );
-    modeButton.disabled = active || state.recordingActionPending;
-    modeButton.addEventListener("click", () => {
-      const automaticName = state.recordingDraft.automaticName === true;
-      state.recordingDraft = {
-        ...state.recordingDraft,
-        mode: mode.id,
-        name: automaticName
-          ? nextAutomaticTakeName(mode.id, [state.recordingDraft.name])
-          : state.recordingDraft.name,
-      };
-      state.recordingPlan = null;
-      state.recordingPlanInput = null;
-      renderActiveLanes({ preserveDraft: false });
-    });
-    modeSwitch.append(modeButton);
-  }
-  controls.append(modeSwitch);
-  appendText(
-    controls,
-    "p",
-    "recording-product-hint",
-    state.recordingDraft.mode === "piano-vocal"
-      ? "Stereo-Mix WAV: Gesang + echter Roland-Klang · MIDI zusätzlich"
-      : "Gesang WAV",
-  );
-  const selectedMode = (recording.modes || []).find(
-    (mode) => mode.id === state.recordingDraft.mode,
-  );
-  if (selectedMode?.actionable !== true && selectedMode?.blocker) {
+    meterSource.id = "recording-live-level-source";
+    stage.append(meterCopy);
+    const stopButton = element("button", "primary-button recording-stop-button", "■ Aufnahme stoppen");
+    stopButton.type = "button";
+    stopButton.setAttribute("aria-label", stopActionLabel);
+    stopButton.dataset.control = "stop";
+    stopButton.disabled = !writable || !active || state.recordingActionPending;
+    stopButton.addEventListener("click", () =>
+      runRecordingAction({ operation: "stop", session_id: session?.session_id }),
+    );
+    stage.append(stopButton);
+    controls.append(stage);
+  } else {
+    const modeSwitch = element("div", "recording-mode-switch");
+    modeSwitch.setAttribute("role", "group");
+    modeSwitch.setAttribute("aria-label", "Aufnahmemodus");
+    for (const mode of recording.modes || []) {
+      const modeButton = element("button", "secondary-button", mode.label);
+      modeButton.type = "button";
+      modeButton.dataset.recordingMode = mode.id;
+      modeButton.setAttribute(
+        "aria-pressed",
+        String(state.recordingDraft.mode === mode.id),
+      );
+      modeButton.disabled = active || state.recordingActionPending;
+      modeButton.addEventListener("click", () => {
+        const automaticName = state.recordingDraft.automaticName === true;
+        state.recordingDraft = {
+          ...state.recordingDraft,
+          mode: mode.id,
+          name: automaticName
+            ? nextAutomaticTakeName(mode.id, [state.recordingDraft.name])
+            : state.recordingDraft.name,
+        };
+        state.recordingPlan = null;
+        state.recordingPlanInput = null;
+        state.recordingDetailsOpen = false;
+        renderActiveLanes({ preserveDraft: false });
+      });
+      modeSwitch.append(modeButton);
+    }
+    controls.append(modeSwitch);
     appendText(
       controls,
       "p",
-      selectedMode.blocker === "exact-midi-gate-requires-plan"
-        ? "recording-product-hint"
-        : "recording-plan",
-      `${selectedMode.blocker === "exact-midi-gate-requires-plan" ? "Automatische Startprüfung" : "Modus derzeit blockiert"}: ${
-        selectedMode.blocker === "roland-midi-source-not-observed"
-          ? "Roland-MIDI-Quelle nicht beobachtet"
-          : selectedMode.blocker === "exact-midi-gate-requires-plan"
-            ? "exakter MIDI-Port und arecordmidi werden beim Start automatisch gebunden"
-          : selectedMode.blocker
-      }`,
+      "recording-product-hint",
+      state.recordingDraft.mode === "piano-vocal"
+        ? `Ergebnis: ${pianoVocalProduct}`
+        : "Ergebnis: Gesang als WAV",
     );
-  }
-  const draft = element("div", "recording-draft");
-  const nameLabel = element("label", "recording-field");
-  appendText(nameLabel, "span", "", "Take-Name");
-  const nameInput = element("input", "recording-input");
-  nameInput.dataset.control = "take-name";
-  nameInput.type = "text";
-  nameInput.autocomplete = "off";
-  nameInput.spellcheck = false;
-  nameInput.maxLength = 128;
-  nameInput.value = state.recordingDraft.name;
-  nameInput.disabled = !writable || active || state.recordingActionPending;
-  nameLabel.append(nameInput);
-  const durationLabel = element("label", "recording-field");
-  appendText(durationLabel, "span", "", "Maximale Dauer (Sekunden)");
-  const durationInput = element("input", "recording-input");
-  durationInput.dataset.control = "maximum-seconds";
-  durationInput.type = "number";
-  durationInput.min = String(contract.capture?.minimum_duration_seconds || 1);
-  durationInput.max = String(contract.capture?.maximum_duration_seconds || 14400);
-  durationInput.step = "1";
-  durationInput.value = String(state.recordingDraft.maximumSeconds);
-  durationInput.disabled = !writable || active || state.recordingActionPending;
-  durationLabel.append(durationInput);
-  draft.append(nameLabel, durationLabel);
-  controls.append(draft);
-
-  const actionRow = element("div", "recording-actions");
-  const planButton = element("button", "secondary-button", "Plan prüfen");
-  const startButton = element("button", "primary-button", "Aufnahme starten");
-  const stopButton = element("button", "secondary-button", "Stop");
-  const recoverButton = element("button", "secondary-button", "Recovery");
-  planButton.dataset.control = "plan";
-  startButton.dataset.control = "start";
-  stopButton.dataset.control = "stop";
-  recoverButton.dataset.control = "recovery";
-  for (const button of [planButton, startButton, stopButton, recoverButton]) button.type = "button";
-  planButton.disabled =
-    !writable ||
-    active ||
-    state.recordingActionPending;
-  startButton.disabled =
-    !writable ||
-    active ||
-    state.recordingActionPending;
-  stopButton.disabled = !writable || !active || state.recordingActionPending;
-  recoverButton.disabled =
-    !writable ||
-    state.recordingActionPending ||
-    !(session?.recovery_required === true || session?.cleanup_required === true);
-
-  const invalidatePlan = ({ nameEdited = false } = {}) => {
-    const parsedDuration = Number.parseInt(durationInput.value, 10);
-    state.recordingDraft = {
-      mode: state.recordingDraft.mode,
-      name: nameInput.value,
-      maximumSeconds: Number.isInteger(parsedDuration) ? parsedDuration : 0,
-      automaticName: nameEdited ? false : state.recordingDraft.automaticName === true,
-    };
-    state.recordingPlan = null;
-    state.recordingPlanInput = null;
-  };
-  nameInput.addEventListener("input", () => invalidatePlan({ nameEdited: true }));
-  durationInput.addEventListener("input", () => invalidatePlan());
-  planButton.addEventListener("click", () => {
-    invalidatePlan();
-    runRecordingAction({
-      operation: "plan",
-      mode: state.recordingDraft.mode,
-      name: state.recordingDraft.name,
-      maximum_seconds: state.recordingDraft.maximumSeconds,
+    if (selectedMode?.actionable !== true && selectedMode?.blocker) {
+      appendText(
+        controls,
+        "p",
+        selectedMode.blocker === "exact-midi-gate-requires-plan"
+          ? "recording-product-hint"
+          : "recording-plan",
+        `${selectedMode.blocker === "exact-midi-gate-requires-plan" ? "Automatische Startprüfung" : "Modus derzeit blockiert"}: ${
+          selectedMode.blocker === "roland-midi-source-not-observed"
+            ? "Roland-MIDI-Quelle nicht beobachtet"
+            : selectedMode.blocker === "exact-midi-gate-requires-plan"
+              ? "exakter MIDI-Port und arecordmidi werden beim Start automatisch gebunden"
+              : selectedMode.blocker
+        }`,
+      );
+    }
+    const startButton = element("button", "primary-button recording-start-button", "● Aufnahme starten");
+    startButton.type = "button";
+    startButton.setAttribute("aria-label", startActionLabel);
+    startButton.dataset.control = "start";
+    startButton.disabled = !writable || state.recordingActionPending;
+    startButton.addEventListener("click", () => {
+      runRecordingStart();
     });
+    controls.append(startButton);
+  }
+
+  const advanced = element("details", "recording-advanced");
+  advanced.open = state.recordingDetailsOpen;
+  const advancedSummary = element("summary", "recording-advanced-summary", "Details und Startprüfung");
+  advanced.append(advancedSummary, facts);
+  advanced.addEventListener("toggle", () => {
+    state.recordingDetailsOpen = advanced.open;
   });
-  startButton.addEventListener("click", () => {
-    invalidatePlan();
-    runRecordingStart();
-  });
-  stopButton.addEventListener("click", () =>
-    runRecordingAction({ operation: "stop", session_id: session?.session_id }),
-  );
-  recoverButton.addEventListener("click", () =>
-    runRecordingAction({ operation: "recover", session_id: session?.session_id }),
-  );
-  actionRow.append(planButton, startButton, stopButton, recoverButton);
-  controls.append(actionRow);
+
+  if (!active) {
+    const draft = element("div", "recording-draft");
+    const nameLabel = element("label", "recording-field");
+    appendText(nameLabel, "span", "", "Take-Name");
+    const nameInput = element("input", "recording-input");
+    nameInput.dataset.control = "take-name";
+    nameInput.type = "text";
+    nameInput.autocomplete = "off";
+    nameInput.spellcheck = false;
+    nameInput.maxLength = 128;
+    nameInput.value = state.recordingDraft.name;
+    nameInput.disabled = !writable || state.recordingActionPending;
+    nameLabel.append(nameInput);
+    const durationLabel = element("label", "recording-field");
+    appendText(durationLabel, "span", "", "Maximale Dauer (Sekunden)");
+    const durationInput = element("input", "recording-input");
+    durationInput.dataset.control = "maximum-seconds";
+    durationInput.type = "number";
+    durationInput.min = String(contract.capture?.minimum_duration_seconds || 1);
+    durationInput.max = String(contract.capture?.maximum_duration_seconds || 14400);
+    durationInput.step = "1";
+    durationInput.value = String(state.recordingDraft.maximumSeconds);
+    durationInput.disabled = !writable || state.recordingActionPending;
+    durationLabel.append(durationInput);
+    draft.append(nameLabel, durationLabel);
+    advanced.append(draft);
+
+    const invalidatePlan = ({ nameEdited = false } = {}) => {
+      const parsedDuration = Number.parseInt(durationInput.value, 10);
+      state.recordingDraft = {
+        mode: state.recordingDraft.mode,
+        name: nameInput.value,
+        maximumSeconds: Number.isInteger(parsedDuration) ? parsedDuration : 0,
+        automaticName: nameEdited ? false : state.recordingDraft.automaticName === true,
+      };
+      state.recordingPlan = null;
+      state.recordingPlanInput = null;
+    };
+    nameInput.addEventListener("input", () => invalidatePlan({ nameEdited: true }));
+    durationInput.addEventListener("input", () => invalidatePlan());
+
+    const planButton = element("button", "secondary-button", "Plan prüfen");
+    planButton.type = "button";
+    planButton.dataset.control = "plan";
+    planButton.disabled = !writable || state.recordingActionPending;
+    planButton.addEventListener("click", () => {
+      invalidatePlan();
+      state.recordingDetailsOpen = true;
+      runRecordingAction({
+        operation: "plan",
+        mode: state.recordingDraft.mode,
+        name: state.recordingDraft.name,
+        maximum_seconds: state.recordingDraft.maximumSeconds,
+      });
+    });
+    advanced.append(planButton);
+  }
 
   if (state.recordingPlan) {
     const plan = state.recordingPlan;
     appendText(
-      controls,
+      advanced,
       "p",
       plan.ready ? "recording-plan ready" : "recording-plan",
       plan.ready
@@ -1610,9 +1744,45 @@ function renderRecordingControls(card, recording) {
         item.append(copy);
         checklist.append(item);
       }
-      controls.append(checklist);
+      advanced.append(checklist);
     }
   }
+  controls.append(advanced);
+
+  if (session?.recovery_required === true || session?.cleanup_required === true) {
+    const recovery = element("section", "recording-recovery");
+    appendText(
+      recovery,
+      "strong",
+      "",
+      session.recovery_required === true
+        ? "Recorder benötigt Wiederherstellung"
+        : "Recorder kann freigegeben werden",
+    );
+    appendText(
+      recovery,
+      "p",
+      "",
+      session.recovery_required === true
+        ? "Die vorhandene Aufnahme bleibt erhalten. Recovery prüft die gebundene Sitzung und räumt nur den Recorderzustand auf."
+        : "Der Take ist abgeschlossen; der verbliebene Recorderzustand kann jetzt kontrolliert aufgeräumt werden.",
+    );
+    const recoverButton = element(
+      "button",
+      "secondary-button",
+      session.recovery_required === true ? "Recovery ausführen" : "Recorder freigeben",
+    );
+    recoverButton.type = "button";
+    recoverButton.setAttribute("aria-label", recoveryActionLabel);
+    recoverButton.dataset.control = "recovery";
+    recoverButton.disabled = !writable || state.recordingActionPending;
+    recoverButton.addEventListener("click", () =>
+      runRecordingAction({ operation: "recover", session_id: session?.session_id }),
+    );
+    recovery.append(recoverButton);
+    controls.append(recovery);
+  }
+
   if (!writable) {
     appendText(
       controls,
@@ -1624,6 +1794,7 @@ function renderRecordingControls(card, recording) {
     );
   }
   card.append(controls);
+  syncRecordingClock();
 }
 
 async function loadRecordingLibrary({ render = true } = {}) {
@@ -1998,8 +2169,8 @@ function renderHome() {
     {
       href: "#material",
       glyph: "≋",
-      eyebrow: "Material",
-      title: "Klänge & Takes",
+      eyebrow: "Aufnahmen",
+      title: "Bibliothek",
       status: whaleStatusReadable
         ? takeCount === null
           ? "Bibliothek"
@@ -3043,6 +3214,7 @@ async function loadTelemetry() {
   state.telemetryPresentationSequence += 1;
   state.telemetryUpdatedAt = Date.now();
   renderTelemetry();
+  updateRecordingLiveStage();
 }
 
 function requestTelemetry() {

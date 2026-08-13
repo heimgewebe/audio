@@ -2526,6 +2526,124 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   border-top: 1px solid var(--line);
 }
 
+.recording-product-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recording-product-head h3 {
+  margin: 0;
+  font-size: clamp(1.1rem, 2vw, 1.45rem);
+}
+
+.recording-start-button,
+.recording-stop-button {
+  width: 100%;
+  min-height: 56px;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.recording-live-stage {
+  display: grid;
+  gap: 12px;
+  padding: clamp(18px, 3vw, 32px);
+  border: 1px solid var(--mint-border);
+  border-radius: var(--radius-lg);
+  text-align: center;
+  background: rgba(185, 230, 181, 0.04);
+}
+
+.recording-live-indicator {
+  color: var(--mint-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recording-running-time {
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(2.6rem, 9vw, 5.2rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.recording-live-meter {
+  width: 100%;
+  height: 14px;
+}
+
+.recording-live-meter-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.recording-live-meter-copy small {
+  color: var(--muted);
+}
+
+.recording-live-stage.is-clipping {
+  border-color: rgba(240, 120, 120, 0.5);
+}
+
+.recording-advanced {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.recording-advanced-summary {
+  padding: 10px 12px;
+  color: var(--muted-bright);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.recording-advanced[open] {
+  padding: 0 12px 12px;
+}
+
+.recording-advanced[open] .recording-advanced-summary {
+  margin: 0 -12px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.recording-recovery {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid rgba(225, 185, 104, 0.28);
+  border-radius: var(--radius-sm);
+  background: rgba(225, 185, 104, 0.06);
+}
+
+.recording-recovery p {
+  margin: 0;
+  color: var(--muted-bright);
+}
+
+.depth-panel.is-workspace-focused .recording-controls {
+  width: min(760px, 100%);
+  margin-inline: auto;
+}
+
+.depth-panel.is-workspace-focused .recording-live-stage {
+  min-height: min(64vh, 620px);
+  align-content: center;
+}
+
+@media (pointer: coarse) {
+  .recording-start-button,
+  .recording-stop-button {
+    min-height: 64px;
+  }
+}
+
 .recording-truth {
   margin: 0;
 }
