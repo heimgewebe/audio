@@ -465,10 +465,25 @@ class FeatureDetectionTests(unittest.TestCase):
             r"requestMIDIAccess\s*\(",
             r"new\s+AudioContext",
             r"navigator\.permissions\.query",
-            r"\.play\s*\(\s*\)",
         ):
             with self.subTest(pattern=pattern):
                 self.assertIsNone(re.search(pattern, self.app), pattern)
+
+    def test_media_playback_is_only_user_initiated_take_playback(self):
+        capability_block = self.app.split("function detectCapabilities() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIsNone(re.search(r"\.play\s*\(\s*\)", capability_block))
+        self.assertEqual(len(re.findall(r"\.play\s*\(\s*\)", self.app)), 1)
+        playback = self.app.split("function playRecordingTake(item, trigger = null) {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("const playback = audio.play();", playback)
+        listener = self.app.split("function appendTakeListenButton(parent, item) {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn('listen.addEventListener("click", (event) =>', listener)
+        self.assertIn("playRecordingTake(item, event.currentTarget)", listener)
 
     def test_detection_probes_every_required_capability(self):
         self.assertIn("window.isSecureContext === true", self.app)

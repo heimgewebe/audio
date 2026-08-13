@@ -308,6 +308,33 @@
           </article>
         </section>
       </main>
+
+      <section
+        class="global-take-player"
+        id="global-take-player"
+        aria-labelledby="global-take-player-title"
+        hidden
+      >
+        <div class="global-take-player-copy">
+          <div>
+            <p class="eyebrow">Wiedergabe</p>
+            <strong id="global-take-player-title">Take</strong>
+            <small id="global-take-player-meta"></small>
+          </div>
+          <button
+            class="icon-button global-take-player-close"
+            id="global-take-player-close"
+            type="button"
+            aria-label="Take-Player schließen"
+          ><span aria-hidden="true">×</span></button>
+        </div>
+        <audio
+          id="global-take-player-audio"
+          class="recording-player"
+          controls
+          preload="metadata"
+        ></audio>
+      </section>
     </div>
 
     <div class="dialog-backdrop" id="dialog-backdrop" hidden>
