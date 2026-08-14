@@ -262,6 +262,15 @@ function recordingCollisionOnly(blockers) {
   );
 }
 
+function recordingModeKnownHardBlocked(mode) {
+  return (
+    mode?.actionable !== true &&
+    typeof mode?.blocker === "string" &&
+    mode.blocker.length > 0 &&
+    mode.blocker !== "exact-midi-gate-requires-plan"
+  );
+}
+
 function recordingBlockerLabel(blocker) {
   if (typeof blocker !== "string" || !blocker) return "Unbekanntes Start-Gate";
   if (RECORDING_BLOCKER_LABELS[blocker]) return RECORDING_BLOCKER_LABELS[blocker];
@@ -1664,8 +1673,9 @@ function renderRecordingControls(card, recording) {
         ? `Ergebnis: ${pianoVocalProduct}`
         : "Ergebnis: Gesang als WAV",
     );
+    let modeBlockerMessage = null;
     if (selectedMode?.actionable !== true && selectedMode?.blocker) {
-      appendText(
+      modeBlockerMessage = appendText(
         controls,
         "p",
         selectedMode.blocker === "exact-midi-gate-requires-plan"
@@ -1684,7 +1694,12 @@ function renderRecordingControls(card, recording) {
     startButton.type = "button";
     startButton.setAttribute("aria-label", startActionLabel);
     startButton.dataset.control = "start";
-    startButton.disabled = !writable || state.recordingActionPending;
+    const knownModeHardBlocked = recordingModeKnownHardBlocked(selectedMode);
+    startButton.disabled = !writable || state.recordingActionPending || knownModeHardBlocked;
+    if (knownModeHardBlocked && modeBlockerMessage) {
+      modeBlockerMessage.id = "recording-mode-blocker";
+      startButton.setAttribute("aria-describedby", modeBlockerMessage.id);
+    }
     startButton.addEventListener("click", () => {
       runRecordingStart();
     });

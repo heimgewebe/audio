@@ -43,6 +43,18 @@ class AudioRecorderUXTests(unittest.TestCase):
             self.assertIn(f'"{message}"', self.app)
         self.assertNotIn('value.textContent = "Pegel wird gelesen"', self.app)
 
+    def test_known_mode_blocker_disables_start_without_blocking_automatic_preflight(self):
+        self.assertIn("function recordingModeKnownHardBlocked(mode)", self.app)
+        self.assertIn('mode.blocker !== "exact-midi-gate-requires-plan"', self.app)
+        self.assertIn(
+            "startButton.disabled = !writable || state.recordingActionPending || knownModeHardBlocked;",
+            self.app,
+        )
+        self.assertIn('modeBlockerMessage.id = "recording-mode-blocker"', self.app)
+        self.assertIn('startButton.setAttribute("aria-describedby", modeBlockerMessage.id)', self.app)
+        self.assertIn('selectedMode.blocker === "exact-midi-gate-requires-plan"', self.app)
+        self.assertIn('"Automatische Startprüfung"', self.app)
+
     def test_technical_controls_are_progressive(self):
         self.assertIn('element("details", "recording-advanced")', self.app)
         self.assertIn('"Details und Startprüfung"', self.app)
