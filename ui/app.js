@@ -2252,6 +2252,18 @@ function homeSignalNode(label, value, detail, tone = "configured") {
   return node;
 }
 
+function listeningPathCard(title, subtitle, nodes) {
+  const path = element("section", "listening-path-card");
+  const heading = element("div", "listening-path-heading");
+  appendText(heading, "strong", "", title);
+  appendText(heading, "small", "", subtitle);
+  path.append(heading);
+  const flow = element("div", "listening-path-flow");
+  flow.append(...nodes);
+  path.append(flow);
+  return path;
+}
+
 function renderHome() {
   const snapshot = state.snapshot;
   const summary = snapshot.summary || {};
@@ -2361,26 +2373,54 @@ function renderHome() {
   ];
   byId("home-actions").replaceChildren(...actions.map(homeActionCard));
 
-  byId("home-signal-caption").textContent = rate
-    ? `${rate} Hz · Ziel ${formatEndpoint(graph.default_sink)}`
-    : `Ziel ${formatEndpoint(graph.default_sink)}`;
+  const external = doctor.external_endpoints || {};
+  const receiverProfile = homeProfile("receiver");
+  const receiverPhysicalOpen = (receiverProfile?.unresolved_physical_fact_count ?? 0) > 0;
+  const pioneerObserved = external.pioneer_vsx_830_k?.software_observed === true;
+  const pioneerTone = pioneerObserved ? "observed" : receiverPhysicalOpen ? "onsite" : "configured";
+  const pioneerDetail = pioneerObserved
+    ? "softwareseitig beobachtet"
+    : receiverPhysicalOpen
+      ? "PC-Verbindung / Eingang / Hörmodus / Pegel vor Ort offen"
+      : "physische Receiver-Gates belegt";
+
+  byId("home-signal-caption").textContent =
+    `${rate ? `${rate} Hz · ` : ""}2 Haupt-Ausgabeketten · aktuelles Softwareziel ${formatEndpoint(graph.default_sink)}`;
   byId("home-signal-flow").replaceChildren(
-    homeSignalNode("Quelle", "Qobuz / Desktop", "Wiedergabequelle", "configured"),
-    homeSignalNode(
-      "Interface",
-      "MOTU M2",
-      motuObserved ? "aktuell beobachtet" : "Zielgerät · aktuell nicht beobachtet",
-      motuObserved ? "observed" : "onsite",
-    ),
-    homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Ziel der Kopfhörerkette", "configured"),
-    homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
+    listeningPathCard("Kopfhörer · Referenz", "definierter MOTU-/Lake-People-Weg", [
+      homeSignalNode("Quelle", "Qobuz / Desktop", "Wiedergabequelle", "configured"),
+      homeSignalNode(
+        "Interface",
+        "MOTU M2",
+        motuObserved ? "aktuell beobachtet" : "Zielgerät · aktuell nicht beobachtet",
+        motuObserved ? "observed" : "onsite",
+      ),
+      homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Kopfhörerverstärker", "configured"),
+      homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
+    ]),
+    listeningPathCard("Lautsprecher · Receiver", "separater Pioneer-Wiedergabeweg", [
+      homeSignalNode("Quelle", "Qobuz / Desktop", "Wiedergabequelle", "configured"),
+      homeSignalNode(
+        "PC-Ausgang",
+        "Heim-PC",
+        receiverPhysicalOpen ? "Verbindung zum VSX vor Ort zu bestätigen" : "Receiver-Verbindung belegt",
+        receiverPhysicalOpen ? "onsite" : "configured",
+      ),
+      homeSignalNode("Receiver", "Pioneer VSX-830-K", pioneerDetail, pioneerTone),
+      homeSignalNode(
+        "Lautsprecherbestand",
+        "ELAC + Canton",
+        "2× ELAC FS 109.2 · Canton Center + 4 Satelliten · kein Subwoofer · aktive Zuordnung offen",
+        "onsite",
+      ),
+    ]),
   );
 
   const metrics = [
     ["Samplerate", rate ? `${rate / 1000} kHz` : "offen", "aktueller Graph"],
     ["Puffer", quantum ? `${quantum} Frames` : "offen", "aktueller Quantum"],
-    ["MOTU M2", motuObserved ? "beobachtet" : "offen", "Audiointerface"],
-    ["Ausgabe", "Focal Clear MG", "Referenzabhöre"],
+    ["MOTU M2", motuObserved ? "beobachtet" : "offen", "Kopfhörerweg"],
+    ["Ausgaben", "Focal + Pioneer", "Kopfhörer + Lautsprecher"],
   ];
   byId("home-metrics").replaceChildren(
     ...metrics.map(([label, value, description]) => {
@@ -3541,6 +3581,11 @@ function renderConnections() {
         ? "softwareseitig beobachtet"
         : "physischer Weg offen",
       external.pioneer_vsx_830_k?.software_observed ? "observed" : "onsite",
+    ),
+    signalNode(
+      "Lautsprecherbestand am Pioneer",
+      "2× ELAC FS 109.2 · Canton Center + 4 Satelliten · kein Subwoofer · aktive Zuordnung offen",
+      "onsite",
     ),
     signalNode(
       "1MII B03 Pro",

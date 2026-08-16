@@ -14,6 +14,7 @@
     {"id": "lake-people-g111-mk2", "type": "headphone-amplifier", "verification": "user-declared"},
     {"id": "focal-clear-mg", "type": "headphones", "verification": "user-declared"},
     {"id": "pioneer-vsx-830-k", "type": "receiver", "verification": "user-declared"},
+    {"id": "pioneer-speaker-system", "type": "speaker-system", "verification": "user-declared", "components": ["2x ELAC FS 109.2 front", "1x Canton center", "4x Canton satellite"], "subwoofer": false},
     {"id": "1mii-b03-pro", "type": "bluetooth-transmitter", "verification": "user-declared"},
     {"id": "qobuz", "type": "streaming-source", "verification": "observed-via-mopidy"}
   ],
@@ -25,6 +26,7 @@
     {"from": "motu-m2", "to": "lake-people-g111-mk2", "transport": "analog-line", "verification": "unknown", "required_physical_facts": ["output pair", "cable type", "amplifier input"]},
     {"from": "lake-people-g111-mk2", "to": "focal-clear-mg", "transport": "headphone", "verification": "unknown", "required_physical_facts": ["gain setting", "headphone output", "volume reference"]},
     {"from": "heim-pc", "to": "pioneer-vsx-830-k", "transport": "unknown-digital-or-analog", "verification": "user-declared-unresolved", "required_physical_facts": ["PC output", "receiver input", "receiver listening mode", "reference volume"]},
+    {"from": "pioneer-vsx-830-k", "to": "pioneer-speaker-system", "transport": "unknown-speaker-output", "verification": "user-declared-unresolved", "required_physical_facts": ["speaker output assignment", "speaker connection"]},
     {"from": "heim-pc", "to": "1mii-b03-pro", "transport": "unknown-optical-or-analog", "verification": "unknown", "required_physical_facts": ["transmitter input", "TX mode", "codec", "paired target"]},
     {"from": "qobuz", "to": "pipewire", "transport": "mopidy-pulse", "verification": "software-observable", "quality_boundary": "mixed path; bit-perfect not established"}
   ]
