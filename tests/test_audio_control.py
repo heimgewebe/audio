@@ -1263,6 +1263,38 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('["Rate", graph.force_rate_hz', javascript)
         self.assertIn('["Quantum",', javascript)
 
+    def test_listening_workspace_shows_both_physical_playback_chains(self):
+        html = (ROOT / "ui" / "index.html").read_text()
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        styles = (ROOT / "ui" / "styles.css").read_text()
+        signal_path = json.loads((ROOT / "inventory" / "signal-path.v1.json").read_text())
+
+        self.assertIn("Wiedergabewege", html)
+        self.assertIn('listeningPathCard("Kopfhörer · Referenz"', javascript)
+        self.assertIn('listeningPathCard("Lautsprecher · Receiver"', javascript)
+        self.assertIn('"Pioneer VSX-830-K"', javascript)
+        self.assertIn('"Lautsprecherbestand"', javascript)
+        self.assertIn("2× ELAC FS 109.2", javascript)
+        self.assertIn("Canton Center + 4 Satelliten", javascript)
+        self.assertIn("kein Subwoofer", javascript)
+        self.assertIn("aktive Zuordnung offen", javascript)
+        self.assertIn(".listening-path-flow", styles)
+        speaker_system = next(
+            node for node in signal_path["nodes"] if node.get("id") == "pioneer-speaker-system"
+        )
+        self.assertEqual(speaker_system["type"], "speaker-system")
+        self.assertEqual(speaker_system["verification"], "user-declared")
+        self.assertFalse(speaker_system["subwoofer"])
+        self.assertEqual(len(speaker_system["components"]), 3)
+        self.assertTrue(
+            any(
+                edge.get("from") == "pioneer-vsx-830-k"
+                and edge.get("to") == "pioneer-speaker-system"
+                and edge.get("verification") == "user-declared-unresolved"
+                for edge in signal_path["edges"]
+            )
+        )
+
     def test_auto_refresh_policy_blocks_dialogs_and_audio_actions(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         policy_start = javascript.index("function autoRefreshBlocked()")

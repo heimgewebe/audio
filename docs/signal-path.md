@@ -17,6 +17,12 @@ Aufnahmepegeln oder Prozesszuständen ableiten.
 Qobuz läuft derzeit über Mopidy und den Pulse-kompatiblen PipeWire-Pfad. Dies
 belegt einen funktionalen Mischpfad, aber keine bitgenaue Wiedergabe.
 
+Der Pioneer VSX-830-K ist ein separater, nutzerdeklarierter Wiedergabeweg vom
+Heim-PC. Als Lautsprecherbestand sind 2× ELAC FS 109.2, ein Canton Center und
+vier Canton Satelliten ohne Subwoofer deklariert. Welche davon aktuell welchem
+Receiver-Ausgang zugeordnet sind und wie sie verkabelt sind, bleibt bis zur
+Vor-Ort-Prüfung ausdrücklich offen.
+
 ## Physisch zu bestätigen
 
 Die Vorlage `inventory/physical-verification.v1.json` nennt die noch offenen
