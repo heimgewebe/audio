@@ -3907,11 +3907,12 @@ main { padding: 0 28px 42px; }
 .listening-input-grid .home-signal-node::after {
   position: absolute;
   bottom: -16px;
-  left: 50%;
+  left: calc(50% - 0.5px);
   width: 1px;
   height: 16px;
   background: var(--line-strong-v2);
   content: "";
+  transform: translateX(-50%);
 }
 
 .listening-input-grid .home-signal-node + .home-signal-node::before {
@@ -3932,6 +3933,7 @@ main { padding: 0 28px 42px; }
   width: 1px;
   background: var(--line-strong-v2);
   content: "";
+  transform: translateX(-50%);
 }
 
 .listening-hub-stage::before {
@@ -3985,6 +3987,7 @@ main { padding: 0 28px 42px; }
   height: 29px;
   background: var(--line-strong-v2);
   content: "";
+  transform: translateX(-50%);
 }
 
 .listening-branch-grid {
@@ -4016,6 +4019,7 @@ main { padding: 0 28px 42px; }
   width: 1px;
   height: 28px;
   content: "";
+  transform: translateX(-50%);
 }
 
 .listening-branch-grid .listening-path-card.is-reference::before {
