@@ -9,7 +9,7 @@ const ROUTES = {
   hoeren: {
     title: "Hören",
     eyebrow: "Wiedergabe und Referenzweg",
-    description: "Referenz-Monitoring und Wiedergabewege klar getrennt nach Kopfhörer und Lautsprecher.",
+    description: "Beide Wiedergabewege laufen über das MOTU M2 und trennen sich danach in Kopfhörer- und Receiverkette.",
   },
   aufnehmen: {
     title: "Aufnehmen",
@@ -96,7 +96,7 @@ const PHYSICAL_FACT_LABELS = {
   motu_output_to_lake_people: "MOTU-Ausgang zum Lake People",
   motu_phantom_48v: "MOTU 48-V-Phantomspeisung",
   pioneer_listening_mode: "Pioneer Hörmodus",
-  pioneer_pc_connection: "Pioneer Verbindung zum PC",
+  pioneer_pc_connection: "Pioneer Verbindung vom MOTU M2",
   pioneer_reference_volume: "Pioneer Referenzlautstärke",
   pioneer_selected_input: "Pioneer ausgewählter Eingang",
   rode_nt1a_connected: "RØDE NT1-A angeschlossen",
@@ -2420,7 +2420,7 @@ function renderHome() {
   const pioneerDetail = pioneerObserved
     ? "softwareseitig beobachtet"
     : receiverPhysicalOpen
-      ? "PC-Verbindung / Eingang / Hörmodus / Pegel vor Ort offen"
+      ? "MOTU-Anschlussdetails / Eingang / Hörmodus / Pegel vor Ort offen"
       : "physische Receiver-Gates belegt";
 
   byId("home-signal-caption").textContent =
@@ -2437,13 +2437,13 @@ function renderHome() {
       homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Kopfhörerverstärker", "configured"),
       homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
     ], "reference"),
-    listeningPathCard("Lautsprecher · Receiver", "separater Pioneer-Wiedergabeweg", [
+    listeningPathCard("Lautsprecher · Receiver", "Pioneer-Weg über MOTU M2", [
       homeSignalNode("Quelle", "Qobuz / Desktop", "Wiedergabequelle", "configured"),
       homeSignalNode(
-        "PC-Ausgang",
-        "Heim-PC",
-        receiverPhysicalOpen ? "Verbindung zum VSX vor Ort zu bestätigen" : "Receiver-Verbindung belegt",
-        receiverPhysicalOpen ? "onsite" : "configured",
+        "Interface",
+        "MOTU M2",
+        motuObserved ? "aktuell beobachtet · gemeinsamer Ausgangspunkt" : "Zielgerät · gemeinsamer Ausgangspunkt",
+        motuObserved ? "observed" : "onsite",
       ),
       homeSignalNode("Receiver", "Pioneer VSX-830-K", pioneerDetail, pioneerTone),
       homeSignalNode(
@@ -2458,7 +2458,7 @@ function renderHome() {
   const metrics = [
     ["Samplerate", rate ? `${rate / 1000} kHz` : "offen", "aktueller Graph"],
     ["Puffer", quantum ? `${quantum} Frames` : "offen", "aktueller Quantum"],
-    ["MOTU M2", motuObserved ? "beobachtet" : "offen", "Kopfhörerweg"],
+    ["MOTU M2", motuObserved ? "beobachtet" : "offen", "beide Hörwege"],
     ["Ausgaben", "Focal + Pioneer", "Kopfhörer + Lautsprecher"],
   ];
   const metricGlyphs = { Samplerate: "≋", Puffer: "◫", "MOTU M2": "◖", Ausgaben: "◎" };

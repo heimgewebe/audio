@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "audiozentrale_workspace_state",
-  "product_model_sha256": "87a36ce5cae399069adae5ad7b7b4fd015e2df5f71ed117dd950286d284e6d6f",
+  "product_model_sha256": "db8ff99ae1537b4b10c4dc8318355a4139c14ed0cc3e7b4ef4a3b7376985f3f7",
   "workspace_id": "home-studio-demo",
   "active_setup_id": "reference-focal",
   "setups": [

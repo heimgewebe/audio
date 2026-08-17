@@ -17,10 +17,14 @@ Aufnahmepegeln oder Prozesszuständen ableiten.
 Qobuz läuft derzeit über Mopidy und den Pulse-kompatiblen PipeWire-Pfad. Dies
 belegt einen funktionalen Mischpfad, aber keine bitgenaue Wiedergabe.
 
-Der Pioneer VSX-830-K ist ein separater, nutzerdeklarierter Wiedergabeweg vom
-Heim-PC. Als Lautsprecherbestand sind 2× ELAC FS 109.2, ein Canton Center und
-vier Canton Satelliten ohne Subwoofer deklariert. Welche davon aktuell welchem
-Receiver-Ausgang zugeordnet sind und wie sie verkabelt sind, bleibt bis zur
+Der Pioneer VSX-830-K nutzt ebenfalls den MOTU M2. Der nutzerdeklarierte
+Wiedergabeweg lautet damit `Heim-PC / Qobuz → PipeWire → MOTU M2 → Pioneer
+VSX-830-K → Lautsprecher`. Die beiden Hauptwege verzweigen sich hinter dem MOTU:
+zum Lake People/Focal einerseits und zum Pioneer/Lautsprechersystem andererseits.
+Als Lautsprecherbestand sind 2× ELAC FS 109.2, ein Canton Center und vier Canton
+Satelliten ohne Subwoofer deklariert. Welcher MOTU-Ausgang und Kabeltyp zum
+Pioneer genutzt werden, welcher Receiver-Eingang aktiv ist, wie die Lautsprecher
+zugeordnet und verkabelt sind sowie Hörmodus und Referenzpegel bleiben bis zur
 Vor-Ort-Prüfung ausdrücklich offen.
 
 ## Physisch zu bestätigen

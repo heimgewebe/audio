@@ -5,7 +5,7 @@
   "effect_scope": "repository-and-simulation-only",
   "canonical_profile_catalog": {
     "path": "profiles/audio-profiles.v1.json",
-    "sha256": "7282efd05b92e6eb326d27befcf00692e77d3bb589e6d828c4557567d12a5ea9"
+    "sha256": "56a23d85a43ea23f8ef6ff100d87d33fe432ac018902453adcf4b0c02aa1ffbb"
   },
   "aliases": {},
   "profiles": {
@@ -100,9 +100,9 @@
       "protects_recording": true
     },
     "receiver": {
-      "devices": ["pioneer_vsx_830_k"],
+      "devices": ["motu_m2", "pioneer_vsx_830_k"],
       "source": "playback-applications",
-      "sink": "pioneer-defined-stereo-input",
+      "sink": "motu-m2",
       "midi": "disabled",
       "monitoring": "receiver",
       "rate": {"policy": "receiver-measured", "hz": null},

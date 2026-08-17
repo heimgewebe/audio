@@ -25,7 +25,7 @@
     {"from": "rode-nt1-a", "to": "motu-m2", "transport": "balanced-xlr", "verification": "unknown", "required_physical_facts": ["input number", "cable connected", "48 V state", "gain position"]},
     {"from": "motu-m2", "to": "lake-people-g111-mk2", "transport": "analog-line", "verification": "unknown", "required_physical_facts": ["output pair", "cable type", "amplifier input"]},
     {"from": "lake-people-g111-mk2", "to": "focal-clear-mg", "transport": "headphone", "verification": "unknown", "required_physical_facts": ["gain setting", "headphone output", "volume reference"]},
-    {"from": "heim-pc", "to": "pioneer-vsx-830-k", "transport": "unknown-digital-or-analog", "verification": "user-declared-unresolved", "required_physical_facts": ["PC output", "receiver input", "receiver listening mode", "reference volume"]},
+    {"from": "motu-m2", "to": "pioneer-vsx-830-k", "transport": "physical-audio-connection", "verification": "user-declared-unresolved", "required_physical_facts": ["MOTU output", "cable type", "receiver input", "receiver listening mode", "reference volume"]},
     {"from": "pioneer-vsx-830-k", "to": "pioneer-speaker-system", "transport": "unknown-speaker-output", "verification": "user-declared-unresolved", "required_physical_facts": ["speaker output assignment", "speaker connection"]},
     {"from": "heim-pc", "to": "1mii-b03-pro", "transport": "unknown-optical-or-analog", "verification": "unknown", "required_physical_facts": ["transmitter input", "TX mode", "codec", "paired target"]},
     {"from": "qobuz", "to": "pipewire", "transport": "mopidy-pulse", "verification": "software-observable", "quality_boundary": "mixed path; bit-perfect not established"}
