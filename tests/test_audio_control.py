@@ -1394,6 +1394,18 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('left: calc(25% - 4px);', topology_css)
         self.assertIn('right: calc(25% - 4.5px);', topology_css)
         self.assertIn('left: calc(25% - 4.5px);', topology_css)
+        for connector_selector in (
+            '.listening-input-grid .home-signal-node::after {',
+            '.listening-hub-stage::before,\n.listening-hub-stage::after {',
+            '.listening-split-marker::after {',
+            '.listening-branch-grid .listening-path-card::before {',
+        ):
+            connector_block = topology_css.split(connector_selector, 1)[1].split('}', 1)[0]
+            self.assertIn('transform: translateX(-50%);', connector_block)
+        input_connector_block = topology_css.split(
+            '.listening-input-grid .home-signal-node::after {', 1
+        )[1].split('}', 1)[0]
+        self.assertIn('left: calc(50% - 0.5px);', input_connector_block)
 
     def test_auto_refresh_policy_blocks_dialogs_and_audio_actions(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
