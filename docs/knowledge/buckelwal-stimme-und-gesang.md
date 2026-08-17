@@ -162,8 +162,17 @@ Technische Folgen:
 - Wiederholungen dürfen aber nicht unverbunden zufällig klingen;
 - ein Phrasengedächtnis soll Variantenfamilien, Intensität und bereits benutzte
   Ereignisse berücksichtigen;
-- die Engine spielt niemals selbstständig eine fertige Melodie anstelle des
-  Spielers.
+- die **Live-Engine** spielt niemals selbstständig eine fertige Melodie anstelle
+  des Spielers.
+
+Seit 17. August 2026 existiert daneben ein bewusst getrennter
+**Offline-/Study-Layer** in `scripts/whale_song_grammar.py`. Er modelliert
+`Unit → Phrase → Theme → SongCycle` deterministisch über der unveränderten
+Morph-Stimme. Seine konkreten Motive, Wiederholungszahlen, Pausenwerte und
+Übergangsregeln sind Engineering-Hypothesen und dürfen nicht als aus dem
+vorhandenen Korpus gemessene biologische Parameter ausgegeben werden. Die
+methodische Grenze und die noch fehlende reale Phrase-/Theme-Annotation stehen
+in `docs/experiments/buckelwal-song-grammar-v1.md`.
 
 ## Lokales, quellengebundenes Korpus
 
@@ -390,6 +399,9 @@ Populationen, Rufarten oder menschliche Wahrnehmung.
 - Zeitmodell: `assets/whale-sources/voice-model/manifest.json`
 - Modell-Builder: `scripts/build_whale_voice_model.py`
 - Source-Filter-Engine: `scripts/whale_source_filter_engine.py`
+- Offline-Songgrammatik: `scripts/whale_song_grammar.py`
+- Songgrammar-Study-Runner: `scripts/study_whale_song_grammar.py`
+- Songgrammar-Methodik: `docs/experiments/buckelwal-song-grammar-v1.md`
 - Holdout-Prüfung: `scripts/evaluate_whale_voice_model.py`
 - Ablationsstudie: `docs/experiments/buckelwal-organic-v51-ablation.md`
 - externer Zusatzsatz: `assets/whale-sources/evaluation-v2/manifest.json`
