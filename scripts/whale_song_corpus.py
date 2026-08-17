@@ -164,6 +164,25 @@ def load_source_manifest(corpus_root: pathlib.Path) -> dict[str, object]:
     ids = [item.get("recording_id") for item in records if isinstance(item, dict)]
     if len(ids) != len(records) or len(set(ids)) != len(ids):
         raise ValueError("song corpus recording identities are invalid")
+    development_years = set(development)
+    holdout_years = set(holdout)
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("song corpus record must be an object")
+        year = record.get("year")
+        record_split = record.get("split")
+        if isinstance(year, bool) or not isinstance(year, int):
+            raise ValueError("song corpus record year must be an integer")
+        if year in development_years:
+            expected_split = "development"
+        elif year in holdout_years:
+            expected_split = "holdout"
+        else:
+            raise ValueError(f"song corpus record year is outside the frozen split: {year}")
+        if record_split != expected_split:
+            raise ValueError(
+                f"song corpus record split mismatches frozen year contract: {year}"
+            )
     return data
 
 
@@ -494,6 +513,8 @@ def split_summary(corpus: dict[str, object], split: str) -> dict[str, object]:
         "theme_sequence_length": summarize_values(
             [summary["published_median_theme_sequence_length"] for summary in summaries]
         ),
+    }
+    recording_equal_weight_summaries = {
         "phrases_per_published_song": summarize_values(
             [summary["phrases_per_published_song"] for summary in summaries]
         ),
@@ -523,6 +544,7 @@ def split_summary(corpus: dict[str, object], split: str) -> dict[str, object]:
             "analyzed_span_per_published_song_seconds": "pooled first-to-last analyzed spans divided by pooled published song count",
         },
         "feature_distributions": feature_distributions,
+        "recording_equal_weight_summaries": recording_equal_weight_summaries,
         "feature_vector": {
             "mean_phrase_duration_seconds": feature_distributions["phrase_duration_seconds"]["mean"],
             "mean_interphrase_gap_seconds": feature_distributions["interphrase_gap_seconds"]["mean"],
@@ -546,6 +568,8 @@ def training_recommendations(development: dict[str, object]) -> dict[str, object
 
     from whale_song_grammar import SongGrammarConfig
 
+    if development.get("split") != "development":
+        raise ValueError("training recommendations require the development split")
     distributions = development["feature_distributions"]
     feature_vector = development["feature_vector"]
     themes = distributions["theme_sequence_length"]
@@ -622,7 +646,7 @@ def training_recommendations(development: dict[str, object]) -> dict[str, object
             "phrase_repeats_min": repeats_min != raw_min,
             "phrase_repeats_max": repeats_max != raw_max,
             "phrase_pause_seconds": not math.isclose(projected_pause, raw_pause, abs_tol=1e-9),
-            "joint_unit_budget_constraint_applied": True,
+            "search_space_enforces_joint_unit_budget": True,
         },
         "not_fitted": [
             "transition_pause_seconds: Raven phrase tables do not label transition gaps as a separate timing population",

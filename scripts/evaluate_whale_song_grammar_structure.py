@@ -142,6 +142,15 @@ def build_reports(corpus_root: pathlib.Path = DEFAULT_CORPUS_ROOT) -> tuple[dict
             "evaluation": "2017-2019 frozen later-year holdout",
             "holdout_used_for_selection": False,
         },
+        "comparison_contract": {
+            "mean_phrase_duration_seconds": "model phrase-body duration compared with empirical Raven phrase-window duration",
+            "mean_interphrase_gap_seconds": "model mean hierarchical phrase boundary pause used as an engineering proxy for empirical <=60 s interphrase gaps; the populations are not asserted identical",
+            "mean_phrase_type_run_length": "model consecutive theme-family phrase runs compared with empirical consecutive two-letter phrase-type runs",
+            "mean_theme_sequence_length": "model themes per cycle compared with recording-level published median theme-string length",
+            "mean_phrases_per_published_song": "one model SongCycle is an engineering proxy for one published biological song",
+            "mean_published_units_per_song": "model units per SongCycle are compared with peer-reviewed mean units per biological song",
+            "mean_analyzed_span_per_published_song_seconds": "model SongCycle duration is compared with pooled analyzed recording span per published song",
+        },
         "default": {
             **default,
             "development_distance": default_dev,
@@ -178,6 +187,8 @@ def build_reports(corpus_root: pathlib.Path = DEFAULT_CORPUS_ROOT) -> tuple[dict
             "human perceptual preference",
             "population-wide biological optimality",
             "permission to change the live or default grammar",
+            "semantic identity between a model SongCycle and a biological song",
+            "identity between model hierarchical boundary pauses and empirical interphrase gaps",
         ],
     }
     evaluation["evaluation_sha256"] = sha256_json(evaluation)
