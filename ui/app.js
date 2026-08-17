@@ -1,12 +1,36 @@
 "use strict";
 
 const ROUTES = {
-  home: { title: "Home", eyebrow: "Arbeitsbereiche" },
-  hoeren: { title: "Hören", eyebrow: "Wiedergabe und Referenzweg" },
-  aufnehmen: { title: "Aufnehmen", eyebrow: "Recorder und Takes" },
-  spielen: { title: "Spielen", eyebrow: "Instrumente und Klang" },
-  material: { title: "Bibliothek", eyebrow: "Aufnahmen, Klänge und Replay" },
-  system: { title: "System", eyebrow: "Betrieb und Integration" },
+  home: {
+    title: "Home",
+    eyebrow: "Arbeitsbereiche",
+    description: "Direkter Einstieg in Hören, Aufnehmen und Spielen mit aktuellem System-Readback.",
+  },
+  hoeren: {
+    title: "Hören",
+    eyebrow: "Wiedergabe und Referenzweg",
+    description: "Referenz-Monitoring und Wiedergabewege klar getrennt nach Kopfhörer und Lautsprecher.",
+  },
+  aufnehmen: {
+    title: "Aufnehmen",
+    eyebrow: "Recorder und Takes",
+    description: "Gesang und Instrumente mit prüfbaren Start-Gates aufnehmen und Takes direkt weiterverwenden.",
+  },
+  spielen: {
+    title: "Spielen",
+    eyebrow: "Instrumente und Klang",
+    description: "Roland, Softwareinstrumente und Klangmodelle in einem fokussierten Spielbereich.",
+  },
+  material: {
+    title: "Bibliothek",
+    eyebrow: "Aufnahmen, Klänge und Replay",
+    description: "Eigene Takes, Klangmaterial und Replay getrennt organisieren und wiederfinden.",
+  },
+  system: {
+    title: "System",
+    eyebrow: "Betrieb und Integration",
+    description: "Geräte, Wahrheitsebenen, Telemetrie und Deployment als technische Kontrollfläche.",
+  },
 };
 
 // Alte Links bleiben lesbar, sind aber nicht mehr die sichtbare Informationsarchitektur.
@@ -2244,16 +2268,31 @@ function homeActionCard({ href, glyph, eyebrow, title, status, tone, detail }) {
   return card;
 }
 
+const SIGNAL_GLYPHS = Object.freeze({
+  Quelle: "≋",
+  Interface: "▣",
+  Verstärker: "▥",
+  Kopfhörer: "◖",
+  "PC-Ausgang": "▱",
+  Receiver: "▤",
+  Lautsprecher: "◎",
+});
+
 function homeSignalNode(label, value, detail, tone = "configured") {
   const node = element("article", `home-signal-node ${tone}`);
+  appendText(node, "span", "signal-node-glyph", SIGNAL_GLYPHS[label] || "◇").setAttribute(
+    "aria-hidden",
+    "true",
+  );
   appendText(node, "span", "eyebrow", label);
   appendText(node, "strong", "", value);
   appendText(node, "small", "", detail);
   return node;
 }
 
-function listeningPathCard(title, subtitle, nodes) {
-  const path = element("section", "listening-path-card");
+function listeningPathCard(title, subtitle, nodes, tone = "reference") {
+  const path = element("section", `listening-path-card is-${tone}`);
+  path.dataset.pathTone = tone;
   const heading = element("div", "listening-path-heading");
   appendText(heading, "strong", "", title);
   appendText(heading, "small", "", subtitle);
@@ -2397,7 +2436,7 @@ function renderHome() {
       ),
       homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Kopfhörerverstärker", "configured"),
       homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
-    ]),
+    ], "reference"),
     listeningPathCard("Lautsprecher · Receiver", "separater Pioneer-Wiedergabeweg", [
       homeSignalNode("Quelle", "Qobuz / Desktop", "Wiedergabequelle", "configured"),
       homeSignalNode(
@@ -2408,12 +2447,12 @@ function renderHome() {
       ),
       homeSignalNode("Receiver", "Pioneer VSX-830-K", pioneerDetail, pioneerTone),
       homeSignalNode(
-        "Lautsprecherbestand",
+        "Lautsprecher",
         "ELAC + Canton",
         "2× ELAC FS 109.2 · Canton Center + 4 Satelliten · kein Subwoofer · aktive Zuordnung offen",
         "onsite",
       ),
-    ]),
+    ], "receiver"),
   );
 
   const metrics = [
@@ -2422,12 +2461,20 @@ function renderHome() {
     ["MOTU M2", motuObserved ? "beobachtet" : "offen", "Kopfhörerweg"],
     ["Ausgaben", "Focal + Pioneer", "Kopfhörer + Lautsprecher"],
   ];
+  const metricGlyphs = { Samplerate: "≋", Puffer: "◫", "MOTU M2": "◖", Ausgaben: "◎" };
   byId("home-metrics").replaceChildren(
     ...metrics.map(([label, value, description]) => {
-      const metric = element("article", "metric-card");
-      appendText(metric, "p", "eyebrow", label);
-      appendText(metric, "strong", "", value);
-      appendText(metric, "span", "", description);
+      const metric = element("article", "metric-card listen-metric-card");
+      metric.dataset.metric = label.toLowerCase().replaceAll(" ", "-");
+      appendText(metric, "span", "metric-glyph", metricGlyphs[label] || "◇").setAttribute(
+        "aria-hidden",
+        "true",
+      );
+      const copy = element("div", "metric-copy");
+      appendText(copy, "p", "eyebrow", label);
+      appendText(copy, "strong", "", value);
+      appendText(copy, "span", "", description);
+      metric.append(copy);
       return metric;
     }),
   );
@@ -2729,6 +2776,8 @@ function renderProfileGrid(targetId, profiles) {
 function profileCard(profile) {
   const card = element("article", "profile-card");
   const stateName = profileState(profile);
+  card.dataset.profile = profile.id;
+  card.dataset.profileState = stateName;
   const top = element("div", "card-topline");
   appendText(top, "span", "card-glyph", PROFILE_GLYPHS[profile.id] || "◇").setAttribute(
     "aria-hidden",
@@ -3583,7 +3632,7 @@ function renderConnections() {
       external.pioneer_vsx_830_k?.software_observed ? "observed" : "onsite",
     ),
     signalNode(
-      "Lautsprecherbestand am Pioneer",
+      "Lautsprecher am Pioneer",
       "2× ELAC FS 109.2 · Canton Center + 4 Satelliten · kein Subwoofer · aktive Zuordnung offen",
       "onsite",
     ),
@@ -3984,8 +4033,10 @@ function applyRoute(event) {
       link.removeAttribute("aria-current");
     }
   }
+  document.documentElement.dataset.activeRoute = route;
   byId("view-title").textContent = ROUTES[route].title;
   byId("view-eyebrow").textContent = ROUTES[route].eyebrow;
+  byId("view-description").textContent = ROUTES[route].description;
   document.title = `${ROUTES[route].title} · Audiozentrale`;
   if (routeTarget) {
     window.requestAnimationFrame(() => {

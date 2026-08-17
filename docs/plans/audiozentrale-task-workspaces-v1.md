@@ -46,3 +46,17 @@ Der Fokus wird durch eine CSS-Zustandsklasse auf **dem existierenden Panel** rea
 - alte Deep-Links bleiben auf definierte neue Arbeitsbereiche abbildbar;
 - Buckelwal `start`/`mode`/`stop` sind aus `#spielen` an `/api/v1/actions/whale` gebunden und nur bei direkter lokaler Loopback-Autorität bedienbar;
 - bestehende Recorder-, Telemetrie-, PWA- und Sicherheitsverträge bleiben grün.
+
+## Visuelles Zonensystem v2
+
+Die Oberfläche übernimmt für alle Arbeitsbereiche ein funktionales Farbsystem, ohne
+Zustandswahrheit aus Farbe abzuleiten. Farbe dient ausschließlich der räumlichen
+Orientierung: Hören ist kühl türkis, Receiver-/Lautsprecherwege sind warm amber,
+Aufnehmen ist korallfarben, Spielen violett/blau, Bibliothek blau und System neutral
+slate. Statusfarben für beobachtet, vor Ort, Labor und Fehler bleiben davon getrennt.
+
+Auf iPad und kleineren Viewports dürfen zentrale Gerätenamen, Signalwegwerte und
+Handlungsbeschreibungen nicht durch `text-overflow: ellipsis` zur Unkenntlichkeit
+verkürzt werden. Signalpfade brechen responsiv um; Text darf mehrzeilig werden.
+Die Informationshierarchie lautet sichtbar: Seitenkopf → Funktionszone → Status →
+Profile/Aktionen → optionale technische Tiefe.

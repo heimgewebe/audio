@@ -1273,7 +1273,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('listeningPathCard("Kopfhörer · Referenz"', javascript)
         self.assertIn('listeningPathCard("Lautsprecher · Receiver"', javascript)
         self.assertIn('"Pioneer VSX-830-K"', javascript)
-        self.assertIn('"Lautsprecherbestand"', javascript)
+        self.assertIn('"Lautsprecher"', javascript)
         self.assertIn("2× ELAC FS 109.2", javascript)
         self.assertIn("Canton Center + 4 Satelliten", javascript)
         self.assertIn("kein Subwoofer", javascript)
@@ -1294,6 +1294,44 @@ class AudioControlTests(unittest.TestCase):
                 for edge in signal_path["edges"]
             )
         )
+
+    def test_visual_system_v2_has_functional_zones_and_readable_signal_paths(self):
+        html = (ROOT / "ui" / "index.html").read_text()
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        styles = (ROOT / "ui" / "styles.css").read_text()
+
+        self.assertIn('id="view-description"', html)
+        for zone in ("home", "listening", "recording", "playing", "library", "system"):
+            self.assertIn(f'data-zone="{zone}"', html)
+        self.assertIn('class="workspace-zone profile-zone"', html)
+        self.assertIn('id="listening-profile-title">Hörprofile</h3>', html)
+
+        self.assertIn('document.documentElement.dataset.activeRoute = route;', javascript)
+        self.assertIn('byId("view-description").textContent = ROUTES[route].description;', javascript)
+        self.assertIn('const SIGNAL_GLYPHS = Object.freeze({', javascript)
+        self.assertIn('`listening-path-card is-${tone}`', javascript)
+        self.assertIn('"receiver"),', javascript)
+        self.assertIn('"metric-card listen-metric-card"', javascript)
+
+        visual = styles.index("/* Audiozentrale visual system v2")
+        self.assertGreater(visual, styles.index(".home-signal-node strong,"))
+        visual_css = styles[visual:]
+        for token in (
+            "--listen-accent:",
+            "--receiver-accent:",
+            "--record-accent:",
+            "--play-accent:",
+            "--library-accent:",
+            "--system-accent:",
+        ):
+            self.assertIn(token, visual_css)
+        self.assertIn('.listening-path-card.is-reference', visual_css)
+        self.assertIn('.listening-path-card.is-receiver', visual_css)
+        self.assertIn('white-space: normal;', visual_css)
+        self.assertIn('overflow-wrap: anywhere;', visual_css)
+        self.assertIn('@media (max-width: 1360px)', visual_css)
+        self.assertIn('.listening-path-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }', visual_css)
+        self.assertIn('@media (max-width: 620px)', visual_css)
 
     def test_auto_refresh_policy_blocks_dialogs_and_audio_actions(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
