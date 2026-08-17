@@ -29,6 +29,11 @@ MAX_SESSION_CYCLES = 4
 MAX_THEME_COUNT = 6
 MAX_PHRASE_REPEATS = 8
 MAX_SESSION_UNITS = 512
+MAX_THEME_PHRASE_UNITS = 6
+TRANSITION_PHRASE_UNITS = 4
+PHRASE_PAUSE_JITTER_SECONDS = 0.07
+TRANSITION_PAUSE_JITTER_SECONDS = 0.08
+BOUNDARY_MARGIN_SECONDS = 0.01
 
 
 @dataclass(frozen=True)
@@ -60,11 +65,11 @@ class UnitPlan:
 
     @property
     def sound_end_seconds(self) -> float:
-        return self.start_seconds + self.duration_seconds
+        return round(self.start_seconds + self.duration_seconds, 6)
 
     @property
     def end_seconds(self) -> float:
-        return self.sound_end_seconds + self.gap_seconds
+        return round(self.sound_end_seconds + self.gap_seconds, 6)
 
 
 @dataclass(frozen=True)
@@ -155,10 +160,36 @@ class SongGrammarConfig:
                 raise ValueError(f"{name} must be finite")
             if not low <= float(value) <= high:
                 raise ValueError(f"{name} is outside the bounded range")
-        if not self.transition_pause_seconds > self.phrase_pause_seconds:
-            raise ValueError("transition pauses must exceed ordinary phrase pauses")
-        if not self.cycle_pause_seconds > self.transition_pause_seconds:
-            raise ValueError("cycle pauses must exceed transition pauses")
+        required_transition_gap = (
+            PHRASE_PAUSE_JITTER_SECONDS
+            + TRANSITION_PAUSE_JITTER_SECONDS
+            + BOUNDARY_MARGIN_SECONDS
+        )
+        if (
+            self.transition_pause_seconds - self.phrase_pause_seconds
+            < required_transition_gap - 1.0e-9
+        ):
+            raise ValueError(
+                "transition pauses must preserve phrase < transition ordering after jitter"
+            )
+        required_cycle_gap = (
+            TRANSITION_PAUSE_JITTER_SECONDS + BOUNDARY_MARGIN_SECONDS
+        )
+        if (
+            self.cycle_pause_seconds - self.transition_pause_seconds
+            < required_cycle_gap - 1.0e-9
+        ):
+            raise ValueError(
+                "cycle pauses must preserve transition < cycle ordering after jitter"
+            )
+        worst_case_units = self.cycles * (
+            self.theme_count * self.phrase_repeats_max * MAX_THEME_PHRASE_UNITS
+            + (self.theme_count - 1) * TRANSITION_PHRASE_UNITS
+        )
+        if worst_case_units > MAX_SESSION_UNITS:
+            raise ValueError(
+                "song grammar configuration can exceed the bounded session unit budget"
+            )
 
 
 # These six families are deliberately compact engineering motifs.  Their role is
@@ -204,6 +235,11 @@ _THEME_MOTIFS: tuple[tuple[UnitPrototype, ...], ...] = (
         UnitPrototype("broken", 0, 0.80, 0.16, 73, -250, 2),
     ),
 )
+
+if any(len(motif) < TRANSITION_PHRASE_UNITS for motif in _THEME_MOTIFS):
+    raise RuntimeError("every whale theme motif must support a two-plus-two transition")
+if any(len(motif) + 1 > MAX_THEME_PHRASE_UNITS for motif in _THEME_MOTIFS):
+    raise RuntimeError("whale theme motif exceeds the bounded phrase unit budget")
 
 _THEME_IDS = tuple(chr(ord("A") + index) for index in range(len(_THEME_MOTIFS)))
 
@@ -298,21 +334,20 @@ class WhaleSongGrammar:
             bend = self._bounded_bend(
                 prototype.bend_value + direction * min(360, evolution * 90)
             )
-            units.append(
-                UnitPlan(
-                    unit_id=f"c{cycle_index + 1}-{theme_id}-r{repeat_index + 1}-u{unit_index + 1}",
-                    kind=prototype.kind,
-                    origin_theme_id=theme_id,
-                    start_seconds=round(cursor, 6),
-                    duration_seconds=round(duration, 6),
-                    gap_seconds=round(gap, 6),
-                    note=note,
-                    velocity=velocity,
-                    bend_value=bend,
-                    pulse_count=prototype.pulse_count,
-                )
+            unit = UnitPlan(
+                unit_id=f"c{cycle_index + 1}-{theme_id}-r{repeat_index + 1}-u{unit_index + 1}",
+                kind=prototype.kind,
+                origin_theme_id=theme_id,
+                start_seconds=round(cursor, 6),
+                duration_seconds=round(duration, 6),
+                gap_seconds=round(gap, 6),
+                note=note,
+                velocity=velocity,
+                bend_value=bend,
+                pulse_count=prototype.pulse_count,
             )
-            cursor += duration + gap
+            units.append(unit)
+            cursor = unit.end_seconds
 
         # Every third developed repetition receives one related terminal
         # flourish.  It is derived from the motif tail instead of being sampled
@@ -336,7 +371,7 @@ class WhaleSongGrammar:
                 flourish=True,
             )
             units.append(flourish)
-            cursor += flourish.duration_seconds + flourish.gap_seconds
+            cursor = flourish.end_seconds
 
         body_end = units[-1].sound_end_seconds
         end_seconds = body_end + boundary_pause_seconds
@@ -377,23 +412,24 @@ class WhaleSongGrammar:
                 if unit_index == len(transition_units) - 1
                 else max(0.08, prototype.gap_seconds * 0.78)
             )
-            units.append(
-                UnitPlan(
-                    unit_id=f"c{cycle_index + 1}-{from_id}-{to_id}-x-u{unit_index + 1}",
-                    kind=prototype.kind,
-                    origin_theme_id=origin_id,
-                    start_seconds=round(cursor, 6),
-                    duration_seconds=round(duration, 6),
-                    gap_seconds=round(gap, 6),
-                    note=self._bounded_note(self.config.base_note + prototype.semitone_offset),
-                    velocity=self._bounded_velocity(prototype.velocity - 3),
-                    bend_value=self._bounded_bend(prototype.bend_value),
-                    pulse_count=prototype.pulse_count,
-                )
+            unit = UnitPlan(
+                unit_id=f"c{cycle_index + 1}-{from_id}-{to_id}-x-u{unit_index + 1}",
+                kind=prototype.kind,
+                origin_theme_id=origin_id,
+                start_seconds=round(cursor, 6),
+                duration_seconds=round(duration, 6),
+                gap_seconds=round(gap, 6),
+                note=self._bounded_note(self.config.base_note + prototype.semitone_offset),
+                velocity=self._bounded_velocity(prototype.velocity - 3),
+                bend_value=self._bounded_bend(prototype.bend_value),
+                pulse_count=prototype.pulse_count,
             )
-            cursor += duration + gap
+            units.append(unit)
+            cursor = unit.end_seconds
         body_end = units[-1].sound_end_seconds
-        boundary = self.config.transition_pause_seconds + self.rng.centered(0.08)
+        boundary = self.config.transition_pause_seconds + self.rng.centered(
+            TRANSITION_PAUSE_JITTER_SECONDS
+        )
         return PhrasePlan(
             phrase_id=f"c{cycle_index + 1}-{from_id}-{to_id}-transition",
             family_id=f"{from_id}>{to_id}",
@@ -438,7 +474,9 @@ class WhaleSongGrammar:
                         # phrase-sized rather than duplicating the transition gap.
                         boundary = self.config.phrase_pause_seconds
                     else:
-                        boundary = self.config.phrase_pause_seconds + self.rng.centered(0.07)
+                        boundary = self.config.phrase_pause_seconds + self.rng.centered(
+                            PHRASE_PAUSE_JITTER_SECONDS
+                        )
                     phrase = self._instantiate_phrase(
                         cycle_index=cycle_index,
                         theme_index=theme_index,

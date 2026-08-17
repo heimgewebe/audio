@@ -123,6 +123,12 @@ ungeprüft wachsende Pläne:
 - höchstens 4 Songzyklen;
 - höchstens 512 Units pro Session.
 
+Die ersten drei Grenzen sind **keine unabhängig kombinierbaren Versprechen**:
+Schon die Konfiguration berechnet konservativ ihren maximal möglichen
+Unit-Verbrauch und wird abgelehnt, wenn die Kombination 512 Units überschreiten
+könnte. Dadurch kann eine als gültig akzeptierte Konfiguration nicht erst mitten
+in der Generierung am Session-Budget scheitern.
+
 Mit Standardparametern und Seed `0xB0A7` entsteht im aktuellen Stand eine
 Session von ungefähr **219 Sekunden** mit 39 Phrasen und 172 Units. Diese Zahlen
 sind ein deterministischer Produkt-Smoke, kein biologischer Sollwert.
@@ -143,8 +149,12 @@ kleine Binnenpause
 ```
 
 Die konkreten Defaultwerte (`0,82 s`, `1,35 s`, `2,60 s`) sind Engineering-
-Parameter. Nur die qualitative Rolle längerer Pausen an Strukturgrenzen ist
-wissenschaftlich motiviert.
+Parameter. Ordinary-Phrase-Jitter beträgt höchstens `±0,07 s`,
+Transition-Jitter höchstens `±0,08 s`. Gültige Konfigurationen müssen deshalb
+mindestens `0,16 s` Basisabstand zwischen Phrase und Transition sowie `0,09 s`
+zwischen Transition und Zyklus reservieren. So bleibt die obige strikte
+Reihenfolge auch an den Jitter-Extremen erhalten. Nur die qualitative Rolle
+längerer Pausen an Strukturgrenzen ist wissenschaftlich motiviert.
 
 ## Determinismus
 

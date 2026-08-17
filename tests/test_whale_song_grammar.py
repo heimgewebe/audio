@@ -110,12 +110,74 @@ class WhaleSongGrammarTests(unittest.TestCase):
             for unit in phrase.units:
                 self.assertLessEqual(unit.end_seconds, phrase.body_end_seconds + 1e-6)
 
-    def test_default_session_is_multi_minute_but_bounded(self):
+    def test_unit_chain_has_no_rounding_gaps(self):
+        session = self.make_session(
+            cycles=1,
+            theme_count=3,
+            phrase_repeats_min=3,
+            phrase_repeats_max=3,
+        )
+        for phrase in iter_phrases(session):
+            for left, right in zip(phrase.units, phrase.units[1:]):
+                self.assertEqual(left.end_seconds, right.start_seconds)
+
+    def test_pause_hierarchy_survives_jitter(self):
+        config = SongGrammarConfig(
+            cycles=2,
+            theme_count=3,
+            phrase_repeats_min=3,
+            phrase_repeats_max=3,
+            phrase_pause_seconds=1.0,
+            transition_pause_seconds=1.16,
+            cycle_pause_seconds=1.25,
+        )
+        session = WhaleSongGrammar(config).generate()
+        ordinary_boundaries = []
+        transition_boundaries = []
+        cycle_boundaries = []
+        for cycle in session.cycles:
+            cycle_boundaries.append(
+                cycle.themes[-1].phrases[-1].boundary_pause_seconds
+            )
+            for theme_index, theme in enumerate(cycle.themes):
+                for phrase_index, phrase in enumerate(theme.phrases):
+                    is_cycle_boundary = (
+                        theme_index == len(cycle.themes) - 1
+                        and phrase_index == len(theme.phrases) - 1
+                    )
+                    if not is_cycle_boundary:
+                        ordinary_boundaries.append(phrase.boundary_pause_seconds)
+            transition_boundaries.extend(
+                transition.phrase.boundary_pause_seconds
+                for transition in cycle.transitions
+            )
+        self.assertLess(max(ordinary_boundaries), min(transition_boundaries))
+        self.assertLess(max(transition_boundaries), min(cycle_boundaries))
+
+    def test_default_session_is_revision_stable_and_bounded(self):
         session = self.make_session()
         metrics = structural_metrics(session)
+        self.assertEqual(session.duration_seconds, 219.448825)
+        self.assertEqual(metrics["phrase_count_total"], 39)
+        self.assertEqual(metrics["transition_phrase_count"], 6)
+        self.assertEqual(metrics["unit_count"], 172)
+        self.assertEqual(metrics["flourish_unit_count"], 9)
+        self.assertEqual(
+            plan_sha256(session),
+            "dc28438135d02b3fad17907abf262fbbcd0df83c45084806a41f55f4e0706001",
+        )
         self.assertGreater(session.duration_seconds, 120.0)
         self.assertLess(session.duration_seconds, 600.0)
         self.assertLessEqual(metrics["unit_count"], MAX_SESSION_UNITS)
+
+    def test_near_budget_configuration_generates_within_bound(self):
+        session = self.make_session(
+            cycles=4,
+            theme_count=3,
+            phrase_repeats_min=6,
+            phrase_repeats_max=6,
+        )
+        self.assertLessEqual(structural_metrics(session)["unit_count"], MAX_SESSION_UNITS)
 
     def test_event_translation_is_sorted_bounded_and_closes_voice(self):
         session = self.make_session(cycles=1, theme_count=2, phrase_repeats_min=2, phrase_repeats_max=2)
@@ -165,6 +227,25 @@ class WhaleSongGrammarTests(unittest.TestCase):
             SongGrammarConfig(phrase_repeats_min=5, phrase_repeats_max=4)
         with self.assertRaises(ValueError):
             SongGrammarConfig(phrase_pause_seconds=2.0, transition_pause_seconds=1.0)
+        with self.assertRaises(ValueError):
+            SongGrammarConfig(
+                phrase_pause_seconds=1.0,
+                transition_pause_seconds=1.10,
+                cycle_pause_seconds=1.30,
+            )
+        with self.assertRaises(ValueError):
+            SongGrammarConfig(
+                phrase_pause_seconds=1.0,
+                transition_pause_seconds=1.16,
+                cycle_pause_seconds=1.20,
+            )
+        with self.assertRaises(ValueError):
+            SongGrammarConfig(
+                cycles=4,
+                theme_count=6,
+                phrase_repeats_min=8,
+                phrase_repeats_max=8,
+            )
 
 
 if __name__ == "__main__":
