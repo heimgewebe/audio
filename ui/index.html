@@ -72,6 +72,7 @@
           <div class="view-heading">
             <p class="eyebrow" id="view-eyebrow">Arbeitsbereiche</p>
             <h1 id="view-title" tabindex="-1">Home</h1>
+            <p class="view-description" id="view-description">Direkter Einstieg in Hören, Aufnehmen und Spielen mit aktuellem System-Readback.</p>
           </div>
           <div class="topbar-actions">
             <span class="mobile-authority" id="mobile-authority" role="status">
@@ -104,7 +105,7 @@
 
         <section class="view is-active" id="view-home" data-view="home">
           <article
-            class="depth-panel home-dashboard"
+            class="depth-panel home-dashboard" data-zone="home"
             id="home-dashboard"
             data-depth-panel
             data-focus-title="Audiozentrale"
@@ -144,7 +145,7 @@
           </article>
 
           <article
-            class="depth-panel telemetry-panel"
+            class="depth-panel telemetry-panel" data-zone="telemetry"
             id="live-telemetry"
             data-depth-panel
             data-focus-title="Live-Telemetrie"
@@ -171,7 +172,7 @@
         <section class="view" id="view-spielen" data-view="spielen" hidden></section>
 
         <section class="workspace-staging" id="task-workspace-staging" hidden>
-          <article class="depth-panel" id="setup-playing" tabindex="-1" data-depth-panel data-workspace-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Buckelwal-Instrument mit lokaler oder eng typisierter privater Fernsteuerung; der lokale Control-Dienst bleibt Loopback-only.">
+          <article class="depth-panel" id="setup-playing" data-zone="playing" tabindex="-1" data-depth-panel data-workspace-panel data-focus-title="Buckelwal-Setup" data-focus-summary="Buckelwal-Instrument mit lokaler oder eng typisierter privater Fernsteuerung; der lokale Control-Dienst bleibt Loopback-only.">
             <header class="depth-heading"><div><p class="eyebrow">Instrument</p><h2>Buckelwal</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="play-intro-stat"></div>
             <div id="whale-control"></div>
@@ -181,6 +182,7 @@
           <article
             class="depth-panel whale-learning-panel"
             id="whale-learning-lesson"
+            data-zone="learning"
             data-depth-panel
             data-focus-kind="whale-learning"
             data-focus-title="Vom reinen Ton zur Buckelwaleinheit"
@@ -202,15 +204,18 @@
             </div>
           </article>
 
-          <article class="depth-panel" id="setup-listening" tabindex="-1" data-depth-panel data-workspace-panel data-focus-title="Hör-Setups" data-focus-summary="Kopfhörer- und Receiver/Lautsprecherweg mit getrenntem Wahrheitsstatus und ihren Voraussetzungen.">
-            <header class="depth-heading"><div><p class="eyebrow">Wiedergabe</p><h2>Hören</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+          <article class="depth-panel" id="setup-listening" data-zone="listening" tabindex="-1" data-depth-panel data-workspace-panel data-focus-title="Hör-Setups" data-focus-summary="Kopfhörer- und Receiver/Lautsprecherweg mit getrenntem Wahrheitsstatus und ihren Voraussetzungen.">
+            <header class="depth-heading"><div><p class="eyebrow">Wiedergabe</p><h2>Wiedergabewege</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="intro-stat" id="listen-intro-stat"></div>
             <div class="workspace-signal-host" id="listening-signal-host"></div>
-            <div class="profile-grid" id="listening-profiles"></div>
+            <section class="workspace-zone profile-zone" aria-labelledby="listening-profile-title">
+              <div class="section-heading compact profile-zone-heading"><div><p class="eyebrow">Profile &amp; Aktionen</p><h3 id="listening-profile-title">Hörprofile</h3></div></div>
+              <div class="profile-grid" id="listening-profiles"></div>
+            </section>
             <div class="depth-detail" hidden><p class="callout">Profilpläne bleiben nebenwirkungsfrei. Sie zeigen Voraussetzungen, führen aber kein Apply aus.</p></div>
           </article>
 
-          <article class="depth-panel" id="setup-recording" data-depth-panel data-workspace-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile, Recorderzustand und letzte Takes sind sichtbar; Recorderaktionen laufen lokal oder eng typisiert über die private Tailnet-Bridge.">
+          <article class="depth-panel" id="setup-recording" data-zone="recording" data-depth-panel data-workspace-panel data-focus-title="Aufnahme-Setups" data-focus-summary="Aufnahmeprofile, Recorderzustand und letzte Takes sind sichtbar; Recorderaktionen laufen lokal oder eng typisiert über die private Tailnet-Bridge.">
             <header class="depth-heading"><div><p class="eyebrow">Aufnahmeplanung</p><h2>Aufnehmen</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="recording-workspace-host" id="recording-live-host"></div>
             <div class="callout" id="recording-boundary"></div>
@@ -223,7 +228,7 @@
         </section>
 
         <section class="view" id="view-material" data-view="material" hidden>
-          <article class="depth-panel" id="material-library" data-depth-panel data-workspace-panel data-focus-title="Bibliothek" data-focus-summary="Takes bleiben unveränderlich; Kategorien und Papierkorb sind getrennte Bibliotheksmetadaten.">
+          <article class="depth-panel" id="material-library" data-zone="library" data-depth-panel data-workspace-panel data-focus-title="Bibliothek" data-focus-summary="Takes bleiben unveränderlich; Kategorien und Papierkorb sind getrennte Bibliotheksmetadaten.">
             <header class="depth-heading"><div><p class="eyebrow">Aufnahmen und Klänge</p><h2>Bibliothek</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="library-toolbar" aria-label="Aufnahmen sortieren und filtern">
               <label>Ansicht<select id="library-view"><option value="active">Aktive Aufnahmen</option><option value="trash">Papierkorb</option><option value="all">Alle</option></select></label>
@@ -235,7 +240,7 @@
             <div class="depth-detail" hidden><div class="section-heading compact"><h3>Klangsysteme</h3></div><div class="sound-grid" id="sound-library"></div></div>
           </article>
 
-          <article class="depth-panel replay-panel" data-depth-panel data-focus-title="Telemetrie-Replay" data-focus-summary="Synthetische, hashgebundene Daten ohne Autorität über Geräte, Routen oder Audioaktionen.">
+          <article class="depth-panel replay-panel" data-zone="replay" data-depth-panel data-focus-title="Telemetrie-Replay" data-focus-summary="Synthetische, hashgebundene Daten ohne Autorität über Geräte, Routen oder Audioaktionen.">
             <header class="depth-heading"><div><p class="eyebrow">Synthetisch · nicht autoritativ</p><h2>Telemetrie-Replay</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="replay-toolbar">
               <label for="replay-scenario">Szenario<select id="replay-scenario"></select></label>
@@ -259,7 +264,7 @@
         <section class="view" id="view-system" data-view="system" hidden>
           <div class="system-truth-host" id="system-truth-host"></div>
           <div class="system-live-host" id="system-live-host"></div>
-          <article class="depth-panel" id="system-workspace" data-depth-panel data-workspace-panel data-focus-title="Systemwahrheit" data-focus-summary="Geräte, Route, Deployment und Doctor bleiben die technische Autorität.">
+          <article class="depth-panel" id="system-workspace" data-zone="system" data-depth-panel data-workspace-panel data-focus-title="Systemwahrheit" data-focus-summary="Geräte, Route, Deployment und Doctor bleiben die technische Autorität.">
             <header class="depth-heading"><div><p class="eyebrow">Betrieb und Integration</p><h2>System</h2></div><div class="depth-actions"><button class="secondary-button" id="diagnostic-refresh" type="button">Neu prüfen</button><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="metric-grid system-summary" id="system-summary"></div>
             <div class="depth-detail" hidden>
@@ -272,13 +277,13 @@
             </div>
           </article>
 
-          <article class="depth-panel" data-depth-panel data-focus-title="Diagnose" data-focus-summary="Read-only Doctor, Werkzeuge und Laufzeitwarnungen.">
+          <article class="depth-panel" data-zone="diagnostics" data-depth-panel data-focus-title="Diagnose" data-focus-summary="Read-only Doctor, Werkzeuge und Laufzeitwarnungen.">
             <header class="depth-heading"><div><p class="eyebrow">Doctor</p><h2>Diagnose</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="metric-grid" id="diagnostic-metrics"></div>
             <div class="depth-detail diagnostic-layout" hidden><div><div class="section-heading compact"><h3>Hinweise</h3></div><div class="warning-list" id="warning-list"></div></div><div><div class="section-heading compact"><h3>Werkzeuge</h3></div><div class="command-list" id="command-health"></div></div></div>
           </article>
 
-          <article class="depth-panel runtime-mode-panel" data-depth-panel data-focus-title="Betriebsmodus" data-focus-summary="Zwei getrennte Laufzeitmodi mit unterschiedlicher Autorität; die Wahl bleibt lokal im Browser und steuert kein Gerät.">
+          <article class="depth-panel runtime-mode-panel" data-zone="system" data-depth-panel data-focus-title="Betriebsmodus" data-focus-summary="Zwei getrennte Laufzeitmodi mit unterschiedlicher Autorität; die Wahl bleibt lokal im Browser und steuert kein Gerät.">
             <header class="depth-heading"><div><p class="eyebrow">iPad und PWA</p><h2>Betriebsmodus</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <fieldset class="runtime-mode-choice" id="runtime-mode-choice">
               <legend class="sr-only">Laufzeitmodus wählen</legend>
@@ -301,7 +306,7 @@
             </div>
           </article>
 
-          <article class="depth-panel" data-depth-panel data-focus-title="Lokale Konfiguration" data-focus-summary="Browserpräferenzen und Dienstidentität; keine physische Hardwaresteuerung.">
+          <article class="depth-panel" data-zone="system" data-depth-panel data-focus-title="Lokale Konfiguration" data-focus-summary="Browserpräferenzen und Dienstidentität; keine physische Hardwaresteuerung.">
             <header class="depth-heading"><div><p class="eyebrow">Konfiguration</p><h2>Dienst und Ansicht</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="settings-grid"><article class="panel" id="service-settings"></article><article class="panel"><div class="panel-heading"><h3>Browseransicht</h3></div><label class="setting-row" for="motion-toggle"><span><strong id="motion-toggle-label">Bewegung reduzieren</strong><small id="motion-toggle-description">Nur diese Browseransicht.</small></span><input id="motion-toggle" type="checkbox" role="switch" aria-labelledby="motion-toggle-label" aria-describedby="motion-toggle-description"></label><label class="setting-row" for="auto-refresh-toggle"><span><strong id="auto-refresh-toggle-label">Automatisch aktualisieren</strong><small id="auto-refresh-toggle-description">Alle acht Sekunden Systemwahrheit lesen.</small></span><input id="auto-refresh-toggle" type="checkbox" role="switch" aria-labelledby="auto-refresh-toggle-label" aria-describedby="auto-refresh-toggle-description" checked></label></article></div>
             <div class="depth-detail" hidden><p class="callout">Die App-Shell und der Browser verwenden dieselben Dateien <code>index.html</code>, <code>app.js</code> und <code>styles.css</code>.</p></div>
