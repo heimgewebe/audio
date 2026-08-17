@@ -1390,6 +1390,10 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('.listening-branch-grid {', topology_css)
         self.assertIn('linear-gradient(90deg, var(--listen-accent), var(--receiver-accent))', topology_css)
         self.assertIn('.listening-branch-grid .listening-path-flow {', topology_css)
+        self.assertIn('right: calc(25% - 4px);', topology_css)
+        self.assertIn('left: calc(25% - 4px);', topology_css)
+        self.assertIn('right: calc(25% - 4.5px);', topology_css)
+        self.assertIn('left: calc(25% - 4.5px);', topology_css)
 
     def test_auto_refresh_policy_blocks_dialogs_and_audio_actions(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
