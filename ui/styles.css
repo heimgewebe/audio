@@ -3695,16 +3695,19 @@ main { padding: 0 28px 42px; }
   border-color: var(--line-v2);
   background: linear-gradient(145deg, rgba(25, 44, 47, 0.25), rgba(8, 19, 20, 0.78));
 }
-.metric-glyph {
-  display: inline-grid;
+.listen-metric-card > .metric-glyph {
+  display: grid;
   width: 42px;
   height: 42px;
   place-items: center;
+  align-self: start;
+  margin: 0;
   border: 1px solid var(--line-strong-v2);
   border-radius: 12px;
   color: var(--listen-accent);
   background: rgba(6, 16, 17, 0.65);
   font-size: 1rem;
+  line-height: 1;
 }
 .metric-copy { min-width: 0; }
 .metric-copy .eyebrow { margin-top: 1px; }

@@ -1312,10 +1312,18 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('`listening-path-card is-${tone}`', javascript)
         self.assertIn('"receiver"),', javascript)
         self.assertIn('"metric-card listen-metric-card"', javascript)
-
         visual = styles.index("/* Audiozentrale visual system v2")
         self.assertGreater(visual, styles.index(".home-signal-node strong,"))
         visual_css = styles[visual:]
+        self.assertIn('.listen-metric-card > .metric-glyph {', visual_css)
+        icon_css = visual_css.split('.listen-metric-card > .metric-glyph {', 1)[1].split('}', 1)[0]
+        self.assertIn('display: grid;', icon_css)
+        self.assertIn('place-items: center;', icon_css)
+        self.assertIn('align-self: start;', icon_css)
+        self.assertIn('margin: 0;', icon_css)
+        self.assertIn('font-size: 1rem;', icon_css)
+        self.assertIn('line-height: 1;', icon_css)
+
         for token in (
             "--listen-accent:",
             "--receiver-accent:",
