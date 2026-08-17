@@ -3853,3 +3853,225 @@ main { padding: 0 28px 42px; }
   .listen-metric-card { min-height: 0; }
   .truth-strip { grid-template-columns: 1fr; }
 }
+
+
+/* Listening topology v3 — selectable sources -> MOTU hub -> two output branches. */
+.home-signal-flow {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.listening-topology {
+  display: grid;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.topology-stage-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.listening-input-stage {
+  position: relative;
+  width: min(100%, 760px);
+  justify-self: center;
+  padding-bottom: 24px;
+}
+
+.listening-input-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.listening-input-stage::before {
+  position: absolute;
+  right: 25%;
+  bottom: 8px;
+  left: 25%;
+  height: 1px;
+  background: var(--line-strong-v2);
+  content: "";
+}
+
+.listening-input-grid .home-signal-node {
+  min-height: 118px;
+}
+
+.listening-input-grid .home-signal-node::after {
+  position: absolute;
+  bottom: -16px;
+  left: 50%;
+  width: 1px;
+  height: 16px;
+  background: var(--line-strong-v2);
+  content: "";
+}
+
+.listening-input-grid .home-signal-node + .home-signal-node::before {
+  display: none;
+}
+
+.listening-hub-stage {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  padding: 16px 0 30px;
+}
+
+.listening-hub-stage::before,
+.listening-hub-stage::after {
+  position: absolute;
+  left: 50%;
+  width: 1px;
+  background: var(--line-strong-v2);
+  content: "";
+}
+
+.listening-hub-stage::before {
+  top: 0;
+  height: 16px;
+}
+
+.listening-hub-stage::after {
+  bottom: 0;
+  height: 30px;
+}
+
+.listening-hub-stage .home-signal-node {
+  width: min(100%, 360px);
+  min-height: 118px;
+  border-color: rgba(185, 230, 181, 0.48);
+  background:
+    linear-gradient(145deg, rgba(61, 91, 61, 0.15), rgba(8, 20, 21, 0.82));
+  box-shadow: 0 0 0 1px rgba(185, 230, 181, 0.025), 0 12px 26px rgba(0, 0, 0, 0.08);
+}
+
+.listening-hub-stage .signal-node-glyph {
+  color: var(--mint-strong);
+}
+
+.listening-split-marker {
+  position: relative;
+  z-index: 2;
+  justify-self: center;
+  margin: -5px 0 28px;
+}
+
+.listening-split-marker > span {
+  display: inline-flex;
+  min-height: 27px;
+  align-items: center;
+  padding: 4px 11px;
+  border: 1px solid var(--line-strong-v2);
+  border-radius: 999px;
+  color: var(--muted-bright);
+  background: rgba(7, 18, 19, 0.96);
+  font-size: 0.62rem;
+  letter-spacing: 0.03em;
+}
+
+.listening-split-marker::after {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 1px;
+  height: 29px;
+  background: var(--line-strong-v2);
+  content: "";
+}
+
+.listening-branch-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.listening-branch-grid::before {
+  position: absolute;
+  top: -1px;
+  right: 25%;
+  left: 25%;
+  height: 1px;
+  background: linear-gradient(90deg, var(--listen-accent), var(--receiver-accent));
+  content: "";
+  opacity: 0.42;
+}
+
+.listening-branch-grid .listening-path-card {
+  position: relative;
+}
+
+.listening-branch-grid .listening-path-card::before {
+  position: absolute;
+  top: -28px;
+  left: 50%;
+  width: 1px;
+  height: 28px;
+  content: "";
+}
+
+.listening-branch-grid .listening-path-card.is-reference::before {
+  background: var(--listen-line);
+}
+
+.listening-branch-grid .listening-path-card.is-receiver::before {
+  background: var(--receiver-line);
+}
+
+.listening-branch-grid .listening-path-flow {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.listening-branch-grid .home-signal-node {
+  min-height: 136px;
+}
+
+@media (max-width: 900px) {
+  .listening-branch-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .listening-branch-grid::before,
+  .listening-branch-grid .listening-path-card::before,
+  .listening-split-marker::after {
+    display: none;
+  }
+
+  .listening-split-marker {
+    margin-bottom: 12px;
+  }
+}
+
+@media (max-width: 620px) {
+  .listening-input-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .listening-input-stage {
+    padding-bottom: 8px;
+  }
+
+  .listening-input-stage::before,
+  .listening-input-grid .home-signal-node::after,
+  .listening-hub-stage::before {
+    display: none;
+  }
+
+  .listening-hub-stage {
+    padding-top: 8px;
+  }
+
+  .listening-branch-grid .listening-path-flow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

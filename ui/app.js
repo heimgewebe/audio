@@ -9,7 +9,7 @@ const ROUTES = {
   hoeren: {
     title: "Hören",
     eyebrow: "Wiedergabe und Referenzweg",
-    description: "Beide Wiedergabewege laufen über das MOTU M2 und trennen sich danach in Kopfhörer- und Receiverkette.",
+    description: "Desktop und Mobilgeräte können als Quellen dienen; der MOTU M2 ist der zentrale Knoten für Kopfhörer- und Receiverast.",
   },
   aufnehmen: {
     title: "Aufnehmen",
@@ -2270,6 +2270,9 @@ function homeActionCard({ href, glyph, eyebrow, title, status, tone, detail }) {
 
 const SIGNAL_GLYPHS = Object.freeze({
   Quelle: "≋",
+  "Quelle · Desktop": "▱",
+  "Quelle · Mobil": "▯",
+  "Zentraler Knoten": "▣",
   Interface: "▣",
   Verstärker: "▥",
   Kopfhörer: "◖",
@@ -2301,6 +2304,28 @@ function listeningPathCard(title, subtitle, nodes, tone = "reference") {
   flow.append(...nodes);
   path.append(flow);
   return path;
+}
+
+function listeningTopology(inputs, hub, branches) {
+  const topology = element("section", "listening-topology");
+  topology.setAttribute("aria-label", "Wiedergabetopologie");
+
+  const inputStage = element("div", "listening-input-stage");
+  appendText(inputStage, "span", "topology-stage-label", "Quelloptionen");
+  const inputGrid = element("div", "listening-input-grid");
+  inputGrid.append(...inputs);
+  inputStage.append(inputGrid);
+
+  const hubStage = element("div", "listening-hub-stage");
+  hubStage.append(hub);
+
+  const split = element("div", "listening-split-marker");
+  appendText(split, "span", "", "2 Ausgabeäste");
+
+  const branchGrid = element("div", "listening-branch-grid");
+  branchGrid.append(...branches);
+  topology.append(inputStage, hubStage, split, branchGrid);
+  return topology;
 }
 
 function renderHome() {
@@ -2424,41 +2449,48 @@ function renderHome() {
       : "physische Receiver-Gates belegt";
 
   byId("home-signal-caption").textContent =
-    `${rate ? `${rate} Hz · ` : ""}2 Haupt-Ausgabeketten · aktuelles Softwareziel ${formatEndpoint(graph.default_sink)}`;
+    `${rate ? `${rate} Hz · ` : ""}2 Quellarten → MOTU M2 → 2 Ausgabeäste · Softwareziel ${formatEndpoint(graph.default_sink)}`;
   byId("home-signal-flow").replaceChildren(
-    listeningPathCard("Kopfhörer · Referenz", "definierter MOTU-/Lake-People-Weg", [
-      homeSignalNode("Quelle", "Qobuz / Desktop", "Wiedergabequelle", "configured"),
+    listeningTopology(
+      [
+        homeSignalNode("Quelle · Desktop", "Heim-PC / Qobuz", "aktuelle Softwarequelle", "configured"),
+        homeSignalNode(
+          "Quelle · Mobil",
+          "iPad / Handy",
+          "mögliche Wiedergabequelle · Anschlussweg offen",
+          "onsite",
+        ),
+      ],
       homeSignalNode(
-        "Interface",
+        "Zentraler Knoten",
         "MOTU M2",
-        motuObserved ? "aktuell beobachtet" : "Zielgerät · aktuell nicht beobachtet",
+        motuObserved
+          ? "aktuell beobachtet · DAC / Audiointerface"
+          : "DAC / Audiointerface · aktuell nicht beobachtet",
         motuObserved ? "observed" : "onsite",
       ),
-      homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Kopfhörerverstärker", "configured"),
-      homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
-    ], "reference"),
-    listeningPathCard("Lautsprecher · Receiver", "Pioneer-Weg über MOTU M2", [
-      homeSignalNode("Quelle", "Qobuz / Desktop", "Wiedergabequelle", "configured"),
-      homeSignalNode(
-        "Interface",
-        "MOTU M2",
-        motuObserved ? "aktuell beobachtet · gemeinsamer Ausgangspunkt" : "Zielgerät · gemeinsamer Ausgangspunkt",
-        motuObserved ? "observed" : "onsite",
-      ),
-      homeSignalNode("Receiver", "Pioneer VSX-830-K", pioneerDetail, pioneerTone),
-      homeSignalNode(
-        "Lautsprecher",
-        "ELAC + Canton",
-        "2× ELAC FS 109.2 · Canton Center + 4 Satelliten · kein Subwoofer · aktive Zuordnung offen",
-        "onsite",
-      ),
-    ], "receiver"),
+      [
+        listeningPathCard("Kopfhörer · Referenz", "MOTU → Lake People → Focal", [
+          homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Kopfhörerverstärker", "configured"),
+          homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
+        ], "reference"),
+        listeningPathCard("Lautsprecher · Receiver", "MOTU → Pioneer → ELAC/Canton", [
+          homeSignalNode("Receiver", "Pioneer VSX-830-K", pioneerDetail, pioneerTone),
+          homeSignalNode(
+            "Lautsprecher",
+            "ELAC + Canton",
+            "2× ELAC FS 109.2 · Canton Center + 4 Satelliten · kein Subwoofer · aktive Zuordnung offen",
+            "onsite",
+          ),
+        ], "receiver"),
+      ],
+    ),
   );
 
   const metrics = [
     ["Samplerate", rate ? `${rate / 1000} kHz` : "offen", "aktueller Graph"],
     ["Puffer", quantum ? `${quantum} Frames` : "offen", "aktueller Quantum"],
-    ["MOTU M2", motuObserved ? "beobachtet" : "offen", "beide Hörwege"],
+    ["MOTU M2", motuObserved ? "beobachtet" : "offen", "zentraler Hörknoten"],
     ["Ausgaben", "Focal + Pioneer", "Kopfhörer + Lautsprecher"],
   ];
   const metricGlyphs = { Samplerate: "≋", Puffer: "◫", "MOTU M2": "◖", Ausgaben: "◎" };
@@ -2761,7 +2793,7 @@ function renderProfiles() {
   const listeningStat = byId("listen-intro-stat");
   listeningStat.replaceChildren();
   appendText(listeningStat, "strong", "", String(listening.length));
-  appendText(listeningStat, "span", "", "explizite Hörwege");
+  appendText(listeningStat, "span", "", "Hörprofile");
 }
 
 function renderProfileGrid(targetId, profiles) {
