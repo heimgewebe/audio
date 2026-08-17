@@ -169,6 +169,8 @@ Nicht gefittet werden Transition- oder Zykluspausen, Motif-Pitches/Timbre und Un
 
 Der technische Distanzwert ist der Mittelwert des relativen absoluten Fehlers über **sieben** deklarierte Strukturmerkmale. Niedriger ist besser. Er ist kein biologischer oder perceptueller Realismus-Score.
 
+Die Modellseite verwendet dabei explizite Engineering-Proxys: ein `SongCycle` wird für Phrasen-/Unit-/Dauervergleiche einem publizierten biologischen Song gegenübergestellt; die gemittelten hierarchischen Modell-Grenzpausen werden mit den empirischen Interphrasenlücken verglichen. Diese Populationen werden **nicht** als semantisch identisch behauptet; `evaluation.json` bindet das Mapping unter `comparison_contract`.
+
 | Modell | Development | Holdout |
 |---|---:|---:|
 | bestehender Grammar-Default | 0.435504 | 0.403603 |
@@ -184,7 +186,7 @@ Verbessert:
 - Theme-Sequenzlänge: `0.254237 -> 0.118644`;
 - Phrasen/publizierter Song: `0.379862 -> 0.333805`;
 - publizierte Units/Song: `0.539298 -> 0.017469`;
-- Phrasentyp-Run-Länge: `0.200672 -> 0.162659`;
+- Phrasentyp-Run-Länge: `0.221866 -> 0.162659`;
 - analysierte Zeitspanne/publizierter Song: `0.733944 -> 0.427768`.
 
 Verschlechtert:
@@ -233,8 +235,8 @@ Aktuelle interne Identitäten:
 
 ```text
 corpus_sha256    eaf884d3c11d3a63d134d0f4d4544093b1772f09e493893013c2bebda9e83426
-empirical_sha256 6f31dd7bc3ae63a510ef528502e0d92e2b6c28d74ac3c786b0dffde239038ac7
-evaluation_sha256 6a0c2d28622cca037af106d2c553fc9d3d0133e947b0af7f42518324a11ed36d
+empirical_sha256 0679eee5299a1a5e6bc00ec79c227aec993f82eee7cab917d3a4927984b16f63
+evaluation_sha256 435e2c3132ea393c22a18c2dac78dd68b4d3f04917fb076a08f17e4476136617
 ```
 
 Reproduzierbare Builds:

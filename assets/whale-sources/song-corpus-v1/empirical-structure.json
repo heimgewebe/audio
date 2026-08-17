@@ -12,15 +12,6 @@
     },
     "classified_phrase_count": 1596,
     "feature_distributions": {
-      "analyzed_span_per_published_song_seconds": {
-        "count": 15,
-        "max": 696.847498,
-        "mean": 444.56727,
-        "median": 428.624183,
-        "min": 243.087552,
-        "p25": 376.74008,
-        "p75": 489.985387
-      },
       "interphrase_gap_seconds": {
         "count": 1589,
         "max": 15.747605,
@@ -48,24 +39,6 @@
         "p25": 1.0,
         "p75": 8.0
       },
-      "phrases_per_published_song": {
-        "count": 15,
-        "max": 90.0,
-        "mean": 45.9,
-        "median": 39.666667,
-        "min": 22.5,
-        "p25": 34.5,
-        "p75": 58.666667
-      },
-      "published_units_per_song": {
-        "count": 15,
-        "max": 270.5,
-        "mean": 164.459333,
-        "median": 163.5,
-        "min": 64.25,
-        "p25": 115.835,
-        "p75": 217.0
-      },
       "theme_sequence_length": {
         "count": 15,
         "max": 10.0,
@@ -88,6 +61,35 @@
     "phrase_count": 1605,
     "published_song_count": 38,
     "record_count": 15,
+    "recording_equal_weight_summaries": {
+      "analyzed_span_per_published_song_seconds": {
+        "count": 15,
+        "max": 696.847498,
+        "mean": 444.56727,
+        "median": 428.624183,
+        "min": 243.087552,
+        "p25": 376.74008,
+        "p75": 489.985387
+      },
+      "phrases_per_published_song": {
+        "count": 15,
+        "max": 90.0,
+        "mean": 45.9,
+        "median": 39.666667,
+        "min": 22.5,
+        "p25": 34.5,
+        "p75": 58.666667
+      },
+      "published_units_per_song": {
+        "count": 15,
+        "max": 270.5,
+        "mean": 164.459333,
+        "median": 163.5,
+        "min": 64.25,
+        "p25": 115.835,
+        "p75": 217.0
+      }
+    },
     "repetition_coded_phrase_count": 1583,
     "split": "development"
   },
@@ -98,7 +100,7 @@
     "a production default change",
     "perceptual realism"
   ],
-  "empirical_sha256": "6f31dd7bc3ae63a510ef528502e0d92e2b6c28d74ac3c786b0dffde239038ac7",
+  "empirical_sha256": "0679eee5299a1a5e6bc00ec79c227aec993f82eee7cab917d3a4927984b16f63",
   "holdout": {
     "aggregation_contract": {
       "analyzed_span_per_published_song_seconds": "pooled first-to-last analyzed spans divided by pooled published song count",
@@ -111,15 +113,6 @@
     },
     "classified_phrase_count": 707,
     "feature_distributions": {
-      "analyzed_span_per_published_song_seconds": {
-        "count": 11,
-        "max": 719.366731,
-        "mean": 432.787713,
-        "median": 377.678018,
-        "min": 236.004884,
-        "p25": 327.489112,
-        "p75": 559.548029
-      },
       "interphrase_gap_seconds": {
         "count": 696,
         "max": 8.600702,
@@ -147,24 +140,6 @@
         "p25": 2.0,
         "p75": 6.0
       },
-      "phrases_per_published_song": {
-        "count": 11,
-        "max": 47.0,
-        "mean": 31.354545,
-        "median": 29.4,
-        "min": 14.0,
-        "p25": 25.75,
-        "p75": 40.25
-      },
-      "published_units_per_song": {
-        "count": 11,
-        "max": 378.0,
-        "mean": 178.856364,
-        "median": 153.67,
-        "min": 84.0,
-        "p25": 101.25,
-        "p75": 220.125
-      },
       "theme_sequence_length": {
         "count": 11,
         "max": 7.0,
@@ -187,6 +162,35 @@
     "phrase_count": 707,
     "published_song_count": 23,
     "record_count": 11,
+    "recording_equal_weight_summaries": {
+      "analyzed_span_per_published_song_seconds": {
+        "count": 11,
+        "max": 719.366731,
+        "mean": 432.787713,
+        "median": 377.678018,
+        "min": 236.004884,
+        "p25": 327.489112,
+        "p75": 559.548029
+      },
+      "phrases_per_published_song": {
+        "count": 11,
+        "max": 47.0,
+        "mean": 31.354545,
+        "median": 29.4,
+        "min": 14.0,
+        "p25": 25.75,
+        "p75": 40.25
+      },
+      "published_units_per_song": {
+        "count": 11,
+        "max": 378.0,
+        "mean": 178.856364,
+        "median": 153.67,
+        "min": 84.0,
+        "p25": 101.25,
+        "p75": 220.125
+      }
+    },
     "repetition_coded_phrase_count": 707,
     "split": "holdout"
   },
@@ -194,10 +198,10 @@
   "recommendations": {
     "candidate_count": 127,
     "clamped_or_jointly_constrained": {
-      "joint_unit_budget_constraint_applied": true,
       "phrase_pause_seconds": false,
       "phrase_repeats_max": true,
       "phrase_repeats_min": true,
+      "search_space_enforces_joint_unit_budget": true,
       "theme_count": true
     },
     "development_fit_mean_relative_absolute_error": 0.124392,
