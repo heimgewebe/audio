@@ -1,0 +1,821 @@
+{
+  "analysis_reference": {
+    "commit": "fcf49e4abe3ff4544c6400758c0d1fa32ff76996",
+    "decoder_warning": "public MATLAB source comments that phrase-to-unit transcription is not fixed yet to get the correct unit sequence",
+    "license_status": "no explicit repository license observed",
+    "repository": "https://gitlab.awi.de/eschall/humpback-whale-song-analysis",
+    "use": "method cross-check only; no source code or phrase catalogue vendored"
+  },
+  "dataset": {
+    "article_id": 25259947,
+    "citation": "Schall, Elena; Oña, Javier; Denkinger, Judith (2024). Humpback Whale Song Recordings Ecuador 2012-2019. figshare. Media. https://doi.org/10.6084/m9.figshare.25259947.v1",
+    "doi": "10.6084/m9.figshare.25259947.v1",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "published_date": "2024-03-07T15:26:01Z",
+    "source_url": "https://figshare.com/articles/media/Humpback_Whale_Song_Recordings_Ecuador_2012-2019/25259947",
+    "title": "Humpback Whale Song Recordings Ecuador 2012-2019",
+    "version": 1
+  },
+  "does_not_establish": [
+    "per-unit timestamp boundaries",
+    "unit sequence/count reconstruction from the raw repetition-code suffix alone",
+    "individual song boundaries inside each released Raven table",
+    "audio content integrity beyond Figshare file identity and published MD5 unless a WAV is separately downloaded and SHA-256 bound",
+    "population-wide representativeness",
+    "perceptual realism"
+  ],
+  "kind": "humpback_whale_song_corpus_source_manifest",
+  "records": [
+    {
+      "annotation": {
+        "bytes": 9225,
+        "figshare_file_id": 44625001,
+        "file": "raw/HS120627-1107-ESM.txt",
+        "md5": "7c894d98cc86afd87dad62482bb8a42a",
+        "sha256": "87e0e66d145251690001ebc4baab7d8ac0f0c48cac2bcacd8e6bcd683682969e"
+      },
+      "audio_external": {
+        "bytes": 151755308,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625004,
+        "md5": "c6d0e84dec5a225293ac7138b4bda615",
+        "name": "HS120627-1107-ESM.wav"
+      },
+      "published_mean_units_per_song": 270.5,
+      "published_median_theme_sequence": [
+        "Dj",
+        "Ja",
+        "Ia",
+        "Ic",
+        "Cg",
+        "As",
+        "Ar",
+        "Au"
+      ],
+      "published_song_count": 3,
+      "recording_id": "HS120627-1107-ESM",
+      "split": "development",
+      "year": 2012
+    },
+    {
+      "annotation": {
+        "bytes": 13838,
+        "figshare_file_id": 44625013,
+        "file": "raw/HS120802-0959-ESM.txt",
+        "md5": "2d404abba1a5ee939f0b2dcbbca515b6",
+        "sha256": "35fc2774d4b274954b407ba20e230b4ab0c81bd4b1a435772c42a9bbeefadb1e"
+      },
+      "audio_external": {
+        "bytes": 308685356,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625016,
+        "md5": "e7a3d6d51baed5adceab9b06f108c716",
+        "name": "HS120802-0959-ESM.wav"
+      },
+      "published_mean_units_per_song": 202.0,
+      "published_median_theme_sequence": [
+        "Dj",
+        "Ja",
+        "Ia",
+        "Ic",
+        "Cg",
+        "Ar",
+        "As",
+        "Au"
+      ],
+      "published_song_count": 3,
+      "recording_id": "HS120802-0959-ESM",
+      "split": "development",
+      "year": 2012
+    },
+    {
+      "annotation": {
+        "bytes": 14197,
+        "figshare_file_id": 44625019,
+        "file": "raw/HS120813-1053-ESM.txt",
+        "md5": "4490c65bc53068d120f4fbc2780b3699",
+        "sha256": "87afe1bdd448bdf4d7cce02855845ed3a4877ac6c7d078cd76db427efbf3d757"
+      },
+      "audio_external": {
+        "bytes": 307325996,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625025,
+        "md5": "654ad6991989bd2d7d95387fa751b31a",
+        "name": "HS120813-1053-ESM.wav"
+      },
+      "published_mean_units_per_song": 232.67,
+      "published_median_theme_sequence": [
+        "Dj",
+        "Ja",
+        "Ic",
+        "Ia",
+        "Cg",
+        "Ar",
+        "As",
+        "Au"
+      ],
+      "published_song_count": 3,
+      "recording_id": "HS120813-1053-ESM",
+      "split": "development",
+      "year": 2012
+    },
+    {
+      "annotation": {
+        "bytes": 8255,
+        "figshare_file_id": 44625151,
+        "file": "raw/HS130730-1342-ESM-PA.txt",
+        "md5": "590a1c981189305fd03a999a8495ae3d",
+        "sha256": "2bc738e79d0c5e77426f99443c886fd9a1deb353946560377a164c296b917e9c"
+      },
+      "audio_external": {
+        "bytes": 69353934,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625163,
+        "md5": "49c5913a6f520f36c74a9c795a1f69dc",
+        "name": "HS130730-1342-ESM-PA.wav"
+      },
+      "published_mean_units_per_song": 196.5,
+      "published_median_theme_sequence": [
+        "Ec",
+        "Ed",
+        "Gb",
+        "Ga",
+        "Dj"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS130730-1342-ESM-PA",
+      "split": "development",
+      "year": 2013
+    },
+    {
+      "annotation": {
+        "bytes": 9971,
+        "figshare_file_id": 44625154,
+        "file": "raw/HS130805-1710-MAN.txt",
+        "md5": "d25f794bd622ce88d7812fede3aa4fe6",
+        "sha256": "71c785061652d9f66e1b7ed0e9aeba6b6ad19ce3939cb2bfd2ff119c25bf9e96"
+      },
+      "audio_external": {
+        "bytes": 80264492,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625169,
+        "md5": "3e096f754a54134ed83366340e36beff",
+        "name": "HS130805-1710-MAN.wav"
+      },
+      "published_mean_units_per_song": 163.5,
+      "published_median_theme_sequence": [
+        "Ec",
+        "Ed",
+        "Gb",
+        "Ga",
+        "Dj",
+        "Ha"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS130805-1710-MAN",
+      "split": "development",
+      "year": 2013
+    },
+    {
+      "annotation": {
+        "bytes": 15557,
+        "figshare_file_id": 44625157,
+        "file": "raw/HS130806-2154-MAN.txt",
+        "md5": "24de907f9d1d80b831f2adb5cf5c48d8",
+        "sha256": "86b462bda7bbbacca25f2b6ed0c84a06cedb894b48e23afd4383671f10950b45"
+      },
+      "audio_external": {
+        "bytes": 438750848,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625172,
+        "md5": "8d15a8a553fcf7a56fea8a508289f5a9",
+        "name": "HS130806-2154-MAN.wav"
+      },
+      "published_mean_units_per_song": 232.0,
+      "published_median_theme_sequence": [
+        "Ec",
+        "Ed",
+        "Gb",
+        "Ga",
+        "Dj",
+        "Ha"
+      ],
+      "published_song_count": 3,
+      "recording_id": "HS130806-2154-MAN",
+      "split": "development",
+      "year": 2013
+    },
+    {
+      "annotation": {
+        "bytes": 20555,
+        "figshare_file_id": 44625118,
+        "file": "raw/HS140714-0929-ESM.txt",
+        "md5": "62fc85bae1daad9eadf707dae086f1b7",
+        "sha256": "9b479a4af3a0985ebd7e282295c6101734baa87c7e48fc4f9855160208cbbd4e"
+      },
+      "audio_external": {
+        "bytes": 107483948,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625130,
+        "md5": "cf9a7f50ed1f3ce73beac781df95552a",
+        "name": "HS140714-0929-ESM.wav"
+      },
+      "published_mean_units_per_song": 80.8,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Kc",
+        "Av",
+        "Fb",
+        "Ja",
+        "Jb",
+        "Id"
+      ],
+      "published_song_count": 5,
+      "recording_id": "HS140714-0929-ESM",
+      "split": "development",
+      "year": 2014
+    },
+    {
+      "annotation": {
+        "bytes": 21157,
+        "figshare_file_id": 44625121,
+        "file": "raw/HS140716-1131-ESM.txt",
+        "md5": "8f78de61e00734e1738aef69cb093bcb",
+        "sha256": "6ba58684eae38c3284a195ef8ab1b226f985aa43cc62fd096490287d2c83a5ba"
+      },
+      "audio_external": {
+        "bytes": 187303724,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625133,
+        "md5": "fa6e2e8da9bb60c4c25a1e91e48887af",
+        "name": "HS140716-1131-ESM.wav"
+      },
+      "published_mean_units_per_song": 140.67,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Kc",
+        "Av",
+        "Fb",
+        "Jb",
+        "Ja",
+        "Id",
+        "Ia"
+      ],
+      "published_song_count": 3,
+      "recording_id": "HS140716-1131-ESM",
+      "split": "development",
+      "year": 2014
+    },
+    {
+      "annotation": {
+        "bytes": 26850,
+        "figshare_file_id": 44625124,
+        "file": "raw/HS140723-1157-ESM.txt",
+        "md5": "c5feb3f60f113f2b93e0ea31aca74dc0",
+        "sha256": "f94df75c8225594073a84c129536eca1532a0220a4417ead4e67b5338d7fe85c"
+      },
+      "audio_external": {
+        "bytes": 212050988,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625136,
+        "md5": "ad20ed6a9b3c2b33aa6d399d452caff5",
+        "name": "HS140723-1157-ESM.wav"
+      },
+      "published_mean_units_per_song": 179.0,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Av",
+        "Kc",
+        "Fb",
+        "Jb",
+        "Ja",
+        "Ia",
+        "Id"
+      ],
+      "published_song_count": 3,
+      "recording_id": "HS140723-1157-ESM",
+      "split": "development",
+      "year": 2014
+    },
+    {
+      "annotation": {
+        "bytes": 10536,
+        "figshare_file_id": 44625175,
+        "file": "raw/HS150622-1120-MUI-PA.txt",
+        "md5": "4841c035aaf4c23871c39e0c0cb5abb3",
+        "sha256": "b78eb21e5694f8aee3b2e82ff2cebaf1a3719d97310e54f1261ec82c06debe36"
+      },
+      "audio_external": {
+        "bytes": 61563936,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625190,
+        "md5": "d1681324106936bd195116b3daaa994b",
+        "name": "HS150622-1120-MUI-PA.wav"
+      },
+      "published_mean_units_per_song": 233.0,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Ja",
+        "La",
+        "Aw",
+        "Ax",
+        "Kd",
+        "Fc",
+        "Jb",
+        "Id",
+        "Ia"
+      ],
+      "published_song_count": 1,
+      "recording_id": "HS150622-1120-MUI-PA",
+      "split": "development",
+      "year": 2015
+    },
+    {
+      "annotation": {
+        "bytes": 6537,
+        "figshare_file_id": 44625178,
+        "file": "raw/HS150625-1158-MUI.txt",
+        "md5": "66fd10f5e2babf048b38c8775a31c70b",
+        "sha256": "0c1b8741a045ba15ec59ab0838be4f70ecfb969f0c1175c555a836c3b0e43cba"
+      },
+      "audio_external": {
+        "bytes": 43299116,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625187,
+        "md5": "495f1311583b7806835385627b0e5f68",
+        "name": "HS150625-1158-MUI.wav"
+      },
+      "published_mean_units_per_song": 149.0,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Aw",
+        "La",
+        "Ax",
+        "Kd",
+        "Fc",
+        "Jb",
+        "Id",
+        "Ia"
+      ],
+      "published_song_count": 1,
+      "recording_id": "HS150625-1158-MUI",
+      "split": "development",
+      "year": 2015
+    },
+    {
+      "annotation": {
+        "bytes": 7246,
+        "figshare_file_id": 44625181,
+        "file": "raw/HS150626-0921-MUI.txt",
+        "md5": "d5d19d55d2da5edbc961f7dede002ff3",
+        "sha256": "bee053dec251763268206dae54b266773e32a0903d91f63b018e4b4840a185d7"
+      },
+      "audio_external": {
+        "bytes": 56770604,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625193,
+        "md5": "717d841a42d35b5e961e528d2b1f2c55",
+        "name": "HS150626-0921-MUI.wav"
+      },
+      "published_mean_units_per_song": 161.0,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Aw",
+        "La",
+        "Ax",
+        "Kd",
+        "Fb",
+        "Jb",
+        "Id"
+      ],
+      "published_song_count": 1,
+      "recording_id": "HS150626-0921-MUI",
+      "split": "development",
+      "year": 2015
+    },
+    {
+      "annotation": {
+        "bytes": 10477,
+        "figshare_file_id": 44625199,
+        "file": "raw/HS160708-1115-MUI.txt",
+        "md5": "b8ca879da84f2f654a6f5ac61223cfc2",
+        "sha256": "edc0b768d7a3e53f93e6140e0ecdf99e4e4e99f4bbda17badeeadb10d33db732"
+      },
+      "audio_external": {
+        "bytes": 270498860,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625244,
+        "md5": "df389a40f5c4e78b189d592a5e09ab49",
+        "name": "HS160708-1115-MUI.wav"
+      },
+      "published_mean_units_per_song": 64.25,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Gl",
+        "Ay",
+        "Na",
+        "Lb",
+        "Ma",
+        "Ia",
+        "Kd"
+      ],
+      "published_song_count": 4,
+      "recording_id": "HS160708-1115-MUI",
+      "split": "development",
+      "year": 2016
+    },
+    {
+      "annotation": {
+        "bytes": 8154,
+        "figshare_file_id": 44625205,
+        "file": "raw/HS160721-1133-MUI-PA.txt",
+        "md5": "d04fa57aca40c56df8dbb3e4ea3a2bed",
+        "sha256": "c679521541b51b9f6afe1f18e56e7f16fcf55f80a4f8d38765f44e43b03fc951"
+      },
+      "audio_external": {
+        "bytes": 76910736,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625217,
+        "md5": "d1aeb5849ebff8ec203348e8ebc8382b",
+        "name": "HS160721-1133-MUI-PA.wav"
+      },
+      "published_mean_units_per_song": 91.0,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Lb",
+        "Ma",
+        "Ia"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS160721-1133-MUI-PA",
+      "split": "development",
+      "year": 2016
+    },
+    {
+      "annotation": {
+        "bytes": 5490,
+        "figshare_file_id": 44625208,
+        "file": "raw/HS160723-1011-MUI.txt",
+        "md5": "9f2ad6c611c7ed9b269b6511037c1a02",
+        "sha256": "8a21035aed0cddab1f9acb488a9cfb0a4d282b4e06567dc5de420fd25701d7ac"
+      },
+      "audio_external": {
+        "bytes": 159711020,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625235,
+        "md5": "79475baa5a9bf30533aa2cf4a8aaadc5",
+        "name": "HS160723-1011-MUI.wav"
+      },
+      "published_mean_units_per_song": 71.0,
+      "published_median_theme_sequence": [
+        "Ar",
+        "Gl",
+        "Ay",
+        "Na",
+        "Lb",
+        "Ma",
+        "Ic",
+        "Ia"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS160723-1011-MUI",
+      "split": "development",
+      "year": 2016
+    },
+    {
+      "annotation": {
+        "bytes": 5174,
+        "figshare_file_id": 44625220,
+        "file": "raw/HS170725-0956-MUI.txt",
+        "md5": "25a4fec75143dd348e2bdcb184790da9",
+        "sha256": "a0c1a0c1c29cadfe1c6ae0b044625f5aef5806c328228cd15f2ffba75eef530f"
+      },
+      "audio_external": {
+        "bytes": 211762988,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625253,
+        "md5": "dce5c1d0f9b525a7b3637de06024c976",
+        "name": "HS170725-0956-MUI.wav"
+      },
+      "published_mean_units_per_song": 169.0,
+      "published_median_theme_sequence": [
+        "Ma",
+        "Ib",
+        "Ie",
+        "Ih",
+        "Ig",
+        "Ii"
+      ],
+      "published_song_count": 1,
+      "recording_id": "HS170725-0956-MUI",
+      "split": "holdout",
+      "year": 2017
+    },
+    {
+      "annotation": {
+        "bytes": 8914,
+        "figshare_file_id": 44625223,
+        "file": "raw/HS170802-0929-MUI.txt",
+        "md5": "f10f4daf9e8a1ec1be582b223d063b1d",
+        "sha256": "25fd4f754093947db23f110414f715e17d7387cce2f5f266bd6b740f6a7855ec"
+      },
+      "audio_external": {
+        "bytes": 116736812,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625247,
+        "md5": "922517dc88821eec1cfbdb529d2e9cfb",
+        "name": "HS170802-0929-MUI.wav"
+      },
+      "published_mean_units_per_song": 378.0,
+      "published_median_theme_sequence": [
+        "Ma",
+        "Ib",
+        "Ie",
+        "Ih",
+        "If",
+        "Ig",
+        "Ii"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS170802-0929-MUI",
+      "split": "holdout",
+      "year": 2017
+    },
+    {
+      "annotation": {
+        "bytes": 5696,
+        "figshare_file_id": 44625226,
+        "file": "raw/HS170810-1054-MUI-PA.txt",
+        "md5": "2508492a2449dbb85465bb287d79f9b3",
+        "sha256": "c878c46d7d3fa6930c08f1b597dd26299679db5a604f61bfaf114f6610cda185"
+      },
+      "audio_external": {
+        "bytes": 63504338,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625241,
+        "md5": "1c9c858d3e0cd43b300a4a3fbb7d0351",
+        "name": "HS170810-1054-MUI-PA.wav"
+      },
+      "published_mean_units_per_song": 320.0,
+      "published_median_theme_sequence": [
+        "Ma",
+        "Ib",
+        "Ie",
+        "If",
+        "Ih",
+        "Ig",
+        "Ii"
+      ],
+      "published_song_count": 1,
+      "recording_id": "HS170810-1054-MUI-PA",
+      "split": "holdout",
+      "year": 2017
+    },
+    {
+      "annotation": {
+        "bytes": 1814,
+        "figshare_file_id": 44625259,
+        "file": "raw/HS180705-1224-ESM-PA.txt",
+        "md5": "31212fdf6b61bbc6f225b2a77648f5eb",
+        "sha256": "658a5ae8786c7fff9d1774f837b66b12ec8876b3081b7fbff7d2c16dee5b266a"
+      },
+      "audio_external": {
+        "bytes": 60858338,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625271,
+        "md5": "4ffd07b6163ade69476a977fa026deb7",
+        "name": "HS180705-1224-ESM-PA.wav"
+      },
+      "published_mean_units_per_song": 84.0,
+      "published_median_theme_sequence": [
+        "Ij",
+        "Ik"
+      ],
+      "published_song_count": 1,
+      "recording_id": "HS180705-1224-ESM-PA",
+      "split": "holdout",
+      "year": 2018
+    },
+    {
+      "annotation": {
+        "bytes": 6248,
+        "figshare_file_id": 44625262,
+        "file": "raw/HS180717-1003-ESM.txt",
+        "md5": "bc9dc62340f4a84beb7350edfeebb0cb",
+        "sha256": "70942bff855693542ac8a29031bf36e603c69042dec12e2f44b701a259a1a472"
+      },
+      "audio_external": {
+        "bytes": 108320300,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625274,
+        "md5": "04d4b0100f74f25f35a8062dbc60ffe5",
+        "name": "HS180717-1003-ESM.wav"
+      },
+      "published_mean_units_per_song": 86.5,
+      "published_median_theme_sequence": [
+        "Dm",
+        "Il"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS180717-1003-ESM",
+      "split": "holdout",
+      "year": 2018
+    },
+    {
+      "annotation": {
+        "bytes": 4983,
+        "figshare_file_id": 44625265,
+        "file": "raw/HS180803-1236-ESM.txt",
+        "md5": "f7931cf73245b9a8211f45f47ce9c418",
+        "sha256": "20bb37fbafa0432409ea3b7bda47bd0674dcd837edeb8c8a9c9008132cef4d1f"
+      },
+      "audio_external": {
+        "bytes": 132666668,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625277,
+        "md5": "85192e565082ff7fcd45f53e1ccea756",
+        "name": "HS180803-1236-ESM.wav"
+      },
+      "published_mean_units_per_song": 98.0,
+      "published_median_theme_sequence": [
+        "Ij",
+        "Il",
+        "Ib",
+        "Ic",
+        "Dm"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS180803-1236-ESM",
+      "split": "holdout",
+      "year": 2018
+    },
+    {
+      "annotation": {
+        "bytes": 18034,
+        "figshare_file_id": 44625268,
+        "file": "raw/HS180911-1053-MAN.txt",
+        "md5": "691c0bb624be506777547bb82328d13b",
+        "sha256": "7898f023e541c7e9cbfd4dae3a744125407f04495e26b708e54ef1d490803fcb"
+      },
+      "audio_external": {
+        "bytes": 398287502,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625304,
+        "md5": "f138f5b9af66258bb8ce8fbd7b4bbccb",
+        "name": "HS180911-1053-MAN.wav"
+      },
+      "published_mean_units_per_song": 244.75,
+      "published_median_theme_sequence": [
+        "Ee",
+        "Dm",
+        "Ij",
+        "Dc"
+      ],
+      "published_song_count": 5,
+      "recording_id": "HS180911-1053-MAN",
+      "split": "holdout",
+      "year": 2018
+    },
+    {
+      "annotation": {
+        "bytes": 11524,
+        "figshare_file_id": 44625283,
+        "file": "raw/HS190703-1032-ESM.txt",
+        "md5": "4eb65bc58bff2d062509aae58ea2a1a7",
+        "sha256": "81b59945d36b8ea8cce9461625f869f40a50a797438226fc15a30cfb3d2619f2"
+      },
+      "audio_external": {
+        "bytes": 350234254,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625313,
+        "md5": "391a2092a8f4ff9e5dec885b7b9955f8",
+        "name": "HS190703-1032-ESM.wav"
+      },
+      "published_mean_units_per_song": 153.67,
+      "published_median_theme_sequence": [
+        "Ic",
+        "Dm",
+        "Dg",
+        "Lc",
+        "Ld",
+        "Dl",
+        "Ib"
+      ],
+      "published_song_count": 3,
+      "recording_id": "HS190703-1032-ESM",
+      "split": "holdout",
+      "year": 2019
+    },
+    {
+      "annotation": {
+        "bytes": 5879,
+        "figshare_file_id": 44625286,
+        "file": "raw/HS190717-1025-ESM.txt",
+        "md5": "c4608d8c30992decd07540e47f566395",
+        "sha256": "4cb4db9e3225b4e88eb98707f383d3bc826dfe1a8889e7485137ddd3a619f0b9"
+      },
+      "audio_external": {
+        "bytes": 210817422,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625307,
+        "md5": "f4c72322f9c2bd79646ef398c6c9410d",
+        "name": "HS190717-1025-ESM.wav"
+      },
+      "published_mean_units_per_song": 104.5,
+      "published_median_theme_sequence": [
+        "Ic",
+        "Dm",
+        "Dg",
+        "Lc",
+        "Ib"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS190717-1025-ESM",
+      "split": "holdout",
+      "year": 2019
+    },
+    {
+      "annotation": {
+        "bytes": 6498,
+        "figshare_file_id": 44625289,
+        "file": "raw/HS190718-1150-ESM-PA.txt",
+        "md5": "b14f483a86012d85f0080d52a26d9cea",
+        "sha256": "b675cb89cea9cfa5aed88f5a5aa1cb621ce062da809896af78f126d587e5a63f"
+      },
+      "audio_external": {
+        "bytes": 148176376,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625301,
+        "md5": "d3cb1a96774f44281230a875bab3c32a",
+        "name": "HS190718-1150-ESM-PA.wav"
+      },
+      "published_mean_units_per_song": 133.5,
+      "published_median_theme_sequence": [
+        "Ic",
+        "Dm",
+        "Dg",
+        "Lc",
+        "Ld",
+        "Dl",
+        "Ib"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS190718-1150-ESM-PA",
+      "split": "holdout",
+      "year": 2019
+    },
+    {
+      "annotation": {
+        "bytes": 9872,
+        "figshare_file_id": 44625292,
+        "file": "raw/HS190719-0930-ESM.txt",
+        "md5": "3da876a5dd5cab51f835588acd8c32c5",
+        "sha256": "0f23861a60f9b5731e6f41f1b020e867a475b50335c42e3a7d0cb95160f43e9d"
+      },
+      "audio_external": {
+        "bytes": 264559246,
+        "downloaded_into_repository": false,
+        "figshare_file_id": 44625310,
+        "md5": "8674a091a9e3a7292094851fd41cbde5",
+        "name": "HS190719-0930-ESM.wav"
+      },
+      "published_mean_units_per_song": 195.5,
+      "published_median_theme_sequence": [
+        "Ic",
+        "Ib",
+        "Dm",
+        "Dg",
+        "Lc",
+        "Ld",
+        "Dl"
+      ],
+      "published_song_count": 2,
+      "recording_id": "HS190719-0930-ESM",
+      "split": "holdout",
+      "year": 2019
+    }
+  ],
+  "schema_version": 1,
+  "split": {
+    "development_years": [
+      2012,
+      2013,
+      2014,
+      2015,
+      2016
+    ],
+    "frozen_reason": "Later years are held out before fitting to measure generalization across substantial song evolution/revolution.",
+    "holdout_years": [
+      2017,
+      2018,
+      2019
+    ]
+  },
+  "study": {
+    "doi": "10.1111/mms.13208",
+    "method_note": "Raven tables contain manually logged phrase windows. The two-letter phrase identity is recoverable from Category. Numeric suffixes are preserved verbatim as published repetition codes but are not independently decoded into unit sequences because their multi-digit segmentation requires the authors phrase catalogue/decoder and the public analysis code itself marks that transcription path as not yet fixed.",
+    "published_summary_source": "Oña, Denkinger & Schall (2025), Table 1: number of songs analysed, mean number of units per song, and median theme string for each recording.",
+    "title": "Acoustic richness and composition changes of humpback whale (Megaptera novaeangliae) songs on breeding grounds off the coast of Ecuador"
+  }
+}
