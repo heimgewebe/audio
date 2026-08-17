@@ -109,8 +109,10 @@
       ]
     },
     "receiver": {
-      "purpose": "Definierte Ausgabe an den Pioneer VSX-830-K",
-      "required_hardware": [],
+      "purpose": "Definierte Ausgabe an den Pioneer VSX-830-K über MOTU M2",
+      "required_hardware": [
+        "motu_m2"
+      ],
       "required_physical_facts": [
         "pioneer_pc_connection",
         "pioneer_selected_input",

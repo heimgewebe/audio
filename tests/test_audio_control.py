@@ -1268,10 +1268,16 @@ class AudioControlTests(unittest.TestCase):
         javascript = (ROOT / "ui" / "app.js").read_text()
         styles = (ROOT / "ui" / "styles.css").read_text()
         signal_path = json.loads((ROOT / "inventory" / "signal-path.v1.json").read_text())
+        profiles = json.loads((ROOT / "profiles" / "audio-profiles.v1.json").read_text())
+        physical_facts = json.loads((ROOT / "inventory" / "physical-facts.v1.json").read_text())
 
         self.assertIn("Wiedergabewege", html)
         self.assertIn('listeningPathCard("Kopfhörer · Referenz"', javascript)
         self.assertIn('listeningPathCard("Lautsprecher · Receiver"', javascript)
+        self.assertIn('"Pioneer-Weg über MOTU M2"', javascript)
+        self.assertIn('gemeinsamer Ausgangspunkt', javascript)
+        self.assertIn('"beide Hörwege"', javascript)
+        self.assertNotIn('"PC-Ausgang",\n        "Heim-PC"', javascript)
         self.assertIn('"Pioneer VSX-830-K"', javascript)
         self.assertIn('"Lautsprecher"', javascript)
         self.assertIn("2× ELAC FS 109.2", javascript)
@@ -1294,6 +1300,24 @@ class AudioControlTests(unittest.TestCase):
                 for edge in signal_path["edges"]
             )
         )
+        self.assertTrue(
+            any(
+                edge.get("from") == "motu-m2"
+                and edge.get("to") == "pioneer-vsx-830-k"
+                and edge.get("verification") == "user-declared-unresolved"
+                for edge in signal_path["edges"]
+            )
+        )
+        self.assertFalse(
+            any(
+                edge.get("from") == "heim-pc" and edge.get("to") == "pioneer-vsx-830-k"
+                for edge in signal_path["edges"]
+            )
+        )
+        receiver_profile = profiles["profiles"]["receiver"]
+        self.assertEqual(receiver_profile["required_hardware"], ["motu_m2"])
+        self.assertIn("über MOTU M2", receiver_profile["purpose"])
+        self.assertIn("MOTU M2", physical_facts["facts"]["pioneer_pc_connection"]["prompt"])
 
     def test_visual_system_v2_has_functional_zones_and_readable_signal_paths(self):
         html = (ROOT / "ui" / "index.html").read_text()

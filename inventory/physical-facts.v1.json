@@ -75,7 +75,7 @@
     },
     "pioneer_pc_connection": {
       "type": "string",
-      "prompt": "Wie ist der PC mit dem Pioneer verbunden?",
+      "prompt": "Wie ist der MOTU M2 mit dem Pioneer verbunden?",
       "allowed_evidence": [
         "visual"
       ],
