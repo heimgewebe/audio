@@ -1390,10 +1390,13 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('.listening-branch-grid {', topology_css)
         self.assertIn('linear-gradient(90deg, var(--listen-accent), var(--receiver-accent))', topology_css)
         self.assertIn('.listening-branch-grid .listening-path-flow {', topology_css)
-        self.assertIn('right: calc(25% - 4px);', topology_css)
-        self.assertIn('left: calc(25% - 4px);', topology_css)
-        self.assertIn('right: calc(25% - 4.5px);', topology_css)
-        self.assertIn('left: calc(25% - 4.5px);', topology_css)
+        input_stage_block = topology_css.split('.listening-input-stage {', 1)[1].split('}', 1)[0]
+        self.assertIn('width: 100%;', input_stage_block)
+        input_grid_block = topology_css.split('.listening-input-grid {', 1)[1].split('}', 1)[0]
+        self.assertIn('gap: 18px;', input_grid_block)
+        self.assertNotIn('width: min(100%, 760px);', topology_css)
+        self.assertGreaterEqual(topology_css.count('right: calc(25% - 4.5px);'), 2)
+        self.assertGreaterEqual(topology_css.count('left: calc(25% - 4.5px);'), 2)
         for connector_selector in (
             '.listening-input-grid .home-signal-node::after {',
             '.listening-hub-stage::before,\n.listening-hub-stage::after {',

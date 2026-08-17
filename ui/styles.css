@@ -3879,7 +3879,7 @@ main { padding: 0 28px 42px; }
 
 .listening-input-stage {
   position: relative;
-  width: min(100%, 760px);
+  width: 100%;
   justify-self: center;
   padding-bottom: 24px;
 }
@@ -3887,14 +3887,14 @@ main { padding: 0 28px 42px; }
 .listening-input-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 18px;
 }
 
 .listening-input-stage::before {
   position: absolute;
-  right: calc(25% - 4px);
+  right: calc(25% - 4.5px);
   bottom: 8px;
-  left: calc(25% - 4px);
+  left: calc(25% - 4.5px);
   height: 1px;
   background: var(--line-strong-v2);
   content: "";
