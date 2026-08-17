@@ -43,6 +43,23 @@ class WhaleSongCorpusTests(unittest.TestCase):
         self.assertEqual(len(manifest["records"]), 26)
         self.assertTrue(all(not record["audio_external"]["downloaded_into_repository"] for record in manifest["records"]))
 
+    def test_each_record_split_must_match_its_frozen_year(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = pathlib.Path(temporary) / "corpus"
+            shutil.copytree(CORPUS_ROOT, target)
+            manifest_path = target / "source-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            holdout_record = next(
+                record for record in manifest["records"] if record["year"] == 2018
+            )
+            holdout_record["split"] = "development"
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                corpus_lib.load_source_manifest(target)
+
     def test_all_26_annotation_files_are_hash_bound(self):
         manifest = corpus_lib.load_source_manifest(CORPUS_ROOT)
         seen = set()
@@ -105,6 +122,14 @@ class WhaleSongCorpusTests(unittest.TestCase):
         )
         self.assertIn("published song count", self.development["aggregation_contract"]["published_units_per_song"])
 
+        self.assertNotIn(
+            "published_units_per_song", self.development["feature_distributions"]
+        )
+        self.assertIn(
+            "published_units_per_song",
+            self.development["recording_equal_weight_summaries"],
+        )
+
     def test_unit_timestamps_are_never_fabricated(self):
         phrases = [phrase for record in self.corpus["records"] for phrase in record["phrases"]]
         self.assertTrue(phrases)
@@ -158,7 +183,15 @@ class WhaleSongCorpusTests(unittest.TestCase):
         self.assertEqual(config.theme_count, 6)
         self.assertEqual((config.phrase_repeats_min, config.phrase_repeats_max), (6, 6))
         self.assertAlmostEqual(config.phrase_pause_seconds, 0.716662, places=6)
-        self.assertTrue(recommendation["clamped_or_jointly_constrained"]["joint_unit_budget_constraint_applied"])
+        self.assertTrue(
+            recommendation["clamped_or_jointly_constrained"][
+                "search_space_enforces_joint_unit_budget"
+            ]
+        )
+
+    def test_training_projection_rejects_holdout_input(self):
+        with self.assertRaises(ValueError):
+            corpus_lib.training_recommendations(self.holdout)
 
     def test_training_projection_is_independent_of_holdout_object(self):
         first = corpus_lib.training_recommendations(self.development)
@@ -187,6 +220,23 @@ class WhaleSongCorpusTests(unittest.TestCase):
         self.assertLess(
             robustness["development_fitted_holdout_distance"]["summary"]["max"],
             robustness["default_holdout_distance"]["summary"]["min"],
+        )
+
+        self.assertIn(
+            "engineering proxy",
+            report["comparison_contract"]["mean_interphrase_gap_seconds"],
+        )
+        self.assertEqual(
+            empirical,
+            json.loads(
+                (CORPUS_ROOT / "empirical-structure.json").read_text(encoding="utf-8")
+            ),
+        )
+        self.assertEqual(
+            report,
+            json.loads(
+                (CORPUS_ROOT / "evaluation.json").read_text(encoding="utf-8")
+            ),
         )
 
     @staticmethod

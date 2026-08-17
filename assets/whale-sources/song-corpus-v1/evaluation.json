@@ -1,4 +1,13 @@
 {
+  "comparison_contract": {
+    "mean_analyzed_span_per_published_song_seconds": "model SongCycle duration is compared with pooled analyzed recording span per published song",
+    "mean_interphrase_gap_seconds": "model mean hierarchical phrase boundary pause used as an engineering proxy for empirical <=60 s interphrase gaps; the populations are not asserted identical",
+    "mean_phrase_duration_seconds": "model phrase-body duration compared with empirical Raven phrase-window duration",
+    "mean_phrase_type_run_length": "model consecutive theme-family phrase runs compared with empirical consecutive two-letter phrase-type runs",
+    "mean_phrases_per_published_song": "one model SongCycle is an engineering proxy for one published biological song",
+    "mean_published_units_per_song": "model units per SongCycle are compared with peer-reviewed mean units per biological song",
+    "mean_theme_sequence_length": "model themes per cycle compared with recording-level published median theme-string length"
+  },
   "corpus_sha256": "eaf884d3c11d3a63d134d0f4d4544093b1772f09e493893013c2bebda9e83426",
   "default": {
     "config": {
@@ -240,10 +249,10 @@
     "selection": {
       "candidate_count": 127,
       "clamped_or_jointly_constrained": {
-        "joint_unit_budget_constraint_applied": true,
         "phrase_pause_seconds": false,
         "phrase_repeats_max": true,
         "phrase_repeats_min": true,
+        "search_space_enforces_joint_unit_budget": true,
         "theme_count": true
       },
       "development_fit_mean_relative_absolute_error": 0.124392,
@@ -306,10 +315,12 @@
     "acoustic timbre realism",
     "human perceptual preference",
     "population-wide biological optimality",
-    "permission to change the live or default grammar"
+    "permission to change the live or default grammar",
+    "semantic identity between a model SongCycle and a biological song",
+    "identity between model hierarchical boundary pauses and empirical interphrase gaps"
   ],
-  "empirical_sha256": "6f31dd7bc3ae63a510ef528502e0d92e2b6c28d74ac3c786b0dffde239038ac7",
-  "evaluation_sha256": "6a0c2d28622cca037af106d2c553fc9d3d0133e947b0af7f42518324a11ed36d",
+  "empirical_sha256": "0679eee5299a1a5e6bc00ec79c227aec993f82eee7cab917d3a4927984b16f63",
+  "evaluation_sha256": "435e2c3132ea393c22a18c2dac78dd68b4d3f04917fb076a08f17e4476136617",
   "holdout_result": {
     "default": 0.403603,
     "delta_fitted_minus_default": -0.133566,
