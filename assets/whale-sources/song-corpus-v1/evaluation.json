@@ -1,0 +1,399 @@
+{
+  "corpus_sha256": "eaf884d3c11d3a63d134d0f4d4544093b1772f09e493893013c2bebda9e83426",
+  "default": {
+    "config": {
+      "base_note": 45,
+      "cycle_pause_seconds": 2.6,
+      "cycles": 2,
+      "phrase_pause_seconds": 0.82,
+      "phrase_repeats_max": 5,
+      "phrase_repeats_min": 3,
+      "seed": 45223,
+      "theme_count": 4,
+      "transition_pause_seconds": 1.35
+    },
+    "development_distance": {
+      "feature_count": 7,
+      "features": {
+        "mean_analyzed_span_per_published_song_seconds": {
+          "empirical": 412.585699,
+          "model": 108.904855,
+          "relative_absolute_error": 0.736043
+        },
+        "mean_interphrase_gap_seconds": {
+          "empirical": 1.037118,
+          "model": 0.999631,
+          "relative_absolute_error": 0.036145
+        },
+        "mean_phrase_duration_seconds": {
+          "empirical": 8.687608,
+          "model": 4.714493,
+          "relative_absolute_error": 0.457331
+        },
+        "mean_phrase_type_run_length": {
+          "empirical": 6.162162,
+          "model": 4.015625,
+          "relative_absolute_error": 0.348342
+        },
+        "mean_phrases_per_published_song": {
+          "empirical": 42.236842,
+          "model": 19.0625,
+          "relative_absolute_error": 0.548676
+        },
+        "mean_published_units_per_song": {
+          "empirical": 158.382105,
+          "model": 85.125,
+          "relative_absolute_error": 0.462534
+        },
+        "mean_theme_sequence_length": {
+          "empirical": 7.4,
+          "model": 4.0,
+          "relative_absolute_error": 0.459459
+        }
+      },
+      "interpretation": "lower is structurally closer; this engineering diagnostic is not a biological or perceptual realism score",
+      "mean_relative_absolute_error": 0.435504
+    },
+    "feature_aggregation": "arithmetic-mean-across-fixed-model-seeds",
+    "features": {
+      "mean_analyzed_span_per_published_song_seconds": 108.904855,
+      "mean_interphrase_gap_seconds": 0.999631,
+      "mean_phrase_duration_seconds": 4.714493,
+      "mean_phrase_type_run_length": 4.015625,
+      "mean_phrases_per_published_song": 19.0625,
+      "mean_published_units_per_song": 85.125,
+      "mean_theme_sequence_length": 4.0
+    },
+    "holdout_distance": {
+      "feature_count": 7,
+      "features": {
+        "mean_analyzed_span_per_published_song_seconds": {
+          "empirical": 409.331153,
+          "model": 108.904855,
+          "relative_absolute_error": 0.733944
+        },
+        "mean_interphrase_gap_seconds": {
+          "empirical": 1.087752,
+          "model": 0.999631,
+          "relative_absolute_error": 0.081012
+        },
+        "mean_phrase_duration_seconds": {
+          "empirical": 12.245461,
+          "model": 4.714493,
+          "relative_absolute_error": 0.615001
+        },
+        "mean_phrase_type_run_length": {
+          "empirical": 5.160584,
+          "model": 4.015625,
+          "relative_absolute_error": 0.221866
+        },
+        "mean_phrases_per_published_song": {
+          "empirical": 30.73913,
+          "model": 19.0625,
+          "relative_absolute_error": 0.379862
+        },
+        "mean_published_units_per_song": {
+          "empirical": 184.772174,
+          "model": 85.125,
+          "relative_absolute_error": 0.539298
+        },
+        "mean_theme_sequence_length": {
+          "empirical": 5.363636,
+          "model": 4.0,
+          "relative_absolute_error": 0.254237
+        }
+      },
+      "interpretation": "lower is structurally closer; this engineering diagnostic is not a biological or perceptual realism score",
+      "mean_relative_absolute_error": 0.403603
+    },
+    "model_ensemble_seeds": [
+      3682856141,
+      2828730739,
+      1370949864,
+      2752020422,
+      1518344769,
+      4133719992,
+      941196425,
+      4176497700
+    ],
+    "representative_duration_seconds": 219.448825,
+    "representative_plan_sha256": "dc28438135d02b3fad17907abf262fbbcd0df83c45084806a41f55f4e0706001"
+  },
+  "development_fitted_projection": {
+    "config": {
+      "base_note": 45,
+      "cycle_pause_seconds": 2.6,
+      "cycles": 2,
+      "phrase_pause_seconds": 0.716662,
+      "phrase_repeats_max": 6,
+      "phrase_repeats_min": 6,
+      "seed": 45223,
+      "theme_count": 6,
+      "transition_pause_seconds": 1.35
+    },
+    "development_distance": {
+      "feature_count": 7,
+      "features": {
+        "mean_analyzed_span_per_published_song_seconds": {
+          "empirical": 412.585699,
+          "model": 234.232524,
+          "relative_absolute_error": 0.432282
+        },
+        "mean_interphrase_gap_seconds": {
+          "empirical": 1.037118,
+          "model": 0.839888,
+          "relative_absolute_error": 0.190171
+        },
+        "mean_phrase_duration_seconds": {
+          "empirical": 8.687608,
+          "model": 4.873101,
+          "relative_absolute_error": 0.439074
+        },
+        "mean_phrase_type_run_length": {
+          "empirical": 6.162162,
+          "model": 6.0,
+          "relative_absolute_error": 0.026316
+        },
+        "mean_phrases_per_published_song": {
+          "empirical": 42.236842,
+          "model": 41.0,
+          "relative_absolute_error": 0.029283
+        },
+        "mean_published_units_per_song": {
+          "empirical": 158.382105,
+          "model": 188.0,
+          "relative_absolute_error": 0.187003
+        },
+        "mean_theme_sequence_length": {
+          "empirical": 7.4,
+          "model": 6.0,
+          "relative_absolute_error": 0.189189
+        }
+      },
+      "interpretation": "lower is structurally closer; this engineering diagnostic is not a biological or perceptual realism score",
+      "mean_relative_absolute_error": 0.213331
+    },
+    "feature_aggregation": "arithmetic-mean-across-fixed-model-seeds",
+    "features": {
+      "mean_analyzed_span_per_published_song_seconds": 234.232524,
+      "mean_interphrase_gap_seconds": 0.839888,
+      "mean_phrase_duration_seconds": 4.873101,
+      "mean_phrase_type_run_length": 6.0,
+      "mean_phrases_per_published_song": 41.0,
+      "mean_published_units_per_song": 188.0,
+      "mean_theme_sequence_length": 6.0
+    },
+    "holdout_distance": {
+      "feature_count": 7,
+      "features": {
+        "mean_analyzed_span_per_published_song_seconds": {
+          "empirical": 409.331153,
+          "model": 234.232524,
+          "relative_absolute_error": 0.427768
+        },
+        "mean_interphrase_gap_seconds": {
+          "empirical": 1.087752,
+          "model": 0.839888,
+          "relative_absolute_error": 0.227868
+        },
+        "mean_phrase_duration_seconds": {
+          "empirical": 12.245461,
+          "model": 4.873101,
+          "relative_absolute_error": 0.602048
+        },
+        "mean_phrase_type_run_length": {
+          "empirical": 5.160584,
+          "model": 6.0,
+          "relative_absolute_error": 0.162659
+        },
+        "mean_phrases_per_published_song": {
+          "empirical": 30.73913,
+          "model": 41.0,
+          "relative_absolute_error": 0.333805
+        },
+        "mean_published_units_per_song": {
+          "empirical": 184.772174,
+          "model": 188.0,
+          "relative_absolute_error": 0.017469
+        },
+        "mean_theme_sequence_length": {
+          "empirical": 5.363636,
+          "model": 6.0,
+          "relative_absolute_error": 0.118644
+        }
+      },
+      "interpretation": "lower is structurally closer; this engineering diagnostic is not a biological or perceptual realism score",
+      "mean_relative_absolute_error": 0.270037
+    },
+    "model_ensemble_seeds": [
+      3682856141,
+      2828730739,
+      1370949864,
+      2752020422,
+      1518344769,
+      4133719992,
+      941196425,
+      4176497700
+    ],
+    "representative_duration_seconds": 469.055069,
+    "representative_plan_sha256": "7d7222cc733f3bbf8e14c05f4007a6e0e626aa61f7c4026d8bd204baec82f79e",
+    "selection": {
+      "candidate_count": 127,
+      "clamped_or_jointly_constrained": {
+        "joint_unit_budget_constraint_applied": true,
+        "phrase_pause_seconds": false,
+        "phrase_repeats_max": true,
+        "phrase_repeats_min": true,
+        "theme_count": true
+      },
+      "development_fit_mean_relative_absolute_error": 0.124392,
+      "does_not_establish": [
+        "a production default change",
+        "causal improvement",
+        "perceptual realism"
+      ],
+      "fit_features": [
+        "mean_interphrase_gap_seconds",
+        "mean_phrase_type_run_length",
+        "mean_theme_sequence_length",
+        "mean_phrases_per_published_song",
+        "mean_published_units_per_song"
+      ],
+      "model_ensemble_seeds": [
+        3682856141,
+        2828730739,
+        1370949864,
+        2752020422,
+        1518344769,
+        4133719992,
+        941196425,
+        4176497700
+      ],
+      "not_fitted": [
+        "transition_pause_seconds: Raven phrase tables do not label transition gaps as a separate timing population",
+        "cycle_pause_seconds: explicit cycle-boundary pause timing is not directly annotated",
+        "motif pitches/timbre: structural tables do not measure synthesis pitch choices",
+        "per-unit timing: phrase tables do not expose unit timestamps"
+      ],
+      "observed": {
+        "interphrase_gap_median_seconds": 0.716662,
+        "phrase_repeat_run_p25": 1,
+        "phrase_repeat_run_p75": 8,
+        "theme_count_median": 8
+      },
+      "projected_current_config": {
+        "phrase_pause_seconds": 0.716662,
+        "phrase_repeats_max": 6,
+        "phrase_repeats_min": 6,
+        "theme_count": 6
+      },
+      "projected_feature_vector": {
+        "mean_analyzed_span_per_published_song_seconds": 234.232524,
+        "mean_interphrase_gap_seconds": 0.839888,
+        "mean_phrase_duration_seconds": 4.873101,
+        "mean_phrase_type_run_length": 6.0,
+        "mean_phrases_per_published_song": 41.0,
+        "mean_published_units_per_song": 188.0,
+        "mean_theme_sequence_length": 6.0
+      },
+      "selection_method": "exhaustive-valid-current-grammar-grid-8-seed-ensemble",
+      "source_split": "development",
+      "uses_holdout": false
+    }
+  },
+  "does_not_establish": [
+    "causality",
+    "acoustic timbre realism",
+    "human perceptual preference",
+    "population-wide biological optimality",
+    "permission to change the live or default grammar"
+  ],
+  "empirical_sha256": "6f31dd7bc3ae63a510ef528502e0d92e2b6c28d74ac3c786b0dffde239038ac7",
+  "evaluation_sha256": "6a0c2d28622cca037af106d2c553fc9d3d0133e947b0af7f42518324a11ed36d",
+  "holdout_result": {
+    "default": 0.403603,
+    "delta_fitted_minus_default": -0.133566,
+    "development_fitted": 0.270037,
+    "fitted_improves_holdout": true,
+    "lower_is_better": true,
+    "metric": "mean_relative_absolute_error_across_seven_structural_features",
+    "model_feature_aggregation": "arithmetic mean across eight fixed data-independent PRNG seeds"
+  },
+  "interpretation": {
+    "not_supported_if_not_improved": "Do not promote the development-derived projection; the later-year holdout did not improve.",
+    "supported_if_improved": "The development-derived projection generalizes better on the frozen later years for this structural diagnostic."
+  },
+  "kind": "humpback_whale_song_grammar_structural_evaluation",
+  "schema_version": 1,
+  "seed_robustness": {
+    "default_holdout_distance": {
+      "distances": [
+        0.391358,
+        0.435642,
+        0.418064,
+        0.397487,
+        0.398502,
+        0.413334,
+        0.386912,
+        0.387524
+      ],
+      "seeds": [
+        3682856141,
+        2828730739,
+        1370949864,
+        2752020422,
+        1518344769,
+        4133719992,
+        941196425,
+        4176497700
+      ],
+      "summary": {
+        "count": 8,
+        "max": 0.435642,
+        "mean": 0.403603,
+        "median": 0.397995,
+        "min": 0.386912,
+        "p25": 0.3904,
+        "p75": 0.414517
+      }
+    },
+    "development_fitted_holdout_distance": {
+      "distances": [
+        0.269959,
+        0.26973,
+        0.270477,
+        0.270918,
+        0.26943,
+        0.270127,
+        0.269261,
+        0.270397
+      ],
+      "seeds": [
+        3682856141,
+        2828730739,
+        1370949864,
+        2752020422,
+        1518344769,
+        4133719992,
+        941196425,
+        4176497700
+      ],
+      "summary": {
+        "count": 8,
+        "max": 0.270918,
+        "mean": 0.270037,
+        "median": 0.270043,
+        "min": 0.269261,
+        "p25": 0.269655,
+        "p75": 0.270417
+      }
+    },
+    "fitted_beats_default_seed_count": 8,
+    "seed_count": 8
+  },
+  "split_contract": {
+    "evaluation": "2017-2019 frozen later-year holdout",
+    "fit": "2012-2016 development only",
+    "holdout_used_for_selection": false
+  }
+}
