@@ -1269,6 +1269,7 @@ class AudioControlTests(unittest.TestCase):
         styles = (ROOT / "ui" / "styles.css").read_text()
         signal_path = json.loads((ROOT / "inventory" / "signal-path.v1.json").read_text())
         profiles = json.loads((ROOT / "profiles" / "audio-profiles.v1.json").read_text())
+        profile_contracts = json.loads((ROOT / "profiles" / "audio-profile-contracts.v1.json").read_text())
         physical_facts = json.loads((ROOT / "inventory" / "physical-facts.v1.json").read_text())
 
         self.assertIn("Wiedergabewege", html)
@@ -1316,7 +1317,11 @@ class AudioControlTests(unittest.TestCase):
         )
         receiver_profile = profiles["profiles"]["receiver"]
         self.assertEqual(receiver_profile["required_hardware"], ["motu_m2"])
+        self.assertEqual(receiver_profile["desired"]["default_sink"], "motu-m2")
         self.assertIn("über MOTU M2", receiver_profile["purpose"])
+        receiver_contract = profile_contracts["profiles"]["receiver"]
+        self.assertEqual(receiver_contract["devices"], ["motu_m2", "pioneer_vsx_830_k"])
+        self.assertEqual(receiver_contract["sink"], "motu-m2")
         self.assertIn("MOTU M2", physical_facts["facts"]["pioneer_pc_connection"]["prompt"])
 
     def test_visual_system_v2_has_functional_zones_and_readable_signal_paths(self):

@@ -120,6 +120,7 @@
         "pioneer_reference_volume"
       ],
       "desired": {
+        "default_sink": "motu-m2",
         "channel_contract": "stereo-until-surround-tested",
         "reference_level": "measured"
       },
