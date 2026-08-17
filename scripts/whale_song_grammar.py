@@ -409,6 +409,9 @@ class WhaleSongGrammar:
         )
 
     def generate(self) -> SongSessionPlan:
+        # Generation is a pure function of config+seed even when callers reuse
+        # the same grammar instance for multiple reports.
+        self.rng = _DeterministicRng(self.config.seed)
         cursor = 0.0
         cycles: list[SongCyclePlan] = []
         unit_count = 0

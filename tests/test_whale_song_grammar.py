@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -32,6 +33,12 @@ class WhaleSongGrammarTests(unittest.TestCase):
         right = self.make_session(seed=0xB0A7)
         self.assertEqual(canonical_plan_json(left), canonical_plan_json(right))
         self.assertEqual(plan_sha256(left), plan_sha256(right))
+
+    def test_reusing_one_generator_is_idempotent(self):
+        grammar = WhaleSongGrammar(SongGrammarConfig(seed=0xB0A7))
+        first = grammar.generate()
+        second = grammar.generate()
+        self.assertEqual(canonical_plan_json(first), canonical_plan_json(second))
 
     def test_different_seed_changes_variants_not_theme_order(self):
         left = self.make_session(seed=1)
@@ -138,6 +145,16 @@ class WhaleSongGrammarTests(unittest.TestCase):
         self.assertTrue(report["truth_levels"]["evidence_backed"])
         self.assertTrue(report["truth_levels"]["engineering_hypotheses"])
         self.assertIn("perceptual realism", report["does_not_establish"])
+
+    def test_study_report_output_rejects_symlink_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            target = root / "target.json"
+            target.write_text("{}\n", encoding="utf-8")
+            link = root / "report.json"
+            link.symlink_to(target)
+            with self.assertRaises(RuntimeError):
+                study.write_json(link, {"schema_version": 1})
 
     def test_config_rejects_unbounded_or_inverted_inputs(self):
         with self.assertRaises(ValueError):

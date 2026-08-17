@@ -199,7 +199,8 @@ Jeder Study-Report enthält SHA-256-Bindungen auf:
 - `assets/whale-sources/SOURCES.json`;
 - `assets/whale-sources/morph/manifest.json`;
 - `docs/knowledge/buckelwal-stimme-und-gesang.md`;
-- `scripts/whale_song_grammar.py`.
+- `scripts/whale_song_grammar.py`;
+- `scripts/study_whale_song_grammar.py`.
 
 Zusätzlich trennt der Report explizit:
 

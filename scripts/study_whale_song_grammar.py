@@ -16,13 +16,18 @@ import math
 import pathlib
 import subprocess
 import sys
-from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from build_whale_morph_bank import (  # noqa: E402
+    read_bound_regular_bytes,
+    regular_file_path,
+    validated_output_path,
+    write_atomic,
+)
 from whale_live_engine import WhaleVoiceConfig, signal_metrics, write_stereo_wav  # noqa: E402
 from whale_morph_engine import WhaleMorphVoice  # noqa: E402
 from whale_song_grammar import (  # noqa: E402
@@ -42,6 +47,7 @@ SOURCE_BINDING_PATHS = (
     pathlib.Path("assets/whale-sources/morph/manifest.json"),
     pathlib.Path("docs/knowledge/buckelwal-stimme-und-gesang.md"),
     pathlib.Path("scripts/whale_song_grammar.py"),
+    pathlib.Path("scripts/study_whale_song_grammar.py"),
 )
 
 
@@ -56,10 +62,13 @@ def sha256_file(path: pathlib.Path) -> str:
 def source_bindings(root: pathlib.Path = ROOT) -> dict[str, str]:
     bindings: dict[str, str] = {}
     for relative in SOURCE_BINDING_PATHS:
-        path = root / relative
-        if not path.is_file() or path.is_symlink():
-            raise RuntimeError(f"required song-grammar source is unavailable: {relative}")
-        bindings[relative.as_posix()] = sha256_file(path)
+        path = regular_file_path(
+            root / relative, f"song-grammar source {relative.as_posix()}"
+        )
+        payload = read_bound_regular_bytes(
+            path, f"song-grammar source {relative.as_posix()}"
+        )
+        bindings[relative.as_posix()] = hashlib.sha256(payload).hexdigest()
     return bindings
 
 
@@ -178,9 +187,7 @@ def parse_int(value: str) -> int:
 
 
 def write_json(path: pathlib.Path, value: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    path.write_text(payload, encoding="utf-8")
+    write_atomic(path, value)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -218,10 +225,11 @@ def main(argv: list[str] | None = None) -> int:
             seconds=args.render_seconds,
             gain=args.gain,
         )
-        write_stereo_wav(args.render_wav, samples, 48_000)
+        safe_wav = validated_output_path(args.render_wav)
+        write_stereo_wav(safe_wav, samples, 48_000)
         render_record = dict(render_record)
-        render_record["wav"] = str(args.render_wav)
-        render_record["wav_sha256"] = sha256_file(args.render_wav)
+        render_record["wav"] = str(safe_wav)
+        render_record["wav_sha256"] = sha256_file(safe_wav)
 
     report = build_report(session, render=render_record)
     if args.report is not None:
