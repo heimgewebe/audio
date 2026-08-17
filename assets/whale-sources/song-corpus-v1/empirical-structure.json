@@ -1,0 +1,288 @@
+{
+  "corpus_sha256": "eaf884d3c11d3a63d134d0f4d4544093b1772f09e493893013c2bebda9e83426",
+  "development": {
+    "aggregation_contract": {
+      "analyzed_span_per_published_song_seconds": "pooled first-to-last analyzed spans divided by pooled published song count",
+      "interphrase_gap_seconds": "gap-weighted after excluding >60 s session breaks",
+      "phrase_duration_seconds": "phrase-weighted across released phrase windows",
+      "phrase_type_run_length": "run-weighted within each recording; individual song boundaries are unavailable",
+      "phrases_per_published_song": "pooled released phrase rows divided by pooled published song count",
+      "published_units_per_song": "published recording means weighted by published song count",
+      "theme_sequence_length": "equal-weighted across recording-level published median theme strings"
+    },
+    "classified_phrase_count": 1596,
+    "feature_distributions": {
+      "interphrase_gap_seconds": {
+        "count": 1589,
+        "max": 15.747605,
+        "mean": 1.037118,
+        "median": 0.716662,
+        "min": 0.059621,
+        "p25": 0.462358,
+        "p75": 1.220981
+      },
+      "phrase_duration_seconds": {
+        "count": 1605,
+        "max": 84.448803,
+        "mean": 8.687608,
+        "median": 5.528534,
+        "min": 1.706338,
+        "p25": 4.026957,
+        "p75": 9.384857
+      },
+      "phrase_type_run_length": {
+        "count": 259,
+        "max": 46.0,
+        "mean": 6.162162,
+        "median": 4.0,
+        "min": 1.0,
+        "p25": 1.0,
+        "p75": 8.0
+      },
+      "theme_sequence_length": {
+        "count": 15,
+        "max": 10.0,
+        "mean": 7.4,
+        "median": 8.0,
+        "min": 4.0,
+        "p25": 6.5,
+        "p75": 8.0
+      }
+    },
+    "feature_vector": {
+      "mean_analyzed_span_per_published_song_seconds": 412.585699,
+      "mean_interphrase_gap_seconds": 1.037118,
+      "mean_phrase_duration_seconds": 8.687608,
+      "mean_phrase_type_run_length": 6.162162,
+      "mean_phrases_per_published_song": 42.236842,
+      "mean_published_units_per_song": 158.382105,
+      "mean_theme_sequence_length": 7.4
+    },
+    "phrase_count": 1605,
+    "published_song_count": 38,
+    "record_count": 15,
+    "recording_equal_weight_summaries": {
+      "analyzed_span_per_published_song_seconds": {
+        "count": 15,
+        "max": 696.847498,
+        "mean": 444.56727,
+        "median": 428.624183,
+        "min": 243.087552,
+        "p25": 376.74008,
+        "p75": 489.985387
+      },
+      "phrases_per_published_song": {
+        "count": 15,
+        "max": 90.0,
+        "mean": 45.9,
+        "median": 39.666667,
+        "min": 22.5,
+        "p25": 34.5,
+        "p75": 58.666667
+      },
+      "published_units_per_song": {
+        "count": 15,
+        "max": 270.5,
+        "mean": 164.459333,
+        "median": 163.5,
+        "min": 64.25,
+        "p25": 115.835,
+        "p75": 217.0
+      }
+    },
+    "repetition_coded_phrase_count": 1583,
+    "split": "development"
+  },
+  "does_not_establish": [
+    "per-unit timestamp boundaries",
+    "transition-specific pause timing",
+    "cycle-boundary pause timing",
+    "a production default change",
+    "perceptual realism"
+  ],
+  "empirical_sha256": "0679eee5299a1a5e6bc00ec79c227aec993f82eee7cab917d3a4927984b16f63",
+  "holdout": {
+    "aggregation_contract": {
+      "analyzed_span_per_published_song_seconds": "pooled first-to-last analyzed spans divided by pooled published song count",
+      "interphrase_gap_seconds": "gap-weighted after excluding >60 s session breaks",
+      "phrase_duration_seconds": "phrase-weighted across released phrase windows",
+      "phrase_type_run_length": "run-weighted within each recording; individual song boundaries are unavailable",
+      "phrases_per_published_song": "pooled released phrase rows divided by pooled published song count",
+      "published_units_per_song": "published recording means weighted by published song count",
+      "theme_sequence_length": "equal-weighted across recording-level published median theme strings"
+    },
+    "classified_phrase_count": 707,
+    "feature_distributions": {
+      "interphrase_gap_seconds": {
+        "count": 696,
+        "max": 8.600702,
+        "mean": 1.087752,
+        "median": 0.921422,
+        "min": 0.121021,
+        "p25": 0.576392,
+        "p75": 1.334519
+      },
+      "phrase_duration_seconds": {
+        "count": 707,
+        "max": 28.325206,
+        "mean": 12.245461,
+        "median": 11.705477,
+        "min": 4.828635,
+        "p25": 9.521364,
+        "p75": 14.913391
+      },
+      "phrase_type_run_length": {
+        "count": 137,
+        "max": 19.0,
+        "mean": 5.160584,
+        "median": 5.0,
+        "min": 1.0,
+        "p25": 2.0,
+        "p75": 6.0
+      },
+      "theme_sequence_length": {
+        "count": 11,
+        "max": 7.0,
+        "mean": 5.363636,
+        "median": 6.0,
+        "min": 2.0,
+        "p25": 4.5,
+        "p75": 7.0
+      }
+    },
+    "feature_vector": {
+      "mean_analyzed_span_per_published_song_seconds": 409.331153,
+      "mean_interphrase_gap_seconds": 1.087752,
+      "mean_phrase_duration_seconds": 12.245461,
+      "mean_phrase_type_run_length": 5.160584,
+      "mean_phrases_per_published_song": 30.73913,
+      "mean_published_units_per_song": 184.772174,
+      "mean_theme_sequence_length": 5.363636
+    },
+    "phrase_count": 707,
+    "published_song_count": 23,
+    "record_count": 11,
+    "recording_equal_weight_summaries": {
+      "analyzed_span_per_published_song_seconds": {
+        "count": 11,
+        "max": 719.366731,
+        "mean": 432.787713,
+        "median": 377.678018,
+        "min": 236.004884,
+        "p25": 327.489112,
+        "p75": 559.548029
+      },
+      "phrases_per_published_song": {
+        "count": 11,
+        "max": 47.0,
+        "mean": 31.354545,
+        "median": 29.4,
+        "min": 14.0,
+        "p25": 25.75,
+        "p75": 40.25
+      },
+      "published_units_per_song": {
+        "count": 11,
+        "max": 378.0,
+        "mean": 178.856364,
+        "median": 153.67,
+        "min": 84.0,
+        "p25": 101.25,
+        "p75": 220.125
+      }
+    },
+    "repetition_coded_phrase_count": 707,
+    "split": "holdout"
+  },
+  "kind": "humpback_whale_empirical_song_structure",
+  "recommendations": {
+    "candidate_count": 127,
+    "clamped_or_jointly_constrained": {
+      "phrase_pause_seconds": false,
+      "phrase_repeats_max": true,
+      "phrase_repeats_min": true,
+      "search_space_enforces_joint_unit_budget": true,
+      "theme_count": true
+    },
+    "development_fit_mean_relative_absolute_error": 0.124392,
+    "does_not_establish": [
+      "a production default change",
+      "causal improvement",
+      "perceptual realism"
+    ],
+    "fit_features": [
+      "mean_interphrase_gap_seconds",
+      "mean_phrase_type_run_length",
+      "mean_theme_sequence_length",
+      "mean_phrases_per_published_song",
+      "mean_published_units_per_song"
+    ],
+    "model_ensemble_seeds": [
+      3682856141,
+      2828730739,
+      1370949864,
+      2752020422,
+      1518344769,
+      4133719992,
+      941196425,
+      4176497700
+    ],
+    "not_fitted": [
+      "transition_pause_seconds: Raven phrase tables do not label transition gaps as a separate timing population",
+      "cycle_pause_seconds: explicit cycle-boundary pause timing is not directly annotated",
+      "motif pitches/timbre: structural tables do not measure synthesis pitch choices",
+      "per-unit timing: phrase tables do not expose unit timestamps"
+    ],
+    "observed": {
+      "interphrase_gap_median_seconds": 0.716662,
+      "phrase_repeat_run_p25": 1,
+      "phrase_repeat_run_p75": 8,
+      "theme_count_median": 8
+    },
+    "projected_current_config": {
+      "phrase_pause_seconds": 0.716662,
+      "phrase_repeats_max": 6,
+      "phrase_repeats_min": 6,
+      "theme_count": 6
+    },
+    "projected_feature_vector": {
+      "mean_analyzed_span_per_published_song_seconds": 234.232524,
+      "mean_interphrase_gap_seconds": 0.839888,
+      "mean_phrase_duration_seconds": 4.873101,
+      "mean_phrase_type_run_length": 6.0,
+      "mean_phrases_per_published_song": 41.0,
+      "mean_published_units_per_song": 188.0,
+      "mean_theme_sequence_length": 6.0
+    },
+    "selection_method": "exhaustive-valid-current-grammar-grid-8-seed-ensemble",
+    "source_split": "development",
+    "uses_holdout": false
+  },
+  "schema_version": 1,
+  "source_manifest_sha256": "aaa50880cf92803bfd4789add8373e585c74fdb3886af04349e419070910874e",
+  "truth_levels": {
+    "derived_aggregate": [
+      "phrases per published song = released phrase rows / published song count",
+      "analyzed span per published song = first-to-last released phrase span / published song count"
+    ],
+    "observed": [
+      "phrase time windows",
+      "frequency bounds",
+      "source categories"
+    ],
+    "parsed_without_unit_decoding": [
+      "two-letter phrase identity",
+      "raw repetition-code suffix preserved verbatim"
+    ],
+    "published_summary": [
+      "song count per recording",
+      "median theme sequence per recording",
+      "mean units per song per recording"
+    ],
+    "unknown": [
+      "per-unit timestamp boundaries inside each phrase",
+      "unit sequence/count per phrase from raw repetition code alone",
+      "individual song boundaries inside each released Raven table"
+    ]
+  }
+}
