@@ -2319,12 +2319,9 @@ function listeningTopology(inputs, hub, branches) {
   const hubStage = element("div", "listening-hub-stage");
   hubStage.append(hub);
 
-  const split = element("div", "listening-split-marker");
-  appendText(split, "span", "", "2 Ausgabeäste");
-
   const branchGrid = element("div", "listening-branch-grid");
   branchGrid.append(...branches);
-  topology.append(inputStage, hubStage, split, branchGrid);
+  topology.append(inputStage, hubStage, branchGrid);
   return topology;
 }
 
@@ -2449,7 +2446,7 @@ function renderHome() {
       : "physische Receiver-Gates belegt";
 
   byId("home-signal-caption").textContent =
-    `${rate ? `${rate} Hz · ` : ""}2 Quellarten → MOTU M2 → 2 Ausgabeäste · Softwareziel ${formatEndpoint(graph.default_sink)}`;
+    `${rate ? `${rate} Hz · ` : ""}2 Quellarten → MOTU M2 · Softwareziel ${formatEndpoint(graph.default_sink)}`;
   byId("home-signal-flow").replaceChildren(
     listeningTopology(
       [

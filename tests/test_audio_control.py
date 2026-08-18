@@ -1300,7 +1300,8 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn(".listening-input-grid", styles)
         self.assertIn(".listening-hub-stage", styles)
         self.assertIn(".listening-branch-grid", styles)
-        self.assertIn(".listening-split-marker", styles)
+        self.assertNotIn(".listening-split-marker", styles)
+        self.assertNotIn("2 Ausgabeäste", javascript)
         speaker_system = next(
             node for node in signal_path["nodes"] if node.get("id") == "pioneer-speaker-system"
         )
@@ -1388,7 +1389,17 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('.listening-input-grid {', topology_css)
         self.assertIn('grid-template-columns: repeat(2, minmax(0, 1fr));', topology_css)
         self.assertIn('.listening-branch-grid {', topology_css)
-        self.assertIn('linear-gradient(90deg, var(--listen-accent), var(--receiver-accent))', topology_css)
+        branch_grid_block = topology_css.split('.listening-branch-grid {', 1)[1].split('}', 1)[0]
+        self.assertIn('--branch-rise: 30px;', branch_grid_block)
+        self.assertIn('padding-top: var(--branch-rise);', branch_grid_block)
+        branch_rail_block = topology_css.split('.listening-branch-grid::before {', 1)[1].split('}', 1)[0]
+        self.assertIn('top: 0;', branch_rail_block)
+        self.assertIn('linear-gradient(90deg, var(--listen-accent), var(--receiver-accent))', branch_rail_block)
+        branch_stem_block = topology_css.split(
+            '.listening-branch-grid .listening-path-card::before {', 1
+        )[1].split('}', 1)[0]
+        self.assertIn('top: calc(-1 * var(--branch-rise));', branch_stem_block)
+        self.assertIn('height: calc(var(--branch-rise) + 1px);', branch_stem_block)
         self.assertIn('.listening-branch-grid .listening-path-flow {', topology_css)
         branch_flow_block = topology_css.split(
             '.listening-branch-grid .listening-path-flow {', 1
@@ -1414,7 +1425,6 @@ class AudioControlTests(unittest.TestCase):
         for connector_selector in (
             '.listening-input-grid .home-signal-node::after {',
             '.listening-hub-stage::before,\n.listening-hub-stage::after {',
-            '.listening-split-marker::after {',
             '.listening-branch-grid .listening-path-card::before {',
         ):
             connector_block = topology_css.split(connector_selector, 1)[1].split('}', 1)[0]
