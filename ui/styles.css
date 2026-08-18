@@ -4031,11 +4031,30 @@ main { padding: 0 28px 42px; }
 }
 
 .listening-branch-grid .listening-path-flow {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
 }
 
 .listening-branch-grid .home-signal-node {
-  min-height: 136px;
+  min-height: 118px;
+}
+
+/* A branch is a real device chain, not a connection to the group midpoint. */
+.listening-branch-grid .home-signal-node + .home-signal-node::before {
+  display: block;
+  top: -18px;
+  left: 50%;
+  width: 1px;
+  height: 18px;
+  transform: translateX(-50%);
+}
+
+.listening-branch-grid .listening-path-card.is-reference .home-signal-node + .home-signal-node::before {
+  background: var(--listen-line);
+}
+
+.listening-branch-grid .listening-path-card.is-receiver .home-signal-node + .home-signal-node::before {
+  background: var(--receiver-line);
 }
 
 @media (max-width: 900px) {
