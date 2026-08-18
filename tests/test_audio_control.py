@@ -1390,6 +1390,20 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('.listening-branch-grid {', topology_css)
         self.assertIn('linear-gradient(90deg, var(--listen-accent), var(--receiver-accent))', topology_css)
         self.assertIn('.listening-branch-grid .listening-path-flow {', topology_css)
+        branch_flow_block = topology_css.split(
+            '.listening-branch-grid .listening-path-flow {', 1
+        )[1].split('}', 1)[0]
+        self.assertIn('grid-template-columns: minmax(0, 1fr);', branch_flow_block)
+        self.assertIn('gap: 18px;', branch_flow_block)
+        branch_chain_connector = topology_css.split(
+            '.listening-branch-grid .home-signal-node + .home-signal-node::before {', 1
+        )[1].split('}', 1)[0]
+        self.assertIn('display: block;', branch_chain_connector)
+        self.assertIn('top: -18px;', branch_chain_connector)
+        self.assertIn('left: 50%;', branch_chain_connector)
+        self.assertIn('width: 1px;', branch_chain_connector)
+        self.assertIn('height: 18px;', branch_chain_connector)
+        self.assertIn('transform: translateX(-50%);', branch_chain_connector)
         input_stage_block = topology_css.split('.listening-input-stage {', 1)[1].split('}', 1)[0]
         self.assertIn('width: 100%;', input_stage_block)
         input_grid_block = topology_css.split('.listening-input-grid {', 1)[1].split('}', 1)[0]
