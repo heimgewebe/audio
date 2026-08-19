@@ -66,16 +66,20 @@ Die Oberfläche trennt beobachtete Laufzeit, gewünschte Konfiguration, physisch
 ungeprüfte Fakten und tatsächliche Ausführungsautorität. Ausgeschaltete Geräte
 sind daher ein neutraler Vor-Ort-Zustand und kein pauschaler Systemfehler.
 Profilplanung ist read-only; Profil-Apply bleibt sichtbar fail-closed. Der
-vorhandene Dauersong v9 wird nicht neu erfunden, sondern über einen
-hashgebundenen Legacy-Adapter kontrolliert: Vor dem Start wird der geprüfte
-Python-Quellensatz in einen privaten Runtime-Snapshot kopiert und per Bubblewrap
-read-only über die alten Pfade gelegt; alte Bytecode-Caches werden nicht
-verwendet. Der alte 185-%-Streampegel wird nicht übernommen, der verwaltete
-Start ist auf 100 % begrenzt und läuft als transiente User-Unit mit CPU-,
-Speicher-, Task-, FD-, Log- und Laufzeitgrenzen.
-Der dauerhafte Alt-Dienst muss inaktiv sein; Quellendrift blockiert den Start.
-Die zugehörigen alten Kritiker-/Dramaturg-/Liebhaber-Timer sind noch nicht in
-diesen neuen Laufzeitvertrag migriert. Das Dashboard zeigt zusätzlich, ob die
+vorhandene Dauersong v9 wird nicht neu erfunden. Die bestehende
+`grabowski-dauersong.service` bleibt die einzige Performer-Identität und wird
+über einen hashgebundenen Adapter sowie einen repo-versionierten späten
+systemd-Drop-in kontrolliert. Dadurch bleiben auch Kritiker-, Dramaturg- und
+Liebhaber-Timer auf derselben Dienstidentität. Der alte 185-%-Streampegel wird
+auf 100 % überschrieben; zusätzlich gelten CPU-, Speicher-, Task-, FD-, Log-
+und Sechs-Stunden-Laufzeitgrenzen sowie `Restart=no`. `ExecStartPre` blockiert
+Starts bei Quell- oder Soundfont-Drift. Nach dem Start werden sowohl der
+tatsächliche Prozess-Environment-Wert als auch der reale FluidSynth-Stream
+geprüft; ein nachträglich nur konfigurationsseitig auf 100 % umgestellter alter
+185-%-Prozess gilt deshalb weiterhin als unsicher und bleibt stoppbar. Der
+100-%-Drop-in ist ein Sicherheits-Ratchet: Ein Rollback der Audiozentrale darf
+ihn nicht entfernen und damit den alten 185-%-Startvertrag wiederherstellen.
+Das Dashboard zeigt zusätzlich, ob die
 laufende, unveränderliche
 Releasefassung mit dem letzten sicheren Auto-Deploy-Beleg synchron ist, ohne
 private Deploypfade offenzulegen.

@@ -78,6 +78,7 @@ class DauersongLiveTests(unittest.TestCase):
                 "RuntimeMaxUSec=6h",
                 "CPUQuotaPerSecUSec=1.5s",
                 "DropInPaths=/home/alex/.config/systemd/user/grabowski-dauersong.service.d/volume.conf /home/alex/.config/systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+                "NeedDaemonReload=no",
             ]
         )
         completed = subprocess.CompletedProcess(["systemctl"], 0, stdout=stdout, stderr="")
@@ -87,6 +88,145 @@ class DauersongLiveTests(unittest.TestCase):
         self.assertFalse(status["active"])
         self.assertEqual(status["hardening"]["stream_volume_percent"], 100)
         self.assertEqual(status["hardening"]["restart"], "no")
+        self.assertTrue(status["hardening"]["dropin_last"])
+        self.assertEqual(status["hardening"]["need_daemon_reload"], "no")
+
+    def test_service_status_rejects_later_dropin_or_pending_reload(self):
+        base = [
+            "LoadState=loaded",
+            "ActiveState=inactive",
+            "SubState=dead",
+            "Result=success",
+            "MainPID=0",
+            "Environment=GRABOWSKI_STREAM_VOLUME=100 AUDIO_DAUERSONG_MANAGED_BY=audio-control-v1 AUDIO_DAUERSONG_RUNTIME_MAX_SECONDS=21600",
+            "Restart=no",
+            "MemoryMax=536870912",
+            "TasksMax=32",
+            "LimitNOFILE=1024",
+            "RuntimeMaxUSec=6h",
+            "CPUQuotaPerSecUSec=1.5s",
+        ]
+        cases = (
+            (
+                "DropInPaths=/home/alex/.config/systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf /home/alex/.config/systemd/user/grabowski-dauersong.service.d/zzz-override.conf",
+                "NeedDaemonReload=no",
+            ),
+            (
+                "DropInPaths=/home/alex/.config/systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+                "NeedDaemonReload=yes",
+            ),
+        )
+        for dropins, reload_state in cases:
+            with self.subTest(dropins=dropins, reload_state=reload_state):
+                completed = subprocess.CompletedProcess(
+                    ["systemctl"], 0, stdout="\n".join([*base, dropins, reload_state]), stderr=""
+                )
+                with mock.patch.object(MODULE, "run_capture", return_value=completed):
+                    status = MODULE.service_status()
+                self.assertFalse(status["hardening_ready"])
+
+    def test_active_runtime_binds_the_process_environment_not_only_reloaded_config(self):
+        stdout = "\n".join(
+            [
+                "LoadState=loaded",
+                "ActiveState=active",
+                "SubState=running",
+                "Result=success",
+                "MainPID=1234",
+                "Environment=GRABOWSKI_STREAM_VOLUME=100 AUDIO_DAUERSONG_MANAGED_BY=audio-control-v1 AUDIO_DAUERSONG_RUNTIME_MAX_SECONDS=21600",
+                "Restart=no",
+                "MemoryMax=536870912",
+                "TasksMax=32",
+                "LimitNOFILE=1024",
+                "RuntimeMaxUSec=6h",
+                "CPUQuotaPerSecUSec=1.5s",
+                "DropInPaths=/home/alex/.config/systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+                "NeedDaemonReload=no",
+            ]
+        )
+        completed = subprocess.CompletedProcess(["systemctl"], 0, stdout=stdout, stderr="")
+        with (
+            mock.patch.object(MODULE, "run_capture", return_value=completed),
+            mock.patch.object(MODULE, "process_environment_value", return_value="185"),
+        ):
+            status = MODULE.service_status()
+        self.assertTrue(status["hardening_ready"])
+        self.assertEqual(status["hardening"]["stream_volume_percent"], 100)
+        self.assertEqual(status["hardening"]["running_stream_volume_percent"], 185)
+
+    def test_full_status_rejects_old_running_process_even_if_stream_is_temporarily_clamped(self):
+        service = {
+            "unit": MODULE.UNIT_NAME,
+            "load_state": "loaded",
+            "active_state": "active",
+            "sub_state": "running",
+            "result": "success",
+            "main_pid": 1234,
+            "active": True,
+            "hardening_ready": True,
+            "hardening": {
+                "stream_volume_percent": 100,
+                "runtime_max_seconds": MODULE.MAX_RUNTIME_SECONDS,
+                "managed_by": MODULE.MANAGED_BY,
+                "running_stream_volume_percent": 185,
+            },
+        }
+        host = {
+            "ready": True,
+            "source_binding": {"ready": True, "errors": []},
+            "soundfont": {"ready": True},
+        }
+        stream = {"found": True, "indexes": [77], "max_volume_percent": 100}
+        with (
+            mock.patch.object(MODULE, "load_manifest", return_value={}),
+            mock.patch.object(MODULE, "service_status", return_value=service),
+            mock.patch.object(MODULE, "host_verification", return_value=host),
+            mock.patch.object(MODULE, "stream_status", return_value=stream),
+            mock.patch.object(MODULE, "live_status_snapshot", return_value={}),
+        ):
+            status = MODULE.full_status()
+        self.assertFalse(status["runtime_safe"])
+        self.assertEqual(status["configured_stream_volume_percent"], 100)
+        self.assertEqual(status["hardening"]["running_stream_volume_percent"], 185)
+
+    def test_stop_is_issued_before_readback_and_survives_transient_status_failure(self):
+        inactive = {
+            "load_state": "loaded",
+            "active_state": "inactive",
+            "sub_state": "dead",
+            "active": False,
+        }
+        completed = subprocess.CompletedProcess(
+            ["systemctl", "--user", "stop", MODULE.UNIT_NAME], 0, stdout="", stderr=""
+        )
+        with (
+            mock.patch.object(MODULE, "run_capture", return_value=completed) as run,
+            mock.patch.object(
+                MODULE, "service_status", side_effect=[RuntimeError("status unavailable"), inactive]
+            ),
+            mock.patch.object(MODULE.time, "sleep"),
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(MODULE.stop_service(), 0)
+        run.assert_called_once_with(["systemctl", "--user", "stop", MODULE.UNIT_NAME])
+
+    def test_stop_of_missing_unit_is_idempotent_after_effect_attempt(self):
+        missing = {
+            "load_state": "not-found",
+            "active_state": "inactive",
+            "sub_state": "dead",
+            "active": False,
+        }
+        completed = subprocess.CompletedProcess(
+            ["systemctl", "--user", "stop", MODULE.UNIT_NAME], 5, stdout="", stderr="not loaded"
+        )
+        with (
+            mock.patch.object(MODULE, "run_capture", return_value=completed) as run,
+            mock.patch.object(MODULE, "service_status", return_value=missing),
+            mock.patch("builtins.print"),
+        ):
+            self.assertEqual(MODULE.stop_service(), 0)
+        run.assert_called_once_with(["systemctl", "--user", "stop", MODULE.UNIT_NAME])
 
     def test_stream_status_selects_only_fluidsynth_descendants(self):
         entries = [
@@ -150,6 +290,12 @@ class DauersongLiveTests(unittest.TestCase):
                 self.assertEqual(MODULE.start_service(), 0)
         calls = [call.args[0] for call in run.call_args_list]
         self.assertIn(["systemctl", "--user", "start", "grabowski-dauersong.service"], calls)
+
+    def test_cli_parser_exposes_every_supported_subcommand(self):
+        parser = MODULE.build_parser()
+        for command in ("doctor", "status", "start", "stop", "recover", "verify-host"):
+            with self.subTest(command=command):
+                self.assertEqual(parser.parse_args([command]).command, command)
 
     def test_repo_dropin_overrides_185_percent_and_bounds_existing_service(self):
         dropin = (

@@ -27,6 +27,7 @@ MANIFEST_PATH = ROOT / "inventory" / "dauersong-v9-legacy.v1.json"
 UNIT_NAME = "grabowski-dauersong.service"
 MANAGED_BY = "audio-control-v1"
 MAX_JSON_BYTES = 1_048_576
+MAX_PROCESS_ENV_BYTES = 65_536
 MAX_RUNTIME_SECONDS = 21_600
 START_TIMEOUT_SECONDS = 15
 EXPECTED_DROPIN_SUFFIX = "grabowski-dauersong.service.d/zz-audio-control-v1.conf"
@@ -182,10 +183,30 @@ def parse_environment(text: str) -> dict[str, str]:
     return dict(item.split("=", 1) for item in items if "=" in item)
 
 
+def process_environment_value(pid: int, key: str) -> str | None:
+    if pid <= 1 or not key or "=" in key:
+        return None
+    try:
+        with pathlib.Path(f"/proc/{pid}/environ").open("rb") as handle:
+            payload = handle.read(MAX_PROCESS_ENV_BYTES + 1)
+    except OSError:
+        return None
+    if len(payload) > MAX_PROCESS_ENV_BYTES:
+        return None
+    prefix = key.encode("utf-8") + b"="
+    for item in payload.split(b"\0"):
+        if item.startswith(prefix):
+            try:
+                return item[len(prefix):].decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+    return None
+
+
 def service_status() -> dict[str, Any]:
     properties = (
         "LoadState,ActiveState,SubState,Result,MainPID,Environment,Restart,MemoryMax,"
-        "TasksMax,LimitNOFILE,RuntimeMaxUSec,CPUQuotaPerSecUSec,DropInPaths"
+        "TasksMax,LimitNOFILE,RuntimeMaxUSec,CPUQuotaPerSecUSec,DropInPaths,NeedDaemonReload"
     )
     result = run_capture(
         ["systemctl", "--user", "show", UNIT_NAME, f"--property={properties}", "--no-pager"]
@@ -211,6 +232,14 @@ def service_status() -> dict[str, Any]:
     except ValueError:
         volume = None
     active = values.get("ActiveState") == "active" and values.get("SubState") == "running"
+    running_volume = None
+    if active:
+        try:
+            running_volume = int(
+                process_environment_value(main_pid, "GRABOWSKI_STREAM_VOLUME") or ""
+            )
+        except ValueError:
+            running_volume = None
     dropins = values.get("DropInPaths", "").split()
     hardening = {
         "managed_by": environment.get("AUDIO_DAUERSONG_MANAGED_BY"),
@@ -223,6 +252,9 @@ def service_status() -> dict[str, Any]:
         "runtime_max_usec": values.get("RuntimeMaxUSec"),
         "cpu_quota_per_sec_usec": values.get("CPUQuotaPerSecUSec"),
         "dropin_present": any(path.endswith(EXPECTED_DROPIN_SUFFIX) for path in dropins),
+        "dropin_last": bool(dropins and dropins[-1].endswith(EXPECTED_DROPIN_SUFFIX)),
+        "need_daemon_reload": values.get("NeedDaemonReload"),
+        "running_stream_volume_percent": running_volume,
     }
     hardening_ready = (
         hardening["managed_by"] == MANAGED_BY
@@ -235,6 +267,8 @@ def service_status() -> dict[str, Any]:
         and hardening["runtime_max_usec"] != "infinity"
         and hardening["cpu_quota_per_sec_usec"] != "infinity"
         and hardening["dropin_present"] is True
+        and hardening["dropin_last"] is True
+        and hardening["need_daemon_reload"] == "no"
     )
     return {
         "unit": UNIT_NAME,
@@ -406,6 +440,7 @@ def full_status() -> dict[str, Any]:
         not service["active"]
         or (
             service["hardening_ready"]
+            and service["hardening"]["running_stream_volume_percent"] == 100
             and host["ready"]
             and stream.get("found") is True
             and type(stream.get("max_volume_percent")) is int
@@ -474,20 +509,32 @@ def start_service() -> int:
 
 
 def stop_service() -> int:
-    status = service_status()
-    if not status["active"]:
-        print(json.dumps({"state": "inactive", "unit": UNIT_NAME}))
-        return 0
+    # Stop is the emergency exit: never make the effect conditional on a
+    # successful status/hash/drop-in read.  Readback is confirmation only.
     result = run_capture(["systemctl", "--user", "stop", UNIT_NAME])
     if result.returncode != 0:
+        try:
+            current = service_status()
+        except Exception:
+            current = None
+        if current is not None and current.get("load_state") == "not-found":
+            print(json.dumps({"state": "inactive", "unit": UNIT_NAME}))
+            return 0
         raise RuntimeError(result.stderr.strip() or "Dauersong stop failed")
     for _ in range(40):
-        current = service_status()
-        if not current["active"]:
+        try:
+            current = service_status()
+        except Exception:
+            current = None
+        if current is not None and (
+            current.get("load_state") in {"loaded", "not-found"}
+            and current.get("active_state") in {"inactive", "failed"}
+            and current.get("sub_state") in {"dead", "exited", "failed"}
+        ):
             print(json.dumps({"state": "stopped", "unit": UNIT_NAME}))
             return 0
         time.sleep(0.05)
-    raise RuntimeError("Dauersong did not stop cleanly")
+    raise RuntimeError("Dauersong stop was issued but inactive readback was not confirmed")
 
 
 def recover_service() -> int:
@@ -503,7 +550,7 @@ def recover_service() -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True)
     for command, help_text in (
         ("doctor", "read-only host and effective service readiness"),
         ("status", "read current Dauersong state"),
@@ -512,7 +559,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("recover", "clear terminal failed state while inactive"),
         ("verify-host", "verify exact v9 sources and soundfont for ExecStartPre"),
     ):
-        parser.add_parser(command, help=help_text)
+        subparsers.add_parser(command, help=help_text)
     return parser
 
 

@@ -1432,6 +1432,31 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertEqual(len(updates), len(runtime_files))
             self.assertEqual(len(backups), len(runtime_files))
 
+    def test_runtime_rollback_preserves_dauersong_safety_ratchet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            safety = root / "zz-audio-control-v1.conf"
+            ordinary = root / "audio-control-ui-v1.service"
+            safety.write_bytes(b"new-safe-100-percent\n")
+            ordinary.write_bytes(b"new-runtime\n")
+            backups = [
+                {"path": str(safety), "payload": b"old-185-percent\n", "mode": 0o600},
+                {"path": str(ordinary), "payload": b"old-runtime\n", "mode": 0o600},
+            ]
+            with mock.patch.object(MODULE, "DAUERSONG_HARDENING_DESTINATION", safety):
+                MODULE.restore_release_runtime(backups)
+            self.assertEqual(safety.read_bytes(), b"new-safe-100-percent\n")
+            self.assertEqual(ordinary.read_bytes(), b"old-runtime\n")
+
+    def test_runtime_rollback_never_removes_new_dauersong_safety_dropin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            safety = pathlib.Path(directory) / "zz-audio-control-v1.conf"
+            safety.write_bytes(b"safe-cap\n")
+            backups = [{"path": str(safety), "payload": None, "mode": None}]
+            with mock.patch.object(MODULE, "DAUERSONG_HARDENING_DESTINATION", safety):
+                MODULE.restore_release_runtime(backups)
+            self.assertEqual(safety.read_bytes(), b"safe-cap\n")
+
     def test_release_runtime_update_requires_complete_bound_set(self):
         with tempfile.TemporaryDirectory() as directory:
             release = pathlib.Path(directory)

@@ -44,6 +44,17 @@ LEVEL_OBSERVER_CRITICAL_RELEASE_FILES = (
     f"systemd/user/{LEVEL_OBSERVER_UNIT}",
     "systemd/user/audio-control-ui-v1.service",
 )
+DAUERSONG_HARDENING_RELATIVE = (
+    "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf"
+)
+DAUERSONG_HARDENING_DESTINATION = (
+    pathlib.Path.home()
+    / ".config"
+    / "systemd"
+    / "user"
+    / "grabowski-dauersong.service.d"
+    / "zz-audio-control-v1.conf"
+)
 RUNTIME_FILES = {
     "scripts/audio_control_deploy.py": (
         pathlib.Path.home() / ".local" / "libexec" / "audio-control-deploy.py",
@@ -53,8 +64,8 @@ RUNTIME_FILES = {
         pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-control-ui-v1.service",
         0o600,
     ),
-    "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf": (
-        pathlib.Path.home() / ".config" / "systemd" / "user" / "grabowski-dauersong.service.d" / "zz-audio-control-v1.conf",
+    DAUERSONG_HARDENING_RELATIVE: (
+        DAUERSONG_HARDENING_DESTINATION,
         0o600,
     ),
     f"systemd/user/{LEVEL_OBSERVER_UNIT}": (
@@ -581,6 +592,12 @@ def install_release_runtime(
 def restore_release_runtime(backups: list[dict[str, Any]]) -> None:
     for backup in reversed(backups):
         destination = pathlib.Path(backup["path"])
+        # The <=100% Dauersong guard is a one-way safety ratchet. A failed
+        # Audiozentrale release may roll back application/runtime files, but
+        # must never restore the legacy 185% start contract. A forward repair
+        # can replace this drop-in; generic rollback cannot remove it.
+        if destination == DAUERSONG_HARDENING_DESTINATION:
+            continue
         payload = backup["payload"]
         if payload is None:
             with contextlib.suppress(FileNotFoundError):
