@@ -104,6 +104,11 @@ class AudioControlDeployTests(unittest.TestCase):
             port=8765,
         )
 
+    def test_dauersong_hardening_is_installed_after_other_runtime_files(self):
+        self.assertEqual(
+            list(MODULE.RUNTIME_FILES)[-1], MODULE.DAUERSONG_HARDENING_RELATIVE
+        )
+
     def test_dauersong_runtime_files_are_release_critical(self):
         expected = {
             "scripts/dauersong_live.py",

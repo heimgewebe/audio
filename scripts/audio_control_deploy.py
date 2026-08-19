@@ -64,10 +64,6 @@ RUNTIME_FILES = {
         pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-control-ui-v1.service",
         0o600,
     ),
-    DAUERSONG_HARDENING_RELATIVE: (
-        DAUERSONG_HARDENING_DESTINATION,
-        0o600,
-    ),
     f"systemd/user/{LEVEL_OBSERVER_UNIT}": (
         pathlib.Path.home()
         / ".config"
@@ -86,6 +82,10 @@ RUNTIME_FILES = {
     ),
     "systemd/user/audio-control-deploy.timer": (
         pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-control-deploy.timer",
+        0o600,
+    ),
+    DAUERSONG_HARDENING_RELATIVE: (
+        DAUERSONG_HARDENING_DESTINATION,
         0o600,
     ),
 }
