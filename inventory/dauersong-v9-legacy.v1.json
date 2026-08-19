@@ -1,0 +1,95 @@
+{
+  "id": "grabowski-dauersong-v9-host-runtime",
+  "kind": "dauersong_v9_legacy_runtime_binding",
+  "legacy_root": "~/.local/state/grabowski-music",
+  "legacy_unit": "grabowski-dauersong.service",
+  "managed_defaults": {
+    "cpu_quota_percent": 150,
+    "limit_nofile": 1024,
+    "memory_max_bytes": 536870912,
+    "runtime_max_seconds": 21600,
+    "stream_volume_percent": 100,
+    "tasks_max": 32
+  },
+  "managed_unit": "grabowski-dauersong.service",
+  "mutable_state": [
+    "state.json",
+    "ecosystem/accepted.json",
+    "ecosystem/arc-state.json",
+    "ecosystem/autonomy-events.jsonl",
+    "ecosystem/autonomy-state.json",
+    "ecosystem/beloved-sequences.json",
+    "ecosystem/events.jsonl",
+    "ecosystem/inspirations.json",
+    "ecosystem/live-sections.jsonl",
+    "ecosystem/live-status.json",
+    "ecosystem/outcomes.jsonl",
+    "ecosystem/state.json"
+  ],
+  "required_files": {
+    "ecosystem_store.py": {
+      "bytes": 3481,
+      "sha256": "4742ea8c31c1119c9d912517b2ef3016ff79cec5e3dd4a750b620fa0dfe0f0f3"
+    },
+    "form_composer.py": {
+      "bytes": 37504,
+      "sha256": "8427dc6465b51f2e3560fbbbc2855841dac6d665e871826c2d20f7e98091ff67"
+    },
+    "form_data.py": {
+      "bytes": 4869,
+      "sha256": "e162a87b2454b54a857d0a5e1f25220a47f6b45e541166d1f2293b7009b4b63b"
+    },
+    "form_runner_v9.py": {
+      "bytes": 5574,
+      "sha256": "5db75bb3d02fcaa221c4c378233ceaecce201b8df233f7844a1454f162424ef4"
+    },
+    "hooks1.tmp": {
+      "bytes": 974,
+      "sha256": "b2c3e694d80d4504c5ab34487ac632e952eb00514fd4f2b1307e9363cf796a7e"
+    },
+    "hooks2.tmp": {
+      "bytes": 442,
+      "sha256": "505496117b4f9eeb1d1633bd6be142c291af37fa08c5b5d053a143508ed5bcfc"
+    },
+    "hooks3.tmp": {
+      "bytes": 799,
+      "sha256": "03fbe9f99607d94cc9889e39f3071ea31c3ab072c8ae04a43bf7fe172ce50b82"
+    },
+    "music_phrase.py": {
+      "bytes": 8065,
+      "sha256": "a1ebecbe80e9c3f79b37dde1d60c6c0f6c35d8da0fe67544590d07c87ed6d6df"
+    },
+    "music_route.py": {
+      "bytes": 10126,
+      "sha256": "f5d108127c70c9ed47525ee1c514bfe72b6b42a8dc9dd4b50138c9f136b7251f"
+    },
+    "music_v9.py": {
+      "bytes": 17163,
+      "sha256": "e38e9554e66b26bb6ac22e58b4c450dfeeaf3071f9b907b49a0f7b163a49bbf6"
+    },
+    "v8.tmp": {
+      "bytes": 580,
+      "sha256": "de1758267bdac73d351f891bd27362b36c7586bd30134b103b4cfac7aff81198"
+    }
+  },
+  "runner": "form_runner_v9.py",
+  "schema_version": 1,
+  "soundfont": "/usr/share/sounds/sf3/default-GM.sf3",
+  "soundfont_binding": {
+    "bytes": 148398306,
+    "configured_path": "/usr/share/sounds/sf3/default-GM.sf3",
+    "forbid_group_or_other_write": true,
+    "owner_uid": 0,
+    "resolved_path": "/usr/share/sounds/sf2/FluidR3_GM.sf2",
+    "sha256": "74594e8f4250680adf590507a306655a299935343583256f3b722c48a1bc1cb0"
+  },
+  "status": "legacy-source-bound-adapter",
+  "truth_boundary": {
+    "ancillary_legacy_timers_keep_the_same_performer_identity": true,
+    "biological_or_acoustic_model_claim": false,
+    "legacy_185_percent_volume_is_overridden_by_repo_dropin": true,
+    "legacy_code_is_copied_into_repository": false,
+    "legacy_service_identity_is_retained": true,
+    "runtime_start_requires_exact_file_hashes": true
+  }
+}

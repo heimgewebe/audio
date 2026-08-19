@@ -65,8 +65,18 @@ Zustandsautorität; der Browser verarbeitet kein kritisches Audio.
 Die Oberfläche trennt beobachtete Laufzeit, gewünschte Konfiguration, physisch
 ungeprüfte Fakten und tatsächliche Ausführungsautorität. Ausgeschaltete Geräte
 sind daher ein neutraler Vor-Ort-Zustand und kein pauschaler Systemfehler.
-Profilplanung ist read-only; Dauersong und Profil-Apply bleiben sichtbar
-fail-closed. Das Dashboard zeigt zusätzlich, ob die laufende, unveränderliche
+Profilplanung ist read-only; Profil-Apply bleibt sichtbar fail-closed. Der
+vorhandene Dauersong v9 wird nicht neu erfunden, sondern über einen
+hashgebundenen Legacy-Adapter kontrolliert: Vor dem Start wird der geprüfte
+Python-Quellensatz in einen privaten Runtime-Snapshot kopiert und per Bubblewrap
+read-only über die alten Pfade gelegt; alte Bytecode-Caches werden nicht
+verwendet. Der alte 185-%-Streampegel wird nicht übernommen, der verwaltete
+Start ist auf 100 % begrenzt und läuft als transiente User-Unit mit CPU-,
+Speicher-, Task-, FD-, Log- und Laufzeitgrenzen.
+Der dauerhafte Alt-Dienst muss inaktiv sein; Quellendrift blockiert den Start.
+Die zugehörigen alten Kritiker-/Dramaturg-/Liebhaber-Timer sind noch nicht in
+diesen neuen Laufzeitvertrag migriert. Das Dashboard zeigt zusätzlich, ob die
+laufende, unveränderliche
 Releasefassung mit dem letzten sicheren Auto-Deploy-Beleg synchron ist, ohne
 private Deploypfade offenzulegen.
 
@@ -185,6 +195,11 @@ python3 scripts/whale_live.py mode realistic
 python3 scripts/whale_live.py mode ufo
 python3 scripts/whale_live.py toggle
 python3 scripts/whale_live.py demo /tmp/buckelwal-live-voice-v1-demo.wav
+python3 scripts/dauersong_live.py doctor
+python3 scripts/dauersong_live.py status
+# Start/Stop sind zusätzlich lokal in der Audiozentrale verfügbar; Fernsteuerung bleibt blockiert.
+python3 scripts/dauersong_live.py start
+python3 scripts/dauersong_live.py stop
 ./scripts/audio-control check
 ./scripts/audio-control start
 ./scripts/audio-control status

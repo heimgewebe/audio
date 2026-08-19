@@ -358,6 +358,7 @@ const state = {
     automaticName: true,
   },
   recordingActionPending: false,
+  dauersongActionPending: false,
   recordingDetailsOpen: false,
   recordingClockTimer: null,
   whaleActionPending: false,
@@ -666,9 +667,9 @@ function renderRuntimeMode() {
 function syncRemoteControls() {
   const blocked = !backendAllowed();
   byId("refresh-button").disabled =
-    blocked || state.loading || state.recordingActionPending || state.whaleActionPending;
+    blocked || state.loading || state.recordingActionPending || state.dauersongActionPending || state.whaleActionPending;
   byId("diagnostic-refresh").disabled =
-    blocked || state.loading || state.recordingActionPending || state.whaleActionPending;
+    blocked || state.loading || state.recordingActionPending || state.dauersongActionPending || state.whaleActionPending;
   byId("auto-refresh-toggle").disabled = blocked;
 }
 
@@ -723,6 +724,7 @@ function stopRemoteActivity() {
   state.recordingPlan = null;
   state.recordingPlanInput = null;
   state.recordingActionPending = false;
+  state.dauersongActionPending = false;
   state.whaleActionPending = false;
   state.remoteWhaleActionObserved = false;
   state.remoteActionScopes = [];
@@ -908,7 +910,13 @@ function setLoading(loading) {
 }
 
 async function refreshSnapshot(force = false) {
-  if (state.loading || state.recordingActionPending || state.whaleActionPending || !backendAllowed()) return;
+  if (
+    state.loading ||
+    state.recordingActionPending ||
+    state.dauersongActionPending ||
+    state.whaleActionPending ||
+    !backendAllowed()
+  ) return;
   setLoading(true);
   try {
     const suffix = force ? "?refresh=1" : "";
@@ -1080,6 +1088,37 @@ function localWhaleActionsAllowed() {
       typeof state.snapshot?.service?.action_token === "string" &&
       state.snapshot.service.action_token.length >= 16
   );
+}
+
+function localDauersongActionsAllowed() {
+  return Boolean(
+    directLoopbackControlOrigin() &&
+      backendAllowed() &&
+      state.remoteBridgeProjection !== true &&
+      state.snapshot?.capabilities?.dauersong_control === true &&
+      state.snapshot?.dauersong?.status === "ok" &&
+      typeof state.snapshot?.service?.action_token === "string" &&
+      state.snapshot.service.action_token.length >= 16
+  );
+}
+
+async function postDauersongAction(payload) {
+  if (!localDauersongActionsAllowed()) {
+    throw new Error(
+      state.remoteBridgeProjection === true
+        ? "Dauersong-Steuerung ist derzeit nur lokal am Heim-PC freigegeben."
+        : "Dauersong-Steuerung ist aktuell nicht sicher verfügbar.",
+    );
+  }
+  return fetchJson("/api/v1/actions/dauersong", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Audio-Control-Token": state.snapshot.service.action_token,
+    },
+    body: JSON.stringify(payload),
+    timeoutMs: 70000,
+  });
 }
 
 function remoteWhaleSessionFresh() {
@@ -3532,6 +3571,41 @@ function scheduleTelemetryPolling(delayMs = TELEMETRY_POLL_MS) {
 }
 
 
+async function runDauersongAction(operation) {
+  if (!state.snapshot || state.loading || state.dauersongActionPending) return;
+  if (!["start", "stop", "recover"].includes(operation)) return;
+  state.dauersongActionPending = true;
+  clearNotice();
+  syncRemoteControls();
+  renderSounds();
+  try {
+    const result = await postDauersongAction({ operation });
+    if (
+      result?.kind !== "audio_control_dauersong_action_result" ||
+      result.operation !== operation ||
+      !result.snapshot
+    ) {
+      throw new Error("Dauersong-Aktion kam ohne autoritativen Readback zurück.");
+    }
+    state.snapshot = result.snapshot;
+    renderAll();
+    showNotice(
+      operation === "start"
+        ? "Dauersong läuft mit bestätigter 100-%-Streamgrenze."
+        : operation === "stop"
+          ? "Dauersong wurde beendet und als inaktiv zurückgelesen."
+          : "Dauersong-Recovery wurde abgeschlossen; der Dienst bleibt inaktiv.",
+      "success",
+    );
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : "Dauersong-Aktion wurde blockiert.");
+  } finally {
+    state.dauersongActionPending = false;
+    syncRemoteControls();
+    if (state.snapshot) renderSounds();
+  }
+}
+
 function renderSounds() {
   const target = byId("sound-library");
   const whale = state.snapshot.whale;
@@ -3566,17 +3640,67 @@ function renderSounds() {
     return card;
   });
 
+  const songState = state.snapshot.dauersong || {};
+  const songService = songState.service || {};
+  const songActive = songState.status === "ok" && songService.active === true;
+  const songRuntimeSafe = state.snapshot.summary?.dauersong_runtime_safe !== false;
+  const songReady =
+    songState.status === "ok" &&
+    songService.hardening_ready === true &&
+    songService.source_binding_ready === true;
   const song = element("article", "sound-card");
+  song.setAttribute("aria-busy", String(state.dauersongActionPending));
   const songTop = element("div", "card-topline");
   appendText(songTop, "span", "card-glyph", "∞").setAttribute("aria-hidden", "true");
-  appendText(songTop, "span", "status-pill", "geplant");
+  appendText(
+    songTop,
+    "span",
+    `status-pill ${songActive && songRuntimeSafe ? "ready" : songActive ? "unavailable" : songReady ? "" : "unavailable"}`,
+    songActive
+      ? songRuntimeSafe
+        ? "aktiv"
+        : "aktiv · prüfen"
+      : songReady
+        ? "bereit"
+        : "nicht verfügbar",
+  );
   song.append(songTop);
   appendText(song, "h3", "", "Dauersong");
-  appendText(song, "p", "", state.snapshot.dauersong.detail);
+  appendText(song, "p", "", songState.detail || "Dauersong-Zustand ist nicht verfügbar.");
   const songMeta = element("div", "card-meta");
-  appendText(songMeta, "span", "", "Profil experimental");
-  appendText(songMeta, "span", "", "fail-closed");
+  appendText(songMeta, "span", "", "v9 · quellgebunden");
+  appendText(
+    songMeta,
+    "span",
+    "",
+    songActive && !songRuntimeSafe ? "Stream-/Laufzeitvertrag verletzt · Stop verfügbar" : "Stream max. 100 %",
+  );
+  if (songService.live?.name) {
+    appendText(songMeta, "span", "", `Abschnitt ${songService.live.section ?? "–"} · ${songService.live.name}`);
+  }
   song.append(songMeta);
+  const songActions = element("div", "card-actions");
+  const songButton = element(
+    "button",
+    songActive ? "primary-button danger" : "primary-button",
+    songActive ? "Dauersong beenden" : "Dauersong starten",
+  );
+  songButton.type = "button";
+  songButton.disabled =
+    state.loading ||
+    state.dauersongActionPending ||
+    !localDauersongActionsAllowed() ||
+    (!songActive && !songReady);
+  songButton.addEventListener("click", () => runDauersongAction(songActive ? "stop" : "start"));
+  songActions.append(songButton);
+  if (!songActive && songService.active_state === "failed" && songReady) {
+    const recoverButton = element("button", "secondary-button", "Recovery");
+    recoverButton.type = "button";
+    recoverButton.disabled = state.loading || state.dauersongActionPending || !localDauersongActionsAllowed();
+    recoverButton.addEventListener("click", () => runDauersongAction("recover"));
+    songActions.append(recoverButton);
+  }
+  song.append(songActions);
   cards.push(song);
   target.replaceChildren(...cards);
 }
@@ -4130,6 +4254,7 @@ function autoRefreshBlocked() {
     !byId("dialog-backdrop").hidden ||
     state.loading ||
     state.recordingActionPending ||
+    state.dauersongActionPending ||
     state.whaleActionPending ||
     state.replayPlaying ||
     recordingPlaybackActive() ||

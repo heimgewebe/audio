@@ -27,6 +27,9 @@ class AudioControlDeployTests(unittest.TestCase):
     ) -> None:
         files = {
             "scripts/audio_control.py": b"print('control')\n",
+            "scripts/dauersong_live.py": b"print('dauersong')\n",
+            "inventory/dauersong-v9-legacy.v1.json": b"{}\n",
+            "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf": b"[Service]\nRestart=no\n",
             "scripts/audio_level_observer.py": b"print('observer')\n",
             "scripts/audio_live_telemetry.py": b"print('telemetry')\n",
             "scripts/audio_remote_bridge.py": b"print('bridge')\n",
@@ -100,6 +103,25 @@ class AudioControlDeployTests(unittest.TestCase):
             host="127.0.0.1",
             port=8765,
         )
+
+    def test_dauersong_runtime_files_are_release_critical(self):
+        expected = {
+            "scripts/dauersong_live.py",
+            "inventory/dauersong-v9-legacy.v1.json",
+            "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+        }
+        self.assertTrue(expected <= set(MODULE.BASE_CRITICAL_RELEASE_FILES))
+        commit = "8" * 40
+        for missing in sorted(expected):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
 
     def test_replay_runtime_files_are_release_critical(self):
         expected = {
@@ -1327,7 +1349,8 @@ class AudioControlDeployTests(unittest.TestCase):
                     payload = b"print('deploy')\n"
                 else:
                     payload = f"# bound {relative}\n".encode()
-                    expected_units[pathlib.Path(relative).name] = payload
+                    if pathlib.Path(relative).suffix in {".service", ".timer"}:
+                        expected_units[pathlib.Path(relative).name] = payload
                 source.write_bytes(payload)
                 destination = destinations / pathlib.Path(relative).name
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1451,8 +1474,12 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertIn("%h/.config/systemd/user", deploy)
         self.assertNotIn("%h/.config/audio-control-ui", deploy)
         self.assertIn("%h/.local/state/audio-control-deploy", deploy)
-        self.assertEqual(len(MODULE.RUNTIME_FILES), 6)
+        self.assertEqual(len(MODULE.RUNTIME_FILES), 7)
         self.assertIn("systemd/user/audio-remote-bridge-v1.service", MODULE.RUNTIME_FILES)
+        self.assertIn(
+            "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+            MODULE.RUNTIME_FILES,
+        )
         self.assertIn(
             "systemd/user/audio-control-level-observer-v1.service",
             MODULE.RUNTIME_FILES,

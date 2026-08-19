@@ -53,6 +53,10 @@ RUNTIME_FILES = {
         pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-control-ui-v1.service",
         0o600,
     ),
+    "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf": (
+        pathlib.Path.home() / ".config" / "systemd" / "user" / "grabowski-dauersong.service.d" / "zz-audio-control-v1.conf",
+        0o600,
+    ),
     f"systemd/user/{LEVEL_OBSERVER_UNIT}": (
         pathlib.Path.home()
         / ".config"
@@ -96,6 +100,9 @@ REMOTE_BRIDGE_RELEASE_SENTINEL = "tests/test_audio_remote_bridge.py"
 
 BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
+    "scripts/dauersong_live.py",
+    "inventory/dauersong-v9-legacy.v1.json",
+    "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
     "scripts/audio_remote_bridge.py",
     "scripts/audio_remote_bridge_tailscale.py",
     "scripts/audio_remote_bridge_ipad_probe.py",

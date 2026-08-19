@@ -91,6 +91,7 @@ class FakeRunner:
         self.doctor_calls = 0
         self.whale_active = False
         self.whale_mode = None
+        self.dauersong_active = False
 
     def result(self, argv, payload, returncode=0):
         return MODULE.CommandResult(
@@ -202,6 +203,78 @@ class FakeRunner:
                 )
         if script == "audio-record" and argv[2] == "init":
             return self.result(argv, {"schema_version": 1, "status": "ready"})
+        if script == "dauersong_live.py":
+            operation = argv[2]
+            if operation == "status":
+                active = self.dauersong_active
+                return self.result(
+                    argv,
+                    {
+                        "schema_version": 1,
+                        "kind": "dauersong_live_status",
+                        "unit": "grabowski-dauersong.service",
+                        "load_state": "loaded",
+                        "active_state": "active" if active else "inactive",
+                        "sub_state": "running" if active else "dead",
+                        "result": "success",
+                                                "main_pid": 4242 if active else 0,
+                        "active": active,
+                        "managed_by": "audio-control-v1",
+                        "runtime_max_seconds": 21600,
+                        "configured_stream_volume_percent": 100,
+                        "hardening_ready": True,
+                        "hardening": {
+                            "managed_by": "audio-control-v1",
+                            "stream_volume_percent": 100,
+                            "runtime_max_seconds": 21600,
+                        },
+                        "stream": (
+                            {
+                                "found": True,
+                                "indexes": [55],
+                                "max_volume_percent": 100,
+                                "streams": [
+                                    {
+                                        "index": 55,
+                                        "process_id": 4243,
+                                        "volume_percent": 100,
+                                    }
+                                ],
+                            }
+                            if active
+                            else {
+                                "found": False,
+                                "indexes": [],
+                                "max_volume_percent": None,
+                            }
+                        ),
+                        "live": (
+                            {
+                                "updated_at_unix": 1.0,
+                                "section": 3,
+                                "name": "Verwandlung",
+                                "cycle": 1,
+                                "effective_bpm": 70.0,
+                                "melody_notes": 42,
+                            }
+                            if active
+                            else None
+                        ),
+                        "source_binding_ready": True,
+                        "source_binding_errors": [],
+                        "soundfont_ready": True,
+                        "runtime_safe": True,
+                    },
+                )
+            if operation == "start":
+                self.dauersong_active = True
+                return self.result(argv, {"state": "ready", "unit": "grabowski-dauersong.service"})
+            if operation == "stop":
+                self.dauersong_active = False
+                return self.result(argv, {"state": "stopped", "unit": "grabowski-dauersong.service"})
+            if operation == "recover":
+                self.dauersong_active = False
+                return self.result(argv, {"state": "clean", "unit": "grabowski-dauersong.service"})
         if script == "whale_live.py":
             operation = argv[2]
             if operation == "status":
@@ -464,7 +537,7 @@ class AudioControlTests(unittest.TestCase):
         )
         self.assertFalse(snapshot["capabilities"]["profile_apply"])
         self.assertTrue(snapshot["capabilities"]["recording_control"])
-        self.assertFalse(snapshot["capabilities"]["dauersong_control"])
+        self.assertTrue(snapshot["capabilities"]["dauersong_control"])
         self.assertEqual(snapshot["recording"]["status"], "idle")
         self.assertEqual(snapshot["recording"]["contract"]["profile"], "voice-recording")
         self.assertEqual(snapshot["recording"]["contract"]["source"]["kind"], "motu-voice")
@@ -480,7 +553,10 @@ class AudioControlTests(unittest.TestCase):
             recording_modes["piano-vocal"]["blocker"],
             "exact-midi-gate-requires-plan",
         )
-        self.assertEqual(snapshot["dauersong"]["status"], "planned-not-executable")
+        self.assertEqual(snapshot["dauersong"]["status"], "ok")
+        self.assertTrue(snapshot["dauersong"]["actionable"])
+        self.assertFalse(snapshot["dauersong"]["service"]["active"])
+        self.assertFalse(snapshot["summary"]["active_dauersong"])
         self.assertEqual(len(snapshot["profiles"]), 10)
         self.assertFalse(snapshot["summary"]["active_whale"])
         self.assertEqual(snapshot["whale"]["contract"]["default_mode"], "morph")
@@ -672,6 +748,125 @@ class AudioControlTests(unittest.TestCase):
                 MODULE.read_bounded_json_object(
                     link, label="Deploy-Beleg", maximum_bytes=128
                 )
+
+    def test_dauersong_action_is_local_allowlisted_and_read_back(self):
+        runner = FakeRunner()
+        controller = self.controller(runner)
+        started = controller.perform_dauersong_action({"operation": "start"})
+        self.assertEqual(started["kind"], "audio_control_dauersong_action_result")
+        self.assertEqual(started["operation"], "start")
+        self.assertTrue(started["snapshot"]["dauersong"]["service"]["active"])
+        self.assertEqual(
+            started["snapshot"]["dauersong"]["service"]["stream"]["max_volume_percent"],
+            100,
+        )
+        stopped = controller.perform_dauersong_action({"operation": "stop"})
+        self.assertFalse(stopped["snapshot"]["dauersong"]["service"]["active"])
+        action_calls = [
+            call[0]
+            for call in runner.calls
+            if len(call[0]) > 2
+            and pathlib.Path(call[0][1]).name == "dauersong_live.py"
+            and call[0][2] != "status"
+        ]
+        self.assertEqual(
+            action_calls,
+            [
+                (sys.executable, str(MODULE.DAUERSONG_SCRIPT), "start"),
+                (sys.executable, str(MODULE.DAUERSONG_SCRIPT), "stop"),
+            ],
+        )
+
+    def test_dauersong_action_rejects_extra_fields_and_unknown_operations(self):
+        controller = self.controller(FakeRunner())
+        with self.assertRaisesRegex(MODULE.ControlError, "genau das Feld operation"):
+            controller.perform_dauersong_action({"operation": "start", "mode": "x"})
+        with self.assertRaisesRegex(MODULE.ControlError, "Unbekannte Dauersong-Aktion"):
+            controller.perform_dauersong_action({"operation": "toggle"})
+
+    def test_dauersong_unsafe_active_stream_stays_stoppable_and_marks_attention(self):
+        runner = FakeRunner()
+        runner.dauersong_active = True
+        original_run = runner.run
+
+        def unsafe_run(argv, *, timeout):
+            result = original_run(argv, timeout=timeout)
+            if (
+                len(argv) > 2
+                and pathlib.Path(argv[1]).name == "dauersong_live.py"
+                and argv[2] == "status"
+                and runner.dauersong_active
+            ):
+                report = json.loads(result.stdout)
+                report["stream"]["max_volume_percent"] = 101
+                report["runtime_safe"] = False
+                return runner.result(argv, report)
+            return result
+
+        runner.run = unsafe_run
+        controller = self.controller(runner)
+        snapshot = controller.snapshot(refresh=True)
+        self.assertTrue(snapshot["dauersong"]["service"]["active"])
+        self.assertFalse(snapshot["summary"]["dauersong_runtime_safe"])
+        self.assertEqual(snapshot["summary"]["runtime_state"], "attention")
+        self.assertFalse(snapshot["dauersong"]["actionable"])
+
+        stopped = controller.perform_dauersong_action({"operation": "stop"})
+        self.assertFalse(stopped["snapshot"]["dauersong"]["service"]["active"])
+
+    def test_unhardened_active_dauersong_remains_stoppable(self):
+        runner = FakeRunner()
+        runner.dauersong_active = True
+        original_run = runner.run
+
+        def unhardened_run(argv, *, timeout):
+            result = original_run(argv, timeout=timeout)
+            if (
+                len(argv) > 2
+                and pathlib.Path(argv[1]).name == "dauersong_live.py"
+                and argv[2] == "status"
+                and runner.dauersong_active
+            ):
+                report = json.loads(result.stdout)
+                report["managed_by"] = None
+                report["hardening_ready"] = False
+                report["configured_stream_volume_percent"] = 185
+                report["runtime_safe"] = False
+                report["stream"]["max_volume_percent"] = 185
+                return runner.result(argv, report)
+            return result
+
+        runner.run = unhardened_run
+        controller = self.controller(runner)
+        snapshot = controller.snapshot(refresh=True)
+        self.assertTrue(snapshot["dauersong"]["service"]["active"])
+        self.assertFalse(snapshot["dauersong"]["actionable"])
+        self.assertEqual(snapshot["summary"]["runtime_state"], "attention")
+        stopped = controller.perform_dauersong_action({"operation": "stop"})
+        self.assertFalse(stopped["snapshot"]["dauersong"]["service"]["active"])
+
+    def test_dauersong_start_readback_rejects_stream_above_100_percent(self):
+        runner = FakeRunner()
+        original_run = runner.run
+
+        def unsafe_after_start(argv, *, timeout):
+            result = original_run(argv, timeout=timeout)
+            if (
+                len(argv) > 2
+                and pathlib.Path(argv[1]).name == "dauersong_live.py"
+                and argv[2] == "status"
+                and runner.dauersong_active
+            ):
+                report = json.loads(result.stdout)
+                report["stream"]["max_volume_percent"] = 101
+                report["runtime_safe"] = False
+                return runner.result(argv, report)
+            return result
+
+        runner.run = unsafe_after_start
+        controller = self.controller(runner)
+        with self.assertRaisesRegex(MODULE.ControlError, "sicher begrenztem Audiostream"):
+            controller.perform_dauersong_action({"operation": "start"})
 
     def test_snapshot_cache_and_explicit_refresh(self):
         runner = FakeRunner()
@@ -1211,7 +1406,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("Backend beschäftigt", javascript)
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 2)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 3)
 
     def test_static_surface_prioritizes_compact_functional_controls(self):
         html = (ROOT / "ui" / "index.html").read_text()
@@ -1464,7 +1659,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn("WHALE_ACTION_TIMEOUT_MS", javascript)
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 2)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 3)
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
 
