@@ -1489,7 +1489,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             runtime_updates, runtime_backups = install_release_runtime(release)
             updated_sources = {update["source"] for update in runtime_updates}
             runtime_unit_changed = any(
-                source.endswith((".service", ".timer"))
+                source.startswith("systemd/user/")
                 for source in updated_sources
             )
             ui_unit_updated = (

@@ -893,6 +893,63 @@ class AudioControlDeployTests(unittest.TestCase):
             install_runtime.assert_called_once_with(release)
             activate.assert_not_called()
 
+    def test_unchanged_dauersong_dropin_drift_triggers_daemon_reload(self):
+        commit = "d" * 40
+        update = {
+            "source": "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+            "destination": "/tmp/zz-audio-control-v1.conf",
+            "sha256": "e" * 64,
+            "mode": "0o600",
+        }
+        backup = {"path": update["destination"], "payload": b"old", "mode": 0o600}
+        daemon_reload = MODULE.CommandResult(
+            ("systemctl", "--user", "daemon-reload"), 0, "", "", 0.1
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            release = args.deploy_root / "releases" / commit
+            release.mkdir(parents=True)
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE, "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(MODULE, "read_current_commit", return_value=commit),
+                mock.patch.object(
+                    MODULE, "prepare_release", return_value=(release, [], False)
+                ),
+                mock.patch.object(
+                    MODULE, "reconcile_runtime_environment",
+                    return_value=({"changed": False, "host": "127.0.0.1", "port": 8765}, None),
+                ),
+                mock.patch.object(
+                    MODULE, "install_release_runtime", return_value=([update], [backup])
+                ),
+                mock.patch.object(MODULE, "run_command", return_value=daemon_reload) as run,
+                mock.patch.object(MODULE, "activate_service") as activate,
+                mock.patch.object(
+                    MODULE, "verify_service", return_value={"url": "http://127.0.0.1:8765/"}
+                ),
+                mock.patch.object(
+                    MODULE, "prune_releases",
+                    return_value={"keep": 3, "removed": [], "warnings": []},
+                ),
+            ):
+                report = MODULE.sync(args)
+        self.assertFalse(report["changed"])
+        self.assertEqual(report["runtime_updates"], [update])
+        activate.assert_not_called()
+        run.assert_called_once_with(
+            ["systemctl", "--user", "daemon-reload"], timeout=30
+        )
+
     def test_unchanged_ui_unit_drift_restarts_service(self):
         commit = "6" * 40
         update = {
