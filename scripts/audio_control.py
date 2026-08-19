@@ -34,6 +34,7 @@ UI_ROOT = ROOT / "ui"
 PROFILE_CATALOG = ROOT / "profiles" / "audio-profiles.v1.json"
 WHALE_PROFILE = ROOT / "profiles" / "buckelwal-live-voice-v1.json"
 WHALE_SCRIPT = ROOT / "scripts" / "whale_live.py"
+DAUERSONG_SCRIPT = ROOT / "scripts" / "dauersong_live.py"
 DOCTOR_SCRIPT = ROOT / "scripts" / "audio_doctor.py"
 PLANNER_SCRIPT = ROOT / "scripts" / "profile_planner.py"
 REPLAY_SCRIPT = ROOT / "scripts" / "audio_telemetry_replay.py"
@@ -422,6 +423,38 @@ def validate_whale_status(report: dict[str, Any]) -> None:
     )
     if not active_contract and not inactive_contract:
         raise ControlError("Buckelwal-Dienst meldete keinen terminalen Zustand.")
+
+
+def validate_dauersong_status(report: dict[str, Any]) -> None:
+    if (
+        report.get("schema_version") != 1
+        or report.get("kind") != "dauersong_live_status"
+        or report.get("unit") != "grabowski-dauersong.service"
+    ):
+        raise ControlError("Dauersong-Dienst meldete einen fremden Statusvertrag.")
+    for key in ("load_state", "active_state", "sub_state"):
+        if not isinstance(report.get(key), str):
+            raise ControlError("Dauersong-Dienst lieferte unvollständigen Status.")
+    if not isinstance(report.get("source_binding_ready"), bool):
+        raise ControlError("Dauersong-Dienst meldete keine Quellenbindung.")
+    active = report.get("active") is True
+    active_contract = (
+        report.get("load_state") == "loaded"
+        and report.get("active_state") == "active"
+        and report.get("sub_state") == "running"
+    )
+    inactive_contract = (
+        report.get("load_state") in {"loaded", "not-found"}
+        and report.get("active_state") in {"inactive", "failed"}
+        and report.get("sub_state") in {"dead", "exited", "failed"}
+    )
+    if active != active_contract:
+        raise ControlError("Dauersong-Dienst meldete widersprüchliche Aktivität.")
+    if not active_contract and not inactive_contract:
+        raise ControlError("Dauersong-Dienst meldete keinen terminalen Zustand.")
+    stream = report.get("stream")
+    if not isinstance(stream, dict):
+        raise ControlError("Dauersong-Dienst meldete keinen Audiostreamzustand.")
 
 
 def validate_profile_plan(
@@ -1648,6 +1681,26 @@ class AudioControl:
         except ControlError as error:
             return "unavailable", {}, str(error)
 
+    def _dauersong_status(self) -> tuple[str, dict[str, Any], str | None]:
+        try:
+            result = self.runner.run(
+                [sys.executable, str(DAUERSONG_SCRIPT), "status"],
+                timeout=8,
+            )
+            report = parse_json_output(result, label="Dauersong-Dienst")
+            if result.returncode != 0:
+                return (
+                    "unavailable",
+                    {},
+                    safe_error_message(
+                        report, "Dauersong-Dienstzustand ist nicht lesbar."
+                    ),
+                )
+            validate_dauersong_status(report)
+            return "ok", report, None
+        except ControlError as error:
+            return "unavailable", {}, str(error)
+
     def _recording_probe(self) -> tuple[str, dict[str, Any], str | None]:
         try:
             result = self.runner.run(
@@ -2117,8 +2170,13 @@ class AudioControl:
         whale_contract = read_whale_contract()
         doctor_status, doctor, doctor_error = self._doctor()
         whale_status, whale, whale_error = self._whale_status()
+        dauersong_status, dauersong, dauersong_error = self._dauersong_status()
         recording_status, recording_probe, recording_error = self._recording_probe()
         recording_contract = read_voice_recording_contract()
+        dauersong_active = dauersong.get("active") is True
+        dauersong_runtime_safe = (
+            dauersong_status == "ok" and dauersong.get("runtime_safe") is True
+        )
         warnings = doctor.get("warnings", [])
         if not isinstance(warnings, list):
             warnings = []
@@ -2163,12 +2221,20 @@ class AudioControl:
             warning for warning in high_warnings if warning not in onsite_high_warnings
         ]
         runtime_unavailable = doctor_status != "ok" or whale_status != "ok"
-        runtime_attention = runtime_unavailable or bool(runtime_high_warnings)
+        dauersong_attention = (
+            dauersong_status != "ok"
+            or dauersong.get("hardening_ready") is False
+            or dauersong.get("source_binding_ready") is False
+            or not dauersong_runtime_safe
+        )
+        runtime_attention = (
+            runtime_unavailable or bool(runtime_high_warnings) or dauersong_attention
+        )
         runtime_state = (
             "unavailable"
             if runtime_unavailable
             else "attention"
-            if runtime_high_warnings
+            if runtime_high_warnings or dauersong_attention
             else "healthy"
         )
         projected_profiles = project_profile_readiness(
@@ -2217,6 +2283,8 @@ class AudioControl:
                 "onsite_warning_count": len(onsite_high_warnings),
                 "physical_unknown_count": len(physical_unknowns),
                 "active_whale": bool(whale.get("active")),
+                "active_dauersong": dauersong_active,
+                "dauersong_runtime_safe": dauersong_runtime_safe,
                 "active_recording": bool(
                     isinstance(recording_probe.get("session"), dict)
                     and recording_probe["session"].get("active") is True
@@ -2250,14 +2318,21 @@ class AudioControl:
             },
             "profiles": projected_profiles,
             "dauersong": {
-                "status": "planned-not-executable",
-                "actionable": False,
-                "profile": "experimental",
-                "detail": (
-                    "Dauersong bleibt als isoliertes Experiment geplant; "
-                    "eine verwaltete Laufzeit mit Start-, Stop- und "
-                    "Ressourcenvertrag fehlt noch."
+                "status": dauersong_status,
+                "actionable": (
+                    dauersong_status == "ok"
+                    and dauersong.get("hardening_ready") is True
+                    and dauersong.get("source_binding_ready") is True
+                    and dauersong_runtime_safe
                 ),
+                "profile": "experimental",
+                "error": dauersong_error,
+                "detail": (
+                    "Vorhandener Dauersong v9 hinter hashgebundener Quellenprüfung, "
+                    "100-%-Streamgrenze und begrenzter systemd-Laufzeit."
+                ),
+                "service": dauersong,
+                "actions": ["start", "stop", "recover"],
             },
             "recording": {
                 "status": (
@@ -2295,7 +2370,7 @@ class AudioControl:
                 "whale_control": True,
                 "profile_apply": False,
                 "recording_control": recording_status == "ok",
-                "dauersong_control": False,
+                "dauersong_control": dauersong_status == "ok",
             },
         }
 
@@ -2314,7 +2389,7 @@ class AudioControl:
         now = self.clock()
         errors = [
             str(section.get("error"))
-            for section_name in ("doctor", "whale", "recording")
+            for section_name in ("doctor", "whale", "dauersong", "recording")
             if isinstance((section := snapshot.get(section_name)), dict)
             and section.get("error")
         ]
@@ -2393,6 +2468,102 @@ class AudioControl:
             return report
         finally:
             self._plan_lock.release()
+
+    def perform_dauersong_action(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if set(payload) != {"operation"}:
+            raise ControlError("Die Dauersong-Aktion benötigt genau das Feld operation.")
+        operation = payload.get("operation")
+        if operation not in {"start", "stop", "recover"}:
+            raise ControlError("Unbekannte Dauersong-Aktion.")
+
+        command = [sys.executable, str(DAUERSONG_SCRIPT), str(operation)]
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere Audioaktion läuft bereits.")
+        try:
+            if not self._snapshot_lock.acquire(blocking=False):
+                raise ActionBusy(
+                    "Eine Zustandsabfrage verhindert den sicheren Aktions-Readback."
+                )
+            try:
+                self.invalidate()
+                try:
+                    (
+                        precondition_status,
+                        precondition_service,
+                        precondition_error,
+                    ) = self._dauersong_status()
+                    if precondition_status != "ok":
+                        raise ControlError(
+                            precondition_error
+                            or "Dauersong-Dienstzustand ist nicht sicher lesbar."
+                        )
+                    if operation == "start":
+                        if precondition_service.get("active") is True:
+                            raise ControlError("Dauersong läuft bereits.")
+                        if precondition_service.get("hardening_ready") is not True:
+                            raise ControlError(
+                                "Der repo-verwaltete Dauersong-Härtungsvertrag ist noch nicht aktiv."
+                            )
+                        if precondition_service.get("source_binding_ready") is not True:
+                            raise ControlError(
+                                "Die gebundene Dauersong-v9-Quelle stimmt nicht mit dem geprüften Stand überein."
+                            )
+                    elif operation == "recover":
+                        if precondition_service.get("active") is True:
+                            raise ControlError(
+                                "Dauersong-Recovery ist nur im inaktiven Zustand erlaubt."
+                            )
+
+                    result = self.runner.run(command, timeout=25)
+                    report = parse_json_output(result, label="Dauersong-Aktion")
+                    if result.returncode != 0:
+                        raise ControlError(
+                            safe_error_message(report, "Dauersong-Aktion wurde blockiert.")
+                        )
+                except Exception:
+                    try:
+                        self._readback_after_mutation()
+                    except Exception:
+                        pass
+                    raise
+
+                snapshot = self._readback_after_mutation()
+                song = snapshot.get("dauersong", {})
+                service = song.get("service", {})
+                status_ok = song.get("status") == "ok"
+                active = service.get("active") is True
+                if operation == "start":
+                    stream = service.get("stream")
+                    maximum = stream.get("max_volume_percent") if isinstance(stream, dict) else None
+                    if (
+                        not status_ok
+                        or not active
+                        or service.get("managed_by") != "audio-control-v1"
+                        or service.get("hardening_ready") is not True
+                        or service.get("configured_stream_volume_percent") != 100
+                        or not isinstance(stream, dict)
+                        or stream.get("found") is not True
+                        or type(maximum) is not int
+                        or maximum > 100
+                    ):
+                        raise ControlError(
+                            "Dauersong-Start wurde nicht mit sicher begrenztem Audiostream bestätigt."
+                        )
+                elif not status_ok or active:
+                    raise ControlError(
+                        "Dauersong-Endzustand wurde nicht als inaktiv bestätigt."
+                    )
+                return {
+                    "schema_version": 1,
+                    "kind": "audio_control_dauersong_action_result",
+                    "operation": operation,
+                    "result": report,
+                    "snapshot": snapshot,
+                }
+            finally:
+                self._snapshot_lock.release()
+        finally:
+            self._action_lock.release()
 
     def perform_whale_action(self, payload: dict[str, Any]) -> dict[str, Any]:
         allowed_keys = {"operation", "mode"}
@@ -3217,6 +3388,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             or parsed.fragment
             or parsed.path not in {
                 f"/api/{API_VERSION}/actions/whale",
+                f"/api/{API_VERSION}/actions/dauersong",
                 f"/api/{API_VERSION}/actions/recording",
             }
             or parsed.query
@@ -3316,6 +3488,8 @@ class AudioControlHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == f"/api/{API_VERSION}/actions/recording":
                 result = self.server.controller.perform_recording_action(payload)
+            elif parsed.path == f"/api/{API_VERSION}/actions/dauersong":
+                result = self.server.controller.perform_dauersong_action(payload)
             else:
                 result = self.server.controller.perform_whale_action(payload)
         except ActionBusy as error:
@@ -3595,6 +3769,7 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
         re.findall(r"/api/v1/actions/[a-z0-9_-]+", javascript)
     )
     required_action_endpoints = {
+        "/api/v1/actions/dauersong",
         "/api/v1/actions/recording",
         "/api/v1/actions/whale",
     }

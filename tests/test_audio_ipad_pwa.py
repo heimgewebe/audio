@@ -534,7 +534,13 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             "async function fetchJson(url, options = {}) {\n"
             "  if (!backendAllowed() && sameOriginApiTarget(url)) {",
             "async function refreshSnapshot(force = false) {\n"
-            "  if (state.loading || state.recordingActionPending || state.whaleActionPending || !backendAllowed()) return;",
+            "  if (\n"
+            "    state.loading ||\n"
+            "    state.recordingActionPending ||\n"
+            "    state.dauersongActionPending ||\n"
+            "    state.whaleActionPending ||\n"
+            "    !backendAllowed()\n"
+            "  ) return;",
             "async function loadReplay() {\n  if (!backendAllowed()) return;",
             "function requestTelemetry() {\n  if (!backendAllowed()) return Promise.resolve();",
             "async function telemetryPollTick() {\n"

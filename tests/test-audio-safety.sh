@@ -6,6 +6,15 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/safe/runtime"
 printf '%s\n' '#!/usr/bin/env bash' 'exec carla-single lv2 example' >"$tmp/safe/runtime/start"
 "$checker" "$tmp/safe"
+mkdir -p "$tmp/excluded/runtime"
+printf '%s\n' 'sfizz_jack documentation example' >"$tmp/excluded/runtime/example.md"
+"$checker" "$tmp/excluded"
+mkdir -p "$tmp/hidden/runtime"
+printf '%s\n' '#!/usr/bin/env bash' 'sfizz_jack hidden.sfz' >"$tmp/hidden/runtime/.start"
+if "$checker" "$tmp/hidden" >/dev/null 2>&1; then
+  echo 'hidden sfizz_jack negative control unexpectedly passed' >&2
+  exit 1
+fi
 mkdir -p "$tmp/sfizz/runtime"
 printf '%s\n' '#!/usr/bin/env bash' 'sfizz_jack instrument.sfz' >"$tmp/sfizz/runtime/start"
 if "$checker" "$tmp/sfizz" >/dev/null 2>&1; then

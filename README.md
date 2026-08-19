@@ -65,8 +65,22 @@ Zustandsautorität; der Browser verarbeitet kein kritisches Audio.
 Die Oberfläche trennt beobachtete Laufzeit, gewünschte Konfiguration, physisch
 ungeprüfte Fakten und tatsächliche Ausführungsautorität. Ausgeschaltete Geräte
 sind daher ein neutraler Vor-Ort-Zustand und kein pauschaler Systemfehler.
-Profilplanung ist read-only; Dauersong und Profil-Apply bleiben sichtbar
-fail-closed. Das Dashboard zeigt zusätzlich, ob die laufende, unveränderliche
+Profilplanung ist read-only; Profil-Apply bleibt sichtbar fail-closed. Der
+vorhandene Dauersong v9 wird nicht neu erfunden. Die bestehende
+`grabowski-dauersong.service` bleibt die einzige Performer-Identität und wird
+über einen hashgebundenen Adapter sowie einen repo-versionierten späten
+systemd-Drop-in kontrolliert. Dadurch bleiben auch Kritiker-, Dramaturg- und
+Liebhaber-Timer auf derselben Dienstidentität. Der alte 185-%-Streampegel wird
+auf 100 % überschrieben; zusätzlich gelten CPU-, Speicher-, Task-, FD-, Log-
+und Sechs-Stunden-Laufzeitgrenzen sowie `Restart=no`. `ExecStartPre` blockiert
+Starts bei Quell- oder Soundfont-Drift. Nach dem Start werden sowohl der
+tatsächliche Prozess-Environment-Wert als auch der reale FluidSynth-Stream
+geprüft; ein nachträglich nur konfigurationsseitig auf 100 % umgestellter alter
+185-%-Prozess gilt deshalb weiterhin als unsicher und bleibt stoppbar. Der
+100-%-Drop-in ist ein Sicherheits-Ratchet: Ein Rollback der Audiozentrale darf
+ihn nicht entfernen und damit den alten 185-%-Startvertrag wiederherstellen.
+Das Dashboard zeigt zusätzlich, ob die
+laufende, unveränderliche
 Releasefassung mit dem letzten sicheren Auto-Deploy-Beleg synchron ist, ohne
 private Deploypfade offenzulegen.
 
@@ -185,6 +199,11 @@ python3 scripts/whale_live.py mode realistic
 python3 scripts/whale_live.py mode ufo
 python3 scripts/whale_live.py toggle
 python3 scripts/whale_live.py demo /tmp/buckelwal-live-voice-v1-demo.wav
+python3 scripts/dauersong_live.py doctor
+python3 scripts/dauersong_live.py status
+# Start/Stop sind zusätzlich lokal in der Audiozentrale verfügbar; Fernsteuerung bleibt blockiert.
+python3 scripts/dauersong_live.py start
+python3 scripts/dauersong_live.py stop
 ./scripts/audio-control check
 ./scripts/audio-control start
 ./scripts/audio-control status

@@ -27,6 +27,9 @@ class AudioControlDeployTests(unittest.TestCase):
     ) -> None:
         files = {
             "scripts/audio_control.py": b"print('control')\n",
+            "scripts/dauersong_live.py": b"print('dauersong')\n",
+            "inventory/dauersong-v9-legacy.v1.json": b"{}\n",
+            "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf": b"[Service]\nRestart=no\n",
             "scripts/audio_level_observer.py": b"print('observer')\n",
             "scripts/audio_live_telemetry.py": b"print('telemetry')\n",
             "scripts/audio_remote_bridge.py": b"print('bridge')\n",
@@ -100,6 +103,30 @@ class AudioControlDeployTests(unittest.TestCase):
             host="127.0.0.1",
             port=8765,
         )
+
+    def test_dauersong_hardening_is_installed_after_other_runtime_files(self):
+        self.assertEqual(
+            list(MODULE.RUNTIME_FILES)[-1], MODULE.DAUERSONG_HARDENING_RELATIVE
+        )
+
+    def test_dauersong_runtime_files_are_release_critical(self):
+        expected = {
+            "scripts/dauersong_live.py",
+            "inventory/dauersong-v9-legacy.v1.json",
+            "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+        }
+        self.assertTrue(expected <= set(MODULE.BASE_CRITICAL_RELEASE_FILES))
+        commit = "8" * 40
+        for missing in sorted(expected):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
 
     def test_replay_runtime_files_are_release_critical(self):
         expected = {
@@ -871,6 +898,63 @@ class AudioControlDeployTests(unittest.TestCase):
             install_runtime.assert_called_once_with(release)
             activate.assert_not_called()
 
+    def test_unchanged_dauersong_dropin_drift_triggers_daemon_reload(self):
+        commit = "d" * 40
+        update = {
+            "source": "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+            "destination": "/tmp/zz-audio-control-v1.conf",
+            "sha256": "e" * 64,
+            "mode": "0o600",
+        }
+        backup = {"path": update["destination"], "payload": b"old", "mode": 0o600}
+        daemon_reload = MODULE.CommandResult(
+            ("systemctl", "--user", "daemon-reload"), 0, "", "", 0.1
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            release = args.deploy_root / "releases" / commit
+            release.mkdir(parents=True)
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE, "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(MODULE, "read_current_commit", return_value=commit),
+                mock.patch.object(
+                    MODULE, "prepare_release", return_value=(release, [], False)
+                ),
+                mock.patch.object(
+                    MODULE, "reconcile_runtime_environment",
+                    return_value=({"changed": False, "host": "127.0.0.1", "port": 8765}, None),
+                ),
+                mock.patch.object(
+                    MODULE, "install_release_runtime", return_value=([update], [backup])
+                ),
+                mock.patch.object(MODULE, "run_command", return_value=daemon_reload) as run,
+                mock.patch.object(MODULE, "activate_service") as activate,
+                mock.patch.object(
+                    MODULE, "verify_service", return_value={"url": "http://127.0.0.1:8765/"}
+                ),
+                mock.patch.object(
+                    MODULE, "prune_releases",
+                    return_value={"keep": 3, "removed": [], "warnings": []},
+                ),
+            ):
+                report = MODULE.sync(args)
+        self.assertFalse(report["changed"])
+        self.assertEqual(report["runtime_updates"], [update])
+        activate.assert_not_called()
+        run.assert_called_once_with(
+            ["systemctl", "--user", "daemon-reload"], timeout=30
+        )
+
     def test_unchanged_ui_unit_drift_restarts_service(self):
         commit = "6" * 40
         update = {
@@ -1327,7 +1411,8 @@ class AudioControlDeployTests(unittest.TestCase):
                     payload = b"print('deploy')\n"
                 else:
                     payload = f"# bound {relative}\n".encode()
-                    expected_units[pathlib.Path(relative).name] = payload
+                    if pathlib.Path(relative).suffix in {".service", ".timer"}:
+                        expected_units[pathlib.Path(relative).name] = payload
                 source.write_bytes(payload)
                 destination = destinations / pathlib.Path(relative).name
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1351,6 +1436,31 @@ class AudioControlDeployTests(unittest.TestCase):
                 updates, backups = MODULE.install_release_runtime(release)
             self.assertEqual(len(updates), len(runtime_files))
             self.assertEqual(len(backups), len(runtime_files))
+
+    def test_runtime_rollback_preserves_dauersong_safety_ratchet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            safety = root / "zz-audio-control-v1.conf"
+            ordinary = root / "audio-control-ui-v1.service"
+            safety.write_bytes(b"new-safe-100-percent\n")
+            ordinary.write_bytes(b"new-runtime\n")
+            backups = [
+                {"path": str(safety), "payload": b"old-185-percent\n", "mode": 0o600},
+                {"path": str(ordinary), "payload": b"old-runtime\n", "mode": 0o600},
+            ]
+            with mock.patch.object(MODULE, "DAUERSONG_HARDENING_DESTINATION", safety):
+                MODULE.restore_release_runtime(backups)
+            self.assertEqual(safety.read_bytes(), b"new-safe-100-percent\n")
+            self.assertEqual(ordinary.read_bytes(), b"old-runtime\n")
+
+    def test_runtime_rollback_never_removes_new_dauersong_safety_dropin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            safety = pathlib.Path(directory) / "zz-audio-control-v1.conf"
+            safety.write_bytes(b"safe-cap\n")
+            backups = [{"path": str(safety), "payload": None, "mode": None}]
+            with mock.patch.object(MODULE, "DAUERSONG_HARDENING_DESTINATION", safety):
+                MODULE.restore_release_runtime(backups)
+            self.assertEqual(safety.read_bytes(), b"safe-cap\n")
 
     def test_release_runtime_update_requires_complete_bound_set(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1451,8 +1561,12 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertIn("%h/.config/systemd/user", deploy)
         self.assertNotIn("%h/.config/audio-control-ui", deploy)
         self.assertIn("%h/.local/state/audio-control-deploy", deploy)
-        self.assertEqual(len(MODULE.RUNTIME_FILES), 6)
+        self.assertEqual(len(MODULE.RUNTIME_FILES), 7)
         self.assertIn("systemd/user/audio-remote-bridge-v1.service", MODULE.RUNTIME_FILES)
+        self.assertIn(
+            "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
+            MODULE.RUNTIME_FILES,
+        )
         self.assertIn(
             "systemd/user/audio-control-level-observer-v1.service",
             MODULE.RUNTIME_FILES,

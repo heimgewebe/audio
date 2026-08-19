@@ -44,6 +44,17 @@ LEVEL_OBSERVER_CRITICAL_RELEASE_FILES = (
     f"systemd/user/{LEVEL_OBSERVER_UNIT}",
     "systemd/user/audio-control-ui-v1.service",
 )
+DAUERSONG_HARDENING_RELATIVE = (
+    "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf"
+)
+DAUERSONG_HARDENING_DESTINATION = (
+    pathlib.Path.home()
+    / ".config"
+    / "systemd"
+    / "user"
+    / "grabowski-dauersong.service.d"
+    / "zz-audio-control-v1.conf"
+)
 RUNTIME_FILES = {
     "scripts/audio_control_deploy.py": (
         pathlib.Path.home() / ".local" / "libexec" / "audio-control-deploy.py",
@@ -73,6 +84,10 @@ RUNTIME_FILES = {
         pathlib.Path.home() / ".config" / "systemd" / "user" / "audio-control-deploy.timer",
         0o600,
     ),
+    DAUERSONG_HARDENING_RELATIVE: (
+        DAUERSONG_HARDENING_DESTINATION,
+        0o600,
+    ),
 }
 PWA_CRITICAL_RELEASE_FILES = (
     "inventory/audiozentrale-ipad-pwa.v1.json",
@@ -96,6 +111,9 @@ REMOTE_BRIDGE_RELEASE_SENTINEL = "tests/test_audio_remote_bridge.py"
 
 BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
+    "scripts/dauersong_live.py",
+    "inventory/dauersong-v9-legacy.v1.json",
+    "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
     "scripts/audio_remote_bridge.py",
     "scripts/audio_remote_bridge_tailscale.py",
     "scripts/audio_remote_bridge_ipad_probe.py",
@@ -574,6 +592,12 @@ def install_release_runtime(
 def restore_release_runtime(backups: list[dict[str, Any]]) -> None:
     for backup in reversed(backups):
         destination = pathlib.Path(backup["path"])
+        # The <=100% Dauersong guard is a one-way safety ratchet. A failed
+        # Audiozentrale release may roll back application/runtime files, but
+        # must never restore the legacy 185% start contract. A forward repair
+        # can replace this drop-in; generic rollback cannot remove it.
+        if destination == DAUERSONG_HARDENING_DESTINATION:
+            continue
         payload = backup["payload"]
         if payload is None:
             with contextlib.suppress(FileNotFoundError):
@@ -1482,7 +1506,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             runtime_updates, runtime_backups = install_release_runtime(release)
             updated_sources = {update["source"] for update in runtime_updates}
             runtime_unit_changed = any(
-                source.endswith((".service", ".timer"))
+                source.startswith("systemd/user/")
                 for source in updated_sources
             )
             ui_unit_updated = (

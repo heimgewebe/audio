@@ -6,17 +6,51 @@ for dir in runtime systemd config projects; do
   [[ -d "$root/$dir" ]] && scan+=("$root/$dir")
 done
 [[ ${#scan[@]} -eq 0 ]] && exit 0
-failed=0
-if rg -n --hidden --glob '!*.md' --glob '!*.txt' '(^|[^[:alnum:]_])sfizz_jack([^[:alnum:]_]|$)' "${scan[@]}"; then
-  echo 'FEHLER: sfizz_jack ist in produktiven Audioflächen verboten.' >&2
-  failed=1
-fi
-if rg -n --hidden --glob '!*.md' --glob '!*.txt' '>>[^#\n]*\.log([[:space:]]|$)' "${scan[@]}"; then
-  echo 'FEHLER: unbeschränkte append-Umleitung in Logdateien ist verboten.' >&2
-  failed=1
-fi
-if rg -n --hidden --glob '!*.md' --glob '!*.txt' 'session\.log' "${scan[@]}"; then
-  echo 'FEHLER: unverwaltete session.log-Verträge sind verboten.' >&2
-  failed=1
-fi
-exit "$failed"
+exec python3 - "${scan[@]}" <<'PY'
+from __future__ import annotations
+
+import pathlib
+import re
+import stat
+import sys
+
+checks = (
+    (
+        re.compile(r"(^|[^A-Za-z0-9_])sfizz_jack([^A-Za-z0-9_]|$)"),
+        "FEHLER: sfizz_jack ist in produktiven Audioflächen verboten.",
+    ),
+    (
+        re.compile(r">>[^#\n]*\.log(?:\s|$)"),
+        "FEHLER: unbeschränkte append-Umleitung in Logdateien ist verboten.",
+    ),
+    (
+        re.compile(r"session\.log"),
+        "FEHLER: unverwaltete session.log-Verträge sind verboten.",
+    ),
+)
+
+matched = [False] * len(checks)
+for raw_root in sys.argv[1:]:
+    root = pathlib.Path(raw_root)
+    for path in sorted(root.rglob("*")):
+        try:
+            metadata = path.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or path.suffix in {".md", ".txt"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line_number, line in enumerate(text.splitlines(), 1):
+            for index, (pattern, _message) in enumerate(checks):
+                if pattern.search(line):
+                    print(f"{path}:{line_number}:{line}")
+                    matched[index] = True
+
+for found, (_pattern, message) in zip(matched, checks):
+    if found:
+        print(message, file=sys.stderr)
+raise SystemExit(1 if any(matched) else 0)
+PY

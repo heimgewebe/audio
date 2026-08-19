@@ -10,8 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Run safety negative controls
         run: bash tests/test-audio-safety.sh
       - name: Check repository audio surfaces
