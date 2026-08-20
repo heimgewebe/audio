@@ -17,6 +17,8 @@ import stat
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -37,6 +39,9 @@ MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 MAX_ELD_FILES = 32
 MAX_ELD_BYTES = 256 * 1024
 STREAM_CHUNK_BYTES = 8192
+MOPIDY_RPC_URL = "http://127.0.0.1:6680/mopidy/rpc"
+MAX_MOPIDY_RPC_BYTES = 64 * 1024
+MOPIDY_RPC_TIMEOUT_SECONDS = 1.5
 
 SERIAL_PATTERNS = (
     re.compile(r"usb-[^\s]+", re.IGNORECASE),
@@ -229,6 +234,84 @@ def parse_setting(text: str, key: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def observe_mopidy_qobuz() -> dict[str, object]:
+    """Observe whether the current local Mopidy runtime exposes a Qobuz backend."""
+    request_body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "core.library.browse",
+            "params": {"uri": None},
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        MOPIDY_RPC_URL,
+        data=request_body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirectHandler(),
+    )
+    try:
+        with opener.open(request, timeout=MOPIDY_RPC_TIMEOUT_SECONDS) as response:
+            body = response.read(MAX_MOPIDY_RPC_BYTES + 1)
+            status = getattr(response, "status", 200)
+            final_url = response.geturl()
+    except (OSError, urllib.error.URLError):
+        return {
+            "rpc_reachable": False,
+            "backend_registered": False,
+            "status": "rpc-unavailable",
+            "reason": "local-mopidy-rpc-unavailable",
+        }
+    if final_url != MOPIDY_RPC_URL or status != 200 or len(body) > MAX_MOPIDY_RPC_BYTES:
+        return {
+            "rpc_reachable": False,
+            "backend_registered": False,
+            "status": "rpc-invalid",
+            "reason": "local-mopidy-rpc-response-invalid",
+        }
+    try:
+        payload = json.loads(body.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError):
+        return {
+            "rpc_reachable": False,
+            "backend_registered": False,
+            "status": "rpc-invalid",
+            "reason": "local-mopidy-rpc-response-invalid",
+        }
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, list):
+        return {
+            "rpc_reachable": True,
+            "backend_registered": False,
+            "status": "backend-unavailable",
+            "reason": "qobuz-backend-not-registered",
+        }
+    backend_registered = any(
+        isinstance(item, dict)
+        and isinstance(item.get("uri"), str)
+        and item["uri"].casefold().startswith("qobuz:")
+        for item in result
+    )
+    return {
+        "rpc_reachable": True,
+        "backend_registered": backend_registered,
+        "status": "available" if backend_registered else "backend-unavailable",
+        "reason": None if backend_registered else "qobuz-backend-not-registered",
+    }
+
+
 def is_motu_m2_endpoint(name: str | None) -> bool:
     if not name:
         return False
@@ -390,7 +473,9 @@ def desired_hardware() -> list[str]:
 
 
 def build_report(
-    results: Iterable[CommandResult], eld_text: str = ""
+    results: Iterable[CommandResult],
+    eld_text: str = "",
+    mopidy_qobuz: dict[str, object] | None = None,
 ) -> dict[str, object]:
     result_list = list(results)
     by_command = {result.argv: result for result in result_list}
@@ -438,6 +523,12 @@ def build_report(
     source = normalize_endpoint(source_name)
     pioneer_observed = bool(re.search(r"Pioneer|VSX-?830", eld_text, re.IGNORECASE))
     bluetooth_active = bluetooth.stdout.strip() == "active"
+    qobuz_observation = mopidy_qobuz or {
+        "rpc_reachable": None,
+        "backend_registered": None,
+        "status": "not-observed",
+        "reason": "mopidy-qobuz-not-observed",
+    }
 
     warnings: list[dict[str, str]] = []
     if source != "motu-m2":
@@ -483,6 +574,17 @@ def build_report(
                 "detail": "The system Bluetooth service is inactive; an external transmitter remains unobservable.",
             }
         )
+    if (
+        qobuz_observation.get("rpc_reachable") is True
+        and qobuz_observation.get("backend_registered") is False
+    ):
+        warnings.append(
+            {
+                "code": "qobuz-mopidy-backend-unavailable",
+                "severity": "medium",
+                "detail": "Mopidy is reachable, but its Qobuz backend is not registered; qobuz-rate-proof cannot run.",
+            }
+        )
 
     return {
         "schema_version": 1,
@@ -515,6 +617,13 @@ def build_report(
             "force_quantum_frames": quantum,
             "single_buffer_period_ms": buffer_period_ms,
             "round_trip_latency_ms": None,
+        },
+        "streaming_sources": {
+            "qobuz": {
+                "mopidy": qobuz_observation,
+                "rate_probe_backend_ready": qobuz_observation.get("backend_registered") is True,
+                "browser_quality_boundary": "shared-pipewire-mixed-path; track-native-not-established",
+            }
         },
         "external_endpoints": {
             "pioneer_vsx_830_k": {
@@ -667,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     results = [run_read_only(command) for command in READ_ONLY_COMMANDS]
-    report = build_report(results, read_eld_text())
+    report = build_report(results, read_eld_text(), observe_mopidy_qobuz())
     encoded = (
         json.dumps(report, ensure_ascii=False, indent=2 if args.pretty else None) + "\n"
     )

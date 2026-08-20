@@ -125,6 +125,41 @@ class AudioDoctorTests(unittest.TestCase):
             {warning["code"] for warning in report["warnings"]},
         )
 
+    def test_qobuz_backend_unavailable_blocks_reference_rate_proof(self):
+        report = MODULE.build_report(
+            [],
+            mopidy_qobuz={
+                "rpc_reachable": True,
+                "backend_registered": False,
+                "status": "backend-unavailable",
+                "reason": "qobuz-backend-not-registered",
+            },
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(qobuz["rate_probe_backend_ready"])
+        self.assertEqual(qobuz["mopidy"]["status"], "backend-unavailable")
+        self.assertIn(
+            "qobuz-mopidy-backend-unavailable",
+            {warning["code"] for warning in report["warnings"]},
+        )
+
+    def test_qobuz_backend_available_allows_reference_rate_proof(self):
+        report = MODULE.build_report(
+            [],
+            mopidy_qobuz={
+                "rpc_reachable": True,
+                "backend_registered": True,
+                "status": "available",
+                "reason": None,
+            },
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertTrue(qobuz["rate_probe_backend_ready"])
+        self.assertNotIn(
+            "qobuz-mopidy-backend-unavailable",
+            {warning["code"] for warning in report["warnings"]},
+        )
+
     def test_serial_redaction(self):
         self.assertNotIn("M20000062566", MODULE.redact("usb-MOTU_M2_M20000062566-00"))
 
