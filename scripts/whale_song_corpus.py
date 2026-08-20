@@ -403,6 +403,89 @@ def recording_summary(record: dict[str, object], phrases: Sequence[PhraseObserva
     }
 
 
+def split_source_bindings(
+    corpus_root: pathlib.Path, split: str
+) -> list[dict[str, object]]:
+    """Return manifest-declared source bindings without reading annotation payloads."""
+
+    if split not in {"development", "holdout"}:
+        raise ValueError("split must be development or holdout")
+    manifest = load_source_manifest(corpus_root)
+    bindings: list[dict[str, object]] = []
+    for record in manifest["records"]:
+        if not isinstance(record, dict) or record.get("split") != split:
+            continue
+        annotation = record.get("annotation")
+        if not isinstance(annotation, dict):
+            raise ValueError("record annotation binding is missing")
+        bindings.append(
+            {
+                "recording_id": record["recording_id"],
+                "year": record["year"],
+                "annotation": {
+                    "file": annotation["file"],
+                    "bytes": annotation["bytes"],
+                    "md5": annotation["md5"],
+                    "sha256": annotation["sha256"],
+                },
+            }
+        )
+    if not bindings:
+        raise ValueError(f"corpus split is empty: {split}")
+    return bindings
+
+
+def build_split_corpus(corpus_root: pathlib.Path, split: str) -> dict[str, object]:
+    """Build exactly one frozen split without reading the other split's payloads.
+
+    Reading ``source-manifest.json`` is allowed because it is the revision-bound
+    split/source contract.  Only annotation payloads belonging to ``split`` are
+    opened and hash-verified.  This gives calibration code a hard access boundary
+    instead of relying on downstream callers to ignore an already-loaded holdout.
+    """
+
+    if split not in {"development", "holdout"}:
+        raise ValueError("split must be development or holdout")
+    manifest = load_source_manifest(corpus_root)
+    selected = [
+        record
+        for record in manifest["records"]
+        if isinstance(record, dict) and record.get("split") == split
+    ]
+    if not selected:
+        raise ValueError(f"corpus split is empty: {split}")
+
+    records_out: list[dict[str, object]] = []
+    for record in selected:
+        phrases = parse_recording(corpus_root, record)
+        records_out.append(
+            {
+                "source": record,
+                "summary": recording_summary(record, phrases),
+                "phrases": [asdict(phrase) for phrase in phrases],
+            }
+        )
+
+    manifest_path = regular_file_path(
+        corpus_root / "source-manifest.json", "song corpus source manifest"
+    )
+    result: dict[str, object] = {
+        "schema_version": CORPUS_SCHEMA_VERSION,
+        "kind": "humpback_whale_song_structural_split_corpus",
+        "selected_split": split,
+        "source_manifest_sha256": sha256_bytes(
+            read_bound_regular_bytes(manifest_path, "song corpus source manifest")
+        ),
+        "split": manifest["split"],
+        "record_count": len(records_out),
+        "phrase_count": sum(len(record["phrases"]) for record in records_out),
+        "records": records_out,
+        "does_not_establish": manifest.get("does_not_establish", []),
+    }
+    result["corpus_sha256"] = sha256_bytes(canonical_json_bytes(result))
+    return result
+
+
 def build_corpus(corpus_root: pathlib.Path) -> dict[str, object]:
     manifest = load_source_manifest(corpus_root)
     records_out: list[dict[str, object]] = []

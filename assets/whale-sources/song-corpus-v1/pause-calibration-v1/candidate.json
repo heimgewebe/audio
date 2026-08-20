@@ -1,0 +1,465 @@
+{
+  "baseline_validation": {
+    "reason": "the baseline artifact contains holdout results and is not read during calibration",
+    "status": "deferred-until-post-freeze-holdout-evaluation"
+  },
+  "calibration": {
+    "development_distance_all_current_features": {
+      "feature_count": 7,
+      "features": {
+        "mean_analyzed_span_per_published_song_seconds": {
+          "empirical": 412.585699,
+          "model": 242.318959,
+          "relative_absolute_error": 0.412682
+        },
+        "mean_interphrase_gap_seconds": {
+          "empirical": 1.037118,
+          "model": 1.037118,
+          "relative_absolute_error": 0.0
+        },
+        "mean_phrase_duration_seconds": {
+          "empirical": 8.687608,
+          "model": 4.873101,
+          "relative_absolute_error": 0.439074
+        },
+        "mean_phrase_type_run_length": {
+          "empirical": 6.162162,
+          "model": 6.0,
+          "relative_absolute_error": 0.026316
+        },
+        "mean_phrases_per_published_song": {
+          "empirical": 42.236842,
+          "model": 41.0,
+          "relative_absolute_error": 0.029283
+        },
+        "mean_published_units_per_song": {
+          "empirical": 158.382105,
+          "model": 188.0,
+          "relative_absolute_error": 0.187003
+        },
+        "mean_theme_sequence_length": {
+          "empirical": 7.4,
+          "model": 6.0,
+          "relative_absolute_error": 0.189189
+        }
+      },
+      "interpretation": "lower is structurally closer; this engineering diagnostic is not a biological or perceptual realism score",
+      "mean_relative_absolute_error": 0.183364
+    },
+    "empirical_development_mean_interphrase_gap_seconds": 1.037118,
+    "endpoint_model_gaps_seconds": {
+      "high": 1.243957,
+      "low": 0.61225
+    },
+    "evaluated_candidates": [
+      {
+        "development_gap_relative_absolute_error": 0.40966216,
+        "feature_vector": {
+          "mean_analyzed_span_per_published_song_seconds": 224.899354,
+          "mean_interphrase_gap_seconds": 0.61225,
+          "mean_phrase_duration_seconds": 4.873101,
+          "mean_phrase_type_run_length": 6.0,
+          "mean_phrases_per_published_song": 41.0,
+          "mean_published_units_per_song": 188.0,
+          "mean_theme_sequence_length": 6.0
+        },
+        "model_mean_interphrase_gap_seconds": 0.61225,
+        "phrase_pause_seconds": 0.45
+      },
+      {
+        "development_gap_relative_absolute_error": 9.64e-07,
+        "feature_vector": {
+          "mean_analyzed_span_per_published_song_seconds": 242.318924,
+          "mean_interphrase_gap_seconds": 1.037117,
+          "mean_phrase_duration_seconds": 4.873101,
+          "mean_phrase_type_run_length": 6.0,
+          "mean_phrases_per_published_song": 41.0,
+          "mean_published_units_per_song": 188.0,
+          "mean_theme_sequence_length": 6.0
+        },
+        "model_mean_interphrase_gap_seconds": 1.037117,
+        "phrase_pause_seconds": 0.947702
+      },
+      {
+        "development_gap_relative_absolute_error": 0.0,
+        "feature_vector": {
+          "mean_analyzed_span_per_published_song_seconds": 242.318959,
+          "mean_interphrase_gap_seconds": 1.037118,
+          "mean_phrase_duration_seconds": 4.873101,
+          "mean_phrase_type_run_length": 6.0,
+          "mean_phrases_per_published_song": 41.0,
+          "mean_published_units_per_song": 188.0,
+          "mean_theme_sequence_length": 6.0
+        },
+        "model_mean_interphrase_gap_seconds": 1.037118,
+        "phrase_pause_seconds": 0.947703
+      },
+      {
+        "development_gap_relative_absolute_error": 9.64e-07,
+        "feature_vector": {
+          "mean_analyzed_span_per_published_song_seconds": 242.318994,
+          "mean_interphrase_gap_seconds": 1.037119,
+          "mean_phrase_duration_seconds": 4.873101,
+          "mean_phrase_type_run_length": 6.0,
+          "mean_phrases_per_published_song": 41.0,
+          "mean_published_units_per_song": 188.0,
+          "mean_theme_sequence_length": 6.0
+        },
+        "model_mean_interphrase_gap_seconds": 1.037119,
+        "phrase_pause_seconds": 0.947704
+      },
+      {
+        "development_gap_relative_absolute_error": 0.199436323,
+        "feature_vector": {
+          "mean_analyzed_span_per_published_song_seconds": 250.799354,
+          "mean_interphrase_gap_seconds": 1.243957,
+          "mean_phrase_duration_seconds": 4.873101,
+          "mean_phrase_type_run_length": 6.0,
+          "mean_phrases_per_published_song": 41.0,
+          "mean_published_units_per_song": 188.0,
+          "mean_theme_sequence_length": 6.0
+        },
+        "model_mean_interphrase_gap_seconds": 1.243957,
+        "phrase_pause_seconds": 1.19
+      }
+    ],
+    "final_config": {
+      "base_note": 45,
+      "cycle_pause_seconds": 2.6,
+      "cycles": 2,
+      "phrase_pause_seconds": 0.947703,
+      "phrase_repeats_max": 6,
+      "phrase_repeats_min": 6,
+      "seed": 45223,
+      "theme_count": 6,
+      "transition_pause_seconds": 1.35
+    },
+    "model_ensemble_seeds": [
+      3682856141,
+      2828730739,
+      1370949864,
+      2752020422,
+      1518344769,
+      4133719992,
+      941196425,
+      4176497700
+    ],
+    "objective": "mean_interphrase_gap_seconds_relative_absolute_error",
+    "selection_method": "development-only-affine-crossing-plus-microsecond-neighbours",
+    "unrounded_crossing_seconds": 0.947702764098,
+    "valid_phrase_pause_range_seconds": [
+      0.45,
+      1.19
+    ],
+    "winner": {
+      "development_gap_relative_absolute_error": 0.0,
+      "feature_vector": {
+        "mean_analyzed_span_per_published_song_seconds": 242.318959,
+        "mean_interphrase_gap_seconds": 1.037118,
+        "mean_phrase_duration_seconds": 4.873101,
+        "mean_phrase_type_run_length": 6.0,
+        "mean_phrases_per_published_song": 41.0,
+        "mean_published_units_per_song": 188.0,
+        "mean_theme_sequence_length": 6.0
+      },
+      "model_mean_interphrase_gap_seconds": 1.037118,
+      "phrase_pause_seconds": 0.947703
+    }
+  },
+  "candidate_sha256": "f343b326b149f0ea4b6c76bb0a0db0123eb8a7e91ca0c84a500f05a0ca22521e",
+  "code_bindings": {
+    "scripts/calibrate_whale_song_interphrase_pause.py": "a7d49ccf73e77e65262168adfd95fa634db8f0e33133b76af27ac81bd98b47a0",
+    "scripts/evaluate_whale_song_grammar_structure.py": "bb8e3218894f66d9cf7d4fd9b19d7f4ef3456a6522b3ddb2e303c5a8a96e6889",
+    "scripts/whale_song_corpus.py": "b84bc7fddeac07edefaf425fd2bfedceedbdca5c47eff24588c3bd0b00d6b3b4",
+    "scripts/whale_song_grammar.py": "49a3a23fa3c3a34ed2f3baff313c4d023e03a6fc8ae58646221343b456dbec71"
+  },
+  "development_source_binding": {
+    "annotation_bindings": [
+      {
+        "annotation": {
+          "bytes": 9225,
+          "file": "raw/HS120627-1107-ESM.txt",
+          "md5": "7c894d98cc86afd87dad62482bb8a42a",
+          "sha256": "87e0e66d145251690001ebc4baab7d8ac0f0c48cac2bcacd8e6bcd683682969e"
+        },
+        "recording_id": "HS120627-1107-ESM",
+        "year": 2012
+      },
+      {
+        "annotation": {
+          "bytes": 13838,
+          "file": "raw/HS120802-0959-ESM.txt",
+          "md5": "2d404abba1a5ee939f0b2dcbbca515b6",
+          "sha256": "35fc2774d4b274954b407ba20e230b4ab0c81bd4b1a435772c42a9bbeefadb1e"
+        },
+        "recording_id": "HS120802-0959-ESM",
+        "year": 2012
+      },
+      {
+        "annotation": {
+          "bytes": 14197,
+          "file": "raw/HS120813-1053-ESM.txt",
+          "md5": "4490c65bc53068d120f4fbc2780b3699",
+          "sha256": "87afe1bdd448bdf4d7cce02855845ed3a4877ac6c7d078cd76db427efbf3d757"
+        },
+        "recording_id": "HS120813-1053-ESM",
+        "year": 2012
+      },
+      {
+        "annotation": {
+          "bytes": 8255,
+          "file": "raw/HS130730-1342-ESM-PA.txt",
+          "md5": "590a1c981189305fd03a999a8495ae3d",
+          "sha256": "2bc738e79d0c5e77426f99443c886fd9a1deb353946560377a164c296b917e9c"
+        },
+        "recording_id": "HS130730-1342-ESM-PA",
+        "year": 2013
+      },
+      {
+        "annotation": {
+          "bytes": 9971,
+          "file": "raw/HS130805-1710-MAN.txt",
+          "md5": "d25f794bd622ce88d7812fede3aa4fe6",
+          "sha256": "71c785061652d9f66e1b7ed0e9aeba6b6ad19ce3939cb2bfd2ff119c25bf9e96"
+        },
+        "recording_id": "HS130805-1710-MAN",
+        "year": 2013
+      },
+      {
+        "annotation": {
+          "bytes": 15557,
+          "file": "raw/HS130806-2154-MAN.txt",
+          "md5": "24de907f9d1d80b831f2adb5cf5c48d8",
+          "sha256": "86b462bda7bbbacca25f2b6ed0c84a06cedb894b48e23afd4383671f10950b45"
+        },
+        "recording_id": "HS130806-2154-MAN",
+        "year": 2013
+      },
+      {
+        "annotation": {
+          "bytes": 20555,
+          "file": "raw/HS140714-0929-ESM.txt",
+          "md5": "62fc85bae1daad9eadf707dae086f1b7",
+          "sha256": "9b479a4af3a0985ebd7e282295c6101734baa87c7e48fc4f9855160208cbbd4e"
+        },
+        "recording_id": "HS140714-0929-ESM",
+        "year": 2014
+      },
+      {
+        "annotation": {
+          "bytes": 21157,
+          "file": "raw/HS140716-1131-ESM.txt",
+          "md5": "8f78de61e00734e1738aef69cb093bcb",
+          "sha256": "6ba58684eae38c3284a195ef8ab1b226f985aa43cc62fd096490287d2c83a5ba"
+        },
+        "recording_id": "HS140716-1131-ESM",
+        "year": 2014
+      },
+      {
+        "annotation": {
+          "bytes": 26850,
+          "file": "raw/HS140723-1157-ESM.txt",
+          "md5": "c5feb3f60f113f2b93e0ea31aca74dc0",
+          "sha256": "f94df75c8225594073a84c129536eca1532a0220a4417ead4e67b5338d7fe85c"
+        },
+        "recording_id": "HS140723-1157-ESM",
+        "year": 2014
+      },
+      {
+        "annotation": {
+          "bytes": 10536,
+          "file": "raw/HS150622-1120-MUI-PA.txt",
+          "md5": "4841c035aaf4c23871c39e0c0cb5abb3",
+          "sha256": "b78eb21e5694f8aee3b2e82ff2cebaf1a3719d97310e54f1261ec82c06debe36"
+        },
+        "recording_id": "HS150622-1120-MUI-PA",
+        "year": 2015
+      },
+      {
+        "annotation": {
+          "bytes": 6537,
+          "file": "raw/HS150625-1158-MUI.txt",
+          "md5": "66fd10f5e2babf048b38c8775a31c70b",
+          "sha256": "0c1b8741a045ba15ec59ab0838be4f70ecfb969f0c1175c555a836c3b0e43cba"
+        },
+        "recording_id": "HS150625-1158-MUI",
+        "year": 2015
+      },
+      {
+        "annotation": {
+          "bytes": 7246,
+          "file": "raw/HS150626-0921-MUI.txt",
+          "md5": "d5d19d55d2da5edbc961f7dede002ff3",
+          "sha256": "bee053dec251763268206dae54b266773e32a0903d91f63b018e4b4840a185d7"
+        },
+        "recording_id": "HS150626-0921-MUI",
+        "year": 2015
+      },
+      {
+        "annotation": {
+          "bytes": 10477,
+          "file": "raw/HS160708-1115-MUI.txt",
+          "md5": "b8ca879da84f2f654a6f5ac61223cfc2",
+          "sha256": "edc0b768d7a3e53f93e6140e0ecdf99e4e4e99f4bbda17badeeadb10d33db732"
+        },
+        "recording_id": "HS160708-1115-MUI",
+        "year": 2016
+      },
+      {
+        "annotation": {
+          "bytes": 8154,
+          "file": "raw/HS160721-1133-MUI-PA.txt",
+          "md5": "d04fa57aca40c56df8dbb3e4ea3a2bed",
+          "sha256": "c679521541b51b9f6afe1f18e56e7f16fcf55f80a4f8d38765f44e43b03fc951"
+        },
+        "recording_id": "HS160721-1133-MUI-PA",
+        "year": 2016
+      },
+      {
+        "annotation": {
+          "bytes": 5490,
+          "file": "raw/HS160723-1011-MUI.txt",
+          "md5": "9f2ad6c611c7ed9b269b6511037c1a02",
+          "sha256": "8a21035aed0cddab1f9acb488a9cfb0a4d282b4e06567dc5de420fd25701d7ac"
+        },
+        "recording_id": "HS160723-1011-MUI",
+        "year": 2016
+      }
+    ],
+    "phrase_count": 1605,
+    "record_count": 15,
+    "source_manifest_sha256": "aaa50880cf92803bfd4789add8373e585c74fdb3886af04349e419070910874e",
+    "split_corpus_sha256": "9e0d0b92fb8eb0d7ccea8f1f5152e449f01f0d016024804f1687680a719e307e",
+    "summary_sha256": "34484e12aac0da9acc7a152b8e9c4e30ef098f690045ede1229fba23511d1cc1"
+  },
+  "does_not_establish": [
+    "a production or live default change",
+    "holdout improvement before the one-shot evaluation",
+    "biological identity between model boundary pauses and empirical phrase gaps",
+    "acoustic timbre or perceptual realism"
+  ],
+  "experiment_id": "audio-whale-interphrase-pause-t044-v1",
+  "final_config": {
+    "base_note": 45,
+    "cycle_pause_seconds": 2.6,
+    "cycles": 2,
+    "phrase_pause_seconds": 0.947703,
+    "phrase_repeats_max": 6,
+    "phrase_repeats_min": 6,
+    "seed": 45223,
+    "theme_count": 6,
+    "transition_pause_seconds": 1.35
+  },
+  "freeze_contract": {
+    "holdout_annotation_payload_access_during_freeze": "forbidden",
+    "holdout_evaluation_allowed_after_freeze": true,
+    "holdout_split": "2017-2019",
+    "implementation": "build_split_corpus(corpus_root, 'development')",
+    "post_holdout_tuning_within_same_experiment": false,
+    "selection_split": "2012-2016 development only"
+  },
+  "gap_definition": {
+    "derivation": "current phrase begin minus previous chronological phrase end; negative overlap is clamped to zero; gaps greater than 60 seconds start a new session and are excluded",
+    "development_reference_distribution": {
+      "count": 1589,
+      "max": 15.747605,
+      "mean": 1.037118,
+      "median": 0.716662,
+      "min": 0.059621,
+      "p25": 0.462358,
+      "p75": 1.220981
+    },
+    "model_proxy": "mean hierarchical phrase boundary pause; proxy mapping is retained from the canonical structural evaluator and is not asserted semantically identical",
+    "name": "adjacent-released-phrase-window-gap-within-continuous-recording-session",
+    "not_unit_or_intra_phrase_gap": true,
+    "population": "released Raven phrase windows, gap-weighted",
+    "session_break_seconds_exclusive_upper_bound": 60.0,
+    "theme_boundary_status": "not separately labelled by the released Raven tables; no special theme-boundary population is invented"
+  },
+  "historical_task_intake": {
+    "paused_gap_relative_error": 0.22786836858667633,
+    "source": "Bureau AUDIO-CONTROL-PLANE-V1-T044 task intake",
+    "unpaused_baseline_gap_relative_error": 0.08101189807106207,
+    "use_as_acceptance_threshold": false
+  },
+  "kind": "humpback_whale_interphrase_pause_calibration_candidate",
+  "metric_contract": {
+    "canonical_evaluator_feature_count": 7,
+    "canonical_features": [
+      "mean_phrase_duration_seconds",
+      "mean_interphrase_gap_seconds",
+      "mean_phrase_type_run_length",
+      "mean_theme_sequence_length",
+      "mean_phrases_per_published_song",
+      "mean_published_units_per_song",
+      "mean_analyzed_span_per_published_song_seconds"
+    ],
+    "historical_task_wording_feature_count": 6,
+    "resolution": "report the current seven-feature evaluator superset; do not omit the added analyzed-span metric to match historical six-feature wording"
+  },
+  "schema_version": 1,
+  "structural_projection_before_pause_calibration": {
+    "candidate_count": 127,
+    "clamped_or_jointly_constrained": {
+      "phrase_pause_seconds": false,
+      "phrase_repeats_max": true,
+      "phrase_repeats_min": true,
+      "search_space_enforces_joint_unit_budget": true,
+      "theme_count": true
+    },
+    "development_fit_mean_relative_absolute_error": 0.124392,
+    "does_not_establish": [
+      "a production default change",
+      "causal improvement",
+      "perceptual realism"
+    ],
+    "fit_features": [
+      "mean_interphrase_gap_seconds",
+      "mean_phrase_type_run_length",
+      "mean_theme_sequence_length",
+      "mean_phrases_per_published_song",
+      "mean_published_units_per_song"
+    ],
+    "model_ensemble_seeds": [
+      3682856141,
+      2828730739,
+      1370949864,
+      2752020422,
+      1518344769,
+      4133719992,
+      941196425,
+      4176497700
+    ],
+    "not_fitted": [
+      "transition_pause_seconds: Raven phrase tables do not label transition gaps as a separate timing population",
+      "cycle_pause_seconds: explicit cycle-boundary pause timing is not directly annotated",
+      "motif pitches/timbre: structural tables do not measure synthesis pitch choices",
+      "per-unit timing: phrase tables do not expose unit timestamps"
+    ],
+    "observed": {
+      "interphrase_gap_median_seconds": 0.716662,
+      "phrase_repeat_run_p25": 1,
+      "phrase_repeat_run_p75": 8,
+      "theme_count_median": 8
+    },
+    "projected_current_config": {
+      "phrase_pause_seconds": 0.716662,
+      "phrase_repeats_max": 6,
+      "phrase_repeats_min": 6,
+      "theme_count": 6
+    },
+    "projected_feature_vector": {
+      "mean_analyzed_span_per_published_song_seconds": 234.232524,
+      "mean_interphrase_gap_seconds": 0.839888,
+      "mean_phrase_duration_seconds": 4.873101,
+      "mean_phrase_type_run_length": 6.0,
+      "mean_phrases_per_published_song": 41.0,
+      "mean_published_units_per_song": 188.0,
+      "mean_theme_sequence_length": 6.0
+    },
+    "selection_method": "exhaustive-valid-current-grammar-grid-8-seed-ensemble",
+    "source_split": "development",
+    "uses_holdout": false
+  },
+  "task_id": "AUDIO-CONTROL-PLANE-V1-T044"
+}
