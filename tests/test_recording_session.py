@@ -1169,36 +1169,115 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertEqual(transient["device"], path.stat().st_dev)
         self.assertEqual(transient["inode"], path.stat().st_ino)
 
-    def test_laboratory_projection_binds_exact_physical_snapshot(self) -> None:
+    def test_physical_projection_scopes_historical_catalog_drift(self) -> None:
+        path = self.base / "physical.json"
+        state = MODULE.PHYSICAL.empty_state()
+        MODULE.PHYSICAL.record_fact(
+            state, "rode_nt1a_connected", "true", "visual"
+        )
+        state["catalog_sha256"] = "f" * 64
+        state["facts"]["retired-unrelated-fact"] = {"not": "current"}
+        MODULE.PHYSICAL.atomic_write_private(path, state)
+
+        projection, blockers = MODULE._physical_projection(
+            path, {"rode_nt1a_connected": True}
+        )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(projection["facts"], {"rode_nt1a_connected": True})
+        self.assertIsNotNone(projection["state_sha256"])
+
+    def test_physical_projection_still_rejects_invalid_required_fact(self) -> None:
+        path = self.base / "physical.json"
+        state = MODULE.PHYSICAL.empty_state()
+        MODULE.PHYSICAL.record_fact(
+            state, "rode_nt1a_connected", "true", "visual"
+        )
+        state["catalog_sha256"] = "f" * 64
+        state["facts"]["rode_nt1a_connected"]["evidence"] = "invented"
+        MODULE.PHYSICAL.atomic_write_private(path, state)
+
+        projection, blockers = MODULE._physical_projection(
+            path, {"rode_nt1a_connected": True}
+        )
+
+        self.assertEqual(blockers, ["physical-state-invalid"])
+        self.assertIn("invalid evidence", projection["error"])
+
+    def test_laboratory_projection_scopes_historical_and_unrelated_drift(self) -> None:
+        path = self.base / "laboratory.json"
         gate = "voice-level-measurement"
+        evidence = {"kind": "bound-current-evidence"}
+        now = MODULE.utc_now()
         receipt = {
-            "evidence": {"kind": "bound"},
-            "physical_state_sha256": "b" * 64,
+            "status": "passed",
+            "recorded_at": now,
+            "evidence_sha256": MODULE.LAB.canonical_sha256(evidence),
+            "physical_state_sha256": "a" * 64,
+            "evidence": evidence,
         }
-        state = {"gates": {gate: receipt}}
+        state = MODULE.LAB.empty_state()
+        state["catalog_sha256"] = "1" * 64
+        state["profile_catalog_sha256"] = "2" * 64
+        state["gates"] = {gate: receipt, "retired-unrelated-gate": "invalid"}
+        state["updated_at"] = now
+        MODULE.LAB.atomic_write_private(path, state)
+
         with (
+            mock.patch.object(MODULE.LAB, "validate_evidence"),
             mock.patch.object(
-                MODULE,
-                "_read_optional_state",
-                return_value=(state, {"sha256": "c" * 64}),
-            ),
-            mock.patch.object(
-                MODULE.LAB,
-                "gate_resolution",
-                return_value=(set(), {gate: "physical-state-changed"}),
+                MODULE.LAB, "has_bound_voice_capture", return_value=True
             ),
         ):
             projection, blockers = MODULE._laboratory_projection(
-                self.base / "laboratory.json",
+                path,
                 {
                     "state_path": str(self.base / "physical.json"),
                     "state_sha256": "a" * 64,
                 },
                 [gate],
             )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(projection["resolved"], [gate])
+        self.assertEqual(projection["invalidated"], {})
+        self.assertIsNotNone(projection["state_sha256"])
+
+    def test_laboratory_projection_binds_exact_physical_snapshot(self) -> None:
+        path = self.base / "laboratory.json"
+        gate = "voice-level-measurement"
+        evidence = {"kind": "bound-current-evidence"}
+        now = MODULE.utc_now()
+        receipt = {
+            "status": "passed",
+            "recorded_at": now,
+            "evidence_sha256": MODULE.LAB.canonical_sha256(evidence),
+            "physical_state_sha256": "b" * 64,
+            "evidence": evidence,
+        }
+        state = MODULE.LAB.empty_state()
+        state["gates"] = {gate: receipt}
+        state["updated_at"] = now
+        MODULE.LAB.atomic_write_private(path, state)
+
+        with (
+            mock.patch.object(MODULE.LAB, "validate_evidence"),
+            mock.patch.object(
+                MODULE.LAB, "has_bound_voice_capture", return_value=True
+            ),
+        ):
+            projection, blockers = MODULE._laboratory_projection(
+                path,
+                {
+                    "state_path": str(self.base / "physical.json"),
+                    "state_sha256": "a" * 64,
+                },
+                [gate],
+            )
+
         self.assertEqual(blockers, [f"laboratory-gate:{gate}"])
         self.assertEqual(projection["invalidated"][gate], "physical-state-changed")
-        self.assertEqual(projection["state_sha256"], "c" * 64)
+        self.assertIsNotNone(projection["state_sha256"])
 
     def test_live_performance_preconditions_reserve_four_audio_artifacts(self) -> None:
         spec = self.persisted_spec(session_type="piano-vocal-performance", maximum_seconds=1)

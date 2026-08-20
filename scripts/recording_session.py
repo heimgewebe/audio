@@ -755,17 +755,83 @@ def _read_optional_state(
     return state, binding
 
 
+def _require_sha256_provenance(value: Any, label: str) -> str:
+    if not isinstance(value, str) or HEX64_RE.fullmatch(value) is None:
+        raise ValueError(f"{label} must be a lowercase hexadecimal SHA-256")
+    return value
+
+
+def _read_required_physical_state(
+    path: pathlib.Path, requirements: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if not path.exists() and not path.is_symlink():
+        return PHYSICAL.empty_state(), None
+    state, binding = _safe_json_read_with_binding(
+        path, maximum_bytes=PHYSICAL.MAX_STATE_BYTES, require_private=True
+    )
+    if (
+        state.get("schema_version") != 1
+        or state.get("kind") != "physical_audio_observation"
+    ):
+        raise ValueError("physical observation state has the wrong schema or kind")
+    _require_sha256_provenance(
+        state.get("catalog_sha256"), "physical fact catalog provenance"
+    )
+    if state.get("template_sha256") != PHYSICAL.sha256_file(PHYSICAL.TEMPLATE_PATH):
+        raise ValueError(
+            "physical verification template changed; review observations before reuse"
+        )
+    facts = state.get("facts")
+    if not isinstance(facts, dict):
+        raise ValueError("physical observation state has no facts object")
+    catalog_payload = PHYSICAL.load_json(PHYSICAL.CATALOG_PATH)
+    catalog = catalog_payload.get("facts", {})
+    if not isinstance(catalog, dict):
+        raise RecordingError("physical fact catalog has no facts object")
+    unknown_required = sorted(set(requirements) - set(catalog))
+    if unknown_required:
+        raise RecordingError(
+            "recording contract references unknown physical facts: "
+            + ", ".join(unknown_required)
+        )
+    observed_times: list[dt.datetime] = []
+    for key in requirements:
+        item = facts.get(key)
+        if item is None:
+            continue
+        if not isinstance(item, dict):
+            raise ValueError(f"stored required fact is not an object: {key}")
+        spec = catalog[key]
+        evidence = item.get("evidence")
+        if evidence not in spec.get("allowed_evidence", []):
+            raise ValueError(f"stored required fact has invalid evidence: {key}")
+        if item.get("authority") != "explicit-human-observation":
+            raise ValueError(f"stored required fact has invalid authority: {key}")
+        observed_times.append(
+            PHYSICAL.parse_timestamp(
+                item.get("observed_at"), f"stored required fact timestamp: {key}"
+            )
+        )
+        PHYSICAL.validate_stored_value(spec, item.get("value"))
+    updated_at = state.get("updated_at")
+    if updated_at is None:
+        if observed_times:
+            raise ValueError("physical observation state has required facts but no updated_at")
+    else:
+        updated = PHYSICAL.parse_timestamp(updated_at, "physical observation updated_at")
+        if observed_times and updated < max(observed_times):
+            raise ValueError(
+                "physical observation updated_at predates a required stored fact"
+            )
+    return state, binding
+
+
 def _physical_projection(
     path: pathlib.Path, requirements: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
     blockers: list[str] = []
     try:
-        state, binding = _read_optional_state(
-            path,
-            maximum_bytes=PHYSICAL.MAX_STATE_BYTES,
-            empty_factory=PHYSICAL.empty_state,
-            validator=PHYSICAL.validate_state,
-        )
+        state, binding = _read_required_physical_state(path, requirements)
     except (OSError, RecordingError, ValueError) as exc:
         return {
             "state_path": str(path),
@@ -777,7 +843,7 @@ def _physical_projection(
     resolved = {
         key: item.get("value")
         for key, item in facts.items()
-        if isinstance(key, str) and isinstance(item, dict)
+        if key in requirements and isinstance(item, dict)
     }
     for key, expected in requirements.items():
         value = resolved.get(key)
@@ -797,18 +863,138 @@ def _physical_projection(
     }, blockers
 
 
+def _read_required_laboratory_state(
+    path: pathlib.Path, required: list[str]
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, dict[str, Any]]]:
+    if not path.exists() and not path.is_symlink():
+        return LAB.empty_state(), None, {}
+    state, binding = _safe_json_read_with_binding(
+        path, maximum_bytes=LAB.MAX_STATE_BYTES, require_private=True
+    )
+    if (
+        state.get("schema_version") != 1
+        or state.get("kind") != "audio_laboratory_gate_state"
+    ):
+        raise ValueError("laboratory gate state has the wrong schema or kind")
+    _require_sha256_provenance(
+        state.get("catalog_sha256"), "laboratory gate catalog provenance"
+    )
+    _require_sha256_provenance(
+        state.get("profile_catalog_sha256"), "audio profile catalog provenance"
+    )
+    gates = state.get("gates")
+    if not isinstance(gates, dict):
+        raise ValueError("laboratory gate state has no gates object")
+    catalog = LAB.load_catalog()
+    unknown_required = sorted(set(required) - set(catalog))
+    if unknown_required:
+        raise RecordingError(
+            "recording contract references unknown laboratory gates: "
+            + ", ".join(unknown_required)
+        )
+    selected: dict[str, dict[str, Any]] = {}
+    recorded_times: list[dt.datetime] = []
+    for gate in required:
+        receipt = gates.get(gate)
+        if receipt is None:
+            continue
+        if not isinstance(receipt, dict):
+            raise ValueError(f"required laboratory receipt is not an object: {gate}")
+        if receipt.get("status") != "passed":
+            raise ValueError(f"required laboratory receipt is not passed: {gate}")
+        evidence = receipt.get("evidence")
+        if not isinstance(evidence, dict):
+            raise ValueError(f"required laboratory receipt has no evidence: {gate}")
+        LAB.validate_evidence(
+            gate,
+            evidence,
+            allow_legacy_voice=True,
+            allow_legacy_policy=True,
+            allow_stale_policy=True,
+            allow_legacy_xrun=True,
+            allow_legacy_plugin_host=True,
+            allow_legacy_qobuz=True,
+        )
+        if receipt.get("evidence_sha256") != LAB.canonical_sha256(evidence):
+            raise ValueError(f"required laboratory evidence digest mismatch: {gate}")
+        recorded_times.append(
+            LAB.parse_timestamp(
+                receipt.get("recorded_at"), f"recorded_at: required gate {gate}"
+            )
+        )
+        expected_binding = catalog[gate].get("binds_physical_state") is True
+        physical_binding = receipt.get("physical_state_sha256")
+        if expected_binding:
+            _require_sha256_provenance(
+                physical_binding, f"physical-state binding: required gate {gate}"
+            )
+        elif physical_binding is not None:
+            raise ValueError(
+                f"unbound required gate unexpectedly stores physical-state binding: {gate}"
+            )
+        selected[gate] = receipt
+    updated_at = state.get("updated_at")
+    if updated_at is None:
+        if recorded_times:
+            raise ValueError("laboratory state has required receipts but no updated_at")
+    else:
+        updated = LAB.parse_timestamp(updated_at, "laboratory updated_at")
+        if recorded_times and updated < max(recorded_times):
+            raise ValueError("laboratory updated_at predates a required receipt")
+    return state, binding, selected
+
+
+def _resolve_required_laboratory_gates(
+    receipts: dict[str, dict[str, Any]],
+    required: list[str],
+    physical_state_sha256: str | None,
+) -> tuple[set[str], dict[str, str]]:
+    resolved: set[str] = set()
+    invalidated: dict[str, str] = {}
+    catalog = LAB.load_catalog()
+    for gate in required:
+        receipt = receipts.get(gate)
+        if receipt is None:
+            invalidated[gate] = "missing"
+            continue
+        evidence = receipt["evidence"]
+        if gate == "voice-level-measurement" and not LAB.has_bound_voice_capture(evidence):
+            invalidated[gate] = "legacy-unbound-voice-evidence"
+            continue
+        if gate in LAB.RATE_POLICY_DECISIONS:
+            if not LAB.has_bound_policy_decision(evidence):
+                invalidated[gate] = "legacy-unbound-policy-evidence"
+                continue
+            if not LAB.policy_decision_binding_current(evidence):
+                invalidated[gate] = "policy-binding-changed"
+                continue
+        if gate == "xrun-stability-test" and not LAB.has_bound_xrun_observation(evidence):
+            invalidated[gate] = "legacy-unbound-xrun-evidence"
+            continue
+        if gate == "managed-plugin-host-proof" and not LAB.has_bound_plugin_host_observation(evidence):
+            invalidated[gate] = "legacy-unbound-plugin-host-evidence"
+            continue
+        if gate == "qobuz-rate-proof" and not LAB.has_bound_qobuz_observation(evidence):
+            invalidated[gate] = "legacy-unbound-qobuz-evidence"
+            continue
+        if catalog[gate].get("binds_physical_state") is True:
+            if physical_state_sha256 is None:
+                invalidated[gate] = "physical-state-missing"
+                continue
+            if receipt.get("physical_state_sha256") != physical_state_sha256:
+                invalidated[gate] = "physical-state-changed"
+                continue
+        resolved.add(gate)
+    return resolved, invalidated
+
+
 def _laboratory_projection(
     path: pathlib.Path, physical: dict[str, Any], required: list[str]
 ) -> tuple[dict[str, Any], list[str]]:
     try:
-        state, binding = _read_optional_state(
-            path,
-            maximum_bytes=LAB.MAX_STATE_BYTES,
-            empty_factory=LAB.empty_state,
-            validator=LAB.validate_state,
-        )
-        resolved_all, invalidated_all = LAB.gate_resolution(
-            state, pathlib.Path(physical["state_path"])
+        state, binding, receipts = _read_required_laboratory_state(path, required)
+        resolved_all, invalidated_all = _resolve_required_laboratory_gates(
+            receipts, required, physical.get("state_sha256")
         )
     except (KeyError, OSError, RecordingError, ValueError) as exc:
         return {
@@ -819,7 +1005,6 @@ def _laboratory_projection(
             "receipt_sha256": {},
             "error": str(exc),
         }, ["laboratory-state-invalid"]
-    receipts = state.get("gates", {})
     resolved = {gate for gate in required if gate in resolved_all}
     invalidated = {
         gate: invalidated_all.get(gate, "missing")
@@ -830,7 +1015,7 @@ def _laboratory_projection(
     receipt_sha = {
         gate: canonical_sha256(receipts[gate])
         for gate in required
-        if isinstance(receipts, dict) and isinstance(receipts.get(gate), dict)
+        if isinstance(receipts.get(gate), dict)
     }
     return {
         "state_path": str(path),
