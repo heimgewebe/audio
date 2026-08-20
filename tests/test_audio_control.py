@@ -1477,8 +1477,8 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('"iPad / Handy"', javascript)
         self.assertIn('mögliche Wiedergabequelle · Anschlussweg offen', javascript)
         self.assertIn('"Zentraler Knoten"', javascript)
-        self.assertIn('"MOTU → Lake People → Focal"', javascript)
-        self.assertIn('"MOTU → Pioneer → ELAC/Canton"', javascript)
+        self.assertIn('"MOTU Monitor Out (MOTU-seitig TRS belegt) → Lake People → Focal"', javascript)
+        self.assertIn('"MOTU RCA/Cinch → Pioneer → ELAC/Canton"', javascript)
         self.assertIn('"zentraler Hörknoten"', javascript)
         self.assertIn('Desktop und Mobilgeräte können als Quellen dienen', javascript)
         self.assertNotIn('homeSignalNode("Quelle", "Qobuz / Desktop"', javascript)
@@ -1516,7 +1516,7 @@ class AudioControlTests(unittest.TestCase):
             any(
                 edge.get("from") == "motu-m2"
                 and edge.get("to") == "pioneer-vsx-830-k"
-                and edge.get("verification") == "user-declared-unresolved"
+                and edge.get("verification") == "human-visual"
                 for edge in signal_path["edges"]
             )
         )

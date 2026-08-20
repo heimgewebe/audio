@@ -1,10 +1,11 @@
 # Signalweg und physische Wahrheit
 
-`inventory/signal-path.v1.json` trennt drei Evidenzklassen:
+`inventory/signal-path.v1.json` trennt vier Evidenzklassen:
 
 - **observed/software-observable**: aktuell vom Heim-PC messbar;
-- **user-declared**: Gerät oder Verbindung ist bekannt, aber nicht technisch rückgelesen;
-- **unknown**: darf weder als aktiv noch als sicher interpretiert werden.
+- **human-visual**: durch ausdrückliche menschliche Sichtprüfung belegt;
+- **partial-human-visual**: ein Teil der physischen Verbindung ist visuell belegt, offene Details bleiben unbekannt;
+- **user-declared/unknown**: bekannt oder erwartet, aber nicht hinreichend technisch bzw. visuell belegt.
 
 Der MOTU M2 exponiert unter Linux keine ALSA-Regler für Eingangsgain, Monitor-Mix
 oder 48 V. Der Doctor darf diese Zustände daher nicht aus Gerätesichtbarkeit,
@@ -12,23 +13,47 @@ Aufnahmepegeln oder Prozesszuständen ableiten.
 
 ## Aktuell belegbare digitale Kette
 
-`Roland FP-30X → USB → PipeWire → MOTU M2`
+Der Heim-PC läuft unter Linux mit PipeWire. Für den Referenz-Hörpfad gilt daher
+nicht ein Windows-/WASAPI-/ASIO-Modell, sondern der tatsächlich beobachtete
+`Qobuz/Mopidy → PipeWire → USB → MOTU M2`-Pfad. Qobuz über Mopidy und den
+Pulse-kompatiblen PipeWire-Pfad belegt einen funktionalen Mischpfad, aber für sich
+allein noch keine bitgenaue oder track-native Wiedergabe. Dafür gelten weiterhin
+die separaten Gates `qobuz-rate-proof` und `rate-policy-decision`.
 
-Qobuz läuft derzeit über Mopidy und den Pulse-kompatiblen PipeWire-Pfad. Dies
-belegt einen funktionalen Mischpfad, aber keine bitgenaue Wiedergabe.
+## Fotografisch geprüfte Ausgangstopologie vom 20. August 2026
 
-Der Pioneer VSX-830-K nutzt ebenfalls den MOTU M2. Der nutzerdeklarierte
-Wiedergabeweg lautet damit `Heim-PC / Qobuz → PipeWire → MOTU M2 → Pioneer
-VSX-830-K → Lautsprecher`. Die beiden Hauptwege verzweigen sich hinter dem MOTU:
-zum Lake People/Focal einerseits und zum Pioneer/Lautsprechersystem andererseits.
-Als Lautsprecherbestand sind 2× ELAC FS 109.2, ein Canton Center und vier Canton
-Satelliten ohne Subwoofer deklariert. Welcher MOTU-Ausgang und Kabeltyp zum
-Pioneer genutzt werden, welcher Receiver-Eingang aktiv ist, wie die Lautsprecher
-zugeordnet und verkabelt sind sowie Hörmodus und Referenzpegel bleiben bis zur
-Vor-Ort-Prüfung ausdrücklich offen.
+Der Wiedergabepfad verzweigt bereits am MOTU M2:
+
+```text
+Heim-PC / Qobuz
+      ↓ USB
+    MOTU M2
+      ├─ Monitor Out: MOTU-seitig 6,3-mm-TRS belegt → Lake People G111 Mk II → Focal Clear Mg
+      └─ 2× RCA/Cinch fotografisch belegt → Pioneer VSX-830-K → Lautsprecher
+```
+
+Für den Lake-People-Zweig ist mindestens ein echter TRS-Stecker mit zwei
+Isolierringen am MOTU fotografisch belegt. In diesem Ausgangskontext steht TRS
+für eine symmetrische Mono-Line-Verbindung (Tip +, Ring −, Sleeve Schirm), nicht
+für Stereo auf einem Kabel. Für Stereo werden zwei Kanäle benötigt. Noch nicht
+separat visuell abgeschlossen sind der zweite MOTU-TRS-Ausgang, die exakte
+Links/Rechts-Zuordnung, beide Verstärker-seitigen Anschlüsse sowie der
+Input-Selector des G111. Es gibt aktuell keinen positiven Hinweis auf einen
+Verkabelungsfehler.
+
+Für den Pioneer-Zweig sind die beiden belegten RCA/Cinch-Ausgänge am MOTU und
+deren vom Nutzer identifizierte Führung zum Pioneer belegt. Der Pioneer liegt
+damit nicht im Focal-Kopfhörerpfad. Receiver-Eingang, Hörmodus, Referenzpegel und
+die konkrete Lautsprecherzuordnung bleiben getrennte offene Fakten.
+
+Ein Kabelwechsel ist aus dieser Topologie allein kein begründeter Klanghebel.
+Weitere Kabelarbeit ist erst bei einem realen Symptom wie Brummen,
+Kanalunterbrechung oder Fehlkontakt relevant.
 
 ## Physisch zu bestätigen
 
 Die Vorlage `inventory/physical-verification.v1.json` nennt die noch offenen
 Regler, Eingänge, Kabel und Betriebsarten. `null` ist ein Schutzwert: unbekannt,
-nicht automatisch aus oder sicher.
+nicht automatisch aus oder sicher. Neue Fotoevidenz schließt nur die jeweils
+beobachteten Teilfragen; sie darf insbesondere Gain-Stellung, Lake-Input-Selector
+oder Referenzlautstärke nicht indirekt behaupten.
