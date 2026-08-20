@@ -74,6 +74,23 @@ class CalibrationPackTests(unittest.TestCase):
             self.assertTrue(validation["valid"])
             self.assertFalse(validation["automatic_playback"])
 
+    def test_mirrored_output_reference_packs_lower_non_target_chain(self):
+        catalog = MODULE.load_catalog()
+        headphone = catalog["headphone-reference"]["safety_gates"]
+        receiver = catalog["receiver-reference"]["safety_gates"]
+        self.assertTrue(any("Pioneer receiver" in gate for gate in headphone))
+        self.assertTrue(any("non-target receiver chain" in gate for gate in headphone))
+        self.assertTrue(any("Lake People volume" in gate for gate in receiver))
+        self.assertTrue(any("non-target headphone chain" in gate for gate in receiver))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for name in ("headphone-reference", "receiver-reference"):
+                output = root / name
+                self.create(name, output)
+                identity = self.manifest(output)["identity"]
+                self.assertEqual(identity["safety_gates"], catalog[name]["safety_gates"])
+
     def test_voice_pack_has_no_wave_and_names_its_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "pack"

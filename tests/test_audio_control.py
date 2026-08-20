@@ -1478,7 +1478,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('mögliche Wiedergabequelle · Anschlussweg offen', javascript)
         self.assertIn('"Zentraler Knoten"', javascript)
         self.assertIn('"MOTU Monitor Out (MOTU-seitig TRS belegt) → Lake People → Focal"', javascript)
-        self.assertIn('"MOTU RCA/Cinch → Pioneer → ELAC/Canton"', javascript)
+        self.assertIn('"MOTU RCA/Cinch (spiegelt Monitor 1/2) → Pioneer → ELAC/Canton"', javascript)
         self.assertIn('"zentraler Hörknoten"', javascript)
         self.assertIn('Desktop und Mobilgeräte können als Quellen dienen', javascript)
         self.assertNotIn('homeSignalNode("Quelle", "Qobuz / Desktop"', javascript)

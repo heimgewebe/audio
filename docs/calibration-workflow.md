@@ -50,9 +50,12 @@ Erzeugt einen mono 48-kHz-/16-Bit-Ton mit 1 kHz, −20 dBFS und fünf Sekunden
 Dauer. Er dient nur zur kontrollierten Referenzstellung für MOTU M2, Lake People
 G111 Mk2 und Focal Clear MG.
 
-Vor einer manuellen Wiedergabe müssen der Lake-People-Regler auf Minimum stehen,
-nur ein analoger Regler zugleich angehoben werden und unerwartete Lautstärke zum
-sofortigen Abbruch führen. Zu dokumentieren sind Verkabelung, Gain-Stellung,
+Vor einer manuellen Wiedergabe müssen der Lake-People-Regler auf Minimum und der
+Pioneer stumm, ausgeschaltet oder ebenfalls auf Minimum stehen. Da RCA und TRS am
+MOTU M2 dasselbe Monitorpaar führen, erreicht der Referenzton sonst beide Ketten.
+Nur ein analoger Regler darf zugleich angehoben werden; unerwartete Lautstärke oder
+Ausgabe aus dem nicht getesteten Receiver-Zweig führt zum sofortigen Abbruch. Zu
+dokumentieren sind Verkabelung, Gain-Stellung,
 Referenzstellung und angeschlossener Kopfhörerausgang.
 
 ### `voice-gain`
@@ -66,8 +69,10 @@ Stimme: Spitzen zwischen −12 und −6 dBFS ohne Clipping.
 ### `receiver-reference`
 
 Erzeugt denselben begrenzten Referenzton für den Pioneer-Pfad. Vor manueller
-Wiedergabe stehen Receiverlautstärke auf Minimum und Hörmodus auf Stereo, solange
-der Mehrkanalpfad nicht belegt ist. Eingang, Hörmodus, Verbindung und
+Wiedergabe stehen Receiverlautstärke und Lake-People-Regler auf Minimum; der
+Hörmodus bleibt auf Stereo, solange der Mehrkanalpfad nicht belegt ist. Wegen der
+gespiegelten MOTU-Monitor-Ausgänge erreicht der Ton sonst zugleich den
+Kopfhörerzweig. Eingang, Hörmodus, Verbindung und
 Referenzlautstärke müssen physisch dokumentiert werden.
 
 ### `motu-loopback`

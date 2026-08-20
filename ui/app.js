@@ -2510,7 +2510,7 @@ function renderHome() {
           homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Kopfhörerverstärker", "configured"),
           homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
         ], "reference"),
-        listeningPathCard("Lautsprecher · Receiver", "MOTU RCA/Cinch → Pioneer → ELAC/Canton", [
+        listeningPathCard("Lautsprecher · Receiver", "MOTU RCA/Cinch (spiegelt Monitor 1/2) → Pioneer → ELAC/Canton", [
           homeSignalNode("Receiver", "Pioneer VSX-830-K", pioneerDetail, pioneerTone),
           homeSignalNode(
             "Lautsprecher",
