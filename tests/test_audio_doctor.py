@@ -125,6 +125,57 @@ class AudioDoctorTests(unittest.TestCase):
             {warning["code"] for warning in report["warnings"]},
         )
 
+    def test_qobuz_rpc_error_does_not_claim_backend_absence(self):
+        observation = MODULE.classify_mopidy_qobuz_payload(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32603, "message": "Internal error"},
+            }
+        )
+        self.assertTrue(observation["rpc_reachable"])
+        self.assertFalse(observation["backend_registered"])
+        self.assertEqual(observation["status"], "rpc-invalid")
+        self.assertEqual(observation["reason"], "local-mopidy-rpc-error")
+        report = MODULE.build_report([], mopidy_qobuz=observation)
+        codes = {warning["code"] for warning in report["warnings"]}
+        self.assertIn("qobuz-mopidy-probe-invalid", codes)
+        self.assertNotIn("qobuz-mopidy-backend-unavailable", codes)
+
+    def test_qobuz_rpc_unavailable_keeps_backend_state_unknown(self):
+        report = MODULE.build_report(
+            [],
+            mopidy_qobuz={
+                "rpc_reachable": False,
+                "backend_registered": False,
+                "status": "rpc-unavailable",
+                "reason": "local-mopidy-rpc-unavailable",
+            },
+        )
+        codes = {warning["code"] for warning in report["warnings"]}
+        self.assertIn("qobuz-mopidy-rpc-unavailable", codes)
+        self.assertNotIn("qobuz-mopidy-backend-unavailable", codes)
+        self.assertFalse(report["streaming_sources"]["qobuz"]["rate_probe_backend_ready"])
+
+    def test_qobuz_malformed_rpc_result_does_not_claim_backend_absence(self):
+        observation = MODULE.classify_mopidy_qobuz_payload(
+            {"jsonrpc": "2.0", "id": 1, "result": {"not": "a-list"}}
+        )
+        self.assertEqual(observation["status"], "rpc-invalid")
+        self.assertEqual(observation["reason"], "local-mopidy-rpc-response-invalid")
+
+    def test_qobuz_valid_root_browse_distinguishes_backend_presence(self):
+        missing = MODULE.classify_mopidy_qobuz_payload(
+            {"jsonrpc": "2.0", "id": 1, "result": [{"uri": "file:root"}]}
+        )
+        present = MODULE.classify_mopidy_qobuz_payload(
+            {"jsonrpc": "2.0", "id": 1, "result": [{"uri": "qobuz:directory"}]}
+        )
+        self.assertEqual(missing["status"], "backend-unavailable")
+        self.assertEqual(missing["reason"], "qobuz-backend-not-registered")
+        self.assertEqual(present["status"], "available")
+        self.assertIsNone(present["reason"])
+
     def test_qobuz_backend_unavailable_blocks_reference_rate_proof(self):
         report = MODULE.build_report(
             [],

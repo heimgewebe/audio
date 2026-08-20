@@ -290,14 +290,26 @@ def observe_mopidy_qobuz() -> dict[str, object]:
             "status": "rpc-invalid",
             "reason": "local-mopidy-rpc-response-invalid",
         }
-    result = payload.get("result") if isinstance(payload, dict) else None
+    return classify_mopidy_qobuz_payload(payload)
+
+
+def classify_mopidy_qobuz_payload(payload: object) -> dict[str, object]:
+    """Classify one bounded Mopidy root-browse JSON-RPC response fail-closed."""
+    invalid = {
+        "rpc_reachable": True,
+        "backend_registered": False,
+        "status": "rpc-invalid",
+        "reason": "local-mopidy-rpc-response-invalid",
+    }
+    if not isinstance(payload, dict):
+        return invalid
+    if payload.get("jsonrpc") != "2.0" or payload.get("id") != 1:
+        return invalid
+    if "error" in payload:
+        return {**invalid, "reason": "local-mopidy-rpc-error"}
+    result = payload.get("result")
     if not isinstance(result, list):
-        return {
-            "rpc_reachable": True,
-            "backend_registered": False,
-            "status": "backend-unavailable",
-            "reason": "qobuz-backend-not-registered",
-        }
+        return invalid
     backend_registered = any(
         isinstance(item, dict)
         and isinstance(item.get("uri"), str)
@@ -574,15 +586,29 @@ def build_report(
                 "detail": "The system Bluetooth service is inactive; an external transmitter remains unobservable.",
             }
         )
-    if (
-        qobuz_observation.get("rpc_reachable") is True
-        and qobuz_observation.get("backend_registered") is False
-    ):
+    qobuz_status = qobuz_observation.get("status")
+    if qobuz_status == "backend-unavailable":
         warnings.append(
             {
                 "code": "qobuz-mopidy-backend-unavailable",
                 "severity": "medium",
                 "detail": "Mopidy is reachable, but its Qobuz backend is not registered; qobuz-rate-proof cannot run.",
+            }
+        )
+    elif qobuz_status == "rpc-unavailable":
+        warnings.append(
+            {
+                "code": "qobuz-mopidy-rpc-unavailable",
+                "severity": "medium",
+                "detail": "The local Mopidy RPC is unavailable; Qobuz backend state is unknown and qobuz-rate-proof cannot run.",
+            }
+        )
+    elif qobuz_status == "rpc-invalid":
+        warnings.append(
+            {
+                "code": "qobuz-mopidy-probe-invalid",
+                "severity": "medium",
+                "detail": "The local Mopidy RPC probe returned an invalid or error response; Qobuz backend state is unknown and qobuz-rate-proof cannot run.",
             }
         )
 
