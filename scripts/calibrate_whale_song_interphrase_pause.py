@@ -44,6 +44,34 @@ TASK_ID = "AUDIO-CONTROL-PLANE-V1-T044"
 EXPERIMENT_ID = "audio-whale-interphrase-pause-t044-v1"
 DEFAULT_CORPUS_ROOT = ROOT / "assets" / "whale-sources" / "song-corpus-v1"
 BASELINE_EVALUATION = DEFAULT_CORPUS_ROOT / "evaluation.json"
+EVIDENCE_ROOT = DEFAULT_CORPUS_ROOT / "pause-calibration-v1"
+CANONICAL_CANDIDATE = EVIDENCE_ROOT / "candidate.json"
+CANONICAL_HOLDOUT_EVALUATION = EVIDENCE_ROOT / "holdout-evaluation.json"
+FROZEN_V1_CANDIDATE_SHA256 = (
+    "f343b326b149f0ea4b6c76bb0a0db0123eb8a7e91ca0c84a500f05a0ca22521e"
+)
+FROZEN_V1_CODE_BINDINGS = {
+    "scripts/calibrate_whale_song_interphrase_pause.py": (
+        "a7d49ccf73e77e65262168adfd95fa634db8f0e33133b76af27ac81bd98b47a0"
+    ),
+    "scripts/evaluate_whale_song_grammar_structure.py": (
+        "bb8e3218894f66d9cf7d4fd9b19d7f4ef3456a6522b3ddb2e303c5a8a96e6889"
+    ),
+    "scripts/whale_song_corpus.py": (
+        "b84bc7fddeac07edefaf425fd2bfedceedbdca5c47eff24588c3bd0b00d6b3b4"
+    ),
+    "scripts/whale_song_grammar.py": (
+        "49a3a23fa3c3a34ed2f3baff313c4d023e03a6fc8ae58646221343b456dbec71"
+    ),
+}
+CALIBRATION_SCRIPT_BINDING_PATH = "scripts/calibrate_whale_song_interphrase_pause.py"
+EMPIRICAL_STRUCTURE_NAME = "empirical-structure.json"
+FROZEN_BASELINE_EVALUATION_SHA256 = (
+    "435e2c3132ea393c22a18c2dac78dd68b4d3f04917fb076a08f17e4476136617"
+)
+FROZEN_BASELINE_FILE_SHA256 = (
+    "d617953522890c4668885bc38e0bcd6ece17eb2295b6a9bdaa63b56655f8e6f4"
+)
 HISTORICAL_TASK_INTAKE = {
     "paused_gap_relative_error": 0.22786836858667633,
     "unpaused_baseline_gap_relative_error": 0.08101189807106207,
@@ -301,9 +329,26 @@ def validate_candidate(candidate: dict[str, object]) -> None:
     payload.pop("candidate_sha256")
     if sha256_json(payload) != expected:
         raise ValueError("candidate sha256 mismatch")
+
     stored_bindings = candidate.get("code_bindings")
-    if stored_bindings != code_bindings():
-        raise ValueError("candidate code binding no longer matches the evaluator revision")
+    current_bindings = code_bindings()
+    if stored_bindings != current_bindings:
+        is_frozen_v1 = (
+            expected == FROZEN_V1_CANDIDATE_SHA256
+            and stored_bindings == FROZEN_V1_CODE_BINDINGS
+        )
+        if not is_frozen_v1:
+            raise ValueError(
+                "candidate code binding matches neither the current evaluator nor the canonical frozen v1 revision"
+            )
+        for relative in CODE_BINDING_PATHS:
+            if relative == CALIBRATION_SCRIPT_BINDING_PATH:
+                continue
+            if current_bindings.get(relative) != FROZEN_V1_CODE_BINDINGS[relative]:
+                raise ValueError(
+                    "canonical frozen v1 candidate is incompatible with a changed computational dependency"
+                )
+
     final_config = candidate.get("final_config")
     if not isinstance(final_config, dict):
         raise ValueError("candidate final config is missing")
@@ -343,6 +388,76 @@ def load_baseline_evaluation(
     return baseline
 
 
+def resolve_repository_path(path: pathlib.Path, label: str) -> pathlib.Path:
+    candidate = path if path.is_absolute() else ROOT / path
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(ROOT)
+    except ValueError as exc:
+        raise ValueError(f"{label} must stay inside the repository") from exc
+    return resolved
+
+
+def load_empirical_structure(path: pathlib.Path) -> dict[str, object]:
+    payload = read_bound_regular_bytes(
+        regular_file_path(path, "T044 empirical structure"), "T044 empirical structure"
+    )
+    empirical = json.loads(payload)
+    if not isinstance(empirical, dict):
+        raise ValueError("empirical structure must be a JSON object")
+    expected = empirical.get("empirical_sha256")
+    if not isinstance(expected, str):
+        raise ValueError("empirical structure sha256 is missing")
+    unhashed = dict(empirical)
+    unhashed.pop("empirical_sha256")
+    if sha256_json(unhashed) != expected:
+        raise ValueError("empirical structure internal sha256 mismatch")
+    return empirical
+
+
+def validate_evaluation_inputs(
+    candidate: dict[str, object],
+    corpus_root: pathlib.Path,
+    baseline_path: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path, dict[str, object]]:
+    normalized_corpus_root = resolve_repository_path(corpus_root, "T044 corpus root")
+    normalized_baseline = resolve_repository_path(baseline_path, "T044 baseline")
+
+    development_binding = candidate.get("development_source_binding")
+    if not isinstance(development_binding, dict):
+        raise ValueError("candidate development source binding is missing")
+    candidate_manifest_sha = development_binding.get("source_manifest_sha256")
+    if not isinstance(candidate_manifest_sha, str):
+        raise ValueError("candidate source manifest sha256 is missing")
+
+    corpus_manifest_sha = sha256_file(normalized_corpus_root / "source-manifest.json")
+    if corpus_manifest_sha != candidate_manifest_sha:
+        raise ValueError("candidate and holdout corpus source manifest mismatch")
+
+    baseline = load_baseline_evaluation(normalized_baseline)
+    if baseline.get("evaluation_sha256") != FROZEN_BASELINE_EVALUATION_SHA256:
+        raise ValueError("baseline evaluation is not the frozen T044 oracle revision")
+    if sha256_file(normalized_baseline) != FROZEN_BASELINE_FILE_SHA256:
+        raise ValueError("baseline file is not the frozen T044 oracle artifact")
+    empirical = load_empirical_structure(
+        normalized_baseline.parent / EMPIRICAL_STRUCTURE_NAME
+    )
+    if baseline.get("empirical_sha256") != empirical.get("empirical_sha256"):
+        raise ValueError("baseline evaluation and empirical structure identity mismatch")
+    if baseline.get("corpus_sha256") != empirical.get("corpus_sha256"):
+        raise ValueError("baseline evaluation and empirical corpus identity mismatch")
+    empirical_manifest_sha = empirical.get("source_manifest_sha256")
+    if empirical_manifest_sha != candidate_manifest_sha:
+        raise ValueError("candidate and baseline source manifest mismatch")
+    baseline_manifest_sha = sha256_file(
+        normalized_baseline.parent / "source-manifest.json"
+    )
+    if baseline_manifest_sha != empirical_manifest_sha:
+        raise ValueError("baseline and its source manifest identity mismatch")
+
+    return normalized_corpus_root, normalized_baseline, baseline
+
+
 def _distance_metrics(distance: dict[str, object]) -> dict[str, dict[str, object]]:
     features = distance.get("features")
     if not isinstance(features, dict) or set(features) != set(STRUCTURAL_FEATURES):
@@ -357,8 +472,14 @@ def evaluate_frozen_candidate(
 ) -> dict[str, object]:
     """Evaluate the already-frozen candidate against the holdout without retuning."""
 
+    if CANONICAL_HOLDOUT_EVALUATION.exists():
+        raise RuntimeError(
+            "holdout evaluation already exists; T044 canonical evaluation is globally single-use"
+        )
     validate_candidate(candidate)
-    baseline = load_baseline_evaluation(baseline_path)
+    corpus_root, baseline_path, baseline = validate_evaluation_inputs(
+        candidate, corpus_root, baseline_path
+    )
     holdout_corpus = build_split_corpus(corpus_root, "holdout")
     holdout = split_summary(holdout_corpus, "holdout")
     final_config = candidate["final_config"]
@@ -419,6 +540,9 @@ def evaluate_frozen_candidate(
         "oracle_binding": {
             "baseline_path": str(baseline_path.relative_to(ROOT)),
             "baseline_file_sha256": sha256_file(baseline_path),
+            "source_manifest_sha256": candidate["development_source_binding"][
+                "source_manifest_sha256"
+            ],
             "baseline_evaluation_sha256": baseline["evaluation_sha256"],
             "comparison_contract": baseline["comparison_contract"],
             "canonical_features": list(STRUCTURAL_FEATURES),
@@ -499,6 +623,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output = validated_output_path(args.output)
     if args.command == "freeze":
+        if CANONICAL_CANDIDATE.exists():
+            raise RuntimeError(
+                "T044 canonical candidate already exists; the development freeze is immutable"
+            )
+        if output.resolve() != CANONICAL_CANDIDATE.resolve():
+            raise ValueError("T044 freeze output must use the canonical candidate path")
         candidate = freeze_candidate(args.corpus_root)
         write_atomic(output, candidate)
         print(
@@ -516,11 +646,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    if output.exists():
+    if CANONICAL_HOLDOUT_EVALUATION.exists():
         raise RuntimeError(
-            "holdout evaluation output already exists; T044 canonical evaluation is single-use"
+            "holdout evaluation already exists; T044 canonical evaluation is globally single-use"
         )
-    candidate = load_candidate(args.candidate)
+    if output.resolve() != CANONICAL_HOLDOUT_EVALUATION.resolve():
+        raise ValueError("T044 holdout output must use the canonical evaluation path")
+    candidate = load_candidate(resolve_repository_path(args.candidate, "T044 candidate"))
     evaluation = evaluate_frozen_candidate(candidate, args.corpus_root, args.baseline)
     write_atomic(output, evaluation)
     print(
