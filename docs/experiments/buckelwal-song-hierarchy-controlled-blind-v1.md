@@ -58,12 +58,12 @@ Der Builder erzeugt standardmäßig vier Trial-Varianten. Jede Variante besitzt 
 
 Die semantische Bedingungszuordnung steht ausschließlich in `answer-key.json`. Das öffentliche `blind-manifest.json` enthält keine A/B→Bedingungszuordnung.
 
-Die vier Trials bilden deterministisch die Kombinationen aus:
+Die vier Trials bilden die Kombinationen aus:
 
 - strukturierte Bedingung als A oder B;
 - Präsentationsreihenfolge A→B oder B→A.
 
-Dadurch erscheinen beide Bedingungen gleich häufig unter A/B und gleich häufig zuerst. Ein Trial ist für **eine** menschliche Hörsitzung gedacht. Die vier Varianten sind keine vier unabhängigen Wiederholungen desselben Hörers.
+Dadurch erscheinen beide Bedingungen gleich häufig unter A/B und gleich häufig zuerst. Die konkrete Zuordnung wird aus einem kryptographisch zufälligen 256-Bit-Seed bestimmt, der ausschließlich in `answer-key.json` steht. Das öffentliche Manifest enthält nur dessen SHA-256-Commitment; aus `pair_identity_sha256` oder dem öffentlichen Manifest lässt sich die A/B-Zuordnung daher nicht rekonstruieren. Nach dem Entblinden kann die Zuordnung mit dem im Answer-Key gespeicherten Seed reproduziert werden. Ein Trial ist für **eine** menschliche Hörsitzung gedacht. Die vier Varianten sind keine vier unabhängigen Wiederholungen desselben Hörers.
 
 ## Menschliche Antworten
 

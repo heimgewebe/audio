@@ -66,8 +66,9 @@ class WhaleSongHierarchyBlindTest(unittest.TestCase):
             controlled.build_condition_plans(CORPUS_ROOT, seconds=10.0)
 
     def test_trial_schedule_is_deterministic_and_counterbalanced(self):
-        left = controlled._trial_schedule("a" * 64, 4)
-        right = controlled._trial_schedule("a" * 64, 4)
+        seed = bytes.fromhex("11" * 32)
+        left = controlled._trial_schedule(seed, 4)
+        right = controlled._trial_schedule(seed, 4)
         self.assertEqual(left, right)
         a_assignments = collections.Counter(
             item["assignment"]["A"] for item in left
@@ -95,7 +96,9 @@ class WhaleSongHierarchyBlindTest(unittest.TestCase):
             ),
         )
         with self.assertRaises(ValueError):
-            controlled._trial_schedule("a" * 64, 2)
+            controlled._trial_schedule(seed, 2)
+        with self.assertRaises(ValueError):
+            controlled._trial_schedule(b"short", 4)
 
     def test_controlled_builder_writes_anonymous_level_matched_protocol(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -106,6 +109,7 @@ class WhaleSongHierarchyBlindTest(unittest.TestCase):
                 seconds=16.0,
                 gain=0.06,
                 trials=4,
+                assignment_seed=bytes.fromhex("22" * 32),
             )
             self.assertEqual(
                 manifest["protocol"],
@@ -121,6 +125,16 @@ class WhaleSongHierarchyBlindTest(unittest.TestCase):
             )
             self.assertNotIn("trial_assignments", manifest)
             self.assertNotIn("condition_plans", manifest)
+            self.assertNotIn("assignment_seed_hex", manifest)
+            self.assertEqual(answer["assignment_seed_hex"], "22" * 32)
+            self.assertEqual(
+                manifest["assignment_seed_sha256"],
+                answer["assignment_seed_sha256"],
+            )
+            self.assertNotEqual(
+                manifest["assignment_seed_sha256"],
+                answer["assignment_seed_hex"],
+            )
             self.assertEqual(len(manifest["trials"]), 4)
             self.assertEqual(len(answer["trial_assignments"]), 4)
 

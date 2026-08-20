@@ -17,6 +17,7 @@ import hashlib
 import json
 import math
 import pathlib
+import secrets
 import sys
 from dataclasses import replace
 from typing import Sequence
@@ -312,14 +313,15 @@ def build_condition_plans(
     return structured, flat, control
 
 
-def _trial_schedule(pair_identity: str, trials: int) -> list[dict[str, object]]:
+def _trial_schedule(assignment_seed: bytes, trials: int) -> list[dict[str, object]]:
     if isinstance(trials, bool) or not isinstance(trials, int):
         raise ValueError("trials must be an integer")
     if not 4 <= trials <= MAX_TRIALS or trials % 4:
         raise ValueError(f"trials must be a multiple of 4 between 4 and {MAX_TRIALS}")
-    seed = hashlib.sha256(f"{pair_identity}:counterbalance-v1".encode("utf-8")).digest()
-    assignment_offset = seed[0] % 2
-    order_offset = seed[1] % 2
+    if not isinstance(assignment_seed, bytes) or len(assignment_seed) < 16:
+        raise ValueError("assignment_seed must contain at least 128 bits of secret entropy")
+    assignment_offset = assignment_seed[0] % 2
+    order_offset = assignment_seed[1] % 2
     schedule: list[dict[str, object]] = []
     for index in range(trials):
         swap_assignment = (index + assignment_offset) % 2 == 1
@@ -383,6 +385,7 @@ def build_controlled_blind_test(
     seconds: float = 30.0,
     gain: float = 0.16,
     trials: int = DEFAULT_TRIALS,
+    assignment_seed: bytes | None = None,
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     if not math.isfinite(gain) or not 0 < gain <= 0.25:
         raise ValueError("gain must be finite and in (0, 0.25]")
@@ -408,7 +411,9 @@ def build_controlled_blind_test(
             "level_rule": level_rule["method"],
         }
     )
-    schedule = _trial_schedule(pair_identity, trials)
+    secret_assignment_seed = assignment_seed if assignment_seed is not None else secrets.token_bytes(32)
+    schedule = _trial_schedule(secret_assignment_seed, trials)
+    assignment_seed_sha256 = hashlib.sha256(secret_assignment_seed).hexdigest()
 
     safe_output_dir = reject_symlink_components(
         output_dir, "whale hierarchy blind output directory"
@@ -457,6 +462,7 @@ def build_controlled_blind_test(
         "kind": "humpback_whale_song_hierarchy_controlled_blind_test",
         "protocol": "matched-inventory-boundary-timing-ablation-v1",
         "pair_identity_sha256": pair_identity,
+        "assignment_seed_sha256": assignment_seed_sha256,
         "corpus_sha256": control["corpus_sha256"],
         "requested_max_seconds": seconds,
         "render_seconds": render_seconds,
@@ -533,6 +539,8 @@ def build_controlled_blind_test(
         "schema_version": 1,
         "kind": "humpback_whale_song_hierarchy_controlled_answer_key",
         "pair_identity_sha256": pair_identity,
+        "assignment_seed_hex": secret_assignment_seed.hex(),
+        "assignment_seed_sha256": assignment_seed_sha256,
         "protocol": manifest["protocol"],
         "source_window": {
             "source_plan_sha256": control["source_plan_sha256"],
