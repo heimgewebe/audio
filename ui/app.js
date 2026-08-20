@@ -2481,7 +2481,7 @@ function renderHome() {
   const pioneerDetail = pioneerObserved
     ? "softwareseitig beobachtet"
     : receiverPhysicalOpen
-      ? "MOTU-Anschlussdetails / Eingang / Hörmodus / Pegel vor Ort offen"
+      ? "RCA/Cinch am MOTU belegt · Receiver-Eingang / Hörmodus / Pegel offen"
       : "physische Receiver-Gates belegt";
 
   byId("home-signal-caption").textContent =
@@ -2506,11 +2506,11 @@ function renderHome() {
         motuObserved ? "observed" : "onsite",
       ),
       [
-        listeningPathCard("Kopfhörer · Referenz", "MOTU → Lake People → Focal", [
+        listeningPathCard("Kopfhörer · Referenz", "MOTU Monitor Out (MOTU-seitig TRS belegt) → Lake People → Focal", [
           homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Kopfhörerverstärker", "configured"),
           homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
         ], "reference"),
-        listeningPathCard("Lautsprecher · Receiver", "MOTU → Pioneer → ELAC/Canton", [
+        listeningPathCard("Lautsprecher · Receiver", "MOTU RCA/Cinch → Pioneer → ELAC/Canton", [
           homeSignalNode("Receiver", "Pioneer VSX-830-K", pioneerDetail, pioneerTone),
           homeSignalNode(
             "Lautsprecher",
