@@ -3,7 +3,8 @@
   "kind": "audio_signal_path_inventory",
   "authority": {
     "software_observation": "read-only doctor output",
-    "physical_topology": "explicit human observation where an edge says human-visual or partial-human-visual; unresolved details remain unknown"
+    "physical_topology": "explicit human observation where an edge says human-visual or partial-human-visual; unresolved details remain unknown",
+    "manufacturer_hardware_contract": "MOTU M Series User Guide, M2 Quick Reference"
   },
   "nodes": [
     {"id": "heim-pc", "type": "computer", "verification": "observed"},
@@ -23,9 +24,9 @@
     {"from": "heim-pc", "to": "pipewire", "transport": "local-software", "verification": "software-observable"},
     {"from": "pipewire", "to": "motu-m2", "transport": "usb-audio", "verification": "software-observable"},
     {"from": "rode-nt1-a", "to": "motu-m2", "transport": "balanced-xlr", "verification": "unknown", "required_physical_facts": ["input number", "cable connected", "48 V state", "gain position"]},
-    {"from": "motu-m2", "to": "lake-people-g111-mk2", "transport": "analog-line", "verification": "partial-human-visual", "observed_physical_facts": ["at least one MOTU monitor-output cable uses a 6.3 mm TRS plug with two insulation rings", "the photographed MOTU-side TRS connector is a balanced mono line connection, not stereo on one cable"], "required_physical_facts": ["second MOTU monitor-output cable", "left/right mapping", "both amplifier-side input connectors", "Lake People input selector"]},
+    {"from": "motu-m2", "to": "lake-people-g111-mk2", "transport": "analog-line", "verification": "partial-human-visual", "documented_hardware_facts": ["MOTU M2 quarter-inch monitor outputs are balanced", "the front MONITOR control governs the rear MONITOR outputs"], "observed_physical_facts": ["at least one MOTU monitor-output cable uses a 6.3 mm TRS plug with two insulation rings", "the photographed MOTU-side TRS connector is a balanced mono line connection, not stereo on one cable"], "required_physical_facts": ["second MOTU monitor-output cable", "left/right mapping", "both amplifier-side input connectors", "Lake People input selector"]},
     {"from": "lake-people-g111-mk2", "to": "focal-clear-mg", "transport": "headphone", "verification": "unknown", "required_physical_facts": ["gain setting", "headphone output", "volume reference"]},
-    {"from": "motu-m2", "to": "pioneer-vsx-830-k", "transport": "unbalanced-rca-line", "verification": "human-visual", "observed_physical_facts": ["the two MOTU RCA outputs are occupied by the user-identified Pioneer cables", "the Pioneer path branches at the MOTU and is not part of the Lake People/Focal path"], "required_physical_facts": ["receiver input", "receiver listening mode", "reference volume"]},
+    {"from": "motu-m2", "to": "pioneer-vsx-830-k", "transport": "unbalanced-rca-line", "verification": "human-visual", "signal_relationship": "mirrors-motu-quarter-inch-monitor-pair", "documented_hardware_facts": ["MOTU M2 RCA outputs mirror the signal on the corresponding quarter-inch monitor outputs", "the RCA pair is not an independently addressable second software output pair"], "observed_physical_facts": ["the two MOTU RCA outputs are occupied by the user-identified Pioneer cables", "the Pioneer path branches physically at the MOTU and is not part of the Lake People/Focal path"], "required_physical_facts": ["receiver input", "receiver listening mode", "reference volume"]},
     {"from": "pioneer-vsx-830-k", "to": "pioneer-speaker-system", "transport": "unknown-speaker-output", "verification": "user-declared-unresolved", "required_physical_facts": ["speaker output assignment", "speaker connection"]},
     {"from": "heim-pc", "to": "1mii-b03-pro", "transport": "unknown-optical-or-analog", "verification": "unknown", "required_physical_facts": ["transmitter input", "TX mode", "codec", "paired target"]},
     {"from": "qobuz", "to": "pipewire", "transport": "mopidy-pulse", "verification": "software-observable", "quality_boundary": "mixed path; bit-perfect not established"}

@@ -26,8 +26,9 @@
       },
       "safety_gates": [
         "Lake People volume at minimum before playback",
+        "Pioneer receiver muted, powered off, or at minimum before headphone-path playback",
         "Only one analog control raised at a time",
-        "Stop immediately on unexpected loudness"
+        "Stop immediately on unexpected loudness or output from the non-target receiver chain"
       ],
       "facts_or_receipts_to_record": [
         "motu_output_to_lake_people",
@@ -88,8 +89,9 @@
       },
       "safety_gates": [
         "Receiver volume at minimum before playback",
+        "Lake People volume at minimum before receiver-path playback",
         "Stereo mode used until multichannel path is proven",
-        "Stop immediately on unexpected routing"
+        "Stop immediately on unexpected routing or output from the non-target headphone chain"
       ],
       "facts_or_receipts_to_record": [
         "pioneer_pc_connection",

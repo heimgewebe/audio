@@ -22,7 +22,7 @@ die separaten Gates `qobuz-rate-proof` und `rate-policy-decision`.
 
 ## Fotografisch geprüfte Ausgangstopologie vom 20. August 2026
 
-Der Wiedergabepfad verzweigt bereits am MOTU M2:
+Der Wiedergabepfad verzweigt physisch am MOTU M2:
 
 ```text
 Heim-PC / Qobuz
@@ -45,6 +45,15 @@ Für den Pioneer-Zweig sind die beiden belegten RCA/Cinch-Ausgänge am MOTU und
 deren vom Nutzer identifizierte Führung zum Pioneer belegt. Der Pioneer liegt
 damit nicht im Focal-Kopfhörerpfad. Receiver-Eingang, Hörmodus, Referenzpegel und
 die konkrete Lautsprecherzuordnung bleiben getrennte offene Fakten.
+
+Der Herstellervertrag ergänzt eine wichtige Systemgrenze: Laut `MOTU M Series
+User Guide` spiegeln die beiden RCA-Ausgänge des M2 das Signal der entsprechenden
+6,3-mm-Monitor-Ausgänge. Der große `MONITOR`-Regler steuert die rückseitigen
+Monitor-Ausgänge. Lake People und Pioneer sind daher zwei physische Abgriffe
+desselben Monitorpaares, nicht zwei unabhängig adressierbare Software-Ausgänge.
+Eine künftige Pegelkalibrierung muss beide angeschlossenen Ziele berücksichtigen;
+die Audiozentrale darf aus der gezeichneten Verzweigung keinen separaten Mix oder
+eine unabhängige Ausgangswahl ableiten.
 
 Ein Kabelwechsel ist aus dieser Topologie allein kein begründeter Klanghebel.
 Weitere Kabelarbeit ist erst bei einem realen Symptom wie Brummen,
