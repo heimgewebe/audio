@@ -1,0 +1,34 @@
+[Unit]
+Description=Fail-closed MOTU desktop recovery after Qobuz ALSA Direct
+Documentation=file:%h/.local/share/audio-control-ui/current/docs/qobuz-desktop-recovery.md
+After=pipewire.service pipewire-pulse.service wireplumber.service
+PartOf=audio-control-ui-v1.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+ConditionPathExists=%h/.local/share/audio-control-ui/current/scripts/qobuz_desktop_recovery.py
+
+[Service]
+Type=simple
+StateDirectory=audio-qobuz-desktop-recovery
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/qobuz_desktop_recovery.py run --state-file %S/audio-qobuz-desktop-recovery/state.json
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=5s
+KillMode=mixed
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+Nice=10
+CPUQuota=5%
+MemoryMax=67108864
+TasksMax=8
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=10
