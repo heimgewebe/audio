@@ -1,0 +1,62 @@
+{
+  "alsa_card_id": "M2",
+  "conclusion": {
+    "claim_scope": "QBZD DirectHardware plus matching MOTU ALSA hardware sample rate; S32_LE PCM container observed.",
+    "native_rate_switching_verified": true,
+    "verified_rates_hz": [
+      44100,
+      48000,
+      96000,
+      192000
+    ]
+  },
+  "configured_device": "front:CARD=M2,DEV=0",
+  "does_not_establish": [
+    "permanent future-track bit-perfectness",
+    "native hardware bit-depth equals source bit-depth",
+    "shared browser or Mopidy path quality"
+  ],
+  "kind": "qbzd_reference_rate_matrix",
+  "observed_date": "2026-08-21",
+  "qbzd_version": "2.0.2",
+  "runtime_current_track_gate": {
+    "requires_consistent_motu_hw_snapshot": true,
+    "requires_consistent_qbzd_snapshot_around_motu_observation": true,
+    "requires_direct_hardware": true,
+    "requires_matching_qbzd_and_motu_rate": true,
+    "requires_motu_owner_class": "qbzd",
+    "requires_motu_pcm_state": "RUNNING",
+    "requires_qbzd_ready": true
+  },
+  "schema_version": 1,
+  "tests": [
+    {
+      "motu_rate_hz": 44100,
+      "qbzd_mode": "DirectHardware",
+      "qbzd_rate_hz": 44100,
+      "source_bit_depth": 16,
+      "source_rate_hz": 44100
+    },
+    {
+      "motu_rate_hz": 48000,
+      "qbzd_mode": "DirectHardware",
+      "qbzd_rate_hz": 48000,
+      "source_bit_depth": 24,
+      "source_rate_hz": 48000
+    },
+    {
+      "motu_rate_hz": 96000,
+      "qbzd_mode": "DirectHardware",
+      "qbzd_rate_hz": 96000,
+      "source_bit_depth": 24,
+      "source_rate_hz": 96000
+    },
+    {
+      "motu_rate_hz": 192000,
+      "qbzd_mode": "DirectHardware",
+      "qbzd_rate_hz": 192000,
+      "source_bit_depth": 24,
+      "source_rate_hz": 192000
+    }
+  ]
+}
