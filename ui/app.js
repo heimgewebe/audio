@@ -111,6 +111,11 @@ const WARNING_LABELS = {
   "voice-source-not-motu": "Mikrofonquelle ist nicht das MOTU M2",
   "high-live-quantum": "Großer Live-Puffer",
   "bluetooth-service-inactive": "System-Bluetooth ist inaktiv",
+  "qobuz-qbzd-api-unavailable": "Qobuz-Referenzpfad nicht erreichbar",
+  "qobuz-qbzd-probe-invalid": "QBZD-Status nicht verlässlich",
+  "qobuz-qbzd-reference-not-ready": "Qobuz-Referenzpfad nicht bereit",
+  "qobuz-qbzd-motu-rate-mismatch": "Qobuz- und MOTU-Samplerate stimmen nicht überein",
+  "qobuz-qbzd-motu-owner-unverified": "MOTU-Wiedergabe nicht sicher QBZD zugeordnet",
 };
 
 const INTERACTION_GRACE_MS = 1200;
@@ -2369,6 +2374,40 @@ function renderHome() {
   const summary = snapshot.summary || {};
   const doctor = snapshot.doctor || {};
   const graph = doctor.graph || {};
+  const qobuz = doctor.streaming_sources?.qobuz || {};
+  const qbzd = qobuz.qbzd || {};
+  const qbzdAudio = qbzd.audio || {};
+  const qobuzVerified = qobuz.track_native_proven === true;
+  const qobuzReady = qobuz.reference_provider_ready === true;
+  const qobuzProvider = qobuz.selected_reference_provider || null;
+  const qobuzRate =
+    qobuzVerified && Number.isFinite(qbzdAudio.sample_rate_hz)
+      ? qbzdAudio.sample_rate_hz
+      : null;
+  let qobuzSourceTitle = "Heim-PC / Qobuz";
+  let qobuzSourceDetail = "Qobuz-Pfad offen";
+  let qobuzSourceTone = "onsite";
+  if (qobuzProvider === "qbzd-qconnect") {
+    qobuzSourceTitle = "Qobuz / QBZD";
+    if (qobuzVerified) {
+      const nativeRate = qobuzRate ? `${qobuzRate / 1000} kHz · ` : "";
+      qobuzSourceDetail = `Qobuz Connect · ${nativeRate}TRACK-NATIVE ✓`;
+      qobuzSourceTone = "observed";
+    } else if (qobuzReady) {
+      if (qobuz.rate_proof_state === "hardware-preparing") {
+        qobuzSourceDetail = "Qobuz Connect · Referenzpfad wird vorbereitet";
+      } else if (qobuz.rate_proof_state === "ready-awaiting-playback") {
+        qobuzSourceDetail = "Qobuz Connect · Referenzpfad bereit · Ratebeleg bei Wiedergabe";
+      } else {
+        qobuzSourceDetail = "Qobuz Connect · Referenzpfad bereit · aktueller Ratebeleg offen";
+      }
+      qobuzSourceTone = "configured";
+    }
+  } else if (qobuzProvider === "mopidy-legacy") {
+    qobuzSourceTitle = "Qobuz / Legacy-Mopidy";
+    qobuzSourceDetail = "Legacy-Mopidy · gemischter Pfad · track-native nicht belegt";
+    qobuzSourceTone = "configured";
+  }
   const presence = snapshot.presence || {};
   const deployment = snapshot.deployment || {};
   const recording = snapshot.recording || {};
@@ -2489,7 +2528,7 @@ function renderHome() {
   byId("home-signal-flow").replaceChildren(
     listeningTopology(
       [
-        homeSignalNode("Quelle · Desktop", "Heim-PC / Qobuz", "aktuelle Softwarequelle", "configured"),
+        homeSignalNode("Quelle · Desktop", qobuzSourceTitle, qobuzSourceDetail, qobuzSourceTone),
         homeSignalNode(
           "Quelle · Mobil",
           "iPad / Handy",

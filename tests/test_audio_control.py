@@ -2031,6 +2031,19 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         self.assertIn('"Walstatus nicht lesbar"', home)
         self.assertIn('"Replay verfügbar · Livezustand nicht lesbar"', home)
 
+    def test_home_qobuz_reference_status_is_evidence_bound(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        home_start = javascript.index("function renderHome()")
+        home_end = javascript.index("function insightCard", home_start)
+        home = javascript[home_start:home_end]
+        self.assertIn("doctor.streaming_sources?.qobuz", home)
+        self.assertIn("qobuz.track_native_proven === true", home)
+        self.assertIn('qobuzProvider === "qbzd-qconnect"', home)
+        self.assertIn('qobuz.rate_proof_state === "hardware-preparing"', home)
+        self.assertIn('qobuz.rate_proof_state === "ready-awaiting-playback"', home)
+        self.assertIn("TRACK-NATIVE ✓", home)
+        self.assertNotIn("BITPERFEKT ✓", home)
+
     def test_sound_library_requires_confirmed_active_whale_truth(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         sounds_start = javascript.index("function renderSounds()")

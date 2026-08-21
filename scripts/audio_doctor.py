@@ -42,6 +42,12 @@ STREAM_CHUNK_BYTES = 8192
 MOPIDY_RPC_URL = "http://127.0.0.1:6680/mopidy/rpc"
 MAX_MOPIDY_RPC_BYTES = 64 * 1024
 MOPIDY_RPC_TIMEOUT_SECONDS = 1.5
+QBZD_STATUS_URL = "http://127.0.0.1:8182/api/status"
+MAX_QBZD_STATUS_BYTES = 64 * 1024
+QBZD_STATUS_TIMEOUT_SECONDS = 1.5
+QBZD_MOTU_DEVICE = "front:CARD=M2,DEV=0"
+MAX_ALSA_CARD_SCAN = 32
+MAX_ALSA_TEXT_BYTES = 4096
 
 SERIAL_PATTERNS = (
     re.compile(r"usb-[^\s]+", re.IGNORECASE),
@@ -324,6 +330,264 @@ def classify_mopidy_qobuz_payload(payload: object) -> dict[str, object]:
     }
 
 
+def parse_alsa_hw_params(text: str) -> dict[str, object]:
+    """Parse one ALSA hw_params projection without inferring a closed PCM state."""
+    value = text.strip()
+    if not value or value == "closed":
+        return {"open": False, "rate_hz": None, "format": None, "channels": None}
+    fields: dict[str, str] = {}
+    for line in value.splitlines():
+        key, separator, raw = line.partition(":")
+        if separator:
+            fields[key.strip()] = raw.strip()
+    rate_match = re.match(r"(?P<rate>[0-9]+)(?:\s|$)", fields.get("rate", ""))
+    channel_text = fields.get("channels", "")
+    channels = int(channel_text) if channel_text.isdigit() else None
+    return {
+        "open": True,
+        "rate_hz": int(rate_match.group("rate")) if rate_match else None,
+        "format": fields.get("format") or None,
+        "channels": channels,
+    }
+
+
+def _read_small_text(path: pathlib.Path, limit: int = MAX_ALSA_TEXT_BYTES) -> str | None:
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError:
+        return None
+    if len(data) > limit:
+        return None
+    try:
+        return data.decode("utf-8", errors="strict")
+    except UnicodeError:
+        return None
+
+
+def parse_alsa_pcm_status(text: str) -> dict[str, object]:
+    """Parse ALSA PCM state and owner PID for immediate local ownership classification."""
+    value = text.strip()
+    if not value or value == "closed":
+        return {"state": "CLOSED", "owner_pid": None}
+    state_match = re.search(r"^state:\s*([A-Z_]+)\s*$", value, re.MULTILINE)
+    owner_match = re.search(r"^owner_pid\s*:\s*([0-9]+)\s*$", value, re.MULTILINE)
+    return {
+        "state": state_match.group(1) if state_match else "UNKNOWN",
+        "owner_pid": int(owner_match.group(1)) if owner_match else None,
+    }
+
+
+def classify_process_owner(
+    owner_pid: int | None,
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+) -> str:
+    """Classify a PCM owner without exposing process identifiers or unrelated names."""
+    if owner_pid is None or owner_pid <= 0:
+        return "unknown"
+    comm = _read_small_text(proc_root / str(owner_pid) / "comm", 128)
+    if comm is None:
+        return "unknown"
+    return "qbzd" if comm.strip() == "qbzd" else "other"
+
+
+def observe_motu_playback_hw_params(
+    asound_root: pathlib.Path = pathlib.Path("/proc/asound"),
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+) -> dict[str, object]:
+    """Observe the currently open MOTU M2 playback PCM directly from ALSA proc state."""
+    try:
+        candidates = sorted(
+            (
+                item
+                for item in asound_root.iterdir()
+                if item.is_dir() and re.fullmatch(r"card[0-9]+", item.name)
+            ),
+            key=lambda item: int(item.name[4:]),
+        )[:MAX_ALSA_CARD_SCAN]
+    except OSError:
+        candidates = []
+    for card in candidates:
+        card_id = _read_small_text(card / "id", 128)
+        if card_id is None or card_id.strip() != "M2":
+            continue
+        pcm_dir = card / "pcm0p" / "sub0"
+        hw_before = _read_small_text(pcm_dir / "hw_params")
+        status_text = _read_small_text(pcm_dir / "status")
+        hw_after = _read_small_text(pcm_dir / "hw_params")
+        if hw_before is None or hw_after is None:
+            return {
+                "observed": True,
+                "card_id": "M2",
+                "open": False,
+                "rate_hz": None,
+                "format": None,
+                "channels": None,
+                "pcm_state": "UNKNOWN",
+                "owner_class": "unknown",
+                "snapshot_consistent": False,
+                "reason": "motu-playback-hw-params-unavailable",
+            }
+        snapshot_consistent = hw_before == hw_after
+        parsed = parse_alsa_hw_params(hw_after if snapshot_consistent else "closed")
+        status = parse_alsa_pcm_status(status_text or "")
+        owner_class = (
+            classify_process_owner(status.get("owner_pid"), proc_root)
+            if snapshot_consistent
+            else "unknown"
+        )
+        return {
+            "observed": True,
+            "card_id": "M2",
+            **parsed,
+            "pcm_state": status.get("state"),
+            "owner_class": owner_class,
+            "snapshot_consistent": snapshot_consistent,
+            "reason": None if snapshot_consistent else "motu-playback-snapshot-changed",
+        }
+    return {
+        "observed": False,
+        "card_id": None,
+        "open": False,
+        "rate_hz": None,
+        "format": None,
+        "channels": None,
+        "pcm_state": "CLOSED",
+        "owner_class": "unknown",
+        "snapshot_consistent": True,
+        "reason": "motu-m2-alsa-card-not-observed",
+    }
+
+
+def classify_qbzd_status_payload(payload: object) -> dict[str, object]:
+    """Project QBZD status onto a small, non-sensitive reference-path allowlist."""
+    invalid = {
+        "api_reachable": True,
+        "status": "api-invalid",
+        "reason": "local-qbzd-status-response-invalid",
+        "reference_provider_ready": False,
+        "track_native_proven": False,
+        "rate_proof_state": "blocked",
+    }
+    if not isinstance(payload, dict) or payload.get("api_version") != 1:
+        return invalid
+    audio = payload.get("audio")
+    auth = payload.get("auth")
+    qconnect = payload.get("qconnect")
+    playback = payload.get("playback")
+    if not isinstance(audio, dict) or not isinstance(auth, dict) or not isinstance(qconnect, dict):
+        return invalid
+    playback_state = (
+        playback.get("state")
+        if isinstance(playback, dict) and isinstance(playback.get("state"), str)
+        else None
+    )
+    backend = audio.get("backend") if isinstance(audio.get("backend"), str) else None
+    configured_device = audio.get("configured_device") if isinstance(audio.get("configured_device"), str) else None
+    auth_state = auth.get("state") if isinstance(auth.get("state"), str) else None
+    subscription = auth.get("subscription") if isinstance(auth.get("subscription"), str) else None
+    qconnect_state = qconnect.get("state") if isinstance(qconnect.get("state"), str) else None
+    session_active = qconnect.get("session_active") is True
+    device_name = qconnect.get("device_name") if isinstance(qconnect.get("device_name"), str) else None
+    device_present = audio.get("device_present") is True
+    device_open = audio.get("device_open") is True
+    sample_rate = audio.get("sample_rate")
+    if not isinstance(sample_rate, int) or isinstance(sample_rate, bool) or sample_rate <= 0:
+        sample_rate = None
+    bit_depth = audio.get("bit_depth")
+    if not isinstance(bit_depth, int) or isinstance(bit_depth, bool) or bit_depth <= 0:
+        bit_depth = None
+    bit_perfect = audio.get("bit_perfect") if isinstance(audio.get("bit_perfect"), str) else None
+    version = payload.get("version") if isinstance(payload.get("version"), str) else None
+    ready = (
+        auth_state == "logged_in"
+        and backend == "alsa"
+        and configured_device == QBZD_MOTU_DEVICE
+        and device_present
+        and qconnect_state == "connected"
+        and session_active
+    )
+    if ready:
+        status = "available"
+        reason = None
+    elif auth_state != "logged_in":
+        status = "not-ready"
+        reason = "qbzd-qobuz-auth-not-ready"
+    elif backend != "alsa" or configured_device != QBZD_MOTU_DEVICE or not device_present:
+        status = "not-ready"
+        reason = "qbzd-reference-audio-route-not-ready"
+    else:
+        status = "not-ready"
+        reason = "qbzd-qconnect-session-not-ready"
+    return {
+        "api_reachable": True,
+        "status": status,
+        "reason": reason,
+        "reference_provider_ready": ready,
+        "version": version,
+        "auth_state": auth_state,
+        "subscription": subscription,
+        "audio": {
+            "backend": backend,
+            "configured_device": configured_device,
+            "device_present": device_present,
+            "device_open": device_open,
+            "sample_rate_hz": sample_rate,
+            "bit_depth": bit_depth,
+            "bit_perfect_mode": bit_perfect,
+        },
+        "qconnect": {
+            "state": qconnect_state,
+            "session_active": session_active,
+            "device_name": device_name,
+        },
+        "playback_state": playback_state,
+        "track_native_proven": False,
+        "rate_proof_state": "ready-awaiting-playback" if ready else "blocked",
+    }
+
+
+def observe_qbzd_qobuz() -> dict[str, object]:
+    """Read fixed loopback QBZD status and discard account/playback identity fields."""
+    request = urllib.request.Request(QBZD_STATUS_URL, method="GET")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
+    try:
+        with opener.open(request, timeout=QBZD_STATUS_TIMEOUT_SECONDS) as response:
+            body = response.read(MAX_QBZD_STATUS_BYTES + 1)
+            status = getattr(response, "status", 200)
+            final_url = response.geturl()
+    except (OSError, urllib.error.URLError):
+        return {
+            "api_reachable": False,
+            "status": "api-unavailable",
+            "reason": "local-qbzd-status-unavailable",
+            "reference_provider_ready": False,
+            "track_native_proven": False,
+            "rate_proof_state": "blocked",
+        }
+    if final_url != QBZD_STATUS_URL or status != 200 or len(body) > MAX_QBZD_STATUS_BYTES:
+        return {
+            "api_reachable": False,
+            "status": "api-invalid",
+            "reason": "local-qbzd-status-response-invalid",
+            "reference_provider_ready": False,
+            "track_native_proven": False,
+            "rate_proof_state": "blocked",
+        }
+    try:
+        payload = json.loads(body.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError):
+        return {
+            "api_reachable": True,
+            "status": "api-invalid",
+            "reason": "local-qbzd-status-response-invalid",
+            "reference_provider_ready": False,
+            "track_native_proven": False,
+            "rate_proof_state": "blocked",
+        }
+    return classify_qbzd_status_payload(payload)
+
+
 def is_motu_m2_endpoint(name: str | None) -> bool:
     if not name:
         return False
@@ -488,6 +752,8 @@ def build_report(
     results: Iterable[CommandResult],
     eld_text: str = "",
     mopidy_qobuz: dict[str, object] | None = None,
+    qbzd_qobuz: dict[str, object] | None = None,
+    motu_playback: dict[str, object] | None = None,
 ) -> dict[str, object]:
     result_list = list(results)
     by_command = {result.argv: result for result in result_list}
@@ -541,6 +807,76 @@ def build_report(
         "status": "not-observed",
         "reason": "mopidy-qobuz-not-observed",
     }
+    qbzd_observation = qbzd_qobuz or {
+        "api_reachable": None,
+        "status": "not-observed",
+        "reason": "qbzd-qobuz-not-observed",
+        "reference_provider_ready": False,
+        "track_native_proven": False,
+        "rate_proof_state": "blocked",
+    }
+    qbzd_ready = qbzd_observation.get("reference_provider_ready") is True
+    legacy_mopidy_ready = qobuz_observation.get("backend_registered") is True
+    selected_qobuz_provider = (
+        "qbzd-qconnect" if qbzd_ready else "mopidy-legacy" if legacy_mopidy_ready else None
+    )
+    motu_playback_observation = motu_playback or {
+        "observed": False,
+        "card_id": None,
+        "open": False,
+        "rate_hz": None,
+        "format": None,
+        "channels": None,
+        "pcm_state": "CLOSED",
+        "owner_class": "unknown",
+        "snapshot_consistent": True,
+        "reason": "motu-playback-not-observed",
+    }
+    qbzd_audio = qbzd_observation.get("audio")
+    if not isinstance(qbzd_audio, dict):
+        qbzd_audio = {}
+    qbzd_rate = qbzd_audio.get("sample_rate_hz")
+    motu_rate = motu_playback_observation.get("rate_hz")
+    playback_state = qbzd_observation.get("playback_state")
+    direct_hardware_reported = qbzd_audio.get("bit_perfect_mode") == "DirectHardware"
+    rates_match = (
+        isinstance(qbzd_rate, int)
+        and not isinstance(qbzd_rate, bool)
+        and isinstance(motu_rate, int)
+        and not isinstance(motu_rate, bool)
+        and qbzd_rate == motu_rate
+    )
+    pcm_state = motu_playback_observation.get("pcm_state")
+    owner_class = motu_playback_observation.get("owner_class")
+    track_native_proven = (
+        qbzd_ready
+        and direct_hardware_reported
+        and motu_playback_observation.get("open") is True
+        and motu_playback_observation.get("snapshot_consistent") is True
+        and pcm_state == "RUNNING"
+        and owner_class == "qbzd"
+        and rates_match
+    )
+    if track_native_proven:
+        qbzd_rate_proof_state = "verified-current-track"
+    elif not qbzd_ready:
+        qbzd_rate_proof_state = "blocked"
+    elif motu_playback_observation.get("snapshot_consistent") is not True:
+        qbzd_rate_proof_state = "hardware-snapshot-unstable"
+    elif motu_playback_observation.get("open") is not True:
+        qbzd_rate_proof_state = "ready-awaiting-playback"
+    elif pcm_state in {"SETUP", "PREPARED"}:
+        qbzd_rate_proof_state = "hardware-preparing"
+    elif pcm_state != "RUNNING":
+        qbzd_rate_proof_state = "hardware-not-running"
+    elif owner_class != "qbzd":
+        qbzd_rate_proof_state = "hardware-owner-unverified"
+    elif not direct_hardware_reported:
+        qbzd_rate_proof_state = "direct-hardware-not-reported"
+    elif not rates_match:
+        qbzd_rate_proof_state = "rate-mismatch"
+    else:
+        qbzd_rate_proof_state = "unverified"
 
     warnings: list[dict[str, str]] = []
     if source != "motu-m2":
@@ -592,7 +928,7 @@ def build_report(
             {
                 "code": "qobuz-mopidy-backend-unavailable",
                 "severity": "medium",
-                "detail": "Mopidy is reachable, but its Qobuz backend is not registered; qobuz-rate-proof cannot run.",
+                "detail": "Legacy Mopidy is reachable, but its Qobuz backend is not registered; the Mopidy rate probe cannot run.",
             }
         )
     elif qobuz_status == "rpc-unavailable":
@@ -600,7 +936,7 @@ def build_report(
             {
                 "code": "qobuz-mopidy-rpc-unavailable",
                 "severity": "medium",
-                "detail": "The local Mopidy RPC is unavailable; Qobuz backend state is unknown and qobuz-rate-proof cannot run.",
+                "detail": "The legacy Mopidy RPC is unavailable; its Qobuz backend state is unknown.",
             }
         )
     elif qobuz_status == "rpc-invalid":
@@ -608,9 +944,20 @@ def build_report(
             {
                 "code": "qobuz-mopidy-probe-invalid",
                 "severity": "medium",
-                "detail": "The local Mopidy RPC probe returned an invalid or error response; Qobuz backend state is unknown and qobuz-rate-proof cannot run.",
+                "detail": "The legacy Mopidy RPC probe returned an invalid or error response; its Qobuz backend state is unknown.",
             }
         )
+    qbzd_status = qbzd_observation.get("status")
+    if qbzd_status == "api-unavailable":
+        warnings.append({"code": "qobuz-qbzd-api-unavailable", "severity": "medium", "detail": "The loopback QBZD status API is unavailable; reference-provider readiness is unknown."})
+    elif qbzd_status == "api-invalid":
+        warnings.append({"code": "qobuz-qbzd-probe-invalid", "severity": "medium", "detail": "The QBZD status response is invalid; reference-provider readiness is unknown."})
+    elif qbzd_status == "not-ready":
+        warnings.append({"code": "qobuz-qbzd-reference-not-ready", "severity": "medium", "detail": "QBZD is observable but the Qobuz reference route is not fully ready."})
+    if qbzd_rate_proof_state == "rate-mismatch":
+        warnings.append({"code": "qobuz-qbzd-motu-rate-mismatch", "severity": "high", "detail": "QBZD and the currently open MOTU hardware PCM report different sample rates; track-native playback is not established."})
+    elif qbzd_rate_proof_state == "hardware-owner-unverified":
+        warnings.append({"code": "qobuz-qbzd-motu-owner-unverified", "severity": "high", "detail": "The MOTU playback PCM is running, but its owner is not verified as QBZD; track-native playback is not established."})
 
     return {
         "schema_version": 1,
@@ -646,8 +993,16 @@ def build_report(
         },
         "streaming_sources": {
             "qobuz": {
+                "selected_reference_provider": selected_qobuz_provider,
+                "reference_provider_ready": qbzd_ready or legacy_mopidy_ready,
+                "rate_probe_backend_ready": qbzd_ready or legacy_mopidy_ready,
+                "track_native_proven": track_native_proven,
+                "rate_proof_state": (qbzd_rate_proof_state if qbzd_ready else "legacy-mopidy-ready" if legacy_mopidy_ready else "blocked"),
+                "direct_hardware_reported": direct_hardware_reported,
+                "motu_hardware_playback": motu_playback_observation,
+                "qbzd": qbzd_observation,
+                "mopidy_legacy": qobuz_observation,
                 "mopidy": qobuz_observation,
-                "rate_probe_backend_ready": qobuz_observation.get("backend_registered") is True,
                 "browser_quality_boundary": "shared-pipewire-mixed-path; track-native-not-established",
             }
         },
@@ -802,7 +1157,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     results = [run_read_only(command) for command in READ_ONLY_COMMANDS]
-    report = build_report(results, read_eld_text(), observe_mopidy_qobuz())
+    report = build_report(
+        results,
+        read_eld_text(),
+        observe_mopidy_qobuz(),
+        observe_qbzd_qobuz(),
+        observe_motu_playback_hw_params(),
+    )
     encoded = (
         json.dumps(report, ensure_ascii=False, indent=2 if args.pretty else None) + "\n"
     )
