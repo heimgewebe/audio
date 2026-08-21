@@ -1,15 +1,28 @@
 {
   "decision": {
     "current_default_observed": {
+      "grammar_config": {
+        "base_note": 45,
+        "cycle_pause_seconds": 2.6,
+        "cycles": 2,
+        "phrase_pause_seconds": 0.82,
+        "phrase_repeats_max": 5,
+        "phrase_repeats_min": 3,
+        "seed": 45223,
+        "theme_count": 4,
+        "transition_pause_seconds": 1.35
+      },
       "grammar_source_file_sha256": "49a3a23fa3c3a34ed2f3baff313c4d023e03a6fc8ae58646221343b456dbec71",
-      "phrase_pause_seconds": 0.82,
       "profile_file_sha256": "d2f309bf2fa70d3b808d11410a5a89ef0bbb321405023101c2e55b47bfc7e92b",
       "voice_mode": "morph"
     },
     "default_promotion_authorized": false,
-    "reason": "Retain 0.947703 as a study candidate. T044 supplies positive frozen structural evidence, but the T043 completion receipt binds no real human responses; the contract therefore does not authorize a default promotion.",
+    "isolated_phrase_pause_promotion_supported": false,
+    "reason": "Retain the complete frozen T044 configuration as study evidence only. Its positive holdout metrics bind theme_count=6, phrase_repeats=6-6 and phrase_pause_seconds=0.947703 together; they do not justify changing the current pause default 0.82 in isolation. The T043 completion receipt also binds no real human responses, so no default promotion is authorized.",
     "reason_codes": [
       "t044-structural-holdout-improvement-positive",
+      "t044-metrics-bind-full-frozen-config",
+      "isolated-pause-promotion-not-supported",
       "t043-perceptual-result-indeterminate",
       "no-real-frozen-human-responses",
       "structural-metrics-not-a-perceptual-substitute",
@@ -18,31 +31,45 @@
     "verdict": "retain_study_candidate"
   },
   "decision_id": "audio-whale-interphrase-pause-default-t045-v1",
-  "decision_sha256": "634b16ab2101576a1785ece2332b9e39e3253c9938c44a85947403b4096388f0",
   "does_not_establish": [
     "human preference",
     "population-wide whale-likeness",
     "biological optimality",
+    "evidence for changing phrase_pause_seconds in isolation",
     "permission to retune on the 2017-2019 holdout",
     "permission to change a live mode or default"
   ],
   "evaluated_candidate": {
     "candidate_file_sha256": "23ed10b77c5488d901f57a6845392c7b7515ecdc5c6f38ff05669b3b521666dd",
     "candidate_sha256": "f343b326b149f0ea4b6c76bb0a0db0123eb8a7e91ca0c84a500f05a0ca22521e",
-    "phrase_pause_seconds": 0.947703
+    "evidence_scope": "complete_frozen_final_config",
+    "final_config": {
+      "base_note": 45,
+      "cycle_pause_seconds": 2.6,
+      "cycles": 2,
+      "phrase_pause_seconds": 0.947703,
+      "phrase_repeats_max": 6,
+      "phrase_repeats_min": 6,
+      "seed": 45223,
+      "theme_count": 6,
+      "transition_pause_seconds": 1.35
+    }
   },
   "future_reconsideration": {
+    "isolated_phrase_pause_change_requires_fresh_evidence": true,
     "minimum_new_evidence": [
       "real human responses frozen before unblinding under a revision-bound controlled protocol",
-      "explicit linkage of any perceptual stimulus to the candidate being reconsidered",
+      "explicit linkage of any perceptual stimulus to the complete candidate configuration being reconsidered",
+      "for an isolated phrase-pause change, a new preregistered evaluation that holds the other grammar parameters at the intended target defaults",
       "no reuse of the 2017-2019 holdout for parameter, threshold, or candidate tuning"
     ],
     "promotion_implementation_must_be_separate": true,
     "requires_new_decision": true
   },
   "holdout_reuse_contract": {
-    "allowed_use": "historical decision evidence only",
+    "allowed_use": "historical evidence for the complete frozen T044 configuration only",
     "candidate_selection_allowed": false,
+    "isolated_parameter_promotion_supported": false,
     "second_t044_holdout_evaluation_allowed": false,
     "threshold_selection_allowed": false,
     "tuning_allowed": false
@@ -70,13 +97,14 @@
     }
   },
   "structural_evidence": {
+    "applies_to": "evaluated_candidate.final_config as a whole",
     "feature_count": 7,
     "interphrase_gap_relative_absolute_error": {
       "calibrated": 0.046549,
       "default": 0.081012,
       "historical_development_projection": 0.227868
     },
-    "interpretation": "The calibrated candidate is structurally better on the frozen holdout, but structural error metrics are not human preference, whale-likeness, or perceptual hierarchy detection.",
+    "interpretation": "The complete frozen T044 configuration is structurally better on the frozen holdout. These metrics do not isolate the effect of phrase_pause_seconds and are not human preference, whale-likeness, or perceptual hierarchy detection.",
     "overall_mean_relative_absolute_error": {
       "calibrated": 0.241312,
       "calibrated_improves_default": true,
@@ -94,5 +122,6 @@
       "mean_theme_sequence_length": 0.118644
     }
   },
-  "task_id": "AUDIO-CONTROL-PLANE-V1-T045"
+  "task_id": "AUDIO-CONTROL-PLANE-V1-T045",
+  "decision_sha256": "d9c310525b45dd156b1684d32cb03bbe4434de2c53a2944aae22335452b1baa0"
 }

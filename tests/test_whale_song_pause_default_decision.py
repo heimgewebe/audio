@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import pathlib
@@ -63,11 +64,12 @@ class WhaleSongPauseDefaultDecisionTests(unittest.TestCase):
         unhashed.pop("decision_sha256")
         self.assertEqual(_sha256_json(unhashed), expected)
 
-    def test_decision_binds_frozen_t044_artifacts(self) -> None:
+    def test_decision_binds_complete_frozen_t044_candidate(self) -> None:
         candidate_binding = self.decision["evaluated_candidate"]
-        self.assertEqual(candidate_binding["phrase_pause_seconds"], 0.947703)
         self.assertEqual(candidate_binding["candidate_sha256"], self.candidate["candidate_sha256"])
         self.assertEqual(candidate_binding["candidate_file_sha256"], _sha256_file(CANDIDATE_PATH))
+        self.assertEqual(candidate_binding["evidence_scope"], "complete_frozen_final_config")
+        self.assertEqual(candidate_binding["final_config"], self.candidate["final_config"])
 
         t044 = self.decision["source_evidence"]["t044_holdout_calibration"]
         self.assertEqual(t044["holdout_evaluation_sha256"], self.holdout["evaluation_sha256"])
@@ -79,6 +81,7 @@ class WhaleSongPauseDefaultDecisionTests(unittest.TestCase):
     def test_structural_evidence_reports_all_current_features(self) -> None:
         structural = self.decision["structural_evidence"]
         per_feature = self.holdout["per_feature"]
+        self.assertEqual(structural["applies_to"], "evaluated_candidate.final_config as a whole")
         self.assertEqual(structural["feature_count"], 7)
         self.assertEqual(len(per_feature), 7)
         self.assertEqual(
@@ -116,10 +119,26 @@ class WhaleSongPauseDefaultDecisionTests(unittest.TestCase):
         self.assertFalse(decision["default_promotion_authorized"])
         current_default = decision["current_default_observed"]
         self.assertEqual(current_default["voice_mode"], "morph")
-        self.assertEqual(
-            current_default["phrase_pause_seconds"], SongGrammarConfig().phrase_pause_seconds
-        )
+        self.assertEqual(current_default["grammar_config"], dataclasses.asdict(SongGrammarConfig()))
         self.assertEqual(current_default["grammar_source_file_sha256"], _sha256_file(GRAMMAR_PATH))
+
+    def test_t044_metrics_do_not_support_an_isolated_pause_default_change(self) -> None:
+        frozen = self.decision["evaluated_candidate"]["final_config"]
+        current = self.decision["decision"]["current_default_observed"]["grammar_config"]
+        self.assertEqual(frozen["phrase_pause_seconds"], 0.947703)
+        self.assertEqual(frozen["theme_count"], 6)
+        self.assertEqual(frozen["phrase_repeats_min"], 6)
+        self.assertEqual(frozen["phrase_repeats_max"], 6)
+        self.assertEqual(current["theme_count"], 4)
+        self.assertEqual(current["phrase_repeats_min"], 3)
+        self.assertEqual(current["phrase_repeats_max"], 5)
+        self.assertFalse(self.decision["decision"]["isolated_phrase_pause_promotion_supported"])
+        self.assertFalse(self.decision["holdout_reuse_contract"]["isolated_parameter_promotion_supported"])
+        self.assertTrue(
+            self.decision["future_reconsideration"][
+                "isolated_phrase_pause_change_requires_fresh_evidence"
+            ]
+        )
 
     def test_holdout_cannot_be_reused_for_retuning_or_second_t044_evaluation(self) -> None:
         contract = self.decision["holdout_reuse_contract"]
