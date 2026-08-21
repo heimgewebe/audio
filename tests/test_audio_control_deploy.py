@@ -32,6 +32,8 @@ class AudioControlDeployTests(unittest.TestCase):
             "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf": b"[Service]\nRestart=no\n",
             "scripts/audio_level_observer.py": b"print('observer')\n",
             "scripts/audio_live_telemetry.py": b"print('telemetry')\n",
+            "scripts/qobuz_desktop_recovery.py": b"print('recovery')\n",
+            "docs/qobuz-desktop-recovery.md": b"# Recovery\n",
             "scripts/audio_remote_bridge.py": b"print('bridge')\n",
             "scripts/audio_remote_bridge_tailscale.py": b"print('tailscale')\n",
             "scripts/audio_remote_bridge_ipad_probe.py": b"print('ipad probe')\n",
@@ -39,6 +41,7 @@ class AudioControlDeployTests(unittest.TestCase):
             "schemas/audiozentrale-remote-bridge.v1.schema.json": b"{}\n",
             "systemd/user/audio-remote-bridge-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "systemd/user/audio-control-level-observer-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
+            "systemd/user/audio-qobuz-desktop-recovery-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "systemd/user/audio-control-ui-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "inventory/audiozentrale-ipad-pwa.v1.json": b"{}\n",
             "schemas/audiozentrale-ipad-pwa.v1.schema.json": b"{}\n",
@@ -68,6 +71,7 @@ class AudioControlDeployTests(unittest.TestCase):
             "tests/test_audio_control.py": b"import unittest\n",
             "tests/test_audio_level_observer.py": b"import unittest\n",
             "tests/test_audio_live_telemetry.py": b"import unittest\n",
+            "tests/test_qobuz_desktop_recovery.py": b"import unittest\n",
             "tests/test_audio_ipad_pwa.py": b"import unittest\n",
             "tests/test_audio_remote_bridge.py": b"import unittest\n",
         }
@@ -103,6 +107,66 @@ class AudioControlDeployTests(unittest.TestCase):
             host="127.0.0.1",
             port=8765,
         )
+
+    def failed_candidate_rollback(
+        self,
+        root: pathlib.Path,
+        *,
+        previous: str,
+        commit: str,
+        previous_supports_recovery: bool,
+        previous_recovery_error: Exception | None = None,
+    ) -> tuple[Exception, mock.Mock, pathlib.Path]:
+        args = self.sync_args(root)
+        args.deploy_root.mkdir()
+        args.state_root.mkdir()
+        previous_release = args.deploy_root / "releases" / previous
+        previous_release.mkdir(parents=True)
+        if previous_supports_recovery:
+            sentinel = previous_release / MODULE.QOBUZ_RECOVERY_RELEASE_SENTINEL
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.write_text("recovery\n", encoding="utf-8")
+        release = args.deploy_root / "releases" / commit
+        self.write_release(release, commit)
+        converge = mock.Mock(side_effect=previous_recovery_error)
+        with (
+            mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+            mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+            mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+            mock.patch.object(
+                MODULE,
+                "prepare_deployment_repository",
+                return_value=(root / "repository.git", []),
+            ),
+            mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+            mock.patch.object(
+                MODULE, "upgrade_current_release_marker", return_value={"changed": False}
+            ),
+            mock.patch.object(MODULE, "read_current_commit", return_value=previous),
+            mock.patch.object(
+                MODULE, "prepare_release", return_value=(release, [], False)
+            ),
+            mock.patch.object(MODULE, "release_supports_remote_bridge", return_value=False),
+            mock.patch.object(MODULE, "switch_current"),
+            mock.patch.object(
+                MODULE,
+                "reconcile_runtime_environment",
+                return_value=({"changed": False}, None),
+            ),
+            mock.patch.object(MODULE, "install_release_runtime", return_value=([], [])),
+            mock.patch.object(MODULE, "activate_service", return_value=[]),
+            mock.patch.object(
+                MODULE,
+                "verify_service",
+                side_effect=MODULE.DeployError("candidate UI unhealthy"),
+            ),
+            mock.patch.object(MODULE, "stop_qobuz_recovery_for_rollback") as stop,
+            mock.patch.object(MODULE, "converge_qobuz_recovery", converge),
+            self.assertRaises(MODULE.DeployError) as raised,
+        ):
+            MODULE.sync(args)
+        stop.assert_called_once_with()
+        return raised.exception, converge, previous_release
 
     def test_dauersong_hardening_is_installed_after_other_runtime_files(self):
         self.assertEqual(
@@ -208,6 +272,31 @@ class AudioControlDeployTests(unittest.TestCase):
         )
         commit = "6" * 40
         for missing in sorted(expected):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
+
+    def test_qobuz_recovery_runtime_files_are_release_critical(self):
+        expected = set(MODULE.QOBUZ_RECOVERY_CRITICAL_RELEASE_FILES)
+        self.assertIn(
+            "systemd/user/audio-qobuz-desktop-recovery-v1.service",
+            MODULE.RUNTIME_FILES,
+        )
+        commit = "7" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            self.write_release(release, commit)
+            self.assertIn(
+                MODULE.QOBUZ_RECOVERY_RELEASE_SENTINEL,
+                MODULE.critical_release_paths(release),
+            )
+        for missing in sorted(expected - {MODULE.QOBUZ_RECOVERY_RELEASE_SENTINEL}):
             with self.subTest(missing=missing):
                 with tempfile.TemporaryDirectory() as directory:
                     release = pathlib.Path(directory)
@@ -607,6 +696,19 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertEqual(activity["active_state"], "not-found")
         self.assertEqual(activity["load_state"], "not-found")
 
+    def test_raw_service_readback_preserves_transitional_state(self):
+        result = MODULE.CommandResult(
+            ("systemctl", "--user", "show", MODULE.QOBUZ_RECOVERY_UNIT),
+            0,
+            "LoadState=loaded\nActiveState=activating\nSubState=auto-restart\n",
+            "",
+            0.1,
+        )
+        with mock.patch.object(MODULE, "run_command", return_value=result):
+            activity = MODULE.read_service_activity_raw(MODULE.QOBUZ_RECOVERY_UNIT)
+        self.assertEqual(activity["active_state"], "activating")
+        self.assertEqual(activity["sub_state"], "auto-restart")
+
     def test_service_readback_binds_html_javascript_css_and_health(self):
         commit = "c" * 40
         with tempfile.TemporaryDirectory() as directory:
@@ -833,6 +935,481 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertEqual(report["service_commands"], [])
             self.assertFalse(report["runtime_environment"]["changed"])
             activate.assert_not_called()
+
+    def test_qobuz_recovery_introduction_converges_on_new_deployer_second_pass(self):
+        commit = "9" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            release = root / "release"
+            self.write_release(release, commit)
+            runtime_only = {
+                "scripts/audio_control_deploy.py": b"print('deployer')\n",
+                "systemd/user/audio-control-deploy.service": b"[Service]\nExecStart=/usr/bin/true\n",
+                "systemd/user/audio-control-deploy.timer": b"[Timer]\nOnActiveSec=60\n",
+            }
+            for relative, payload in runtime_only.items():
+                target = release / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(payload)
+            destinations = root / "runtime"
+            full_mapping = {
+                relative: (destinations / pathlib.Path(relative).name, mode)
+                for relative, (_destination, mode) in MODULE.RUNTIME_FILES.items()
+            }
+            recovery_relative = f"systemd/user/{MODULE.QOBUZ_RECOVERY_UNIT}"
+            recovery_destination = full_mapping[recovery_relative][0]
+            old_mapping = {
+                relative: binding
+                for relative, binding in full_mapping.items()
+                if relative != recovery_relative
+            }
+            command = MODULE.CommandResult(
+                ("systemd-analyze", "--user", "verify"), 0, "", "", 0.1
+            )
+
+            # The historical first invocation can install only its old mapping.
+            with (
+                mock.patch.object(MODULE, "RUNTIME_FILES", old_mapping),
+                mock.patch.object(MODULE, "run_command", return_value=command),
+            ):
+                MODULE.install_release_runtime(release)
+            self.assertFalse(recovery_destination.exists())
+
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            active = {"value": False}
+
+            def activity(unit):
+                self.assertEqual(unit, MODULE.QOBUZ_RECOVERY_UNIT)
+                loaded = recovery_destination.exists()
+                return {
+                    "unit": unit,
+                    "load_state": "loaded" if loaded else "not-found",
+                    "active": loaded and active["value"],
+                    "active_state": "active" if active["value"] else "inactive",
+                    "readback": {},
+                }
+
+            def service(action, unit, **_kwargs):
+                self.assertEqual((action, unit), ("start", MODULE.QOBUZ_RECOVERY_UNIT))
+                active["value"] = True
+                return MODULE.CommandResult(
+                    ("systemctl", "--user", action, unit), 0, "", "", 0.1
+                )
+
+            with (
+                mock.patch.object(MODULE, "RUNTIME_FILES", full_mapping),
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(MODULE, "prepare_deployment_repository", return_value=(root / "repository.git", [])),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(MODULE, "upgrade_current_release_marker", return_value={"changed": False}),
+                mock.patch.object(MODULE, "read_current_commit", return_value=commit),
+                mock.patch.object(MODULE, "prepare_release", return_value=(release, [], False)),
+                mock.patch.object(MODULE, "reconcile_runtime_environment", return_value=({"changed": False}, None)),
+                mock.patch.object(MODULE, "run_command", return_value=command),
+                mock.patch.object(MODULE, "activate_service", return_value=[]),
+                mock.patch.object(MODULE, "verify_service", return_value={"url": "http://127.0.0.1:8765/"}),
+                mock.patch.object(MODULE, "read_service_activity", side_effect=activity),
+                mock.patch.object(MODULE, "service_command", side_effect=service),
+                mock.patch.object(MODULE, "prune_releases", return_value={"keep": 3, "removed": [], "warnings": []}),
+            ):
+                report = MODULE.sync(args)
+
+            self.assertTrue(recovery_destination.is_file())
+            self.assertTrue(report["qobuz_recovery"]["active"])
+            self.assertEqual(len(report["qobuz_recovery"]["activation"]), 1)
+
+    def test_qobuz_recovery_convergence_fails_inactive_readback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            sentinel = release / MODULE.QOBUZ_RECOVERY_RELEASE_SENTINEL
+            sentinel.parent.mkdir(parents=True)
+            sentinel.write_text("recovery\n", encoding="utf-8")
+            inactive = {
+                "load_state": "loaded",
+                "active": False,
+                "active_state": "inactive",
+            }
+            command = MODULE.CommandResult(
+                ("systemctl", "--user", "start", MODULE.QOBUZ_RECOVERY_UNIT),
+                0, "", "", 0.1,
+            )
+            with (
+                mock.patch.object(MODULE, "read_service_activity", return_value=inactive),
+                mock.patch.object(MODULE, "service_command", return_value=command),
+                self.assertRaisesRegex(MODULE.DeployError, "nicht aktiv"),
+            ):
+                MODULE.converge_qobuz_recovery(release)
+
+    def test_failed_release_stops_new_recovery_before_runtime_rollback(self):
+        commit = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            release = args.deploy_root / "releases" / commit
+            sentinel = release / MODULE.QOBUZ_RECOVERY_RELEASE_SENTINEL
+            sentinel.parent.mkdir(parents=True)
+            sentinel.write_text("recovery\n", encoding="utf-8")
+            recovery = root / "runtime" / MODULE.QOBUZ_RECOVERY_UNIT
+            update = {
+                "source": f"systemd/user/{MODULE.QOBUZ_RECOVERY_UNIT}",
+                "destination": str(recovery),
+                "sha256": "b" * 64,
+                "mode": "0o600",
+            }
+            backup = {"path": str(recovery), "payload": None, "mode": None}
+            events = []
+            active = {"value": False}
+
+            def install(_release):
+                recovery.parent.mkdir(parents=True, exist_ok=True)
+                recovery.write_text("[Service]\nExecStart=/usr/bin/true\n", encoding="utf-8")
+                recovery.chmod(0o600)
+                return [update], [backup]
+
+            def activity(_unit):
+                loaded = recovery.exists()
+                events.append(f"read:{active['value']}:{loaded}")
+                return {
+                    "load_state": "loaded" if loaded else "not-found",
+                    "active": active["value"],
+                    "active_state": "active" if active["value"] else "inactive",
+                }
+
+            def service(action, unit, **_kwargs):
+                self.assertEqual(unit, MODULE.QOBUZ_RECOVERY_UNIT)
+                events.append(action)
+                active["value"] = action != "stop"
+                return MODULE.CommandResult(("systemctl", "--user", action, unit), 0, "", "", 0.1)
+
+            def raw_activity(_unit):
+                return {
+                    "load_state": "loaded",
+                    "active": active["value"],
+                    "active_state": "active" if active["value"] else "inactive",
+                    "sub_state": "running" if active["value"] else "dead",
+                    "readback": {},
+                }
+
+            def run(argv, **_kwargs):
+                events.append("reload")
+                self.assertFalse(recovery.exists())
+                return MODULE.CommandResult(tuple(argv), 0, "", "", 0.1)
+
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(MODULE, "prepare_deployment_repository", return_value=(root / "repository.git", [])),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(MODULE, "upgrade_current_release_marker", return_value={"changed": False}),
+                mock.patch.object(MODULE, "read_current_commit", return_value=commit),
+                mock.patch.object(MODULE, "prepare_release", return_value=(release, [], False)),
+                mock.patch.object(MODULE, "reconcile_runtime_environment", return_value=({"changed": False}, None)),
+                mock.patch.object(MODULE, "install_release_runtime", side_effect=install),
+                mock.patch.object(MODULE, "activate_service", return_value=[]),
+                mock.patch.object(MODULE, "verify_service", return_value={"url": "http://127.0.0.1:8765/"}),
+                mock.patch.object(MODULE, "read_service_activity", side_effect=activity),
+                mock.patch.object(MODULE, "read_service_activity_raw", side_effect=raw_activity),
+                mock.patch.object(MODULE, "service_command", side_effect=service),
+                mock.patch.object(MODULE, "run_command", side_effect=run),
+                mock.patch.object(MODULE, "prune_releases", side_effect=MODULE.DeployError("forced readback failure")),
+                self.assertRaisesRegex(
+                    MODULE.DeployError,
+                    "Rollback war unvollständig.*Qobuz-Recovery-Unit ist nicht installiert",
+                ),
+            ):
+                MODULE.sync(args)
+
+            self.assertFalse(recovery.exists())
+            self.assertFalse(active["value"])
+            self.assertLess(events.index("stop"), events.index("reload"))
+
+    def test_implicit_ui_wants_start_is_stopped_before_pointer_rollback(self):
+        previous = "3" * 40
+        commit = "4" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            previous_release = args.deploy_root / "releases" / previous
+            previous_release.mkdir(parents=True)
+            release = args.deploy_root / "releases" / commit
+            self.write_release(release, commit)
+            active = {"value": False}
+            events = []
+
+            def switch(_root, target):
+                events.append(f"pointer:{target}")
+
+            def activate(_unit):
+                events.append("ui")
+                if events.count("ui") == 1:
+                    active["value"] = True
+                    events.append("implicit-recovery-start")
+                return []
+
+            def raw_activity(_unit):
+                return {
+                    "load_state": "loaded",
+                    "active": active["value"],
+                    "active_state": "active" if active["value"] else "inactive",
+                    "sub_state": "running" if active["value"] else "dead",
+                    "readback": {},
+                }
+
+            def service(action, unit, **_kwargs):
+                self.assertEqual((action, unit), ("stop", MODULE.QOBUZ_RECOVERY_UNIT))
+                events.append("stop-recovery")
+                active["value"] = False
+                return MODULE.CommandResult(
+                    ("systemctl", "--user", action, unit), 0, "", "", 0.1
+                )
+
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(
+                    MODULE, "upgrade_current_release_marker", return_value={"changed": False}
+                ),
+                mock.patch.object(MODULE, "read_current_commit", return_value=previous),
+                mock.patch.object(
+                    MODULE, "prepare_release", return_value=(release, [], False)
+                ),
+                mock.patch.object(
+                    MODULE, "release_supports_remote_bridge", return_value=False
+                ),
+                mock.patch.object(MODULE, "switch_current", side_effect=switch),
+                mock.patch.object(
+                    MODULE,
+                    "reconcile_runtime_environment",
+                    return_value=({"changed": False}, None),
+                ),
+                mock.patch.object(MODULE, "install_release_runtime", return_value=([], [])),
+                mock.patch.object(MODULE, "activate_service", side_effect=activate),
+                mock.patch.object(
+                    MODULE,
+                    "verify_service",
+                    side_effect=MODULE.DeployError("candidate UI unhealthy"),
+                ),
+                mock.patch.object(
+                    MODULE, "read_service_activity_raw", side_effect=raw_activity
+                ),
+                mock.patch.object(MODULE, "service_command", side_effect=service),
+                mock.patch.object(MODULE, "converge_qobuz_recovery") as converge,
+                self.assertRaisesRegex(MODULE.DeployError, "candidate UI unhealthy"),
+            ):
+                MODULE.sync(args)
+
+            converge.assert_not_called()
+            self.assertFalse(active["value"])
+            self.assertLess(
+                events.index("implicit-recovery-start"), events.index("stop-recovery")
+            )
+            self.assertLess(
+                events.index("stop-recovery"), events.index(f"pointer:{previous}")
+            )
+
+    def test_script_only_candidate_restart_is_stopped_before_pointer_rollback(self):
+        previous = "1" * 40
+        commit = "2" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            previous_release = args.deploy_root / "releases" / previous
+            release = args.deploy_root / "releases" / commit
+            self.write_release(previous_release, previous)
+            self.write_release(release, commit)
+            (release / "scripts" / "qobuz_desktop_recovery.py").write_bytes(
+                b"print('candidate recovery')\n"
+            )
+            active = {"value": True}
+            events = []
+
+            def switch(_root, target):
+                events.append(f"pointer:{target}")
+
+            def activity(unit):
+                self.assertEqual(unit, MODULE.QOBUZ_RECOVERY_UNIT)
+                return {
+                    "unit": unit,
+                    "load_state": "loaded",
+                    "active": active["value"],
+                    "active_state": "active" if active["value"] else "inactive",
+                    "sub_state": "running" if active["value"] else "dead",
+                    "readback": {},
+                }
+
+            def service(action, unit, **_kwargs):
+                self.assertEqual(unit, MODULE.QOBUZ_RECOVERY_UNIT)
+                events.append(action)
+                active["value"] = action != "stop"
+                return MODULE.CommandResult(
+                    ("systemctl", "--user", action, unit), 0, "", "", 0.1
+                )
+
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(
+                    MODULE,
+                    "upgrade_current_release_marker",
+                    return_value={"changed": False},
+                ),
+                mock.patch.object(MODULE, "read_current_commit", return_value=previous),
+                mock.patch.object(
+                    MODULE, "prepare_release", return_value=(release, [], False)
+                ),
+                mock.patch.object(MODULE, "release_supports_remote_bridge", return_value=False),
+                mock.patch.object(MODULE, "switch_current", side_effect=switch),
+                mock.patch.object(
+                    MODULE,
+                    "reconcile_runtime_environment",
+                    return_value=({"changed": False}, None),
+                ),
+                mock.patch.object(MODULE, "install_release_runtime", return_value=([], [])),
+                mock.patch.object(MODULE, "activate_service", return_value=[]),
+                mock.patch.object(
+                    MODULE,
+                    "verify_service",
+                    return_value={"url": "http://127.0.0.1:8765/"},
+                ),
+                mock.patch.object(MODULE, "read_service_activity", side_effect=activity),
+                mock.patch.object(MODULE, "read_service_activity_raw", side_effect=activity),
+                mock.patch.object(MODULE, "service_command", side_effect=service),
+                mock.patch.object(
+                    MODULE,
+                    "prune_releases",
+                    side_effect=MODULE.DeployError("forced postflight failure"),
+                ),
+                self.assertRaisesRegex(MODULE.DeployError, "forced postflight failure"),
+            ):
+                MODULE.sync(args)
+
+            self.assertEqual(events[0], f"pointer:{commit}")
+            self.assertLess(events.index("restart"), events.index("stop"))
+            self.assertLess(events.index("stop"), events.index(f"pointer:{previous}"))
+            self.assertTrue(active["value"])
+            self.assertLess(events.index(f"pointer:{previous}"), events.index("start"))
+
+    def test_rollback_fails_closed_when_previous_recovery_does_not_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            error, converge, previous_release = self.failed_candidate_rollback(
+                pathlib.Path(directory),
+                previous="5" * 40,
+                commit="6" * 40,
+                previous_supports_recovery=True,
+                previous_recovery_error=MODULE.DeployError(
+                    "previous recovery inactive"
+                ),
+            )
+            self.assertRegex(
+                str(error), "Rollback war unvollständig.*previous recovery inactive"
+            )
+            converge.assert_called_once_with(previous_release)
+
+    def test_rollback_succeeds_when_previous_recovery_is_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            error, converge, previous_release = self.failed_candidate_rollback(
+                pathlib.Path(directory),
+                previous="7" * 40,
+                commit="8" * 40,
+                previous_supports_recovery=True,
+            )
+            self.assertRegex(str(error), "candidate UI unhealthy")
+            converge.assert_called_once_with(previous_release)
+
+    def test_rollback_accepts_legacy_previous_release_without_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            error, converge, _previous_release = self.failed_candidate_rollback(
+                pathlib.Path(directory),
+                previous="9" * 40,
+                commit="a" * 40,
+                previous_supports_recovery=False,
+            )
+            self.assertRegex(str(error), "candidate UI unhealthy")
+            converge.assert_not_called()
+
+    def test_rollback_fails_closed_if_recovery_cannot_be_stopped(self):
+        active = {
+            "load_state": "loaded",
+            "active": False,
+            "active_state": "activating",
+            "sub_state": "auto-restart",
+            "readback": {},
+        }
+        command = MODULE.CommandResult(
+            ("systemctl", "--user", "stop", MODULE.QOBUZ_RECOVERY_UNIT),
+            0, "", "", 0.1,
+        )
+        with (
+            mock.patch.object(MODULE, "read_service_activity_raw", return_value=active),
+            mock.patch.object(MODULE, "service_command", return_value=command),
+            self.assertRaisesRegex(MODULE.DeployError, "nicht sicher stoppen"),
+        ):
+            MODULE.stop_qobuz_recovery_for_rollback(sleeper=lambda _seconds: None)
+
+    def test_rollback_stopper_converges_transitional_and_auto_restart_states(self):
+        inactive = {
+            "load_state": "loaded",
+            "active": False,
+            "active_state": "inactive",
+            "sub_state": "dead",
+            "readback": {},
+        }
+        command = MODULE.CommandResult(
+            ("systemctl", "--user", "stop", MODULE.QOBUZ_RECOVERY_UNIT),
+            0, "", "", 0.1,
+        )
+        for active_state, sub_state in (
+            ("activating", "start"),
+            ("deactivating", "stop-sigterm"),
+            ("activating", "auto-restart"),
+        ):
+            with self.subTest(active_state=active_state, sub_state=sub_state):
+                transitional = {
+                    "load_state": "loaded",
+                    "active": False,
+                    "active_state": active_state,
+                    "sub_state": sub_state,
+                    "readback": {},
+                }
+                with (
+                    mock.patch.object(
+                        MODULE,
+                        "read_service_activity_raw",
+                        side_effect=[transitional, transitional, inactive],
+                    ),
+                    mock.patch.object(
+                        MODULE, "service_command", return_value=command
+                    ) as stop,
+                ):
+                    MODULE.stop_qobuz_recovery_for_rollback(
+                        sleeper=lambda _seconds: None
+                    )
+                stop.assert_called_once_with("stop", MODULE.QOBUZ_RECOVERY_UNIT)
 
     def test_unchanged_release_reconciles_stale_deploy_runtime(self):
         commit = "4" * 40
@@ -1309,6 +1886,249 @@ class AudioControlDeployTests(unittest.TestCase):
                     MODULE.sync(args)
             self.assertEqual(switched, [new_commit, old_commit])
 
+    def test_runtime_install_failure_contains_auto_restarted_candidate_before_rollback(self):
+        old_commit = "3" * 40
+        new_commit = "4" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            previous_release = args.deploy_root / "releases" / old_commit
+            previous_release.mkdir(parents=True)
+            release = args.deploy_root / "releases" / new_commit
+            self.write_release(release, new_commit)
+            events = []
+            active = {"value": False}
+
+            def switch(_root, target):
+                events.append(f"pointer:{target}")
+
+            def install(_release):
+                self.assertEqual(events[-1], f"pointer:{new_commit}")
+                active["value"] = True
+                events.append("candidate-auto-restarted")
+                raise MODULE.DeployError("runtime rejected after pointer switch")
+
+            def raw_activity(_unit):
+                events.append(
+                    "read:candidate-running"
+                    if active["value"]
+                    else "read:candidate-stopped"
+                )
+                return {
+                    "unit": MODULE.QOBUZ_RECOVERY_UNIT,
+                    "load_state": "loaded",
+                    "active": active["value"],
+                    "active_state": "active" if active["value"] else "inactive",
+                    "sub_state": "running" if active["value"] else "dead",
+                    "readback": {},
+                }
+
+            def service(action, unit, **_kwargs):
+                self.assertEqual((action, unit), ("stop", MODULE.QOBUZ_RECOVERY_UNIT))
+                events.append("stop-candidate")
+                active["value"] = False
+                return MODULE.CommandResult(
+                    ("systemctl", "--user", action, unit), 0, "", "", 0.1
+                )
+
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(
+                    MODULE, "resolve_target", return_value=(new_commit, [])
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "upgrade_current_release_marker",
+                    return_value={"changed": False},
+                ),
+                mock.patch.object(
+                    MODULE, "read_current_commit", return_value=old_commit
+                ),
+                mock.patch.object(
+                    MODULE, "prepare_release", return_value=(release, [], False)
+                ),
+                mock.patch.object(
+                    MODULE, "release_supports_remote_bridge", return_value=False
+                ),
+                mock.patch.object(MODULE, "switch_current", side_effect=switch),
+                mock.patch.object(
+                    MODULE,
+                    "reconcile_runtime_environment",
+                    return_value=({"changed": False}, None),
+                ),
+                mock.patch.object(
+                    MODULE, "install_release_runtime", side_effect=install
+                ),
+                mock.patch.object(
+                    MODULE, "read_service_activity_raw", side_effect=raw_activity
+                ),
+                mock.patch.object(MODULE, "service_command", side_effect=service),
+                mock.patch.object(MODULE, "activate_service", return_value=[]),
+                self.assertRaisesRegex(
+                    MODULE.DeployError, "runtime rejected after pointer switch"
+                ),
+            ):
+                MODULE.sync(args)
+
+            self.assertFalse(active["value"])
+            self.assertLess(
+                events.index("read:candidate-running"),
+                events.index("stop-candidate"),
+            )
+            self.assertLess(
+                events.index("stop-candidate"),
+                events.index("read:candidate-stopped"),
+            )
+            self.assertLess(
+                events.index("read:candidate-stopped"),
+                events.index(f"pointer:{old_commit}"),
+            )
+
+    def test_partial_runtime_install_is_contained_before_restore_and_pointer_rollback(self):
+        old_commit = "5" * 40
+        new_commit = "6" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            previous_release = args.deploy_root / "releases" / old_commit
+            previous_release.mkdir(parents=True)
+            release = args.deploy_root / "releases" / new_commit
+            self.write_release(release, new_commit)
+            deploy_relative = "scripts/audio_control_deploy.py"
+            recovery_relative = f"systemd/user/{MODULE.QOBUZ_RECOVERY_UNIT}"
+            deploy_source = release / deploy_relative
+            deploy_source.write_bytes(b"print('candidate deployer')\n")
+            deploy_destination = root / "runtime" / "audio-control-deploy.py"
+            recovery_destination = root / "runtime" / MODULE.QOBUZ_RECOVERY_UNIT
+            deploy_destination.parent.mkdir()
+            deploy_destination.write_bytes(b"original deployer\n")
+            deploy_destination.chmod(0o640)
+            recovery_destination.write_bytes(b"original recovery unit\n")
+            recovery_destination.chmod(0o644)
+            runtime_files = {
+                deploy_relative: (deploy_destination, 0o700),
+                recovery_relative: (recovery_destination, 0o600),
+            }
+            command = MODULE.CommandResult(
+                ("systemd-analyze", "--user", "verify"), 0, "", "", 0.1
+            )
+            events = []
+            active = {"value": False}
+            pointer = {"value": old_commit}
+            install_calls = {"value": 0}
+            original_atomic_replace = MODULE.atomic_replace_bytes
+
+            def switch(_root, target):
+                pointer["value"] = target
+                events.append(f"pointer:{target}")
+
+            def replace(path, payload, mode):
+                if payload in {b"original deployer\n", b"original recovery unit\n"}:
+                    events.append(f"runtime-restore:{path.name}")
+                    original_atomic_replace(path, payload, mode)
+                    return
+                install_calls["value"] += 1
+                if install_calls["value"] == 2:
+                    events.append("runtime-install-failed")
+                    raise OSError("forced second runtime replacement failure")
+                original_atomic_replace(path, payload, mode)
+                active["value"] = True
+                events.append("candidate-auto-restarted")
+
+            def raw_activity(_unit):
+                events.append(
+                    "read:candidate-running"
+                    if active["value"]
+                    else "read:candidate-stopped"
+                )
+                return {
+                    "unit": MODULE.QOBUZ_RECOVERY_UNIT,
+                    "load_state": "loaded",
+                    "active": active["value"],
+                    "active_state": "active" if active["value"] else "inactive",
+                    "sub_state": "running" if active["value"] else "dead",
+                    "readback": {},
+                }
+
+            def service(action, unit, **_kwargs):
+                self.assertEqual((action, unit), ("stop", MODULE.QOBUZ_RECOVERY_UNIT))
+                events.append("stop-candidate")
+                active["value"] = False
+                return MODULE.CommandResult(
+                    ("systemctl", "--user", action, unit), 0, "", "", 0.1
+                )
+
+            with (
+                mock.patch.object(MODULE, "RUNTIME_FILES", runtime_files),
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(MODULE, "resolve_target", return_value=(new_commit, [])),
+                mock.patch.object(
+                    MODULE,
+                    "upgrade_current_release_marker",
+                    return_value={"changed": False},
+                ),
+                mock.patch.object(MODULE, "read_current_commit", return_value=old_commit),
+                mock.patch.object(
+                    MODULE, "prepare_release", return_value=(release, [], False)
+                ),
+                mock.patch.object(
+                    MODULE, "release_supports_remote_bridge", return_value=False
+                ),
+                mock.patch.object(MODULE, "switch_current", side_effect=switch),
+                mock.patch.object(
+                    MODULE,
+                    "reconcile_runtime_environment",
+                    return_value=({"changed": False}, None),
+                ),
+                mock.patch.object(MODULE, "atomic_replace_bytes", side_effect=replace),
+                mock.patch.object(MODULE, "run_command", return_value=command),
+                mock.patch.object(
+                    MODULE, "read_service_activity_raw", side_effect=raw_activity
+                ),
+                mock.patch.object(MODULE, "service_command", side_effect=service),
+                mock.patch.object(MODULE, "activate_service", return_value=[]),
+                self.assertRaisesRegex(
+                    MODULE.ReleaseRuntimeInstallError,
+                    "forced second runtime replacement failure",
+                ),
+            ):
+                MODULE.sync(args)
+
+            first_restore = next(
+                index
+                for index, event in enumerate(events)
+                if event.startswith("runtime-restore:")
+            )
+            self.assertLess(events.index("stop-candidate"), first_restore)
+            self.assertLess(events.index("read:candidate-stopped"), first_restore)
+            self.assertLess(first_restore, events.index(f"pointer:{old_commit}"))
+            self.assertEqual(deploy_destination.read_bytes(), b"original deployer\n")
+            self.assertEqual(deploy_destination.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(
+                recovery_destination.read_bytes(), b"original recovery unit\n"
+            )
+            self.assertEqual(recovery_destination.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(active["value"])
+            self.assertEqual(pointer["value"], old_commit)
+
     def test_runtime_environment_is_port_bound_and_fail_closed(self):
         with mock.patch.dict(
             MODULE.os.environ, {"XDG_RUNTIME_DIR": "/run/user/1234"}
@@ -1437,6 +2257,80 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertEqual(len(updates), len(runtime_files))
             self.assertEqual(len(backups), len(runtime_files))
 
+    def test_partial_runtime_install_failure_propagates_every_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            release = root / "release"
+            deploy_relative = "scripts/audio_control_deploy.py"
+            unit_relative = f"systemd/user/{MODULE.QOBUZ_RECOVERY_UNIT}"
+            sources = {
+                deploy_relative: b"print('new deployer')\n",
+                unit_relative: b"[Service]\nExecStart=/usr/bin/true\n",
+            }
+            destinations = {
+                deploy_relative: root / "runtime" / "audio-control-deploy.py",
+                unit_relative: root / "runtime" / MODULE.QOBUZ_RECOVERY_UNIT,
+            }
+            original = {
+                deploy_relative: (b"old deployer\n", 0o640),
+                unit_relative: (b"old recovery unit\n", 0o644),
+            }
+            runtime_files = {}
+            for relative, payload in sources.items():
+                source = release / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(payload)
+                destination = destinations[relative]
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                old_payload, old_mode = original[relative]
+                destination.write_bytes(old_payload)
+                destination.chmod(old_mode)
+                runtime_files[relative] = (
+                    destination,
+                    0o700 if relative == deploy_relative else 0o600,
+                )
+            command = MODULE.CommandResult(
+                ("systemd-analyze", "--user", "verify"), 0, "", "", 0.1
+            )
+            calls = {"value": 0}
+            original_atomic_replace = MODULE.atomic_replace_bytes
+
+            def fail_second(path, payload, mode):
+                calls["value"] += 1
+                if calls["value"] == 2:
+                    raise OSError("forced partial install")
+                original_atomic_replace(path, payload, mode)
+
+            with (
+                mock.patch.object(MODULE, "RUNTIME_FILES", runtime_files),
+                mock.patch.object(MODULE, "run_command", return_value=command),
+                mock.patch.object(
+                    MODULE, "atomic_replace_bytes", side_effect=fail_second
+                ),
+                self.assertRaises(MODULE.ReleaseRuntimeInstallError) as raised,
+            ):
+                MODULE.install_release_runtime(release)
+
+            error = raised.exception
+            self.assertEqual(len(error.updates), 1)
+            self.assertEqual(len(error.backups), 2)
+            self.assertEqual(
+                [backup["path"] for backup in error.backups],
+                [str(destinations[relative]) for relative in sources],
+            )
+            self.assertEqual(
+                destinations[deploy_relative].read_bytes(), sources[deploy_relative]
+            )
+            self.assertEqual(
+                destinations[unit_relative].read_bytes(), original[unit_relative][0]
+            )
+
+            MODULE.restore_release_runtime(error.backups)
+            for relative, destination in destinations.items():
+                old_payload, old_mode = original[relative]
+                self.assertEqual(destination.read_bytes(), old_payload)
+                self.assertEqual(destination.stat().st_mode & 0o777, old_mode)
+
     def test_runtime_rollback_preserves_dauersong_safety_ratchet(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1561,7 +2455,7 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertIn("%h/.config/systemd/user", deploy)
         self.assertNotIn("%h/.config/audio-control-ui", deploy)
         self.assertIn("%h/.local/state/audio-control-deploy", deploy)
-        self.assertEqual(len(MODULE.RUNTIME_FILES), 7)
+        self.assertEqual(len(MODULE.RUNTIME_FILES), 8)
         self.assertIn("systemd/user/audio-remote-bridge-v1.service", MODULE.RUNTIME_FILES)
         self.assertIn(
             "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
@@ -1569,6 +2463,10 @@ class AudioControlDeployTests(unittest.TestCase):
         )
         self.assertIn(
             "systemd/user/audio-control-level-observer-v1.service",
+            MODULE.RUNTIME_FILES,
+        )
+        self.assertIn(
+            "systemd/user/audio-qobuz-desktop-recovery-v1.service",
             MODULE.RUNTIME_FILES,
         )
         self.assertEqual(MODULE.DEFAULT_RELEASE_RETENTION, 3)

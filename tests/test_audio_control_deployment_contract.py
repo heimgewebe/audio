@@ -9,6 +9,9 @@ UI_UNIT_PATH = ROOT / "systemd" / "user" / "audio-control-ui-v1.service"
 LEVEL_OBSERVER_UNIT_PATH = (
     ROOT / "systemd" / "user" / "audio-control-level-observer-v1.service"
 )
+QOBUZ_RECOVERY_UNIT_PATH = (
+    ROOT / "systemd" / "user" / "audio-qobuz-desktop-recovery-v1.service"
+)
 LEGACY_INDEX_BLOB_SHA = "4a1e80316512a24f780359c8f7e45194226c4f88"
 DEPLOYMENT_CONTRACT_PATTERN = (
     r'<meta\s+name="audio-control-deployment-contract"\s+'
@@ -60,6 +63,19 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         self.assertIn("RuntimeDirectory=audio-control-level-observer", observer)
         self.assertIn("--target auto", observer)
         self.assertIn("Wants=audio-control-level-observer-v1.service", ui)
+
+    def test_qobuz_recovery_is_narrow_and_coupled_to_the_ui_lifecycle(self):
+        self.assertEqual(address_families(QOBUZ_RECOVERY_UNIT_PATH), {"AF_UNIX"})
+        recovery = QOBUZ_RECOVERY_UNIT_PATH.read_text(encoding="utf-8")
+        ui = UI_UNIT_PATH.read_text(encoding="utf-8")
+        self.assertIn("PartOf=audio-control-ui-v1.service", recovery)
+        self.assertIn("StateDirectory=audio-qobuz-desktop-recovery", recovery)
+        self.assertIn("StateDirectoryMode=0700", recovery)
+        self.assertIn("%S/audio-qobuz-desktop-recovery/state.json", recovery)
+        self.assertNotIn("RuntimeDirectory=audio-qobuz-desktop-recovery", recovery)
+        self.assertIn("qobuz_desktop_recovery.py run", recovery)
+        self.assertIn("Wants=", ui)
+        self.assertIn("audio-qobuz-desktop-recovery-v1.service", ui)
 
 
 if __name__ == "__main__":

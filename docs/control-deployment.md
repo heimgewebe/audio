@@ -35,11 +35,23 @@ autoritative Commitidentität.
 8. Der persistente Dienst `audio-control-ui-v1.service` wird bei einem neuen
    Release, geänderter Laufzeitkonfiguration oder geänderter UI-/Observer-Unit
    neu gestartet. Seine `Wants=`-/`PartOf=`-Kopplung startet dabei auch
-   `audio-control-level-observer-v1.service` revisionsgebunden und beendet ihn
-   zusammen mit der UI.
+   `audio-control-level-observer-v1.service` und den eng begrenzten
+   `audio-qobuz-desktop-recovery-v1.service` revisionsgebunden und beendet sie
+   zusammen mit der UI. Der Recovery-Dienst darf ausschließlich WirePlumber
+   neu starten; seine vollständigen Fail-closed-Gates stehen in
+   `docs/qobuz-desktop-recovery.md`.
 9. Das Deployment gilt erst als erfolgreich, wenn HTML, JavaScript und CSS
    bytegenau zum Release passen und `/api/v1/health` zusätzlich exakt den
-   Zielcommit als laufende Backendrevision bestätigt.
+   Zielcommit als laufende Backendrevision bestätigt. Releases mit dem
+   Qobuz-Recovery-Vertrag müssen außerdem die Recovery-Unit als installiert und
+   aktiv zurücklesen; dies gilt auch bei unverändertem Release.
+
+Bei der einmaligen Einführung einer neuen Runtime-Dateizuordnung läuft der
+erste Timer-Pass zwangsläufig noch mit dem alten, bereits geladenen Deployer.
+Dieser Pass kann die neue Qobuz-Recovery-Unit nicht kennen und sein Receipt
+beweist ihre Installation ausdrücklich nicht. Der unmittelbar folgende Pass
+mit dem neuen Deployer installiert, startet und verifiziert die Unit. Für die
+Einführung ist deshalb dessen abschließender Readback operativ erforderlich.
 10. Bei einem Fehler werden Laufzeitkonfiguration, Releasezeiger,
     Deploymechanismus und Dienst auf den vorherigen Stand zurückgesetzt.
 11. Der aktuelle und die zwei jüngsten gültigen Vorgängerreleases bleiben für

@@ -21,7 +21,7 @@ import tempfile
 import time
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any, BinaryIO, Iterable
+from typing import Any, BinaryIO, Callable, Iterable
 
 DEFAULT_SOURCE_REPO = pathlib.Path.home() / "repos" / "audio"
 DEFAULT_DEPLOY_ROOT = pathlib.Path.home() / ".local" / "share" / "audio-control-ui"
@@ -31,8 +31,11 @@ DEFAULT_BRANCH = "main"
 DEFAULT_UNIT = "audio-control-ui-v1.service"
 REMOTE_BRIDGE_UNIT = "audio-remote-bridge-v1.service"
 LEVEL_OBSERVER_UNIT = "audio-control-level-observer-v1.service"
+QOBUZ_RECOVERY_UNIT = "audio-qobuz-desktop-recovery-v1.service"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+SERVICE_STOP_READBACK_ATTEMPTS = 6
+SERVICE_STOP_READBACK_INTERVAL_SECONDS = 0.25
 UI_RUNTIME_ENV = DEFAULT_STATE_ROOT / "runtime.env"
 UI_MANAGED_BY = "audio-control-autodeploy-v1"
 LEVEL_OBSERVER_RUNTIME_DIRECTORY = "audio-control-level-observer"
@@ -42,6 +45,14 @@ LEVEL_OBSERVER_CRITICAL_RELEASE_FILES = (
     "scripts/audio_live_telemetry.py",
     "tests/test_audio_live_telemetry.py",
     f"systemd/user/{LEVEL_OBSERVER_UNIT}",
+    "systemd/user/audio-control-ui-v1.service",
+)
+QOBUZ_RECOVERY_RELEASE_SENTINEL = "tests/test_qobuz_desktop_recovery.py"
+QOBUZ_RECOVERY_CRITICAL_RELEASE_FILES = (
+    "scripts/qobuz_desktop_recovery.py",
+    "docs/qobuz-desktop-recovery.md",
+    QOBUZ_RECOVERY_RELEASE_SENTINEL,
+    f"systemd/user/{QOBUZ_RECOVERY_UNIT}",
     "systemd/user/audio-control-ui-v1.service",
 )
 DAUERSONG_HARDENING_RELATIVE = (
@@ -70,6 +81,10 @@ RUNTIME_FILES = {
         / "systemd"
         / "user"
         / "audio-control-level-observer-v1.service",
+        0o600,
+    ),
+    f"systemd/user/{QOBUZ_RECOVERY_UNIT}": (
+        pathlib.Path.home() / ".config" / "systemd" / "user" / QOBUZ_RECOVERY_UNIT,
         0o600,
     ),
     "systemd/user/audio-remote-bridge-v1.service": (
@@ -168,6 +183,21 @@ MAX_STATIC_BYTES = 1_048_576
 
 class DeployError(RuntimeError):
     """Controlled deployment failure."""
+
+
+class ReleaseRuntimeInstallError(DeployError):
+    """Partial runtime install whose rollback state belongs to the caller."""
+
+    def __init__(
+        self,
+        error: Exception,
+        *,
+        updates: list[dict[str, Any]],
+        backups: list[dict[str, Any]],
+    ) -> None:
+        super().__init__(str(error))
+        self.updates = updates
+        self.backups = backups
 
 
 @dataclass(frozen=True)
@@ -583,9 +613,15 @@ def install_release_runtime(
                     "mode": oct(int(candidate["mode"])),
                 }
             )
-    except Exception:
-        restore_release_runtime(backups)
-        raise
+    except Exception as error:
+        # Once sync() has exposed the candidate through the current pointer,
+        # recovery containment must precede every runtime restore. Transfer the
+        # complete partial-install state to that outer rollback owner.
+        raise ReleaseRuntimeInstallError(
+            error,
+            updates=updates,
+            backups=backups,
+        ) from error
     return updates, backups
 
 
@@ -672,6 +708,7 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         release / "scripts" / "audio_control.py",
         release / "scripts" / "audio_level_observer.py",
         release / "scripts" / "audio_live_telemetry.py",
+        release / "scripts" / "qobuz_desktop_recovery.py",
         release / "scripts" / "audio_remote_bridge.py",
         release / "scripts" / "audio_remote_bridge_tailscale.py",
         release / "inventory" / "audiozentrale-remote-bridge.v1.json",
@@ -690,6 +727,7 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         release / "tests" / "test_audio_control.py",
         release / "tests" / "test_audio_level_observer.py",
         release / "tests" / "test_audio_live_telemetry.py",
+        release / "tests" / "test_qobuz_desktop_recovery.py",
         release / "tests" / "test_audio_ipad_pwa.py",
         release / "tests" / "test_audio_remote_bridge.py",
     ]
@@ -724,6 +762,21 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
                 "unittest",
                 "tests/test_audio_level_observer.py",
                 "tests/test_audio_live_telemetry.py",
+            ],
+            cwd=release,
+            timeout=180,
+        ),
+        run_command(
+            [sys.executable, "scripts/qobuz_desktop_recovery.py", "check"],
+            cwd=release,
+            timeout=30,
+        ),
+        run_command(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "tests/test_qobuz_desktop_recovery.py",
             ],
             cwd=release,
             timeout=180,
@@ -781,6 +834,8 @@ def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
         paths = [relative for relative in paths if relative not in remote_bridge_paths]
     if (release / LEVEL_OBSERVER_RELEASE_SENTINEL).is_file():
         paths.extend(LEVEL_OBSERVER_CRITICAL_RELEASE_FILES)
+    if (release / QOBUZ_RECOVERY_RELEASE_SENTINEL).is_file():
+        paths.extend(QOBUZ_RECOVERY_CRITICAL_RELEASE_FILES)
     paths.extend(relative for relative in RUNTIME_FILES if (release / relative).exists())
     return tuple(dict.fromkeys(paths))
 
@@ -1105,7 +1160,12 @@ def release_supports_remote_bridge(release: pathlib.Path) -> bool:
     return sentinel.is_file() and not sentinel.is_symlink()
 
 
-def read_service_activity(unit: str) -> dict[str, Any]:
+def release_supports_qobuz_recovery(release: pathlib.Path) -> bool:
+    sentinel = release / QOBUZ_RECOVERY_RELEASE_SENTINEL
+    return sentinel.is_file() and not sentinel.is_symlink()
+
+
+def read_service_activity_raw(unit: str) -> dict[str, Any]:
     result = run_command(
         [
             "systemctl",
@@ -1115,6 +1175,7 @@ def read_service_activity(unit: str) -> dict[str, Any]:
             "--no-pager",
             "--property=LoadState",
             "--property=ActiveState",
+            "--property=SubState",
         ],
         timeout=15,
         check=False,
@@ -1130,6 +1191,7 @@ def read_service_activity(unit: str) -> dict[str, Any]:
             "unit": unit,
             "active": False,
             "active_state": "not-found",
+            "sub_state": values.get("SubState", "dead"),
             "load_state": load_state,
             "readback": result.receipt(),
         }
@@ -1139,17 +1201,99 @@ def read_service_activity(unit: str) -> dict[str, Any]:
     if load_state != "loaded":
         raise DeployError(f"Dienst {unit} ist nicht geladen: {load_state!r}.")
     active_state = values.get("ActiveState", "")
-    if active_state not in {"active", "inactive", "failed"}:
-        raise DeployError(
-            f"Dienst {unit} befindet sich in einem nicht stabilen Zustand: {active_state!r}"
-        )
+    sub_state = values.get("SubState", "")
+    if not active_state or not sub_state:
+        raise DeployError(f"Dienstzustand von {unit} ist unvollständig.")
     return {
         "unit": unit,
         "active": active_state == "active",
         "active_state": active_state,
+        "sub_state": sub_state,
         "load_state": load_state,
         "readback": result.receipt(),
     }
+
+
+def read_service_activity(unit: str) -> dict[str, Any]:
+    activity = read_service_activity_raw(unit)
+    active_state = activity["active_state"]
+    if active_state == "not-found":
+        return activity
+    if active_state not in {"active", "inactive", "failed"}:
+        raise DeployError(
+            f"Dienst {unit} befindet sich in einem nicht stabilen Zustand: {active_state!r}"
+        )
+    return activity
+
+
+def converge_qobuz_recovery(
+    release: pathlib.Path,
+    *,
+    restart: bool = False,
+) -> dict[str, Any]:
+    if not release_supports_qobuz_recovery(release):
+        return {
+            "unit": QOBUZ_RECOVERY_UNIT,
+            "supported": False,
+            "active": False,
+            "active_state": "not-applicable",
+            "activation": [],
+        }
+    before = read_service_activity(QOBUZ_RECOVERY_UNIT)
+    if before["load_state"] != "loaded":
+        raise DeployError("Qobuz-Recovery-Unit ist nicht installiert.")
+    activation: list[dict[str, Any]] = []
+    action = "restart" if before["active"] and restart else None
+    if not before["active"]:
+        action = "start"
+    if action is not None:
+        activation.append(service_command(action, QOBUZ_RECOVERY_UNIT).receipt())
+    after = read_service_activity(QOBUZ_RECOVERY_UNIT)
+    if after["load_state"] != "loaded" or not after["active"]:
+        raise DeployError("Qobuz-Recovery-Unit ist nach Konvergenz nicht aktiv.")
+    return {
+        "unit": QOBUZ_RECOVERY_UNIT,
+        "supported": True,
+        "before": before,
+        "activation": activation,
+        "after": after,
+        "active": True,
+        "active_state": after["active_state"],
+    }
+
+
+def stop_qobuz_recovery_for_rollback(
+    *, sleeper: Callable[[float], None] = time.sleep
+) -> list[dict[str, Any]]:
+    before = read_service_activity_raw(QOBUZ_RECOVERY_UNIT)
+    receipts = [before["readback"]]
+    if before["load_state"] == "not-found":
+        return receipts
+    receipts.append(service_command("stop", QOBUZ_RECOVERY_UNIT).receipt())
+    for attempt in range(SERVICE_STOP_READBACK_ATTEMPTS):
+        after = read_service_activity_raw(QOBUZ_RECOVERY_UNIT)
+        receipts.append(after["readback"])
+        if after["load_state"] == "not-found" or (
+            after["active_state"] == "inactive" and after["sub_state"] == "dead"
+        ):
+            return receipts
+        if attempt + 1 < SERVICE_STOP_READBACK_ATTEMPTS:
+            sleeper(SERVICE_STOP_READBACK_INTERVAL_SECONDS)
+    raise DeployError("Rollback konnte Qobuz-Recovery nicht sicher stoppen.")
+
+
+def release_file_changed(
+    previous_release: pathlib.Path | None,
+    release: pathlib.Path,
+    relative: str,
+) -> bool:
+    previous_file = previous_release / relative if previous_release is not None else None
+    candidate_file = release / relative
+    return (
+        previous_file is None
+        or not previous_file.is_file()
+        or sha256_path(previous_file) != sha256_path(candidate_file)
+    )
 
 
 REMOTE_BRIDGE_EFFECT_SCOPE = [
@@ -1459,14 +1603,16 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             )
         marker_upgrade = upgrade_current_release_marker(repository, deploy_root)
         previous = read_current_commit(deploy_root)
+        previous_release = (
+            deploy_root / "releases" / previous if previous is not None else None
+        )
         bridge_before: dict[str, Any] = {
             "unit": REMOTE_BRIDGE_UNIT,
             "supported": False,
             "active": False,
             "active_state": "not-applicable",
         }
-        if previous is not None:
-            previous_release = deploy_root / "releases" / previous
+        if previous_release is not None:
             if release_supports_remote_bridge(previous_release):
                 bridge_before = {
                     "supported": True,
@@ -1480,8 +1626,15 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 "Aktiver Remote-Bridge blockiert den Wechsel auf einen Release ohne Bridgevertrag."
             )
         changed = previous != commit
-        if changed:
-            switch_current(deploy_root, commit)
+        qobuz_recovery_script_changed = (
+            changed
+            and release_supports_qobuz_recovery(release)
+            and release_file_changed(
+                previous_release,
+                release,
+                "scripts/qobuz_desktop_recovery.py",
+            )
+        )
         runtime_updates: list[dict[str, Any]] = []
         runtime_backups: list[dict[str, Any]] = []
         runtime_activation: list[dict[str, Any]] = []
@@ -1495,15 +1648,33 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         bridge_activation_attempted = False
         bridge_restart_required = False
         runtime_unit_changed = False
+        qobuz_recovery_unit_updated = False
+        # Arm rollback containment before the current pointer can expose any
+        # candidate recovery code to an already loaded, auto-restarting unit.
+        qobuz_recovery_candidate_exposed = release_supports_qobuz_recovery(release)
+        qobuz_recovery: dict[str, Any] = {
+            "unit": QOBUZ_RECOVERY_UNIT,
+            "supported": False,
+            "active": False,
+            "active_state": "not-applicable",
+            "activation": [],
+        }
         timer_updated = False
         retention: dict[str, Any] = {"keep": DEFAULT_RELEASE_RETENTION, "removed": [], "warnings": []}
         try:
+            if changed:
+                switch_current(deploy_root, commit)
             runtime_environment, runtime_environment_backup = reconcile_runtime_environment(
                 UI_RUNTIME_ENV,
                 host=args.host,
                 port=args.port,
             )
-            runtime_updates, runtime_backups = install_release_runtime(release)
+            try:
+                runtime_updates, runtime_backups = install_release_runtime(release)
+            except ReleaseRuntimeInstallError as error:
+                runtime_updates = error.updates
+                runtime_backups = error.backups
+                raise
             updated_sources = {update["source"] for update in runtime_updates}
             runtime_unit_changed = any(
                 source.startswith("systemd/user/")
@@ -1514,6 +1685,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             )
             level_observer_unit_updated = (
                 f"systemd/user/{LEVEL_OBSERVER_UNIT}" in updated_sources
+            )
+            qobuz_recovery_unit_updated = (
+                f"systemd/user/{QOBUZ_RECOVERY_UNIT}" in updated_sources
             )
             bridge_unit_updated = (
                 "systemd/user/audio-remote-bridge-v1.service" in updated_sources
@@ -1527,6 +1701,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 or bool(runtime_environment.get("changed"))
                 or ui_unit_updated
                 or level_observer_unit_updated
+                or qobuz_recovery_unit_updated
             )
             if restart_required:
                 service_activation_attempted = True
@@ -1559,6 +1734,12 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                         host=args.host,
                         port=args.port,
                     )
+            qobuz_recovery = converge_qobuz_recovery(
+                release,
+                restart=(
+                    qobuz_recovery_script_changed or qobuz_recovery_unit_updated
+                ),
+            )
             if timer_updated:
                 runtime_activation.append(
                     run_command(
@@ -1574,18 +1755,33 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     bridge_health,
                 ) = restart_remote_bridge()
             retention = prune_releases(deploy_root, current_commit=commit)
-        except Exception:
-            restore_runtime_environment(runtime_environment_backup)
+        except Exception as deployment_error:
+            # Never restore/remove the failed unit while its process may live.
+            if qobuz_recovery_candidate_exposed:
+                try:
+                    stop_qobuz_recovery_for_rollback()
+                except Exception as error:
+                    raise DeployError(
+                        f"Deployment fehlgeschlagen und Qobuz-Recovery konnte "
+                        f"vor dem Rollback nicht gestoppt werden: {error}"
+                    ) from deployment_error
+
+            rollback_errors: list[str] = []
             if runtime_backups:
-                restore_release_runtime(runtime_backups)
+                try:
+                    restore_release_runtime(runtime_backups)
+                except Exception as error:
+                    rollback_errors.append(f"runtime-files:{error}")
                 if runtime_unit_changed:
-                    with contextlib.suppress(Exception):
+                    try:
                         run_command(
                             ["systemctl", "--user", "daemon-reload"],
                             timeout=30,
                         )
+                    except Exception as error:
+                        rollback_errors.append(f"daemon-reload:{error}")
                 if timer_updated:
-                    with contextlib.suppress(Exception):
+                    try:
                         run_command(
                             [
                                 "systemctl",
@@ -1595,20 +1791,66 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                             ],
                             timeout=30,
                         )
+                    except Exception as error:
+                        rollback_errors.append(f"deploy-timer:{error}")
+            try:
+                restore_runtime_environment(runtime_environment_backup)
+            except Exception as error:
+                rollback_errors.append(f"runtime-environment:{error}")
+            rollback_release: pathlib.Path | None = None
+            rollback_ui_available = False
+            rollback_recovery_required = qobuz_recovery_candidate_exposed
             if changed:
                 if previous:
-                    switch_current(deploy_root, previous)
-                    with contextlib.suppress(Exception):
-                        activate_service(args.unit)
+                    try:
+                        switch_current(deploy_root, previous)
+                        rollback_release = previous_release
+                    except Exception as error:
+                        rollback_errors.append(f"release-pointer:{error}")
+                    if rollback_release is not None:
+                        try:
+                            activate_service(args.unit)
+                            rollback_ui_available = True
+                            rollback_recovery_required = True
+                        except Exception as error:
+                            rollback_errors.append(f"ui-service:{error}")
                 else:
-                    remove_current(deploy_root)
-                    stop_service(args.unit)
+                    try:
+                        remove_current(deploy_root)
+                        stop_service(args.unit)
+                    except Exception as error:
+                        rollback_errors.append(f"ui-removal:{error}")
             elif runtime_environment_backup is not None or service_activation_attempted:
-                with contextlib.suppress(Exception):
+                try:
                     activate_service(args.unit)
+                    rollback_release = release
+                    rollback_ui_available = True
+                    rollback_recovery_required = True
+                except Exception as error:
+                    rollback_errors.append(f"ui-service:{error}")
+            else:
+                rollback_release = release
+                rollback_ui_available = True
+            if (
+                rollback_ui_available
+                and rollback_recovery_required
+                and rollback_release is not None
+                and release_supports_qobuz_recovery(rollback_release)
+            ):
+                try:
+                    converge_qobuz_recovery(rollback_release)
+                except Exception as error:
+                    rollback_errors.append(f"qobuz-recovery:{error}")
             if bridge_before["active"] and bridge_activation_attempted:
-                with contextlib.suppress(Exception):
+                try:
                     activate_service(REMOTE_BRIDGE_UNIT)
+                except Exception as error:
+                    rollback_errors.append(f"remote-bridge:{error}")
+            if rollback_errors:
+                raise DeployError(
+                    "Deployment fehlgeschlagen und Rollback war unvollständig: "
+                    + "; ".join(rollback_errors)
+                ) from deployment_error
             raise
         deployed_at = int(time.time())
         receipt = {
@@ -1630,6 +1872,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "runtime_environment": runtime_environment,
             "runtime_activation": runtime_activation,
             "service_commands": service_receipts,
+            "qobuz_recovery": qobuz_recovery,
             "remote_bridge": {
                 "before": bridge_before,
                 "restart_required": bridge_restart_required,
