@@ -2039,9 +2039,15 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         self.assertIn("doctor.streaming_sources?.qobuz", home)
         self.assertIn("qobuz.track_native_proven === true", home)
         self.assertIn('qobuzProvider === "qbzd-qconnect"', home)
-        self.assertIn('qobuz.rate_proof_state === "hardware-preparing"', home)
-        self.assertIn('qobuz.rate_proof_state === "ready-awaiting-playback"', home)
+        self.assertIn('const proofStateDetail = {', home)
+        self.assertIn('"hardware-preparing": "Qobuz Connect · Referenzpfad wird vorbereitet"', home)
+        self.assertIn('"ready-awaiting-playback": "Qobuz Connect · Referenzpfad bereit · Ratebeleg bei Wiedergabe"', home)
+        self.assertIn('proofStateDetail[qobuz.rate_proof_state]', home)
         self.assertIn("TRACK-NATIVE ✓", home)
+        self.assertIn("Rate-Mismatch", home)
+        self.assertIn("MOTU-Rate nicht lesbar", home)
+        self.assertIn("QBZD-Snapshot instabil", home)
+        self.assertIn("toFixed(qobuzRate % 1000 === 0 ? 0 : 1)", home)
         self.assertNotIn("BITPERFEKT ✓", home)
 
     def test_sound_library_requires_confirmed_active_whale_truth(self):

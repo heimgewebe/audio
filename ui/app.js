@@ -2390,17 +2390,27 @@ function renderHome() {
   if (qobuzProvider === "qbzd-qconnect") {
     qobuzSourceTitle = "Qobuz / QBZD";
     if (qobuzVerified) {
-      const nativeRate = qobuzRate ? `${qobuzRate / 1000} kHz · ` : "";
+      const nativeRate = qobuzRate
+        ? `${(qobuzRate / 1000).toFixed(qobuzRate % 1000 === 0 ? 0 : 1)} kHz · `
+        : "";
       qobuzSourceDetail = `Qobuz Connect · ${nativeRate}TRACK-NATIVE ✓`;
       qobuzSourceTone = "observed";
     } else if (qobuzReady) {
-      if (qobuz.rate_proof_state === "hardware-preparing") {
-        qobuzSourceDetail = "Qobuz Connect · Referenzpfad wird vorbereitet";
-      } else if (qobuz.rate_proof_state === "ready-awaiting-playback") {
-        qobuzSourceDetail = "Qobuz Connect · Referenzpfad bereit · Ratebeleg bei Wiedergabe";
-      } else {
-        qobuzSourceDetail = "Qobuz Connect · Referenzpfad bereit · aktueller Ratebeleg offen";
-      }
+      const proofStateDetail = {
+        "hardware-preparing": "Qobuz Connect · Referenzpfad wird vorbereitet",
+        "ready-awaiting-playback": "Qobuz Connect · Referenzpfad bereit · Ratebeleg bei Wiedergabe",
+        "rate-mismatch": "Qobuz Connect · Rate-Mismatch · track-native nicht belegt",
+        "motu-rate-unreadable": "Qobuz Connect · MOTU-Rate nicht lesbar · track-native nicht belegt",
+        "qbzd-rate-unreadable": "Qobuz Connect · QBZD-Rate nicht lesbar · track-native nicht belegt",
+        "hardware-owner-unverified": "Qobuz Connect · MOTU-Owner nicht QBZD · track-native nicht belegt",
+        "hardware-snapshot-unstable": "Qobuz Connect · MOTU-Snapshot instabil · track-native nicht belegt",
+        "qbzd-snapshot-unstable": "Qobuz Connect · QBZD-Snapshot instabil · track-native nicht belegt",
+        "qbzd-snapshot-unavailable": "Qobuz Connect · QBZD-Doppelbeleg offen · track-native nicht belegt",
+        "direct-hardware-not-reported": "Qobuz Connect · DirectHardware nicht belegt",
+      };
+      qobuzSourceDetail =
+        proofStateDetail[qobuz.rate_proof_state] ||
+        "Qobuz Connect · Referenzpfad bereit · aktueller Ratebeleg offen";
       qobuzSourceTone = "configured";
     }
   } else if (qobuzProvider === "mopidy-legacy") {

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -252,6 +253,40 @@ class AudioDoctorTests(unittest.TestCase):
         self.assertNotIn("private artist", encoded)
         self.assertNotIn("999", encoded)
 
+    def test_oversized_qbzd_response_is_reachable_but_invalid(self):
+        class Response:
+            status = 200
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, _limit):
+                return b"x" * (MODULE.MAX_QBZD_STATUS_BYTES + 1)
+            def geturl(self):
+                return MODULE.QBZD_STATUS_URL
+
+        class Opener:
+            def open(self, _request, timeout):
+                self.timeout = timeout
+                return Response()
+
+        with mock.patch.object(MODULE.urllib.request, "build_opener", return_value=Opener()):
+            observation = MODULE.observe_qbzd_qobuz()
+        self.assertTrue(observation["api_reachable"])
+        self.assertEqual(observation["status"], "api-invalid")
+
+    def test_qbzd_http_error_is_reachable_but_invalid(self):
+        error = MODULE.urllib.error.HTTPError(
+            MODULE.QBZD_STATUS_URL, 503, "unavailable", {}, None
+        )
+        with mock.patch.object(
+            MODULE.urllib.request, "build_opener"
+        ) as build_opener:
+            build_opener.return_value.open.side_effect = error
+            observation = MODULE.observe_qbzd_qobuz()
+        self.assertTrue(observation["api_reachable"])
+        self.assertEqual(observation["status"], "api-invalid")
+
     def test_qbzd_status_fails_closed_on_bad_route_or_auth(self):
         bad_route = MODULE.classify_qbzd_status_payload(
             {
@@ -333,6 +368,7 @@ class AudioDoctorTests(unittest.TestCase):
                 "snapshot_consistent": True,
                 "reason": None,
             },
+            qbzd_qobuz_before=observation,
         )
         qobuz = report["streaming_sources"]["qobuz"]
         self.assertTrue(qobuz["track_native_proven"])
@@ -423,11 +459,65 @@ class AudioDoctorTests(unittest.TestCase):
             [],
             qbzd_qobuz=observation,
             motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 48000, "pcm_state": "RUNNING", "owner_class": "qbzd", "snapshot_consistent": True},
+            qbzd_qobuz_before=observation,
         )
         qobuz = report["streaming_sources"]["qobuz"]
         self.assertFalse(qobuz["track_native_proven"])
         self.assertEqual(qobuz["rate_proof_state"], "rate-mismatch")
         self.assertIn("qobuz-qbzd-motu-rate-mismatch", {item["code"] for item in report["warnings"]})
+
+    def test_running_motu_without_direct_hardware_fails_closed(self):
+        observation = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": True,
+                    "sample_rate": 96000,
+                    "bit_depth": 24,
+                    "bit_perfect": None,
+                },
+                "qconnect": {"state": "connected", "session_active": True},
+            }
+        )
+        report = MODULE.build_report(
+            [], qbzd_qobuz=observation,
+            motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 96000, "pcm_state": "RUNNING", "owner_class": "qbzd", "snapshot_consistent": True},
+            qbzd_qobuz_before=observation,
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "direct-hardware-not-reported")
+
+    def test_running_motu_with_unreadable_rate_has_specific_state(self):
+        observation = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": True,
+                    "sample_rate": 96000,
+                    "bit_depth": 24,
+                    "bit_perfect": "DirectHardware",
+                },
+                "qconnect": {"state": "connected", "session_active": True},
+            }
+        )
+        report = MODULE.build_report(
+            [], qbzd_qobuz=observation,
+            motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": None, "pcm_state": "RUNNING", "owner_class": "qbzd", "snapshot_consistent": True},
+            qbzd_qobuz_before=observation,
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "motu-rate-unreadable")
+        self.assertIn("qobuz-qbzd-motu-rate-unreadable", {item["code"] for item in report["warnings"]})
 
     def test_parse_alsa_hw_params_open_and_closed(self):
         self.assertEqual(
@@ -503,6 +593,88 @@ class AudioDoctorTests(unittest.TestCase):
         qobuz = report["streaming_sources"]["qobuz"]
         self.assertFalse(qobuz["track_native_proven"])
         self.assertEqual(qobuz["rate_proof_state"], "hardware-snapshot-unstable")
+
+    def test_qbzd_snapshot_change_around_running_motu_fails_closed(self):
+        before = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": True,
+                    "sample_rate": 96000,
+                    "bit_depth": 24,
+                    "bit_perfect": None,
+                },
+                "qconnect": {"state": "connected", "session_active": True},
+                "playback": {"state": "paused"},
+            }
+        )
+        after = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": True,
+                    "sample_rate": 96000,
+                    "bit_depth": 24,
+                    "bit_perfect": "DirectHardware",
+                },
+                "qconnect": {"state": "connected", "session_active": True},
+                "playback": {"state": "paused"},
+            }
+        )
+        report = MODULE.build_report(
+            [],
+            qbzd_qobuz=after,
+            motu_playback={
+                "observed": True, "card_id": "M2", "open": True,
+                "rate_hz": 96000, "pcm_state": "RUNNING",
+                "owner_class": "qbzd", "snapshot_consistent": True,
+            },
+            qbzd_qobuz_before=before,
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertTrue(qobuz["qbzd_snapshot_observed_twice"])
+        self.assertFalse(qobuz["qbzd_snapshot_consistent"])
+        self.assertEqual(qobuz["rate_proof_state"], "qbzd-snapshot-unstable")
+
+    def test_running_motu_without_qbzd_before_snapshot_never_proves_native(self):
+        observation = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": True,
+                    "sample_rate": 96000,
+                    "bit_depth": 24,
+                    "bit_perfect": "DirectHardware",
+                },
+                "qconnect": {"state": "connected", "session_active": True},
+            }
+        )
+        report = MODULE.build_report(
+            [],
+            qbzd_qobuz=observation,
+            motu_playback={
+                "observed": True, "card_id": "M2", "open": True,
+                "rate_hz": 96000, "pcm_state": "RUNNING",
+                "owner_class": "qbzd", "snapshot_consistent": True,
+            },
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertFalse(qobuz["qbzd_snapshot_observed_twice"])
+        self.assertEqual(qobuz["rate_proof_state"], "qbzd-snapshot-unavailable")
 
     def test_alsa_status_owner_is_classified_without_exposing_pid(self):
         parsed = MODULE.parse_alsa_pcm_status("state: RUNNING\nowner_pid   : 4242\n")

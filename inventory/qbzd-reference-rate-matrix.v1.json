@@ -21,6 +21,7 @@
   "qbzd_version": "2.0.2",
   "runtime_current_track_gate": {
     "requires_consistent_motu_hw_snapshot": true,
+    "requires_consistent_qbzd_snapshot_around_motu_observation": true,
     "requires_direct_hardware": true,
     "requires_matching_qbzd_and_motu_rate": true,
     "requires_motu_owner_class": "qbzd",

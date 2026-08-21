@@ -46,17 +46,24 @@ Für den aktuellen Hardwarezustand gilt:
 Die Oberfläche darf `TRACK-NATIVE ✓` nur anzeigen, wenn gleichzeitig gilt:
 
 - QBZD-Referenzprovider ist bereit,
-- QBZD meldet `DirectHardware`,
+- QBZD wird unmittelbar vor und nach dem MOTU-Snapshot gelesen und die beweisrelevanten QBZD-Felder sind identisch,
+- der zweite QBZD-Snapshot meldet `DirectHardware`,
 - der MOTU-Wiedergabe-PCM ist geöffnet,
 - `hw_params` ist vor und nach dem zugehörigen ALSA-Statusread identisch,
 - ALSA meldet `state: RUNNING`,
 - der ALSA-Owner wird als `qbzd` klassifiziert,
 - QBZD-Rate und MOTU-Hardwarerate sind exakt gleich.
 
-`SETUP` und `PREPARED` bedeuten nur, dass der Pfad aufgebaut wird. Bei geschlossenem oder nicht laufendem PCM, instabilem Hardware-Snapshot, fremdem oder unbekanntem Owner sowie Ratenabweichung bleibt der Nachweis offen. QBZDs eigener `playback_state` wird wegen beobachteter Stale-Zustände nicht als Gate verwendet.
+`SETUP` und `PREPARED` bedeuten nur, dass der Pfad aufgebaut wird. Bei geschlossenem oder nicht laufendem PCM, instabilem QBZD- oder Hardware-Snapshot, fremdem oder unbekanntem Owner sowie Ratenabweichung bleibt der Nachweis offen. QBZDs eigener `playback_state` wird wegen beobachteter Stale-Zustände nicht als Gate verwendet.
 
 ## Abgrenzung
 
 Der Browser-/Desktop-Pfad und der bestehende Mopidy-Pfad bleiben Komfort- bzw. Legacy-Pfade über den gemischten Audiographen. Für sie wird kein Track-Native- oder Bitperfekt-Anspruch abgeleitet. Der QBZD-Referenzpfad fügt selbst kein EQ, Loudness-Normalizing oder bewusstes Resampling hinzu. DSP bleibt eine spätere, getrennt zu bewertende Option.
 
 Die maschinenlesbare Prüfmatrix liegt in `inventory/qbzd-reference-rate-matrix.v1.json`. Sie enthält keine Qobuz-Accountdaten, Titel, Interpreten, Track-IDs oder Prozess-IDs.
+
+### Doctor-Kompatibilität und Race-Grenze
+
+`streaming_sources.qobuz.mopidy_legacy` ist der kanonische Legacy-Diagnoseschlüssel. `streaming_sources.qobuz.mopidy` bleibt vorerst nur als **deprecated compatibility alias** erhalten und darf für neue Konsumenten nicht mehr eingeführt werden.
+
+Der Current-Track-Beleg ist bewusst kein atomarer Cross-Process-Snapshot. Der Doctor liest QBZD unmittelbar vor und nach dem stabilisierten ALSA/MOTU-Snapshot und verwirft den Nachweis, sobald sich ein beweisrelevantes QBZD-Feld ändert. Ein theoretisches sehr kurzes ABA-Fenster zwischen getrennten Prozessen bleibt; deshalb wird keine stärkere Gleichzeitigkeit oder Track-Identitätsbindung behauptet und es werden weiterhin keine Track-IDs, Titel oder Nutzer-IDs persistiert.
