@@ -12,6 +12,7 @@ import pathlib
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -24,6 +25,7 @@ QBZD_STATUS_PATH = "/api/status"
 QBZD_UNIT = "qbzd.service"
 EXPECTED_DEVICE = "front:CARD=M2,DEV=0"
 POLL_SECONDS = 30.0
+HEALTHY_STATUS_FALLBACK_SECONDS = 300.0
 STUCK_SECONDS = 300.0
 STABILIZATION_SECONDS = 2.0
 READBACK_ATTEMPTS = 30
@@ -37,6 +39,16 @@ MAX_STATUS_BYTES = 65_536
 MAX_COMMAND_OUTPUT_BYTES = 65_536
 MAX_PROC_BYTES = 16_384
 MAX_PCM_STATUS_FILES = 128
+MAX_JOURNAL_CURSOR_BYTES = 2_048
+JOURNAL_EXECUTABLE = pathlib.Path("/usr/bin/journalctl")
+JOURNAL_CURSOR_PREFIX = "-- cursor: "
+QCONNECT_JOURNAL_TRIGGERS = (
+    "[QConnect] Lifecycle -> Reconnecting",
+    "Cloud rejected session:",
+    "Reconnect scheduled:",
+    "Max reconnect attempts exceeded",
+    "[QConnect] Reconnect exhausted",
+)
 STATE_SCHEMA_VERSION = 2
 
 
@@ -66,6 +78,12 @@ class QbzdService:
     cgroup: str
 
 
+@dataclass(frozen=True)
+class JournalDelta:
+    cursor: str
+    text: str
+
+
 StatusReader = Callable[[], QbzdStatus]
 Runner = Callable[[tuple[str, ...]], str]
 Sleeper = Callable[[float], None]
@@ -73,6 +91,8 @@ ServiceReader = Callable[[], QbzdService]
 PcmIdleChecker = Callable[[QbzdService], None]
 Clock = Callable[[], float]
 BootIdReader = Callable[[], str]
+JournalReader = Callable[[str | None], JournalDelta]
+Reconciler = Callable[[pathlib.Path], str]
 
 
 def _require_dict(value: Any, label: str) -> dict[str, Any]:
@@ -196,6 +216,132 @@ def run_command(argv: tuple[str, ...]) -> str:
         return completed.stdout.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
         raise RecoveryError(f"command-output-invalid:{argv[0]}") from exc
+
+
+def _validate_journal_cursor(value: str) -> str:
+    if not isinstance(value, str):
+        raise RecoveryError("journal-cursor-invalid")
+    try:
+        encoded = value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as exc:
+        raise RecoveryError("journal-cursor-invalid") from exc
+    if not (1 <= len(encoded) <= MAX_JOURNAL_CURSOR_BYTES):
+        raise RecoveryError("journal-cursor-invalid")
+    if not value.startswith("s="):
+        raise RecoveryError("journal-cursor-invalid")
+    if any(ord(character) < 33 or ord(character) > 126 for character in value):
+        raise RecoveryError("journal-cursor-invalid")
+    return value
+
+
+def parse_journal_output(payload: str) -> JournalDelta:
+    if not isinstance(payload, str):
+        raise RecoveryError("journal-output-invalid")
+    if len(payload.encode("utf-8")) > MAX_COMMAND_OUTPUT_BYTES:
+        raise RecoveryError("journal-output-limit")
+    lines = payload.splitlines()
+    cursor_indexes = [
+        index for index, line in enumerate(lines) if line.startswith(JOURNAL_CURSOR_PREFIX)
+    ]
+    if cursor_indexes != [len(lines) - 1]:
+        raise RecoveryError("journal-cursor-invalid")
+    cursor = _validate_journal_cursor(lines[-1][len(JOURNAL_CURSOR_PREFIX) :])
+    return JournalDelta(cursor=cursor, text="\n".join(lines[:-1]))
+
+
+def _drain_journal_stream(stream: Any, result: dict[str, Any]) -> None:
+    kept = bytearray()
+    truncated = False
+    try:
+        while True:
+            chunk = stream.read(8192)
+            if not chunk:
+                break
+            remaining = max(0, MAX_COMMAND_OUTPUT_BYTES - len(kept))
+            if remaining:
+                kept.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                truncated = True
+    finally:
+        stream.close()
+    result["bytes"] = bytes(kept)
+    result["truncated"] = truncated
+
+
+def read_journal_delta(cursor: str | None = None) -> JournalDelta:
+    argv = [
+        str(JOURNAL_EXECUTABLE),
+        "--user",
+        "--unit",
+        QBZD_UNIT,
+        "--no-pager",
+        "--output=cat",
+        "--show-cursor",
+    ]
+    if cursor is None:
+        argv.append("--lines=0")
+    else:
+        argv.extend(("--after-cursor", _validate_journal_cursor(cursor)))
+    try:
+        process = subprocess.Popen(  # noqa: S603 - fixed executable and bounded argv
+            tuple(argv),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            env={**os.environ, "LC_ALL": "C.UTF-8"},
+        )
+    except OSError as exc:
+        raise RecoveryError("journal-unavailable") from exc
+
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout_result: dict[str, Any] = {}
+    stderr_result: dict[str, Any] = {}
+    readers = (
+        threading.Thread(
+            target=_drain_journal_stream, args=(process.stdout, stdout_result), daemon=True
+        ),
+        threading.Thread(
+            target=_drain_journal_stream, args=(process.stderr, stderr_result), daemon=True
+        ),
+    )
+    for reader in readers:
+        reader.start()
+
+    timed_out = False
+    try:
+        returncode = process.wait(timeout=COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        returncode = process.wait()
+    for reader in readers:
+        reader.join()
+
+    if timed_out:
+        raise RecoveryError("journal-unavailable")
+    if stdout_result.get("truncated") is True or stderr_result.get("truncated") is True:
+        raise RecoveryError("journal-output-limit")
+    if returncode != 0:
+        raise RecoveryError("journal-unavailable")
+    stdout_bytes = stdout_result.get("bytes", b"")
+    stderr_bytes = stderr_result.get("bytes", b"")
+    if not isinstance(stdout_bytes, bytes) or not isinstance(stderr_bytes, bytes):
+        raise RecoveryError("journal-output-invalid")
+    try:
+        payload = stdout_bytes.decode("utf-8", errors="strict")
+        stderr_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise RecoveryError("journal-output-invalid") from exc
+    return parse_journal_output(payload)
+
+
+def journal_requires_status(text: str) -> bool:
+    return any(trigger in text for trigger in QCONNECT_JOURNAL_TRIGGERS)
 
 
 def _read_bounded_text(path: pathlib.Path, error_code: str) -> str:
@@ -827,6 +973,41 @@ def reconcile_once(
         return f"blocked:{exc}"
 
 
+def _fast_followup_required(result: str) -> bool:
+    # Only a positively healthy QConnect read may enter the quiet journal-led
+    # mode. Any disconnected, offline, logged-out, changed, blocked or otherwise
+    # non-healthy observation keeps the original 30-second status cadence until
+    # connected health is observed again.
+    return result not in {
+        "noop:connected",
+        "noop:recovered-naturally",
+        "recovered",
+    }
+
+
+def adaptive_poll_reason(
+    *,
+    fast_followup: bool,
+    journal_available: bool,
+    journal_text: str,
+    last_status_monotonic: float | None,
+    now_monotonic: float,
+) -> str | None:
+    if fast_followup:
+        return "fast-followup"
+    if not journal_available:
+        return "journal-fallback"
+    if journal_requires_status(journal_text):
+        return "journal-trigger"
+    if last_status_monotonic is None:
+        return "startup"
+    if now_monotonic < last_status_monotonic:
+        return "monotonic-reset"
+    if now_monotonic - last_status_monotonic >= HEALTHY_STATUS_FALLBACK_SECONDS:
+        return "safety-fallback"
+    return None
+
+
 def check_contract() -> None:
     _validate_command(
         (
@@ -843,16 +1024,82 @@ def check_contract() -> None:
         raise RecoveryError("status-endpoint-contract-drift")
     if EXPECTED_DEVICE != "front:CARD=M2,DEV=0":
         raise RecoveryError("device-contract-drift")
+    if JOURNAL_EXECUTABLE != pathlib.Path("/usr/bin/journalctl"):
+        raise RecoveryError("journal-executable-contract-drift")
+    if HEALTHY_STATUS_FALLBACK_SECONDS < POLL_SECONDS:
+        raise RecoveryError("healthy-fallback-contract-drift")
+    if not QCONNECT_JOURNAL_TRIGGERS or any(
+        not isinstance(trigger, str) or not trigger for trigger in QCONNECT_JOURNAL_TRIGGERS
+    ):
+        raise RecoveryError("journal-trigger-contract-drift")
 
 
-def run_loop(state_path: pathlib.Path) -> None:
+def run_loop(
+    state_path: pathlib.Path,
+    *,
+    reconciler: Reconciler | None = None,
+    journal_reader: JournalReader = read_journal_delta,
+    sleeper: Sleeper = time.sleep,
+    monotonic_clock: Clock = time.monotonic,
+) -> None:
     previous: str | None = None
+    cursor: str | None = None
+    last_status_monotonic: float | None = None
+    fast_followup = True
+    reconcile_call = reconciler or (lambda path: reconcile_once(state_path=path))
+
+    # Capture the journal edge before the startup status read. A QConnect change
+    # that races with startup is therefore seen either by that status read or by
+    # the first delta after this cursor.
+    try:
+        cursor = journal_reader(None).cursor
+    except RecoveryError:
+        cursor = None
+
     while True:
-        result = reconcile_once(state_path=state_path)
-        if result != previous and not result.startswith("noop:"):
-            print(json.dumps({"qbzd_qconnect_recovery": result}), flush=True)
-        previous = result
-        time.sleep(POLL_SECONDS)
+        journal_text = ""
+        journal_available = cursor is not None
+        if cursor is not None:
+            try:
+                delta = journal_reader(cursor)
+                cursor = delta.cursor
+                journal_text = delta.text
+                journal_available = True
+            except RecoveryError:
+                cursor = None
+                journal_available = False
+
+        # If a cursor is missing or became unusable, capture its replacement
+        # *before* the authoritative status reconciliation. Keep this cycle in
+        # journal-fallback mode even when the replacement succeeds: the full
+        # status read is still required. A reconnect transition racing after
+        # this baseline is then visible either to that status read or to the
+        # next journal delta, instead of being skipped by a post-status baseline.
+        if cursor is None:
+            try:
+                cursor = journal_reader(None).cursor
+            except RecoveryError:
+                cursor = None
+
+        now_monotonic = _clock_value(monotonic_clock, "loop-monotonic")
+        reason = adaptive_poll_reason(
+            fast_followup=fast_followup,
+            journal_available=journal_available,
+            journal_text=journal_text,
+            last_status_monotonic=last_status_monotonic,
+            now_monotonic=now_monotonic,
+        )
+        if reason is not None:
+            result = reconcile_call(state_path)
+            last_status_monotonic = _clock_value(
+                monotonic_clock, "loop-status-monotonic"
+            )
+            fast_followup = _fast_followup_required(result)
+            if result != previous and not result.startswith("noop:"):
+                print(json.dumps({"qbzd_qconnect_recovery": result}), flush=True)
+            previous = result
+
+        sleeper(POLL_SECONDS)
 
 
 def main(argv: list[str] | None = None) -> int:
