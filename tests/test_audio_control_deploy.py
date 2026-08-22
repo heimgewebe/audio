@@ -34,6 +34,8 @@ class AudioControlDeployTests(unittest.TestCase):
             "scripts/audio_live_telemetry.py": b"print('telemetry')\n",
             "scripts/qobuz_desktop_recovery.py": b"print('recovery')\n",
             "docs/qobuz-desktop-recovery.md": b"# Recovery\n",
+            "scripts/qbzd_qconnect_recovery.py": b"print('qbzd recovery')\n",
+            "docs/qbzd-qconnect-recovery.md": b"# QBZD Recovery\n",
             "scripts/audio_remote_bridge.py": b"print('bridge')\n",
             "scripts/audio_remote_bridge_tailscale.py": b"print('tailscale')\n",
             "scripts/audio_remote_bridge_ipad_probe.py": b"print('ipad probe')\n",
@@ -42,6 +44,7 @@ class AudioControlDeployTests(unittest.TestCase):
             "systemd/user/audio-remote-bridge-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "systemd/user/audio-control-level-observer-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "systemd/user/audio-qobuz-desktop-recovery-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
+            "systemd/user/audio-qbzd-qconnect-recovery-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "systemd/user/audio-control-ui-v1.service": b"[Service]\nExecStart=/usr/bin/true\n",
             "inventory/audiozentrale-ipad-pwa.v1.json": b"{}\n",
             "schemas/audiozentrale-ipad-pwa.v1.schema.json": b"{}\n",
@@ -306,6 +309,38 @@ class AudioControlDeployTests(unittest.TestCase):
                         MODULE.DeployError, "Kritische Releasedatei"
                     ):
                         MODULE.release_hashes(release)
+
+    def test_qbzd_qconnect_recovery_runtime_files_are_release_critical(self):
+        expected = set(MODULE.QBZD_QCONNECT_RECOVERY_CRITICAL_RELEASE_FILES)
+        self.assertIn(
+            f"systemd/user/{MODULE.QBZD_QCONNECT_RECOVERY_UNIT}",
+            MODULE.RUNTIME_FILES,
+        )
+        commit = "4" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            self.write_release(release, commit)
+            sentinel = release / MODULE.QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.write_text("import unittest\n", encoding="utf-8")
+            self.assertIn(
+                MODULE.QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL,
+                MODULE.critical_release_paths(release),
+            )
+            MODULE.release_hashes(release)
+            for missing in sorted(
+                expected - {MODULE.QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL}
+            ):
+                with self.subTest(missing=missing):
+                    target = release / missing
+                    payload = target.read_bytes()
+                    target.unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(payload)
 
     def test_pre_remote_bridge_marker_upgrade_remains_supported(self):
         commit = "5" * 40
@@ -835,6 +870,9 @@ class AudioControlDeployTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             release = pathlib.Path(directory)
             self.write_release(release, commit)
+            qbzd_sentinel = release / MODULE.QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL
+            qbzd_sentinel.parent.mkdir(parents=True, exist_ok=True)
+            qbzd_sentinel.write_text("import unittest\n", encoding="utf-8")
 
             def successful(argv, **_kwargs):
                 command = tuple(str(item) for item in argv)
@@ -849,6 +887,19 @@ class AudioControlDeployTests(unittest.TestCase):
             commands = [tuple(call.args[0]) for call in run.call_args_list]
             self.assertIn(
                 (sys.executable, "-m", "unittest", "tests/test_audio_ipad_pwa.py"),
+                commands,
+            )
+            self.assertIn(
+                (sys.executable, "scripts/qbzd_qconnect_recovery.py", "check"),
+                commands,
+            )
+            self.assertIn(
+                (
+                    sys.executable,
+                    "-m",
+                    "unittest",
+                    "tests/test_qbzd_qconnect_recovery.py",
+                ),
                 commands,
             )
             self.assertIn(("/usr/bin/node", "--check", "ui/sw.js"), commands)
@@ -1021,6 +1072,142 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertTrue(recovery_destination.is_file())
             self.assertTrue(report["qobuz_recovery"]["active"])
             self.assertEqual(len(report["qobuz_recovery"]["activation"]), 1)
+
+    def test_qbzd_qconnect_recovery_converges_inactive_unit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            sentinel = release / MODULE.QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.write_text("recovery\n", encoding="utf-8")
+            inactive = {
+                "unit": MODULE.QBZD_QCONNECT_RECOVERY_UNIT,
+                "load_state": "loaded",
+                "active": False,
+                "active_state": "inactive",
+            }
+            active = {
+                "unit": MODULE.QBZD_QCONNECT_RECOVERY_UNIT,
+                "load_state": "loaded",
+                "active": True,
+                "active_state": "active",
+            }
+            command = MODULE.CommandResult(
+                (
+                    "systemctl",
+                    "--user",
+                    "start",
+                    MODULE.QBZD_QCONNECT_RECOVERY_UNIT,
+                ),
+                0,
+                "",
+                "",
+                0.1,
+            )
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "read_service_activity",
+                    side_effect=[inactive, active],
+                ),
+                mock.patch.object(
+                    MODULE, "service_command", return_value=command
+                ) as service,
+            ):
+                result = MODULE.converge_qbzd_qconnect_recovery(release)
+            service.assert_called_once_with(
+                "start", MODULE.QBZD_QCONNECT_RECOVERY_UNIT
+            )
+            self.assertTrue(result["active"])
+            self.assertEqual(result["active_state"], "active")
+            self.assertEqual(len(result["activation"]), 1)
+
+    def test_failed_candidate_stops_qbzd_recovery_before_rollback(self):
+        commit = "3" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir()
+            args.state_root.mkdir()
+            release = args.deploy_root / "releases" / commit
+            release.mkdir(parents=True)
+            sentinel = release / MODULE.QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.write_text("recovery\n", encoding="utf-8")
+            events = []
+
+            def stop_qbzd():
+                events.append("stop-qbzd-recovery")
+                return []
+
+            def restore(_backups):
+                events.append("restore-runtime")
+
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(MODULE, "ensure_source_repo", return_value=root),
+                mock.patch.object(
+                    MODULE,
+                    "prepare_deployment_repository",
+                    return_value=(root / "repository.git", []),
+                ),
+                mock.patch.object(MODULE, "resolve_target", return_value=(commit, [])),
+                mock.patch.object(
+                    MODULE,
+                    "upgrade_current_release_marker",
+                    return_value={"changed": False},
+                ),
+                mock.patch.object(MODULE, "read_current_commit", return_value=commit),
+                mock.patch.object(
+                    MODULE, "prepare_release", return_value=(release, [], False)
+                ),
+                mock.patch.object(
+                    MODULE, "release_supports_remote_bridge", return_value=False
+                ),
+                mock.patch.object(
+                    MODULE, "release_supports_qobuz_recovery", return_value=False
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "reconcile_runtime_environment",
+                    return_value=({"changed": False}, None),
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "install_release_runtime",
+                    return_value=([{"source": "systemd/user/fake.service"}], [{"path": "fake"}]),
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "verify_service",
+                    side_effect=MODULE.DeployError("candidate UI unhealthy"),
+                ),
+                mock.patch.object(MODULE, "activate_service", return_value=[]),
+                mock.patch.object(
+                    MODULE,
+                    "stop_qbzd_qconnect_recovery_for_rollback",
+                    side_effect=stop_qbzd,
+                ) as stop,
+                mock.patch.object(
+                    MODULE, "restore_release_runtime", side_effect=restore
+                ),
+                mock.patch.object(MODULE, "restore_runtime_environment"),
+                mock.patch.object(MODULE, "read_service_activity_raw", return_value={
+                    "load_state": "not-found",
+                    "active": False,
+                    "active_state": "not-found",
+                    "sub_state": "dead",
+                    "readback": {},
+                }),
+                self.assertRaises(MODULE.DeployError),
+            ):
+                MODULE.sync(args)
+            stop.assert_called_once_with()
+            self.assertIn("restore-runtime", events)
+            self.assertLess(
+                events.index("stop-qbzd-recovery"),
+                events.index("restore-runtime"),
+            )
 
     def test_qobuz_recovery_convergence_fails_inactive_readback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2455,7 +2642,7 @@ class AudioControlDeployTests(unittest.TestCase):
         self.assertIn("%h/.config/systemd/user", deploy)
         self.assertNotIn("%h/.config/audio-control-ui", deploy)
         self.assertIn("%h/.local/state/audio-control-deploy", deploy)
-        self.assertEqual(len(MODULE.RUNTIME_FILES), 8)
+        self.assertEqual(len(MODULE.RUNTIME_FILES), 9)
         self.assertIn("systemd/user/audio-remote-bridge-v1.service", MODULE.RUNTIME_FILES)
         self.assertIn(
             "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",

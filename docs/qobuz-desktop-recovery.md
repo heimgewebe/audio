@@ -74,8 +74,12 @@ are rebound immediately before the default change. A final inventory, volume,
 mute, default-sink, and ownership readback must agree.
 
 The versioned state file lives in systemd's private user `StateDirectory`
-(`~/.local/state/audio-qobuz-desktop-recovery`, directory mode `0700`, file mode
-`0600`). It persists exponential failure backoff (capped at 15 minutes), the
+(directory mode `0700`, file mode `0600`) and is addressed through the exported
+`${STATE_DIRECTORY}` value instead of assuming a filesystem root. On the
+Heim-PC's systemd 249 user manager that root resolves below the user
+configuration directory; newer managers may resolve managed state differently
+without changing the service contract. It persists exponential failure backoff
+(capped at 15 minutes), the
 two-minute success cooldown, and the physical-serial-bound `handoff_pending`
 intent across service restarts and UI deployments. If an armed exact sink
 reappears naturally, the same safe handoff gate restores it and clears pending.
