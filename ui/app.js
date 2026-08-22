@@ -2399,6 +2399,7 @@ function renderHome() {
       const proofStateDetail = {
         "hardware-preparing": "Qobuz Connect · Referenzpfad wird vorbereitet",
         "ready-awaiting-playback": "Qobuz Connect · Referenzpfad bereit · Ratebeleg bei Wiedergabe",
+        "desktop-mixed-active": "Qobuz Connect · Desktop-Pfad aktiv · Ratebeleg bei Wiedergabe",
         "rate-mismatch": "Qobuz Connect · Rate-Mismatch · track-native nicht belegt",
         "motu-rate-unreadable": "Qobuz Connect · MOTU-Rate nicht lesbar · track-native nicht belegt",
         "qbzd-rate-unreadable": "Qobuz Connect · QBZD-Rate nicht lesbar · track-native nicht belegt",

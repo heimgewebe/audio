@@ -2042,6 +2042,7 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         self.assertIn('const proofStateDetail = {', home)
         self.assertIn('"hardware-preparing": "Qobuz Connect · Referenzpfad wird vorbereitet"', home)
         self.assertIn('"ready-awaiting-playback": "Qobuz Connect · Referenzpfad bereit · Ratebeleg bei Wiedergabe"', home)
+        self.assertIn('"desktop-mixed-active": "Qobuz Connect · Desktop-Pfad aktiv · Ratebeleg bei Wiedergabe"', home)
         self.assertIn('proofStateDetail[qobuz.rate_proof_state]', home)
         self.assertIn("TRACK-NATIVE ✓", home)
         self.assertIn("Rate-Mismatch", home)
