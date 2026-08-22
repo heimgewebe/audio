@@ -39,8 +39,11 @@ Two fail-safe fallbacks prevent the journal optimization from becoming a new
 single point of failure:
 
 - if the journal cursor is missing, malformed, rotated, unreadable, too large or
-  otherwise unavailable, the next cycle immediately performs the old `/api/status`
-  reconciliation and then tries to establish a fresh cursor;
+  otherwise unavailable, the watcher first attempts a replacement journal baseline
+  and still performs the old `/api/status` reconciliation in that cycle. This order
+  keeps a reconnect racing with cursor recovery visible either to the status read or
+  to the following journal delta. If the replacement also fails, the old 30-second
+  status cadence remains active until journald is observable again;
 - even with a quiet healthy journal, one authoritative status reconciliation is
   forced every five minutes. This bounds detection if a future QBZD version
   silently changes its logging contract.

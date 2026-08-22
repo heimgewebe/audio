@@ -1069,6 +1069,18 @@ def run_loop(
                 cursor = None
                 journal_available = False
 
+        # If a cursor is missing or became unusable, capture its replacement
+        # *before* the authoritative status reconciliation. Keep this cycle in
+        # journal-fallback mode even when the replacement succeeds: the full
+        # status read is still required. A reconnect transition racing after
+        # this baseline is then visible either to that status read or to the
+        # next journal delta, instead of being skipped by a post-status baseline.
+        if cursor is None:
+            try:
+                cursor = journal_reader(None).cursor
+            except RecoveryError:
+                cursor = None
+
         now_monotonic = _clock_value(monotonic_clock, "loop-monotonic")
         reason = adaptive_poll_reason(
             fast_followup=fast_followup,
@@ -1086,16 +1098,6 @@ def run_loop(
             if result != previous and not result.startswith("noop:"):
                 print(json.dumps({"qbzd_qconnect_recovery": result}), flush=True)
             previous = result
-
-            # A failed/rotated cursor never disables recovery. The authoritative
-            # status read has just happened; take a fresh journal baseline for
-            # future cheap wakeups, otherwise stay on the old 30-second status
-            # fallback until journald becomes observable again.
-            if cursor is None:
-                try:
-                    cursor = journal_reader(None).cursor
-                except RecoveryError:
-                    cursor = None
 
         sleeper(POLL_SECONDS)
 

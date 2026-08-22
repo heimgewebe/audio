@@ -769,6 +769,59 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 )
         self.assertEqual(reconciles, [state_path, state_path, state_path])
 
+    def test_run_loop_replacement_cursor_is_captured_before_fallback_status(self):
+        order = []
+        values = [
+            MODULE.JournalDelta("s=0", ""),
+            MODULE.RecoveryError("journal-unavailable"),
+            MODULE.JournalDelta("s=1", ""),
+            MODULE.JournalDelta("s=2", "[QConnect] Lifecycle -> Reconnecting"),
+        ]
+
+        def journal_reader(cursor):
+            order.append(("journal", cursor))
+            value = values.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        results = iter(["noop:connected", "armed"])
+
+        def reconcile(path):
+            order.append(("status", path))
+            return next(results)
+
+        sleeps = 0
+
+        def sleeper(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 2:
+                raise StopLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            with self.assertRaises(StopLoop):
+                MODULE.run_loop(
+                    state_path,
+                    reconciler=reconcile,
+                    journal_reader=journal_reader,
+                    sleeper=sleeper,
+                    monotonic_clock=SequenceClock([0.0, 0.0, 30.0, 30.0]),
+                )
+
+        self.assertEqual(
+            order,
+            [
+                ("journal", None),
+                ("journal", "s=0"),
+                ("journal", None),
+                ("status", state_path),
+                ("journal", "s=1"),
+                ("status", state_path),
+            ],
+        )
+
     def test_run_loop_journal_failure_falls_back_to_status_every_cycle(self):
         unavailable = MODULE.RecoveryError("journal-unavailable")
         journal = FakeJournalReader(
