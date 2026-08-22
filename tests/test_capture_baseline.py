@@ -50,8 +50,17 @@ class CaptureBaselineTests(unittest.TestCase):
             "unrelated M2 adapter",
         )
         self.assertEqual(detected, {"motu_m2": False, "roland_fp_30x": False})
-        self.assertEqual(MODULE.normalize_device_name("MOTU M6 USB Audio"), "MOTU M6 USB Audio")
-        self.assertEqual(MODULE.normalize_device_name("Roland JUNO-DS"), "Roland JUNO-DS")
+        self.assertEqual(MODULE.normalize_device_name("MOTU M6 USB Audio"), "motu-other")
+        self.assertEqual(MODULE.normalize_device_name("Roland JUNO-DS"), "roland-other")
+
+    def test_unmatched_vendor_endpoints_do_not_preserve_private_serials(self) -> None:
+        motu_endpoint = "alsa_output.usb-MOTU_M4_PRIVATE_SERIAL-00.pro-output-0"
+        roland_endpoint = "alsa_input.usb-Roland_JUNO_DS_PRIVATE_SERIAL-00.analog-stereo"
+
+        for endpoint, expected in ((motu_endpoint, "motu-other"), (roland_endpoint, "roland-other")):
+            normalized = MODULE.normalize_device_name(endpoint)
+            self.assertEqual(normalized, expected)
+            self.assertNotIn("PRIVATE_SERIAL", normalized)
 
     def test_wpctl_configured_defaults(self) -> None:
         values = MODULE.parse_wpctl_configured_defaults(

@@ -174,6 +174,10 @@ def normalize_device_name(value: str) -> str:
     if ROLAND_FP_30X.search(value):
         return "roland-fp-30x"
     lower = value.lower()
+    if re.search(r"(?<![a-z0-9])motu(?=$|[^a-z0-9])", value, re.I):
+        return "motu-other"
+    if re.search(r"(?<![a-z0-9])roland(?=$|[^a-z0-9])", value, re.I):
+        return "roland-other"
     if "blue" in lower or "bluetooth" in lower:
         return "bluetooth-audio"
     return re.sub(r"[0-9a-f]{8,}", "<id>", value, flags=re.I)[:160] if value else "unknown"
