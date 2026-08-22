@@ -32,6 +32,7 @@ DEFAULT_UNIT = "audio-control-ui-v1.service"
 REMOTE_BRIDGE_UNIT = "audio-remote-bridge-v1.service"
 LEVEL_OBSERVER_UNIT = "audio-control-level-observer-v1.service"
 QOBUZ_RECOVERY_UNIT = "audio-qobuz-desktop-recovery-v1.service"
+QBZD_QCONNECT_RECOVERY_UNIT = "audio-qbzd-qconnect-recovery-v1.service"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 SERVICE_STOP_READBACK_ATTEMPTS = 6
@@ -53,6 +54,14 @@ QOBUZ_RECOVERY_CRITICAL_RELEASE_FILES = (
     "docs/qobuz-desktop-recovery.md",
     QOBUZ_RECOVERY_RELEASE_SENTINEL,
     f"systemd/user/{QOBUZ_RECOVERY_UNIT}",
+    "systemd/user/audio-control-ui-v1.service",
+)
+QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL = "tests/test_qbzd_qconnect_recovery.py"
+QBZD_QCONNECT_RECOVERY_CRITICAL_RELEASE_FILES = (
+    "scripts/qbzd_qconnect_recovery.py",
+    "docs/qbzd-qconnect-recovery.md",
+    QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL,
+    f"systemd/user/{QBZD_QCONNECT_RECOVERY_UNIT}",
     "systemd/user/audio-control-ui-v1.service",
 )
 DAUERSONG_HARDENING_RELATIVE = (
@@ -85,6 +94,14 @@ RUNTIME_FILES = {
     ),
     f"systemd/user/{QOBUZ_RECOVERY_UNIT}": (
         pathlib.Path.home() / ".config" / "systemd" / "user" / QOBUZ_RECOVERY_UNIT,
+        0o600,
+    ),
+    f"systemd/user/{QBZD_QCONNECT_RECOVERY_UNIT}": (
+        pathlib.Path.home()
+        / ".config"
+        / "systemd"
+        / "user"
+        / QBZD_QCONNECT_RECOVERY_UNIT,
         0o600,
     ),
     "systemd/user/audio-remote-bridge-v1.service": (
@@ -731,6 +748,19 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         release / "tests" / "test_audio_ipad_pwa.py",
         release / "tests" / "test_audio_remote_bridge.py",
     ]
+    qbzd_qconnect_recovery_supported = (
+        (release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL).is_file()
+        and not (release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL).is_symlink()
+    )
+    if qbzd_qconnect_recovery_supported:
+        required.extend(
+            [
+                release / "scripts" / "qbzd_qconnect_recovery.py",
+                release / "docs" / "qbzd-qconnect-recovery.md",
+                release / "systemd" / "user" / QBZD_QCONNECT_RECOVERY_UNIT,
+                release / "tests" / "test_qbzd_qconnect_recovery.py",
+            ]
+        )
     missing = [str(path.relative_to(release)) for path in required if not path.is_file()]
     if missing:
         raise DeployError("Release ist unvollständig: " + ", ".join(missing))
@@ -802,6 +832,26 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
             timeout=120,
         ),
     ]
+    if qbzd_qconnect_recovery_supported:
+        checks.extend(
+            [
+                run_command(
+                    [sys.executable, "scripts/qbzd_qconnect_recovery.py", "check"],
+                    cwd=release,
+                    timeout=30,
+                ),
+                run_command(
+                    [
+                        sys.executable,
+                        "-m",
+                        "unittest",
+                        "tests/test_qbzd_qconnect_recovery.py",
+                    ],
+                    cwd=release,
+                    timeout=180,
+                ),
+            ]
+        )
     node = shutil.which("node")
     if node:
         checks.append(run_command([node, "--check", "ui/app.js"], cwd=release, timeout=30))
@@ -836,6 +886,8 @@ def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
         paths.extend(LEVEL_OBSERVER_CRITICAL_RELEASE_FILES)
     if (release / QOBUZ_RECOVERY_RELEASE_SENTINEL).is_file():
         paths.extend(QOBUZ_RECOVERY_CRITICAL_RELEASE_FILES)
+    if (release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL).is_file():
+        paths.extend(QBZD_QCONNECT_RECOVERY_CRITICAL_RELEASE_FILES)
     paths.extend(relative for relative in RUNTIME_FILES if (release / relative).exists())
     return tuple(dict.fromkeys(paths))
 
@@ -1165,6 +1217,11 @@ def release_supports_qobuz_recovery(release: pathlib.Path) -> bool:
     return sentinel.is_file() and not sentinel.is_symlink()
 
 
+def release_supports_qbzd_qconnect_recovery(release: pathlib.Path) -> bool:
+    sentinel = release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL
+    return sentinel.is_file() and not sentinel.is_symlink()
+
+
 def read_service_activity_raw(unit: str) -> dict[str, Any]:
     result = run_command(
         [
@@ -1262,6 +1319,44 @@ def converge_qobuz_recovery(
     }
 
 
+def converge_qbzd_qconnect_recovery(
+    release: pathlib.Path,
+    *,
+    restart: bool = False,
+) -> dict[str, Any]:
+    if not release_supports_qbzd_qconnect_recovery(release):
+        return {
+            "unit": QBZD_QCONNECT_RECOVERY_UNIT,
+            "supported": False,
+            "active": False,
+            "active_state": "not-applicable",
+            "activation": [],
+        }
+    before = read_service_activity(QBZD_QCONNECT_RECOVERY_UNIT)
+    if before["load_state"] != "loaded":
+        raise DeployError("QBZD-QConnect-Recovery-Unit ist nicht installiert.")
+    activation: list[dict[str, Any]] = []
+    action = "restart" if before["active"] and restart else None
+    if not before["active"]:
+        action = "start"
+    if action is not None:
+        activation.append(
+            service_command(action, QBZD_QCONNECT_RECOVERY_UNIT).receipt()
+        )
+    after = read_service_activity(QBZD_QCONNECT_RECOVERY_UNIT)
+    if after["load_state"] != "loaded" or not after["active"]:
+        raise DeployError("QBZD-QConnect-Recovery-Unit ist nach Konvergenz nicht aktiv.")
+    return {
+        "unit": QBZD_QCONNECT_RECOVERY_UNIT,
+        "supported": True,
+        "before": before,
+        "activation": activation,
+        "after": after,
+        "active": True,
+        "active_state": after["active_state"],
+    }
+
+
 def stop_qobuz_recovery_for_rollback(
     *, sleeper: Callable[[float], None] = time.sleep
 ) -> list[dict[str, Any]]:
@@ -1280,6 +1375,28 @@ def stop_qobuz_recovery_for_rollback(
         if attempt + 1 < SERVICE_STOP_READBACK_ATTEMPTS:
             sleeper(SERVICE_STOP_READBACK_INTERVAL_SECONDS)
     raise DeployError("Rollback konnte Qobuz-Recovery nicht sicher stoppen.")
+
+
+def stop_qbzd_qconnect_recovery_for_rollback(
+    *, sleeper: Callable[[float], None] = time.sleep
+) -> list[dict[str, Any]]:
+    before = read_service_activity_raw(QBZD_QCONNECT_RECOVERY_UNIT)
+    receipts = [before["readback"]]
+    if before["load_state"] == "not-found":
+        return receipts
+    receipts.append(
+        service_command("stop", QBZD_QCONNECT_RECOVERY_UNIT).receipt()
+    )
+    for attempt in range(SERVICE_STOP_READBACK_ATTEMPTS):
+        after = read_service_activity_raw(QBZD_QCONNECT_RECOVERY_UNIT)
+        receipts.append(after["readback"])
+        if after["load_state"] == "not-found" or (
+            after["active_state"] == "inactive" and after["sub_state"] == "dead"
+        ):
+            return receipts
+        if attempt + 1 < SERVICE_STOP_READBACK_ATTEMPTS:
+            sleeper(SERVICE_STOP_READBACK_INTERVAL_SECONDS)
+    raise DeployError("Rollback konnte QBZD-QConnect-Recovery nicht sicher stoppen.")
 
 
 def release_file_changed(
@@ -1649,11 +1766,22 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         bridge_restart_required = False
         runtime_unit_changed = False
         qobuz_recovery_unit_updated = False
+        qbzd_qconnect_recovery_unit_updated = False
         # Arm rollback containment before the current pointer can expose any
         # candidate recovery code to an already loaded, auto-restarting unit.
         qobuz_recovery_candidate_exposed = release_supports_qobuz_recovery(release)
+        qbzd_qconnect_recovery_candidate_exposed = (
+            release_supports_qbzd_qconnect_recovery(release)
+        )
         qobuz_recovery: dict[str, Any] = {
             "unit": QOBUZ_RECOVERY_UNIT,
+            "supported": False,
+            "active": False,
+            "active_state": "not-applicable",
+            "activation": [],
+        }
+        qbzd_qconnect_recovery: dict[str, Any] = {
+            "unit": QBZD_QCONNECT_RECOVERY_UNIT,
             "supported": False,
             "active": False,
             "active_state": "not-applicable",
@@ -1689,6 +1817,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             qobuz_recovery_unit_updated = (
                 f"systemd/user/{QOBUZ_RECOVERY_UNIT}" in updated_sources
             )
+            qbzd_qconnect_recovery_unit_updated = (
+                f"systemd/user/{QBZD_QCONNECT_RECOVERY_UNIT}" in updated_sources
+            )
             bridge_unit_updated = (
                 "systemd/user/audio-remote-bridge-v1.service" in updated_sources
             )
@@ -1702,6 +1833,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 or ui_unit_updated
                 or level_observer_unit_updated
                 or qobuz_recovery_unit_updated
+                or qbzd_qconnect_recovery_unit_updated
             )
             if restart_required:
                 service_activation_attempted = True
@@ -1740,6 +1872,10 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     qobuz_recovery_script_changed or qobuz_recovery_unit_updated
                 ),
             )
+            qbzd_qconnect_recovery = converge_qbzd_qconnect_recovery(
+                release,
+                restart=qbzd_qconnect_recovery_unit_updated,
+            )
             if timer_updated:
                 runtime_activation.append(
                     run_command(
@@ -1756,7 +1892,16 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 ) = restart_remote_bridge()
             retention = prune_releases(deploy_root, current_commit=commit)
         except Exception as deployment_error:
-            # Never restore/remove the failed unit while its process may live.
+            # Never restore/remove a failed release while one of its recovery
+            # processes may still be executing candidate code.
+            if qbzd_qconnect_recovery_candidate_exposed:
+                try:
+                    stop_qbzd_qconnect_recovery_for_rollback()
+                except Exception as error:
+                    raise DeployError(
+                        "Deployment fehlgeschlagen und QBZD-QConnect-Recovery "
+                        f"konnte vor dem Rollback nicht gestoppt werden: {error}"
+                    ) from deployment_error
             if qobuz_recovery_candidate_exposed:
                 try:
                     stop_qobuz_recovery_for_rollback()
@@ -1800,6 +1945,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             rollback_release: pathlib.Path | None = None
             rollback_ui_available = False
             rollback_recovery_required = qobuz_recovery_candidate_exposed
+            rollback_qbzd_qconnect_recovery_required = (
+                qbzd_qconnect_recovery_candidate_exposed
+            )
             if changed:
                 if previous:
                     try:
@@ -1812,6 +1960,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                             activate_service(args.unit)
                             rollback_ui_available = True
                             rollback_recovery_required = True
+                            rollback_qbzd_qconnect_recovery_required = True
                         except Exception as error:
                             rollback_errors.append(f"ui-service:{error}")
                 else:
@@ -1826,6 +1975,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     rollback_release = release
                     rollback_ui_available = True
                     rollback_recovery_required = True
+                    rollback_qbzd_qconnect_recovery_required = True
                 except Exception as error:
                     rollback_errors.append(f"ui-service:{error}")
             else:
@@ -1841,6 +1991,16 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     converge_qobuz_recovery(rollback_release)
                 except Exception as error:
                     rollback_errors.append(f"qobuz-recovery:{error}")
+            if (
+                rollback_ui_available
+                and rollback_qbzd_qconnect_recovery_required
+                and rollback_release is not None
+                and release_supports_qbzd_qconnect_recovery(rollback_release)
+            ):
+                try:
+                    converge_qbzd_qconnect_recovery(rollback_release)
+                except Exception as error:
+                    rollback_errors.append(f"qbzd-qconnect-recovery:{error}")
             if bridge_before["active"] and bridge_activation_attempted:
                 try:
                     activate_service(REMOTE_BRIDGE_UNIT)
@@ -1873,6 +2033,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "runtime_activation": runtime_activation,
             "service_commands": service_receipts,
             "qobuz_recovery": qobuz_recovery,
+            "qbzd_qconnect_recovery": qbzd_qconnect_recovery,
             "remote_bridge": {
                 "before": bridge_before,
                 "restart_required": bridge_restart_required,

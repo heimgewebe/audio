@@ -12,6 +12,9 @@ LEVEL_OBSERVER_UNIT_PATH = (
 QOBUZ_RECOVERY_UNIT_PATH = (
     ROOT / "systemd" / "user" / "audio-qobuz-desktop-recovery-v1.service"
 )
+QBZD_QCONNECT_RECOVERY_UNIT_PATH = (
+    ROOT / "systemd" / "user" / "audio-qbzd-qconnect-recovery-v1.service"
+)
 LEGACY_INDEX_BLOB_SHA = "4a1e80316512a24f780359c8f7e45194226c4f88"
 DEPLOYMENT_CONTRACT_PATTERN = (
     r'<meta\s+name="audio-control-deployment-contract"\s+'
@@ -64,18 +67,34 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         self.assertIn("--target auto", observer)
         self.assertIn("Wants=audio-control-level-observer-v1.service", ui)
 
-    def test_qobuz_recovery_is_narrow_and_coupled_to_the_ui_lifecycle(self):
+    def test_qobuz_recovery_uses_systemd_exported_state_directory(self):
         self.assertEqual(address_families(QOBUZ_RECOVERY_UNIT_PATH), {"AF_UNIX"})
         recovery = QOBUZ_RECOVERY_UNIT_PATH.read_text(encoding="utf-8")
         ui = UI_UNIT_PATH.read_text(encoding="utf-8")
         self.assertIn("PartOf=audio-control-ui-v1.service", recovery)
         self.assertIn("StateDirectory=audio-qobuz-desktop-recovery", recovery)
         self.assertIn("StateDirectoryMode=0700", recovery)
-        self.assertIn("%S/audio-qobuz-desktop-recovery/state.json", recovery)
+        self.assertIn("${STATE_DIRECTORY}/state.json", recovery)
+        self.assertNotIn("%S/audio-qobuz-desktop-recovery/state.json", recovery)
         self.assertNotIn("RuntimeDirectory=audio-qobuz-desktop-recovery", recovery)
         self.assertIn("qobuz_desktop_recovery.py run", recovery)
-        self.assertIn("Wants=", ui)
         self.assertIn("audio-qobuz-desktop-recovery-v1.service", ui)
+
+    def test_qbzd_qconnect_recovery_is_loopback_only_and_ui_lifecycle_bound(self):
+        self.assertEqual(
+            address_families(QBZD_QCONNECT_RECOVERY_UNIT_PATH),
+            {"AF_UNIX", "AF_INET"},
+        )
+        recovery = QBZD_QCONNECT_RECOVERY_UNIT_PATH.read_text(encoding="utf-8")
+        ui = UI_UNIT_PATH.read_text(encoding="utf-8")
+        self.assertIn("PartOf=audio-control-ui-v1.service", recovery)
+        self.assertNotIn("Wants=qbzd.service", recovery)
+        self.assertIn("After=network.target qbzd.service", recovery)
+        self.assertIn("StateDirectory=audio-qbzd-qconnect-recovery", recovery)
+        self.assertIn("StateDirectoryMode=0700", recovery)
+        self.assertIn("${STATE_DIRECTORY}/state.json", recovery)
+        self.assertIn("qbzd_qconnect_recovery.py run", recovery)
+        self.assertIn("audio-qbzd-qconnect-recovery-v1.service", ui)
 
 
 if __name__ == "__main__":
