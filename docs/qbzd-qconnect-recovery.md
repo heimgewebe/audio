@@ -117,3 +117,13 @@ The service is pulled in by `audio-control-ui-v1.service`, ordered after
 `qbzd.service`, and `PartOf` the Audiozentrale lifecycle so revision-bound deploy
 or rollback cannot leave candidate recovery code running across a release
 pointer change. QBZD itself remains an independently enabled user service.
+
+## Audiozentrale-Readback
+
+Die Audiozentrale liest den Zustand dieses Recovery-Wächters zusammen mit dem
+zweiten Qobuz-Recovery-Dienst in einer einzigen begrenzten, read-only
+`systemctl --user show`-Abfrage zurück. Ein verwaltetes Deployment wird als
+`attention` markiert, wenn einer der Wächter inaktiv oder nicht eindeutig
+lesbar ist. Ein aktiver Wächter belegt ausschließlich seine eigene
+Prozessbereitschaft; daraus folgt weder erfolgreiche Qobuz-Wiedergabe noch
+track-native/bitperfekte Ausgabe.

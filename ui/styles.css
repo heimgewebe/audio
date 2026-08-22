@@ -3658,6 +3658,7 @@ main { padding: 0 28px 42px; }
 .listening-path-card.is-receiver .home-signal-node { border-color: rgba(231, 186, 87, 0.25); }
 .listening-path-card.is-reference .home-signal-node.observed { border-color: rgba(185, 230, 181, 0.48); }
 .listening-path-card.is-receiver .home-signal-node.onsite { border-color: rgba(231, 186, 87, 0.45); }
+.listening-path-card .home-signal-node.attention { border-left-color: var(--red); }
 .signal-node-glyph {
   display: inline-grid;
   width: 31px;

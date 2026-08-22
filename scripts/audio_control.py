@@ -110,6 +110,9 @@ SPEC_BASE_REVISION = "81fab5c57a3609b8b931a2ee5251c4f576368298"
 API_VERSION = "v1"
 UNIT_NAME = "audio-control-ui-v1.service"
 UNIT_MANAGED_BY = "audio-control-ui-v1"
+QOBUZ_DESKTOP_RECOVERY_UNIT = "audio-qobuz-desktop-recovery-v1.service"
+QBZD_QCONNECT_RECOVERY_UNIT = "audio-qbzd-qconnect-recovery-v1.service"
+QOBUZ_RECOVERY_UNITS = (QOBUZ_DESKTOP_RECOVERY_UNIT, QBZD_QCONNECT_RECOVERY_UNIT)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_CACHE_SECONDS = 4.0
@@ -1283,6 +1286,98 @@ def deployment_projection(runtime_head: str) -> dict[str, Any]:
     }
 
 
+def qobuz_recovery_projection(
+    runner: CommandRunner, *, required: bool
+) -> dict[str, Any]:
+    units = QOBUZ_RECOVERY_UNITS
+    base = {
+        "authority": "systemd-user-service-readback",
+        "read_only": True,
+        "required": required,
+        "status": "not-required" if not required else "unavailable",
+        "healthy": None if not required else False,
+        "active_count": None,
+        "total_count": len(units),
+        "services": {},
+    }
+    if not required:
+        return base
+
+    argv = [
+        "systemctl",
+        "--user",
+        "show",
+        *units,
+        "--property=Id",
+        "--property=LoadState",
+        "--property=ActiveState",
+        "--property=SubState",
+        "--no-pager",
+    ]
+    try:
+        result = runner.run(argv, timeout=2)
+    except ControlError:
+        return base
+    if result.returncode != 0 or len(result.stdout.encode("utf-8")) > 4096:
+        return base
+
+    expected_fields = {"Id", "LoadState", "ActiveState", "SubState"}
+    records: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if not line:
+            if current:
+                records.append(current)
+                current = {}
+            continue
+        if "=" not in line:
+            return base
+        key, value = line.split("=", 1)
+        if (
+            key not in expected_fields
+            or key in current
+            or re.fullmatch(r"[A-Za-z0-9_.@:-]{1,128}", value) is None
+        ):
+            return base
+        current[key] = value
+    if current:
+        records.append(current)
+    if len(records) != len(units):
+        return base
+
+    services: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if set(record) != expected_fields:
+            return base
+        unit = record["Id"]
+        if unit not in units or unit in services:
+            return base
+        active = (
+            record["LoadState"] == "loaded"
+            and record["ActiveState"] == "active"
+            and record["SubState"] == "running"
+        )
+        services[unit] = {
+            "unit": unit,
+            "load_state": record["LoadState"],
+            "active_state": record["ActiveState"],
+            "sub_state": record["SubState"],
+            "active": active,
+        }
+
+    if set(services) != set(units):
+        return base
+    active_count = sum(service["active"] is True for service in services.values())
+    healthy = active_count == len(units)
+    return {
+        **base,
+        "status": "healthy" if healthy else "attention",
+        "healthy": healthy,
+        "active_count": active_count,
+        "services": services,
+    }
+
+
 def hardware_projection(doctor_status: str, doctor: dict[str, Any]) -> dict[str, Any]:
     hardware = doctor.get("hardware") if isinstance(doctor, dict) else None
     hardware = hardware if isinstance(hardware, dict) else {}
@@ -2220,6 +2315,15 @@ class AudioControl:
         runtime_high_warnings = [
             warning for warning in high_warnings if warning not in onsite_high_warnings
         ]
+        runtime_head = current_revision(self.runner)
+        deployment = deployment_projection(runtime_head)
+        qobuz_recovery = qobuz_recovery_projection(
+            self.runner, required=deployment.get("mode") == "automatic"
+        )
+        qobuz_recovery_attention = (
+            qobuz_recovery.get("required") is True
+            and qobuz_recovery.get("healthy") is not True
+        )
         runtime_unavailable = doctor_status != "ok" or whale_status != "ok"
         dauersong_attention = (
             dauersong_status != "ok"
@@ -2228,13 +2332,16 @@ class AudioControl:
             or not dauersong_runtime_safe
         )
         runtime_attention = (
-            runtime_unavailable or bool(runtime_high_warnings) or dauersong_attention
+            runtime_unavailable
+            or bool(runtime_high_warnings)
+            or dauersong_attention
+            or qobuz_recovery_attention
         )
         runtime_state = (
             "unavailable"
             if runtime_unavailable
             else "attention"
-            if runtime_high_warnings or dauersong_attention
+            if runtime_high_warnings or dauersong_attention or qobuz_recovery_attention
             else "healthy"
         )
         projected_profiles = project_profile_readiness(
@@ -2244,8 +2351,6 @@ class AudioControl:
         for profile in projected_profiles:
             state = profile["dashboard_state"]
             profile_state_counts[state] = profile_state_counts.get(state, 0) + 1
-        runtime_head = current_revision(self.runner)
-        deployment = deployment_projection(runtime_head)
         onsite_required = hardware["onsite_required"] or bool(physical_unknowns)
         return {
             "schema_version": 1,
@@ -2257,6 +2362,7 @@ class AudioControl:
                 "spec_base_revision": SPEC_BASE_REVISION,
             },
             "deployment": deployment,
+            "qobuz_recovery": qobuz_recovery,
             "service": {
                 "authority": "local-backend",
                 "browser_audio_authority": False,
@@ -2269,6 +2375,7 @@ class AudioControl:
             "summary": {
                 "state": "attention" if runtime_attention else "stable",
                 "runtime_state": runtime_state,
+                "qobuz_recovery_state": qobuz_recovery["status"],
                 "hardware_state": hardware["state"],
                 "operational_state": (
                     "attention"

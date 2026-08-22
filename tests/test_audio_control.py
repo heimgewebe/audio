@@ -674,6 +674,158 @@ class AudioControlTests(unittest.TestCase):
             modes["piano-vocal"]["blocker"], "roland-midi-source-not-observed"
         )
 
+    def test_qobuz_recovery_projection_reads_both_services_in_one_call(self):
+        class RecoveryRunner:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, argv, *, timeout):
+                self.calls.append((tuple(argv), timeout))
+                stdout = (
+                    f"Id={MODULE.QOBUZ_DESKTOP_RECOVERY_UNIT}\n"
+                    "LoadState=loaded\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n\n"
+                    f"Id={MODULE.QBZD_QCONNECT_RECOVERY_UNIT}\n"
+                    "LoadState=loaded\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                )
+                return MODULE.CommandResult(tuple(argv), 0, stdout, "")
+
+        runner = RecoveryRunner()
+        projection = MODULE.qobuz_recovery_projection(runner, required=True)
+        self.assertEqual(projection["status"], "healthy")
+        self.assertTrue(projection["healthy"])
+        self.assertTrue(projection["read_only"])
+        self.assertEqual(projection["active_count"], 2)
+        self.assertEqual(projection["total_count"], 2)
+        self.assertEqual(len(runner.calls), 1)
+        argv, timeout = runner.calls[0]
+        self.assertEqual(argv[:3], ("systemctl", "--user", "show"))
+        self.assertIn(MODULE.QOBUZ_DESKTOP_RECOVERY_UNIT, argv)
+        self.assertIn(MODULE.QBZD_QCONNECT_RECOVERY_UNIT, argv)
+        self.assertEqual(timeout, 2)
+        self.assertTrue(
+            projection["services"][MODULE.QOBUZ_DESKTOP_RECOVERY_UNIT]["active"]
+        )
+        self.assertTrue(
+            projection["services"][MODULE.QBZD_QCONNECT_RECOVERY_UNIT]["active"]
+        )
+
+    def test_qobuz_recovery_projection_rejects_incomplete_or_foreign_output(self):
+        valid_desktop = (
+            f"Id={MODULE.QOBUZ_DESKTOP_RECOVERY_UNIT}\n"
+            "LoadState=loaded\n"
+            "ActiveState=active\n"
+            "SubState=running\n"
+        )
+        malformed_outputs = (
+            valid_desktop,
+            (
+                valid_desktop
+                + "\nId=foreign-recovery.service\n"
+                "LoadState=loaded\n"
+                "ActiveState=active\n"
+                "SubState=running\n"
+            ),
+            valid_desktop + "\n" + valid_desktop,
+            (
+                valid_desktop
+                + f"\nId={MODULE.QBZD_QCONNECT_RECOVERY_UNIT}\n"
+                "LoadState=loaded\n"
+                "ActiveState=active\n"
+            ),
+        )
+
+        for stdout in malformed_outputs:
+            with self.subTest(stdout=stdout):
+                class RecoveryRunner:
+                    def run(self, argv, *, timeout):
+                        return MODULE.CommandResult(tuple(argv), 0, stdout, "")
+
+                projection = MODULE.qobuz_recovery_projection(
+                    RecoveryRunner(), required=True
+                )
+                self.assertEqual(projection["status"], "unavailable")
+                self.assertFalse(projection["healthy"])
+                self.assertIsNone(projection["active_count"])
+                self.assertEqual(projection["services"], {})
+
+    def test_managed_runtime_marks_inactive_qobuz_recovery_as_attention(self):
+        class ManagedRecoveryRunner(FakeRunner):
+            def run(self, argv, *, timeout):
+                if argv[:3] == ["systemctl", "--user", "show"]:
+                    self.calls.append((tuple(argv), timeout))
+                    stdout = (
+                        f"Id={MODULE.QOBUZ_DESKTOP_RECOVERY_UNIT}\n"
+                        "LoadState=loaded\n"
+                        "ActiveState=active\n"
+                        "SubState=running\n\n"
+                        f"Id={MODULE.QBZD_QCONNECT_RECOVERY_UNIT}\n"
+                        "LoadState=loaded\n"
+                        "ActiveState=inactive\n"
+                        "SubState=dead\n"
+                    )
+                    return MODULE.CommandResult(tuple(argv), 0, stdout, "")
+                return super().run(argv, timeout=timeout)
+
+        commit = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            marker = root / ".audio-control-release.json"
+            latest = root / "latest.json"
+            marker.write_text(json.dumps({"commit": commit}), encoding="utf-8")
+            latest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_control_deploy_receipt",
+                        "commit": commit,
+                        "changed": False,
+                        "deployed_at_unix": 1_700_000_000,
+                        "service": {"health": {"status": "serving"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(MODULE, "RELEASE_MARKER", marker),
+                mock.patch.object(MODULE, "DEPLOY_LATEST", latest),
+            ):
+                snapshot = self.controller(ManagedRecoveryRunner()).snapshot(refresh=True)
+
+        self.assertEqual(snapshot["deployment"]["status"], "current")
+        self.assertTrue(snapshot["qobuz_recovery"]["required"])
+        self.assertFalse(snapshot["qobuz_recovery"]["healthy"])
+        self.assertEqual(snapshot["qobuz_recovery"]["status"], "attention")
+        self.assertEqual(snapshot["qobuz_recovery"]["active_count"], 1)
+        self.assertEqual(snapshot["summary"]["qobuz_recovery_state"], "attention")
+        self.assertEqual(snapshot["summary"]["runtime_state"], "attention")
+        self.assertEqual(snapshot["summary"]["state"], "attention")
+        self.assertEqual(snapshot["summary"]["operational_state"], "attention")
+
+    def test_source_checkout_does_not_require_qobuz_recovery_services(self):
+        runner = FakeRunner()
+        controller = self.controller(runner)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            with (
+                mock.patch.object(MODULE, "RELEASE_MARKER", root / "missing-marker.json"),
+                mock.patch.object(MODULE, "DEPLOY_LATEST", root / "missing-latest.json"),
+            ):
+                snapshot = controller.snapshot(refresh=True)
+
+        self.assertEqual(snapshot["deployment"]["status"], "source-checkout")
+        self.assertFalse(snapshot["qobuz_recovery"]["required"])
+        self.assertEqual(snapshot["qobuz_recovery"]["status"], "not-required")
+        self.assertIsNone(snapshot["qobuz_recovery"]["healthy"])
+        self.assertIsNone(snapshot["qobuz_recovery"]["active_count"])
+        self.assertEqual(snapshot["summary"]["runtime_state"], "healthy")
+        self.assertFalse(
+            any(call[:3] == ("systemctl", "--user", "show") for call, _ in runner.calls)
+        )
+
     def test_deployment_projection_is_bounded_current_and_path_free(self):
         commit = "c" * 40
         with tempfile.TemporaryDirectory() as directory:
@@ -1575,6 +1727,11 @@ class AudioControlTests(unittest.TestCase):
             self.assertIn(token, visual_css)
         self.assertIn('.listening-path-card.is-reference', visual_css)
         self.assertIn('.listening-path-card.is-receiver', visual_css)
+        self.assertIn('.listening-path-card .home-signal-node.attention {', visual_css)
+        attention_block = visual_css.split(
+            '.listening-path-card .home-signal-node.attention {', 1
+        )[1].split('}', 1)[0]
+        self.assertIn('border-left-color: var(--red);', attention_block)
         self.assertIn('white-space: normal;', visual_css)
         self.assertIn('overflow-wrap: anywhere;', visual_css)
         self.assertIn('@media (max-width: 1360px)', visual_css)
@@ -2037,6 +2194,9 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         home_end = javascript.index("function insightCard", home_start)
         home = javascript[home_start:home_end]
         self.assertIn("doctor.streaming_sources?.qobuz", home)
+        self.assertIn("snapshot.qobuz_recovery || {}", home)
+        self.assertIn("qobuzRecovery.required === true", home)
+        self.assertIn("qobuzRecovery.healthy === true", home)
         self.assertIn("qobuz.track_native_proven === true", home)
         self.assertIn('qobuzProvider === "qbzd-qconnect"', home)
         self.assertIn('const proofStateDetail = {', home)
@@ -2049,6 +2209,9 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         self.assertIn("MOTU-Rate nicht lesbar", home)
         self.assertIn("QBZD-Snapshot instabil", home)
         self.assertIn("toFixed(qobuzRate % 1000 === 0 ? 0 : 1)", home)
+        self.assertIn("Selbstheilung ${activeCountLabel}/2", home)
+        self.assertIn('" · Recovery prüfen"', home)
+        self.assertIn('qobuzSourceTone = "attention"', home)
         self.assertNotIn("BITPERFEKT ✓", home)
 
     def test_sound_library_requires_confirmed_active_whale_truth(self):
