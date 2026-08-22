@@ -43,6 +43,16 @@ class CaptureBaselineTests(unittest.TestCase):
         self.assertEqual(MODULE.normalize_device_name("Bus 001: ID 0582:01b1"), "roland-fp-30x")
         self.assertEqual(MODULE.normalize_device_name("alsa_input.usb-Roland_Roland_Digital_Piano_SERIAL"), "roland-fp-30x")
 
+    def test_hardware_identity_accepts_german_structured_alsa_m2_card(self) -> None:
+        evidence = "Karte 2: M2 [M2], Gerät 0: USB Audio"
+        self.assertTrue(MODULE.detect_hardware(evidence)["motu_m2"])
+        self.assertEqual(MODULE.normalize_device_name(evidence), "motu-m2")
+
+    def test_hardware_identity_accepts_english_structured_alsa_m2_card(self) -> None:
+        evidence = "card 2: M2 [M2]"
+        self.assertTrue(MODULE.detect_hardware(evidence)["motu_m2"])
+        self.assertEqual(MODULE.normalize_device_name(evidence), "motu-m2")
+
     def test_hardware_identity_rejects_other_vendor_models(self) -> None:
         detected = MODULE.detect_hardware(
             "MOTU M4 USB Audio",

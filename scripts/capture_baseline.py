@@ -81,6 +81,10 @@ MAC_ADDRESS = re.compile(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b", re.I)
 IPV4_ADDRESS = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 SERIAL_ASSIGNMENT = re.compile(r"(?i)(serial(?:number)?|device\.serial|object\.serial)\s*[:=]\s*\S+")
 MOTU_M2 = re.compile(r"(?:\bmotu[_. -]+m2(?=$|[_. -])|(?<![0-9a-f])07fd:0008(?![0-9a-f]))", re.I)
+MOTU_M2_ALSA_CARD = re.compile(
+    r"^\s*(?:karte|card)\s+\d+\s*:\s*m2\s*\[\s*m2\s*\](?:\s*,|\s*$)",
+    re.I | re.M,
+)
 ROLAND_FP_30X = re.compile(
     r"(?:\bfp[_. -]?30x(?=$|[_. -])|\broland[_. -]+(?:roland[_. -]+)?digital[_. -]+piano(?=$|[_. -])|(?<![0-9a-f])0582:01b1(?![0-9a-f]))",
     re.I,
@@ -169,7 +173,7 @@ def command_by_prefix(commands: list[dict[str, Any]], prefix: tuple[str, ...]) -
 
 
 def normalize_device_name(value: str) -> str:
-    if MOTU_M2.search(value):
+    if MOTU_M2.search(value) or MOTU_M2_ALSA_CARD.search(value):
         return "motu-m2"
     if ROLAND_FP_30X.search(value):
         return "roland-fp-30x"
@@ -228,7 +232,7 @@ def parse_metadata(text: str) -> dict[str, int | str | None]:
 def detect_hardware(*texts: str) -> dict[str, bool]:
     joined = "\n".join(texts)
     return {
-        "motu_m2": bool(MOTU_M2.search(joined)),
+        "motu_m2": bool(MOTU_M2.search(joined) or MOTU_M2_ALSA_CARD.search(joined)),
         "roland_fp_30x": bool(ROLAND_FP_30X.search(joined)),
     }
 
