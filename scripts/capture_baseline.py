@@ -80,6 +80,11 @@ URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]
 MAC_ADDRESS = re.compile(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b", re.I)
 IPV4_ADDRESS = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 SERIAL_ASSIGNMENT = re.compile(r"(?i)(serial(?:number)?|device\.serial|object\.serial)\s*[:=]\s*\S+")
+MOTU_M2 = re.compile(r"(?:\bmotu[_. -]+m2(?=$|[_. -])|(?<![0-9a-f])07fd:0008(?![0-9a-f]))", re.I)
+ROLAND_FP_30X = re.compile(
+    r"(?:\bfp[_. -]?30x(?=$|[_. -])|\broland[_. -]+(?:roland[_. -]+)?digital[_. -]+piano(?=$|[_. -])|(?<![0-9a-f])0582:01b1(?![0-9a-f]))",
+    re.I,
+)
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -164,11 +169,11 @@ def command_by_prefix(commands: list[dict[str, Any]], prefix: tuple[str, ...]) -
 
 
 def normalize_device_name(value: str) -> str:
-    lower = value.lower()
-    if "motu" in lower or re.search(r"(?:^|[_. -])m2(?:$|[_. -])", lower):
+    if MOTU_M2.search(value):
         return "motu-m2"
-    if "roland" in lower or "digital_piano" in lower or "digital piano" in lower or "fp-30" in lower:
+    if ROLAND_FP_30X.search(value):
         return "roland-fp-30x"
+    lower = value.lower()
     if "blue" in lower or "bluetooth" in lower:
         return "bluetooth-audio"
     return re.sub(r"[0-9a-f]{8,}", "<id>", value, flags=re.I)[:160] if value else "unknown"
@@ -217,10 +222,10 @@ def parse_metadata(text: str) -> dict[str, int | str | None]:
 
 
 def detect_hardware(*texts: str) -> dict[str, bool]:
-    joined = "\n".join(texts).lower()
+    joined = "\n".join(texts)
     return {
-        "motu_m2": bool(re.search(r"\bmotu\b|\bm2\b|motu_m2", joined)),
-        "roland_fp_30x": bool(re.search(r"\broland\b|digital[ _-]piano|fp-30", joined)),
+        "motu_m2": bool(MOTU_M2.search(joined)),
+        "roland_fp_30x": bool(ROLAND_FP_30X.search(joined)),
     }
 
 

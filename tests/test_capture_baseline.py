@@ -33,6 +33,26 @@ class CaptureBaselineTests(unittest.TestCase):
         self.assertEqual(values["default_sink"], "motu-m2")
         self.assertEqual(values["default_source"], "roland-fp-30x")
 
+    def test_hardware_identity_accepts_established_models_and_usb_ids(self) -> None:
+        detected = MODULE.detect_hardware(
+            "alsa_output.usb-MOTU_M2_SERIAL.Direct",
+            "alsa_input.usb-Roland_Roland_Digital_Piano_SERIAL",
+        )
+        self.assertEqual(detected, {"motu_m2": True, "roland_fp_30x": True})
+        self.assertEqual(MODULE.normalize_device_name("Bus 001: ID 07fd:0008"), "motu-m2")
+        self.assertEqual(MODULE.normalize_device_name("Bus 001: ID 0582:01b1"), "roland-fp-30x")
+        self.assertEqual(MODULE.normalize_device_name("alsa_input.usb-Roland_Roland_Digital_Piano_SERIAL"), "roland-fp-30x")
+
+    def test_hardware_identity_rejects_other_vendor_models(self) -> None:
+        detected = MODULE.detect_hardware(
+            "MOTU M4 USB Audio",
+            "Roland JUNO-DS",
+            "unrelated M2 adapter",
+        )
+        self.assertEqual(detected, {"motu_m2": False, "roland_fp_30x": False})
+        self.assertEqual(MODULE.normalize_device_name("MOTU M6 USB Audio"), "MOTU M6 USB Audio")
+        self.assertEqual(MODULE.normalize_device_name("Roland JUNO-DS"), "Roland JUNO-DS")
+
     def test_wpctl_configured_defaults(self) -> None:
         values = MODULE.parse_wpctl_configured_defaults(
             "0. Audio/Sink    alsa_output.usb-MOTU_M2_SERIAL.Direct\n"
