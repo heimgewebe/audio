@@ -2377,6 +2377,9 @@ function renderHome() {
   const qobuz = doctor.streaming_sources?.qobuz || {};
   const qbzd = qobuz.qbzd || {};
   const qbzdAudio = qbzd.audio || {};
+  const qobuzRecovery = snapshot.qobuz_recovery || {};
+  const qobuzRecoveryRequired = qobuzRecovery.required === true;
+  const qobuzRecoveryHealthy = qobuzRecovery.healthy === true;
   const qobuzVerified = qobuz.track_native_proven === true;
   const qobuzReady = qobuz.reference_provider_ready === true;
   const qobuzProvider = qobuz.selected_reference_provider || null;
@@ -2418,6 +2421,16 @@ function renderHome() {
     qobuzSourceTitle = "Qobuz / Legacy-Mopidy";
     qobuzSourceDetail = "Legacy-Mopidy · gemischter Pfad · track-native nicht belegt";
     qobuzSourceTone = "configured";
+  }
+  if (qobuzRecoveryRequired) {
+    const activeCountLabel =
+      Number.isInteger(qobuzRecovery.active_count) &&
+      qobuzRecovery.active_count >= 0 &&
+      qobuzRecovery.active_count <= 2
+        ? qobuzRecovery.active_count
+        : "?";
+    qobuzSourceDetail = `${qobuzSourceDetail} · Selbstheilung ${activeCountLabel}/2${qobuzRecoveryHealthy ? "" : " · Recovery prüfen"}`;
+    if (!qobuzRecoveryHealthy) qobuzSourceTone = "attention";
   }
   const presence = snapshot.presence || {};
   const deployment = snapshot.deployment || {};

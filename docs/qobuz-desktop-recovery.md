@@ -116,3 +116,13 @@ pointer are restored or removed. The deployer then daemon-reloads and restores
 the release/UI lifecycle. If the restored release supports recovery, the
 deployer explicitly starts it when needed and reads it back loaded and active;
 a legacy release without the recovery contract requires no recovery activation.
+
+## Audiozentrale-Readback
+
+Die Audiozentrale liest den Zustand dieses Recovery-Wächters zusammen mit dem
+zweiten Qobuz-Recovery-Dienst in einer einzigen begrenzten, read-only
+`systemctl --user show`-Abfrage zurück. Ein verwaltetes Deployment wird als
+`attention` markiert, wenn einer der Wächter inaktiv oder nicht eindeutig
+lesbar ist. Ein aktiver Wächter belegt ausschließlich seine eigene
+Prozessbereitschaft; daraus folgt weder erfolgreiche Qobuz-Wiedergabe noch
+track-native/bitperfekte Ausgabe.
