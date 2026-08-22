@@ -33,6 +33,45 @@ class CaptureBaselineTests(unittest.TestCase):
         self.assertEqual(values["default_sink"], "motu-m2")
         self.assertEqual(values["default_source"], "roland-fp-30x")
 
+    def test_hardware_identity_accepts_established_models_and_usb_ids(self) -> None:
+        detected = MODULE.detect_hardware(
+            "alsa_output.usb-MOTU_M2_SERIAL.Direct",
+            "alsa_input.usb-Roland_Roland_Digital_Piano_SERIAL",
+        )
+        self.assertEqual(detected, {"motu_m2": True, "roland_fp_30x": True})
+        self.assertEqual(MODULE.normalize_device_name("Bus 001: ID 07fd:0008"), "motu-m2")
+        self.assertEqual(MODULE.normalize_device_name("Bus 001: ID 0582:01b1"), "roland-fp-30x")
+        self.assertEqual(MODULE.normalize_device_name("alsa_input.usb-Roland_Roland_Digital_Piano_SERIAL"), "roland-fp-30x")
+
+    def test_hardware_identity_accepts_german_structured_alsa_m2_card(self) -> None:
+        evidence = "Karte 2: M2 [M2], Gerät 0: USB Audio"
+        self.assertTrue(MODULE.detect_hardware(evidence)["motu_m2"])
+        self.assertEqual(MODULE.normalize_device_name(evidence), "motu-m2")
+
+    def test_hardware_identity_accepts_english_structured_alsa_m2_card(self) -> None:
+        evidence = "card 2: M2 [M2]"
+        self.assertTrue(MODULE.detect_hardware(evidence)["motu_m2"])
+        self.assertEqual(MODULE.normalize_device_name(evidence), "motu-m2")
+
+    def test_hardware_identity_rejects_other_vendor_models(self) -> None:
+        detected = MODULE.detect_hardware(
+            "MOTU M4 USB Audio",
+            "Roland JUNO-DS",
+            "unrelated M2 adapter",
+        )
+        self.assertEqual(detected, {"motu_m2": False, "roland_fp_30x": False})
+        self.assertEqual(MODULE.normalize_device_name("MOTU M6 USB Audio"), "motu-other")
+        self.assertEqual(MODULE.normalize_device_name("Roland JUNO-DS"), "roland-other")
+
+    def test_unmatched_vendor_endpoints_do_not_preserve_private_serials(self) -> None:
+        motu_endpoint = "alsa_output.usb-MOTU_M4_PRIVATE_SERIAL-00.pro-output-0"
+        roland_endpoint = "alsa_input.usb-Roland_JUNO_DS_PRIVATE_SERIAL-00.analog-stereo"
+
+        for endpoint, expected in ((motu_endpoint, "motu-other"), (roland_endpoint, "roland-other")):
+            normalized = MODULE.normalize_device_name(endpoint)
+            self.assertEqual(normalized, expected)
+            self.assertNotIn("PRIVATE_SERIAL", normalized)
+
     def test_wpctl_configured_defaults(self) -> None:
         values = MODULE.parse_wpctl_configured_defaults(
             "0. Audio/Sink    alsa_output.usb-MOTU_M2_SERIAL.Direct\n"
