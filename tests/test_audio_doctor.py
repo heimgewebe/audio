@@ -411,6 +411,87 @@ class AudioDoctorTests(unittest.TestCase):
         self.assertFalse(qobuz["track_native_proven"])
         self.assertEqual(qobuz["rate_proof_state"], "ready-awaiting-playback")
 
+    def test_pipewire_owned_desktop_pcm_is_expected_while_qbzd_is_stably_idle(self):
+        observation = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": False,
+                    "sample_rate": None,
+                    "bit_depth": None,
+                    "bit_perfect": None,
+                },
+                "qconnect": {"state": "connected", "session_active": True},
+                "playback": {"state": "paused"},
+            }
+        )
+        report = MODULE.build_report(
+            [], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
+            motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 48000, "pcm_state": "RUNNING", "owner_class": "pipewire", "snapshot_consistent": True},
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertTrue(qobuz["qbzd_snapshot_consistent"])
+        self.assertEqual(qobuz["rate_proof_state"], "desktop-mixed-active")
+        self.assertNotIn("qobuz-qbzd-motu-owner-unverified", {item["code"] for item in report["warnings"]})
+
+    def test_pipewire_owner_without_explicit_qbzd_device_state_fails_closed(self):
+        observation = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "sample_rate": None,
+                    "bit_depth": None,
+                    "bit_perfect": None,
+                },
+                "qconnect": {"state": "connected", "session_active": True},
+            }
+        )
+        self.assertIsNone(observation["audio"]["device_open"])
+        report = MODULE.build_report(
+            [], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
+            motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 48000, "pcm_state": "RUNNING", "owner_class": "pipewire", "snapshot_consistent": True},
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "hardware-owner-unverified")
+        self.assertIn("qobuz-qbzd-motu-owner-unverified", {item["code"] for item in report["warnings"]})
+
+    def test_pipewire_owner_with_nonidle_qbzd_remains_unverified(self):
+        observation = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": True,
+                    "sample_rate": 48000,
+                    "bit_depth": 24,
+                    "bit_perfect": "DirectHardware",
+                },
+                "qconnect": {"state": "connected", "session_active": True},
+                "playback": {"state": "paused"},
+            }
+        )
+        report = MODULE.build_report(
+            [], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
+            motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 48000, "pcm_state": "RUNNING", "owner_class": "pipewire", "snapshot_consistent": True},
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "hardware-owner-unverified")
+        self.assertIn("qobuz-qbzd-motu-owner-unverified", {item["code"] for item in report["warnings"]})
+
     def test_paused_stale_qbzd_device_open_never_proves_current_track_native(self):
         observation = MODULE.classify_qbzd_status_payload(
             {
@@ -684,6 +765,8 @@ class AudioDoctorTests(unittest.TestCase):
             (proc_root / "4242").mkdir()
             (proc_root / "4242" / "comm").write_text("qbzd\n")
             self.assertEqual(MODULE.classify_process_owner(4242, proc_root), "qbzd")
+            (proc_root / "4242" / "comm").write_text("pipewire\n")
+            self.assertEqual(MODULE.classify_process_owner(4242, proc_root), "pipewire")
             (proc_root / "4242" / "comm").write_text("other-player\n")
             self.assertEqual(MODULE.classify_process_owner(4242, proc_root), "other")
         self.assertEqual(MODULE.classify_process_owner(None), "unknown")

@@ -388,7 +388,12 @@ def classify_process_owner(
     comm = _read_small_text(proc_root / str(owner_pid) / "comm", 128)
     if comm is None:
         return "unknown"
-    return "qbzd" if comm.strip() == "qbzd" else "other"
+    process = comm.strip()
+    if process == "qbzd":
+        return "qbzd"
+    if process == "pipewire":
+        return "pipewire"
+    return "other"
 
 
 def observe_motu_playback_hw_params(
@@ -490,7 +495,8 @@ def classify_qbzd_status_payload(payload: object) -> dict[str, object]:
     session_active = qconnect.get("session_active") is True
     device_name = qconnect.get("device_name") if isinstance(qconnect.get("device_name"), str) else None
     device_present = audio.get("device_present") is True
-    device_open = audio.get("device_open") is True
+    raw_device_open = audio.get("device_open")
+    device_open = raw_device_open if isinstance(raw_device_open, bool) else None
     sample_rate = audio.get("sample_rate")
     if not isinstance(sample_rate, int) or isinstance(sample_rate, bool) or sample_rate <= 0:
         sample_rate = None
@@ -793,6 +799,7 @@ def classify_qbzd_rate_proof_state(
     qbzd_snapshot_observed_twice: bool,
     qbzd_snapshot_consistent: bool,
     direct_hardware_reported: bool,
+    qbzd_device_open: object,
     qbzd_rate: object,
     motu_rate: object,
 ) -> str:
@@ -812,7 +819,18 @@ def classify_qbzd_rate_proof_state(
         return "qbzd-snapshot-unavailable"
     if not qbzd_snapshot_consistent:
         return "qbzd-snapshot-unstable"
-    if motu_playback.get("owner_class") != "qbzd":
+    owner_class = motu_playback.get("owner_class")
+    if (
+        owner_class == "pipewire"
+        and qbzd_device_open is False
+        and qbzd_rate is None
+        and not direct_hardware_reported
+    ):
+        # PipeWire legitimately keeps the MOTU PCM running in the shared 48 kHz
+        # desktop graph while QBZD is idle. This is not a failed Qobuz proof
+        # attempt and can never establish track-native playback.
+        return "desktop-mixed-active"
+    if owner_class != "qbzd":
         return "hardware-owner-unverified"
     if not direct_hardware_reported:
         return "direct-hardware-not-reported"
@@ -929,6 +947,7 @@ def build_report(
         qbzd_snapshot_observed_twice=qbzd_snapshot_observed_twice,
         qbzd_snapshot_consistent=qbzd_snapshot_consistent,
         direct_hardware_reported=direct_hardware_reported,
+        qbzd_device_open=qbzd_audio.get("device_open"),
         qbzd_rate=qbzd_rate,
         motu_rate=motu_rate,
     )
