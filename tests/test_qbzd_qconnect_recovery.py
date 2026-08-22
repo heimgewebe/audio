@@ -92,6 +92,25 @@ class FakeRunner:
         raise AssertionError(f"unexpected command: {argv!r}")
 
 
+class FakeJournalReader:
+    def __init__(self, values):
+        self.values = list(values)
+        self.calls = []
+
+    def __call__(self, cursor):
+        self.calls.append(cursor)
+        if not self.values:
+            raise AssertionError("unexpected journal read")
+        value = self.values.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+class StopLoop(RuntimeError):
+    pass
+
+
 class QbzdQconnectRecoveryTests(unittest.TestCase):
     def state_path(self, root):
         return pathlib.Path(root) / "state.json"
@@ -571,6 +590,219 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             state_path.write_text(json.dumps(invalid), encoding="utf-8")
             with self.assertRaisesRegex(MODULE.RecoveryError, "candidate-binding"):
                 MODULE._load_state(state_path)
+
+    def test_journal_stream_drain_is_memory_bounded_and_marks_truncation(self):
+        import io
+
+        result = {}
+        payload = b"x" * (MODULE.MAX_COMMAND_OUTPUT_BYTES + 8193)
+        MODULE._drain_journal_stream(io.BytesIO(payload), result)
+        self.assertEqual(len(result["bytes"]), MODULE.MAX_COMMAND_OUTPUT_BYTES)
+        self.assertTrue(result["truncated"])
+
+    def test_journal_parser_returns_payload_and_exact_cursor(self):
+        cursor = "s=abc123;i=9;b=boot;m=1;t=2;x=3"
+        delta = MODULE.parse_journal_output(
+            "first line\nsecond line\n-- cursor: " + cursor + "\n"
+        )
+        self.assertEqual(delta.cursor, cursor)
+        self.assertEqual(delta.text, "first line\nsecond line")
+
+    def test_journal_parser_rejects_missing_duplicate_or_malformed_cursor(self):
+        invalid = (
+            "",
+            "one line\n",
+            "-- cursor: s=one\n-- cursor: s=two\n",
+            "-- cursor: not-a-systemd-cursor\n",
+            "-- cursor: s=has space\n",
+        )
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                with self.assertRaises(MODULE.RecoveryError):
+                    MODULE.parse_journal_output(payload)
+
+    def test_real_qconnect_failure_journal_lines_trigger_status_probe(self):
+        observed = (
+            '[QConnect/Transport] Cloud rejected session: code=403 descr="auth"',
+            "[QConnect] Lifecycle -> Reconnecting",
+            "Reconnect scheduled: attempt=3",
+            "Max reconnect attempts exceeded",
+            "[QConnect] Reconnect exhausted (11)",
+        )
+        for line in observed:
+            with self.subTest(line=line):
+                self.assertTrue(MODULE.journal_requires_status(line))
+        self.assertFalse(
+            MODULE.journal_requires_status(
+                "ALSA lib pcm_dmix.c:999:(snd_pcm_dmix_open) unable to open slave"
+            )
+        )
+
+    def test_only_positive_connected_outcomes_enter_quiet_mode(self):
+        for result in ("noop:connected", "noop:recovered-naturally", "recovered"):
+            with self.subTest(result=result):
+                self.assertFalse(MODULE._fast_followup_required(result))
+        for result in (
+            "noop:not-candidate",
+            "noop:changed",
+            "noop:boot-changed",
+            "armed",
+            "noop:stabilizing",
+            "noop:backoff",
+            "blocked:status-unavailable",
+        ):
+            with self.subTest(result=result):
+                self.assertTrue(MODULE._fast_followup_required(result))
+
+    def test_adaptive_poll_policy_is_quiet_when_healthy_but_fails_safe(self):
+        self.assertIsNone(
+            MODULE.adaptive_poll_reason(
+                fast_followup=False,
+                journal_available=True,
+                journal_text="",
+                last_status_monotonic=100.0,
+                now_monotonic=399.9,
+            )
+        )
+        self.assertEqual(
+            MODULE.adaptive_poll_reason(
+                fast_followup=False,
+                journal_available=True,
+                journal_text="",
+                last_status_monotonic=100.0,
+                now_monotonic=400.0,
+            ),
+            "safety-fallback",
+        )
+        self.assertEqual(
+            MODULE.adaptive_poll_reason(
+                fast_followup=False,
+                journal_available=False,
+                journal_text="",
+                last_status_monotonic=100.0,
+                now_monotonic=101.0,
+            ),
+            "journal-fallback",
+        )
+        self.assertEqual(
+            MODULE.adaptive_poll_reason(
+                fast_followup=False,
+                journal_available=True,
+                journal_text="[QConnect] Lifecycle -> Reconnecting",
+                last_status_monotonic=100.0,
+                now_monotonic=101.0,
+            ),
+            "journal-trigger",
+        )
+
+    def test_run_loop_initial_probe_then_healthy_journal_skips_status_polling(self):
+        journal = FakeJournalReader(
+            [
+                MODULE.JournalDelta("s=0", ""),
+                MODULE.JournalDelta("s=1", ""),
+                MODULE.JournalDelta("s=2", ""),
+                MODULE.JournalDelta("s=3", ""),
+            ]
+        )
+        reconciles = []
+        sleeps = 0
+
+        def reconcile(path):
+            reconciles.append(path)
+            return "noop:connected"
+
+        def sleeper(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 3:
+                raise StopLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            with self.assertRaises(StopLoop):
+                MODULE.run_loop(
+                    state_path,
+                    reconciler=reconcile,
+                    journal_reader=journal,
+                    sleeper=sleeper,
+                    monotonic_clock=SequenceClock([0.0, 0.0, 30.0, 60.0]),
+                )
+        self.assertEqual(reconciles, [state_path])
+        self.assertEqual(journal.calls, [None, "s=0", "s=1", "s=2"])
+
+    def test_run_loop_journal_trigger_enters_old_fast_followup_cadence(self):
+        journal = FakeJournalReader(
+            [
+                MODULE.JournalDelta("s=0", ""),
+                MODULE.JournalDelta("s=1", ""),
+                MODULE.JournalDelta(
+                    "s=2", "[QConnect] Lifecycle -> Reconnecting"
+                ),
+                MODULE.JournalDelta("s=3", ""),
+            ]
+        )
+        results = iter(["noop:connected", "armed", "noop:stabilizing"])
+        reconciles = []
+        sleeps = 0
+
+        def reconcile(path):
+            reconciles.append(path)
+            return next(results)
+
+        def sleeper(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 3:
+                raise StopLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            with self.assertRaises(StopLoop):
+                MODULE.run_loop(
+                    state_path,
+                    reconciler=reconcile,
+                    journal_reader=journal,
+                    sleeper=sleeper,
+                    monotonic_clock=SequenceClock(
+                        [0.0, 0.0, 30.0, 30.0, 60.0, 60.0]
+                    ),
+                )
+        self.assertEqual(reconciles, [state_path, state_path, state_path])
+
+    def test_run_loop_journal_failure_falls_back_to_status_every_cycle(self):
+        unavailable = MODULE.RecoveryError("journal-unavailable")
+        journal = FakeJournalReader(
+            [
+                unavailable,
+                MODULE.RecoveryError("journal-unavailable"),
+                MODULE.JournalDelta("s=recovered", ""),
+            ]
+        )
+        reconciles = []
+        sleeps = 0
+
+        def reconcile(path):
+            reconciles.append(path)
+            return "noop:connected"
+
+        def sleeper(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 2:
+                raise StopLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            with self.assertRaises(StopLoop):
+                MODULE.run_loop(
+                    state_path,
+                    reconciler=reconcile,
+                    journal_reader=journal,
+                    sleeper=sleeper,
+                    monotonic_clock=SequenceClock([0.0, 0.0, 30.0, 30.0]),
+                )
+        self.assertEqual(reconciles, [state_path, state_path])
+        self.assertEqual(journal.calls, [None, None, None])
 
     def test_command_contract_allows_only_observe_and_try_restart(self):
         MODULE.check_contract()

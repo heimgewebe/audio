@@ -12,6 +12,46 @@ Its only deliberate mutation is `systemctl --user try-restart qbzd.service`.
 watchdog. The watcher has only an ordering dependency on `qbzd.service`; it does
 not pull that service in.
 
+## Adaptive observation without healthy-state ALSA probe noise
+
+QBZD 2.0.2 performs an ALSA device enumeration while serving `/api/status`. On
+the Heim-PC this is functionally harmless but produces repeated `pcm_oss` and
+`pcm_dmix` warnings. Calling that endpoint every 30 seconds while QConnect is
+healthy therefore creates avoidable device probes and journal noise.
+
+The watchdog now separates **wake-up evidence** from **restart authority**. On
+startup it first captures the current `qbzd.service` journal cursor and then
+performs one authoritative status reconciliation. While QConnect is healthy it
+checks only bounded journal deltas every 30 seconds. Real QBZD 2.0.2 failure
+logs observed for the target fault include `Lifecycle -> Reconnecting`,
+`Cloud rejected session`, reconnect scheduling/exhaustion and the maximum-retry
+message; any of these wakes the full status reconciliation within the same
+30-second cadence as the previous implementation. Journal text never authorizes
+a restart by itself.
+
+Once the status path arms a recovery candidate, the watchdog returns to the
+original full 30-second reconciliation cadence through stabilization, backoff,
+restart-edge gating and connected readback. The five-minute stuck requirement,
+QBZD process binding, boot binding, ALSA ownership gates, durable pre-effect arm
+and post-effect cooldown are therefore unchanged.
+
+Two fail-safe fallbacks prevent the journal optimization from becoming a new
+single point of failure:
+
+- if the journal cursor is missing, malformed, rotated, unreadable, too large or
+  otherwise unavailable, the next cycle immediately performs the old `/api/status`
+  reconciliation and then tries to establish a fresh cursor;
+- even with a quiet healthy journal, one authoritative status reconciliation is
+  forced every five minutes. This bounds detection if a future QBZD version
+  silently changes its logging contract.
+
+The local `/api/events` and `/api/sse` surfaces are deliberately not part of this
+contract because they have not been validated as a stable QConnect lifecycle
+API. For the actually observed QBZD 2.0.2 reconnect/auth failure, the journal
+transition is proven and keeps the previous worst-case wake-up latency while
+reducing healthy watchdog status calls from 120 to at most 12 per hour, apart
+from service startup and explicit diagnostics.
+
 A restart attempt is allowed only after all of these conditions remain true for
 at least five minutes on the same boot and the same QBZD process identity, then
 survive additional restart-edge observations:
