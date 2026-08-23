@@ -997,6 +997,62 @@ class AudioControlTests(unittest.TestCase):
         self.assertTrue(repeated["idempotent"])
         self.assertFalse(repeated["reconciled_after_uncertain_effect"])
 
+    def test_pre_effect_transition_resumes_same_request_without_uncertain_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            MODULE.write_operating_mode_configuration(
+                path,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_operating_mode_configuration",
+                    "configured_mode": "qobuz-reference",
+                    "transition": {
+                        "request_id": "pre-effect-resume-0001",
+                        "from_mode": "qobuz-reference",
+                        "target_mode": "desktop-listening",
+                        "state": "transitioning",
+                        "effect_started": False,
+                        "reason": None,
+                    },
+                    "last_request": None,
+                    "updated_at": "2026-08-23T12:00:00+00:00",
+                },
+            )
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            live = {"doctor": operating_mode_doctor(sink="spdif")}
+
+            def apply_desktop():
+                live["doctor"] = operating_mode_doctor()
+                return {"status": "applied", "mutated": True}
+
+            with (
+                mock.patch.object(
+                    controller,
+                    "_doctor",
+                    side_effect=lambda: ("ok", live["doctor"], None),
+                ),
+                mock.patch.object(
+                    controller,
+                    "_apply_desktop_operating_mode",
+                    side_effect=apply_desktop,
+                ) as apply,
+            ):
+                result = controller.perform_operating_mode_transition(
+                    {
+                        "request_id": "pre-effect-resume-0001",
+                        "target_mode": "desktop-listening",
+                    }
+                )
+                persisted = MODULE.read_operating_mode_configuration(path)
+
+        apply.assert_called_once_with()
+        self.assertEqual(result["status"], "ready")
+        self.assertFalse(result["reconciled_after_uncertain_effect"])
+        self.assertTrue(result["audio_mutated"])
+        self.assertIsNone(persisted["transition"])
+        self.assertEqual(persisted["configured_mode"], "desktop-listening")
+
     def test_unclear_mutation_outcome_fails_closed_and_retry_does_not_reapply(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "mode.json"
@@ -2430,17 +2486,58 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
 
-    def test_operating_mode_ui_keeps_uncertain_request_id_and_blocks_other_target(self):
+    def test_operating_mode_ui_keeps_only_uncertain_request_ids(self):
         javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         self.assertIn(
             "state.operatingModeRetry?.targetMode === targetMode",
             javascript,
         )
         self.assertIn("return state.operatingModeRetry.requestId", javascript)
+        self.assertIn('"operating_mode_transition_uncertain"', javascript)
+        self.assertIn('"operating_mode_postcondition_failed"', javascript)
+        self.assertIn("function operatingModeFailureNeedsSameRequest(error)", javascript)
+        self.assertIn("if (!keepRetry) state.operatingModeRetry = null", javascript)
         self.assertIn("const retryForOtherMode =", javascript)
         self.assertIn(
             "state.operatingModeActionPending ||\n    retryForOtherMode ||",
             javascript,
+        )
+
+    def test_operating_mode_ui_retry_classifier_executes_ambiguity_boundary(self):
+        javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        start = javascript.index("const OPERATING_MODE_RETRY_ERROR_CODES")
+        end = javascript.index("async function runOperatingModeTransition", start)
+        helper = javascript[start:end]
+        harness = helper + (
+            "\nfunction coded(code) {\n"
+            "  const error = new Error(\"test\");\n"
+            "  error.code = code;\n"
+            "  return operatingModeFailureNeedsSameRequest(error);\n"
+            "}\n"
+            "process.stdout.write(JSON.stringify({\n"
+            "  uncoded: operatingModeFailureNeedsSameRequest(new Error(\"network\")),\n"
+            "  uncertain: coded(\"operating_mode_transition_uncertain\"),\n"
+            "  postcondition: coded(\"operating_mode_postcondition_failed\"),\n"
+            "  precondition: coded(\"desktop_transition_precondition_blocked\"),\n"
+            "  workload: coded(\"operating_mode_workload_active\"),\n"
+            "}));\n"
+        )
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "uncoded": True,
+                "uncertain": True,
+                "postcondition": True,
+                "precondition": False,
+                "workload": False,
+            },
         )
 
     def test_recording_shortcut_opens_authoritative_action_workspace(self):

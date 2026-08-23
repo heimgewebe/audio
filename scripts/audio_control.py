@@ -3245,27 +3245,35 @@ class AudioControl:
                             "Eine unklare frühere Modustransition muss mit derselben Request-ID abgeglichen werden.",
                         )
                     doctor_status, doctor, doctor_error = self._doctor()
-                    if not operating_mode_target_ready(
+                    target_ready = operating_mode_target_ready(
                         target_mode, doctor_status, doctor
-                    ):
-                        raise OperatingModeError(
-                            "operating_mode_transition_uncertain",
-                            doctor_error
-                            or "Der frühere Mutationsausgang bleibt unklar; es wird keine Wirkung wiederholt.",
+                    )
+                    if not target_ready:
+                        if transition["effect_started"]:
+                            raise OperatingModeError(
+                                "operating_mode_transition_uncertain",
+                                doctor_error
+                                or "Der frühere Mutationsausgang bleibt unklar; es wird keine Wirkung wiederholt.",
+                            )
+                        # The intent was persisted before any effect could start. Clearing it
+                        # is safe and lets the same request resume normal precondition checks.
+                        configuration = self._clear_operating_mode_transition(
+                            configuration
                         )
-                    configuration, receipt = self._store_operating_mode_success(
-                        configuration,
-                        request_id=request_id,
-                        target_mode=target_mode,
-                        audio_mutated=None if transition["effect_started"] else False,
-                    )
-                    return self._operating_mode_result(
-                        request_id=request_id,
-                        target_mode=target_mode,
-                        receipt=receipt,
-                        idempotent=True,
-                        reconciled_after_uncertain_effect=True,
-                    )
+                    else:
+                        configuration, receipt = self._store_operating_mode_success(
+                            configuration,
+                            request_id=request_id,
+                            target_mode=target_mode,
+                            audio_mutated=None if transition["effect_started"] else False,
+                        )
+                        return self._operating_mode_result(
+                            request_id=request_id,
+                            target_mode=target_mode,
+                            receipt=receipt,
+                            idempotent=True,
+                            reconciled_after_uncertain_effect=transition["effect_started"],
+                        )
 
                 previous = configuration.get("last_request")
                 if isinstance(previous, dict) and previous["request_id"] == request_id:

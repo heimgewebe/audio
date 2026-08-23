@@ -1157,6 +1157,17 @@ function operatingModeRequestId(targetMode) {
   return `mode-${randomPart}`;
 }
 
+const OPERATING_MODE_RETRY_ERROR_CODES = new Set([
+  "operating_mode_transition_uncertain",
+  "operating_mode_postcondition_failed",
+]);
+
+function operatingModeFailureNeedsSameRequest(error) {
+  if (!(error instanceof Error)) return true;
+  if (typeof error.code !== "string" || !error.code) return true;
+  return OPERATING_MODE_RETRY_ERROR_CODES.has(error.code);
+}
+
 async function runOperatingModeTransition(targetMode) {
   if (!localOperatingModeActionsAllowed() || state.operatingModeActionPending) return;
   const requestId = operatingModeRequestId(targetMode);
@@ -1193,9 +1204,11 @@ async function runOperatingModeTransition(targetMode) {
     );
     renderAll();
   } catch (error) {
+    const keepRetry = operatingModeFailureNeedsSameRequest(error);
+    if (!keepRetry) state.operatingModeRetry = null;
     showNotice(
       error instanceof Error
-        ? `${error.message} Erneut versuchen gleicht dieselbe Request-ID ab.`
+        ? `${error.message}${keepRetry ? " Erneut versuchen gleicht dieselbe Request-ID ab." : ""}`
         : "Moduswechsel blieb unklar.",
     );
   } finally {
