@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import itertools
 import os
@@ -30,6 +31,7 @@ READ_ONLY_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("pactl", "info"),
     ("pactl", "list", "short", "sinks"),
     ("pactl", "list", "short", "sources"),
+    ("pactl", "--format=json", "list", "sources"),
     ("aconnect", "-l"),
     ("amidi", "-l"),
     ("systemctl", "is-active", "bluetooth"),
@@ -48,6 +50,23 @@ QBZD_STATUS_TIMEOUT_SECONDS = 1.5
 QBZD_MOTU_DEVICE = "front:CARD=M2,DEV=0"
 MAX_ALSA_CARD_SCAN = 32  # Bound /proc/asound enumeration; real card counts are far lower.
 MAX_ALSA_TEXT_BYTES = 4096  # ALSA proc control files are tiny; cap malformed/unbounded input.
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+MOTU_CAPTURE_IDENTITY_PATH = ROOT / "scripts" / "motu_capture_identity.py"
+
+
+def load_motu_capture_identity():
+    spec = importlib.util.spec_from_file_location(
+        "motu_capture_identity_for_audio_doctor", MOTU_CAPTURE_IDENTITY_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("MOTU capture identity helper cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+MOTU_CAPTURE_IDENTITY = load_motu_capture_identity()
 
 SERIAL_PATTERNS = (
     re.compile(r"usb-[^\s]+", re.IGNORECASE),
@@ -843,6 +862,87 @@ def classify_qbzd_rate_proof_state(
     return "verified-current-track"
 
 
+def classify_recorder_capture_source(result: CommandResult) -> dict[str, object]:
+    """Classify the exact recorder-bound MOTU source without exposing raw identity."""
+    if (
+        result.error is not None
+        or result.returncode != 0
+        or result.stdout_truncated
+        or result.stderr_truncated
+    ):
+        return {
+            "ready": False,
+            "status": "query-unavailable",
+            "reason": "recorder-source-query-incomplete",
+            "match_count": 0,
+        }
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        payload = None
+    if not isinstance(payload, list):
+        return {
+            "ready": False,
+            "status": "invalid",
+            "reason": "recorder-source-json-invalid",
+            "match_count": 0,
+        }
+
+    matches: list[dict[str, object]] = []
+    identity_invalid = False
+    for source in payload:
+        if not isinstance(source, dict):
+            identity_invalid = True
+            continue
+        try:
+            identity = MOTU_CAPTURE_IDENTITY.source_identity(source)
+        except ValueError:
+            identity_invalid = True
+            continue
+        if identity is not None:
+            matches.append(identity)
+
+    if identity_invalid:
+        return {
+            "ready": False,
+            "status": "invalid",
+            "reason": "recorder-source-identity-invalid",
+            "match_count": len(matches),
+        }
+    if len(matches) == 1:
+        return {
+            "ready": True,
+            "status": "ready",
+            "reason": None,
+            "match_count": 1,
+            "identity_sha256": matches[0]["fingerprint"],
+        }
+    if len(matches) > 1:
+        return {
+            "ready": False,
+            "status": "ambiguous",
+            "reason": "recorder-source-ambiguous",
+            "match_count": len(matches),
+        }
+    return {
+        "ready": False,
+        "status": "absent",
+        "reason": "recorder-source-absent",
+        "match_count": 0,
+    }
+
+
+def recorder_capture_warning_detail(state: dict[str, object]) -> str:
+    status = state.get("status")
+    if status == "ambiguous":
+        return "Multiple MOTU M2 recorder capture sources matched; recording remains fail-closed."
+    if status == "invalid":
+        return "The MOTU M2 recorder capture source observation violated the identity contract."
+    if status == "absent":
+        return "No exact MOTU M2 recorder capture source was observed."
+    return "The exact MOTU M2 recorder capture source could not be verified."
+
+
 def build_report(
     results: Iterable[CommandResult],
     eld_text: str = "",
@@ -865,6 +965,10 @@ def build_report(
     )
     sources = by_command.get(
         ("pactl", "list", "short", "sources"), CommandResult((), 127, "", "")
+    )
+    recorder_sources = by_command.get(
+        ("pactl", "--format=json", "list", "sources"),
+        CommandResult((), 127, "", ""),
     )
     aconnect = by_command.get(("aconnect", "-l"), CommandResult((), 127, "", ""))
     amidi = by_command.get(("amidi", "-l"), CommandResult((), 127, "", ""))
@@ -952,14 +1056,17 @@ def build_report(
         motu_rate=motu_rate,
     )
     track_native_proven = qbzd_rate_proof_state == "verified-current-track"
+    recorder_capture = classify_recorder_capture_source(recorder_sources)
 
     warnings: list[dict[str, str]] = []
-    if source != "motu-m2":
+    # Keep this warning code stable: audio_control and the UI classify it.
+    # Its authority is the recorder-bound source now, not PipeWire's default source.
+    if recorder_capture["ready"] is not True:
         warnings.append(
             {
                 "code": "voice-source-not-motu",
                 "severity": "high",
-                "detail": "Default capture source is not the MOTU M2 microphone input.",
+                "detail": recorder_capture_warning_detail(recorder_capture),
             }
         )
     configured_endpoints = {"default_sink": sink, "default_source": source}
@@ -1055,6 +1162,7 @@ def build_report(
                     "present": motu,
                     "alsa_audio": motu_alsa,
                     "pipewire_graph": motu_pipewire,
+                    "recorder_capture": recorder_capture,
                 },
                 "roland_fp_30x": {
                     "present": roland,
@@ -1110,7 +1218,7 @@ def build_report(
                 "physical_ready": None,
             },
             "voice_recording": {
-                "software_ready": motu and source == "motu-m2",
+                "software_ready": motu and recorder_capture["ready"] is True,
                 "physical_ready": None,
             },
             "piano_software_monitoring": {
