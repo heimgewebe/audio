@@ -655,10 +655,11 @@ class AudioControlRecordingTests(unittest.TestCase):
 
     def test_browser_exposes_typed_local_audio_actions_and_remote_bridge_is_sticky(self):
         javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-        self.assertEqual(javascript.count("/api/v1/actions/"), 3)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 4)
         self.assertIn('/api/v1/actions/recording', javascript)
         self.assertIn('/api/v1/actions/whale', javascript)
         self.assertIn('/api/v1/actions/dauersong', javascript)
+        self.assertIn('/api/v1/actions/operating-mode', javascript)
         self.assertNotIn('/bridge/v1/actions/dauersong', javascript)
         self.assertIn("state.remoteBridgeProjection = true", javascript)
         self.assertIn("state.remoteBridgeProjection !== true", javascript)

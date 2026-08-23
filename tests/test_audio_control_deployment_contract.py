@@ -58,6 +58,12 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
             {"AF_UNIX", "AF_INET"},
         )
 
+    def test_ui_mode_receipts_use_systemd_managed_private_state(self):
+        ui = UI_UNIT_PATH.read_text(encoding="utf-8")
+        self.assertIn("StateDirectory=audio-control-ui", ui)
+        self.assertIn("StateDirectoryMode=0700", ui)
+        self.assertIn("ProtectHome=read-only", ui)
+
     def test_level_observer_is_pipewire_only_and_coupled_to_the_ui_lifecycle(self):
         self.assertEqual(address_families(LEVEL_OBSERVER_UNIT_PATH), {"AF_UNIX"})
         observer = LEVEL_OBSERVER_UNIT_PATH.read_text(encoding="utf-8")

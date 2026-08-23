@@ -922,6 +922,38 @@ main {
   background: rgba(61, 91, 61, 0.2);
 }
 
+.status-pill.attention {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 46%, transparent);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+}
+
+.operating-mode-card[data-mode-state="ready"] {
+  border-color: color-mix(in srgb, var(--green) 34%, var(--line));
+}
+
+.operating-mode-card[data-mode-state="recovering"],
+.operating-mode-card[data-mode-state="attention"] {
+  border-color: color-mix(in srgb, var(--amber) 42%, var(--line));
+}
+
+.operating-mode-card[data-mode-state="blocked"] {
+  border-color: color-mix(in srgb, var(--red) 30%, var(--line));
+}
+
+.operating-mode-card.is-read-only {
+  opacity: 0.86;
+}
+
+.operating-mode-quality .track-native-proof {
+  color: var(--green);
+  letter-spacing: 0.035em;
+}
+
+.operating-mode-quality .mode-reason {
+  color: var(--amber);
+}
+
 .status-pill.unavailable {
   border-color: rgba(229, 130, 123, 0.3);
   color: #ffd5d1;

@@ -21,6 +21,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -37,6 +38,7 @@ WHALE_SCRIPT = ROOT / "scripts" / "whale_live.py"
 DAUERSONG_SCRIPT = ROOT / "scripts" / "dauersong_live.py"
 DOCTOR_SCRIPT = ROOT / "scripts" / "audio_doctor.py"
 PLANNER_SCRIPT = ROOT / "scripts" / "profile_planner.py"
+PROFILE_TRANSITION_SCRIPT = ROOT / "scripts" / "profile_transition.py"
 REPLAY_SCRIPT = ROOT / "scripts" / "audio_telemetry_replay.py"
 WHALE_LESSON_SCRIPT = ROOT / "scripts" / "whale_learning_lesson.py"
 LIVE_TELEMETRY_SCRIPT = ROOT / "scripts" / "audio_live_telemetry.py"
@@ -63,6 +65,9 @@ _LESSON_SPEC.loader.exec_module(WHALE_LESSON)
 _LIVE_TELEMETRY_MODULE: Any | None = None
 _LIVE_TELEMETRY_IMPORT_ERROR: BaseException | None = None
 _LIVE_TELEMETRY_IMPORT_LOCK = threading.Lock()
+_PROFILE_TRANSITION_MODULE: Any | None = None
+_PROFILE_TRANSITION_IMPORT_ERROR: BaseException | None = None
+_PROFILE_TRANSITION_IMPORT_LOCK = threading.Lock()
 
 
 def load_live_telemetry() -> Any:
@@ -106,6 +111,40 @@ class _LazyLiveTelemetry:
 
 LIVE_TELEMETRY = _LazyLiveTelemetry()
 
+
+def load_profile_transition() -> Any:
+    """Load the existing typed desktop transition only when an effect is requested."""
+
+    global _PROFILE_TRANSITION_MODULE, _PROFILE_TRANSITION_IMPORT_ERROR
+    if _PROFILE_TRANSITION_MODULE is not None:
+        return _PROFILE_TRANSITION_MODULE
+    if _PROFILE_TRANSITION_IMPORT_ERROR is not None:
+        raise ControlError(
+            "Desktop-Transition ist nicht verfügbar."
+        ) from _PROFILE_TRANSITION_IMPORT_ERROR
+    with _PROFILE_TRANSITION_IMPORT_LOCK:
+        if _PROFILE_TRANSITION_MODULE is not None:
+            return _PROFILE_TRANSITION_MODULE
+        spec = importlib.util.spec_from_file_location(
+            "audio_control_profile_transition", PROFILE_TRANSITION_SCRIPT
+        )
+        if spec is None or spec.loader is None:
+            error = RuntimeError("Profiltransition kann nicht geladen werden.")
+            _PROFILE_TRANSITION_IMPORT_ERROR = error
+            raise ControlError("Desktop-Transition ist nicht verfügbar.") from error
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException as error:
+            if isinstance(error, KeyboardInterrupt):
+                raise
+            sys.modules.pop(spec.name, None)
+            _PROFILE_TRANSITION_IMPORT_ERROR = error
+            raise ControlError("Desktop-Transition ist nicht verfügbar.") from error
+        _PROFILE_TRANSITION_MODULE = module
+        return module
+
 SPEC_BASE_REVISION = "81fab5c57a3609b8b931a2ee5251c4f576368298"
 API_VERSION = "v1"
 UNIT_NAME = "audio-control-ui-v1.service"
@@ -143,6 +182,47 @@ MAX_SUBPROCESS_OUTPUT_BYTES = 1_048_576
 MAX_CONCURRENT_REQUESTS = 12
 REQUEST_IO_TIMEOUT_SECONDS = 5.0
 MAX_RUNTIME_SECONDS = 21_600
+MAX_OPERATING_MODE_STATE_BYTES = 16_384
+_SYSTEMD_STATE_DIRECTORY = pathlib.Path(os.environ.get("STATE_DIRECTORY", ""))
+OPERATING_MODE_STATE_PATH = (
+    _SYSTEMD_STATE_DIRECTORY / "operating-mode-v1.json"
+    if _SYSTEMD_STATE_DIRECTORY.is_absolute()
+    else (
+        pathlib.Path(
+            os.environ.get(
+                "XDG_STATE_HOME", str(pathlib.Path.home() / ".local" / "state")
+            )
+        ).expanduser()
+        / "audio"
+        / "operating-mode-v1.json"
+    )
+)
+OPERATING_MODE_REQUEST_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{15,79}")
+OPERATING_MODE_STATES = frozenset(
+    {"ready", "transitioning", "attention", "blocked", "recovering"}
+)
+OPERATING_MODES = {
+    "desktop-listening": {
+        "label": "Desktop / Spotify / Browser",
+        "effect": "desktop-mixed-transition-v1",
+        "actionable": True,
+    },
+    "qobuz-reference": {
+        "label": "Qobuz High Quality",
+        "effect": "bind-existing-qbzd-qconnect-v1",
+        "actionable": True,
+    },
+    "recording": {
+        "label": "Aufnahme",
+        "effect": None,
+        "actionable": False,
+    },
+    "performance": {
+        "label": "Performance",
+        "effect": None,
+        "actionable": False,
+    },
+}
 STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -205,6 +285,14 @@ BUILD_DEFAULT_TELEMETRY = object()
 
 class ControlError(RuntimeError):
     """Expected service error with a safe user-facing message."""
+
+
+class OperatingModeError(ControlError):
+    """Typed operating-mode failure with a stable public error code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class ActionBusy(ControlError):
@@ -359,6 +447,447 @@ def require_list(value: Any, *, label: str) -> list[Any]:
     if not isinstance(value, list):
         raise ControlError(f"{label} ist keine JSON-Liste.")
     return value
+
+
+def default_operating_mode_configuration() -> dict[str, Any]:
+    """Return the declared default without writing state during GET or refresh."""
+
+    return {
+        "schema_version": 1,
+        "kind": "audio_operating_mode_configuration",
+        "configured_mode": "desktop-listening",
+        "transition": None,
+        "last_request": None,
+        "updated_at": None,
+        "source": "declared-default",
+    }
+
+
+def _validate_operating_mode_request_id(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or OPERATING_MODE_REQUEST_ID_RE.fullmatch(value) is None
+    ):
+        raise OperatingModeError(
+            "operating_mode_request_invalid",
+            "Die Modustransition benötigt eine gültige Request-ID.",
+        )
+    return value
+
+
+def _validate_operating_mode_transition(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "request_id",
+        "from_mode",
+        "target_mode",
+        "state",
+        "effect_started",
+        "reason",
+    }:
+        raise ControlError("Betriebsmoduszustand enthält eine ungültige Transition.")
+    request_id = _validate_operating_mode_request_id(value.get("request_id"))
+    if (
+        value.get("from_mode") not in OPERATING_MODES
+        or value.get("target_mode") not in OPERATING_MODES
+        or value.get("state") not in {"transitioning", "recovering"}
+        or not isinstance(value.get("effect_started"), bool)
+        or (
+            value.get("reason") is not None
+            and (
+                not isinstance(value.get("reason"), str)
+                or not value["reason"]
+                or len(value["reason"]) > 160
+            )
+        )
+    ):
+        raise ControlError("Betriebsmoduszustand enthält eine ungültige Transition.")
+    return {**value, "request_id": request_id}
+
+
+def _validate_operating_mode_receipt(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "request_id",
+        "target_mode",
+        "status",
+        "configuration_changed",
+        "audio_mutated",
+    }:
+        raise ControlError("Betriebsmoduszustand enthält einen ungültigen Request-Beleg.")
+    request_id = _validate_operating_mode_request_id(value.get("request_id"))
+    if (
+        value.get("target_mode") not in OPERATING_MODES
+        or value.get("status") != "ready"
+        or not isinstance(value.get("configuration_changed"), bool)
+        or (
+            value.get("audio_mutated") is not None
+            and not isinstance(value.get("audio_mutated"), bool)
+        )
+    ):
+        raise ControlError("Betriebsmoduszustand enthält einen ungültigen Request-Beleg.")
+    return {**value, "request_id": request_id}
+
+
+def validate_operating_mode_configuration(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "kind",
+        "configured_mode",
+        "transition",
+        "last_request",
+        "updated_at",
+    }:
+        raise ControlError("Betriebsmoduszustand verletzt den Zustandsvertrag.")
+    if (
+        value.get("schema_version") != 1
+        or value.get("kind") != "audio_operating_mode_configuration"
+        or value.get("configured_mode") not in OPERATING_MODES
+        or not isinstance(value.get("updated_at"), str)
+        or not value["updated_at"]
+        or len(value["updated_at"]) > 80
+    ):
+        raise ControlError("Betriebsmoduszustand verletzt den Zustandsvertrag.")
+    transition = _validate_operating_mode_transition(value.get("transition"))
+    receipt = _validate_operating_mode_receipt(value.get("last_request"))
+    if transition is not None and transition["from_mode"] != value["configured_mode"]:
+        raise ControlError("Betriebsmodus-Transition ist nicht an den Sollmodus gebunden.")
+    return {**value, "transition": transition, "last_request": receipt, "source": "persisted"}
+
+
+def read_operating_mode_configuration(path: pathlib.Path) -> dict[str, Any]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return default_operating_mode_configuration()
+    except OSError as error:
+        raise ControlError("Betriebsmoduszustand ist nicht lesbar.") from error
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size > MAX_OPERATING_MODE_STATE_BYTES
+        ):
+            raise ControlError("Betriebsmoduszustand ist nicht sicher gebunden.")
+        encoded = b""
+        while len(encoded) <= MAX_OPERATING_MODE_STATE_BYTES:
+            chunk = os.read(
+                descriptor, MAX_OPERATING_MODE_STATE_BYTES + 1 - len(encoded)
+            )
+            if not chunk:
+                break
+            encoded += chunk
+        if len(encoded) > MAX_OPERATING_MODE_STATE_BYTES:
+            raise ControlError("Betriebsmoduszustand überschreitet die Größenbegrenzung.")
+        value = json.loads(encoded.decode("utf-8"))
+    except ControlError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ControlError("Betriebsmoduszustand ist nicht lesbar.") from error
+    finally:
+        os.close(descriptor)
+    return validate_operating_mode_configuration(value)
+
+
+def write_operating_mode_configuration(
+    path: pathlib.Path, configuration: dict[str, Any]
+) -> dict[str, Any]:
+    payload = {
+        key: configuration[key]
+        for key in (
+            "schema_version",
+            "kind",
+            "configured_mode",
+            "transition",
+            "last_request",
+            "updated_at",
+        )
+    }
+    validate_operating_mode_configuration(payload)
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+    if len(encoded) > MAX_OPERATING_MODE_STATE_BYTES:
+        raise ControlError("Betriebsmoduszustand überschreitet die Größenbegrenzung.")
+    parent = path.parent
+    try:
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        parent_info = parent.lstat()
+        if (
+            stat.S_ISLNK(parent_info.st_mode)
+            or not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != os.getuid()
+        ):
+            raise ControlError("Betriebsmodusverzeichnis ist nicht sicher gebunden.")
+        parent.chmod(0o700)
+        if path.exists() or path.is_symlink():
+            existing = path.lstat()
+            if not stat.S_ISREG(existing.st_mode) or existing.st_uid != os.getuid():
+                raise ControlError("Betriebsmoduszustand ist nicht sicher gebunden.")
+        temporary: pathlib.Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=parent, prefix=".operating-mode-", delete=False
+            ) as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary = pathlib.Path(handle.name)
+            temporary.replace(path)
+            directory_fd = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+    except ControlError:
+        raise
+    except OSError as error:
+        raise ControlError("Betriebsmoduszustand konnte nicht sicher gespeichert werden.") from error
+    return {**payload, "source": "persisted"}
+
+
+def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
+    streaming = doctor.get("streaming_sources")
+    if not isinstance(streaming, dict):
+        streaming = {}
+    qobuz = streaming.get("qobuz")
+    if not isinstance(qobuz, dict):
+        qobuz = {}
+    qbzd = qobuz.get("qbzd")
+    if not isinstance(qbzd, dict):
+        qbzd = {}
+    qconnect = qbzd.get("qconnect")
+    if not isinstance(qconnect, dict):
+        qconnect = {}
+    playback = qobuz.get("motu_hardware_playback")
+    if not isinstance(playback, dict):
+        playback = {}
+    qconnect_state = qconnect.get("state")
+    current_qbzd_playback = (
+        playback.get("owner_class") == "qbzd"
+        and playback.get("pcm_state") == "RUNNING"
+        and playback.get("open") is True
+    )
+    reference_ready = (
+        qobuz.get("selected_reference_provider") == "qbzd-qconnect"
+        and qobuz.get("reference_provider_ready") is True
+        and qbzd.get("status") == "available"
+        and qconnect_state == "connected"
+        and qconnect.get("session_active") is True
+    )
+    track_native = (
+        reference_ready
+        and current_qbzd_playback
+        and qobuz.get("track_native_proven") is True
+    )
+    return {
+        "provider": qobuz.get("selected_reference_provider"),
+        "reference_ready": reference_ready,
+        "qbzd_status": qbzd.get("status"),
+        "qconnect_state": qconnect_state,
+        "qconnect_session_active": qconnect.get("session_active") is True,
+        "current_qbzd_playback": current_qbzd_playback,
+        "track_native_proven": track_native,
+        "rate_proof_state": qobuz.get("rate_proof_state", "blocked"),
+        "track_sample_rate_hz": playback.get("rate_hz") if track_native else None,
+    }
+
+
+def operating_mode_target_ready(
+    target_mode: str, doctor_status: str, doctor: dict[str, Any]
+) -> bool:
+    if doctor_status != "ok":
+        return False
+    hardware = doctor.get("hardware")
+    if not isinstance(hardware, dict) or hardware.get("motu_m2") is not True:
+        return False
+    qobuz = _qobuz_projection(doctor)
+    if target_mode == "qobuz-reference":
+        return qobuz["reference_ready"]
+    if target_mode == "desktop-listening":
+        graph = doctor.get("graph")
+        if not isinstance(graph, dict):
+            return False
+        return (
+            not qobuz["current_qbzd_playback"]
+            and graph.get("default_sink") == "motu-m2"
+            and graph.get("force_rate_hz") == 48_000
+            and graph.get("force_quantum_frames") == 1_024
+        )
+    return False
+
+
+def project_operating_modes(
+    configuration: dict[str, Any],
+    *,
+    doctor_status: str,
+    doctor: dict[str, Any],
+) -> dict[str, Any]:
+    """Project configured, observed, physical and executable truth orthogonally."""
+
+    hardware = doctor.get("hardware")
+    if not isinstance(hardware, dict):
+        hardware = {}
+    motu_present = hardware.get("motu_m2") is True if doctor_status == "ok" else None
+    graph = doctor.get("graph")
+    if not isinstance(graph, dict):
+        graph = {}
+    qobuz = _qobuz_projection(doctor)
+    if qobuz["current_qbzd_playback"]:
+        observed_mode = "qobuz-reference"
+        signal_state = "playing"
+        signal_path = ["Qobuz Connect", "QBZD / ALSA Direct", "MOTU M2"]
+    elif graph.get("default_sink") == "motu-m2" and doctor_status == "ok":
+        observed_mode = "desktop-listening"
+        signal_state = "prepared"
+        signal_path = ["Desktop / Spotify / Browser", "PipeWire gemischt", "MOTU M2"]
+    else:
+        observed_mode = None
+        signal_state = "unknown"
+        signal_path = []
+
+    desktop_ready = operating_mode_target_ready(
+        "desktop-listening", doctor_status, doctor
+    )
+    qobuz_ready = operating_mode_target_ready(
+        "qobuz-reference", doctor_status, doctor
+    )
+    if doctor_status != "ok":
+        desktop_state, desktop_reason = "blocked", "doctor-unavailable"
+        qobuz_state, qobuz_reason = "blocked", "doctor-unavailable"
+    elif motu_present is not True:
+        desktop_state, desktop_reason = "blocked", "motu-not-observed"
+        qobuz_state, qobuz_reason = "blocked", "motu-not-observed"
+    else:
+        desktop_state = "ready" if desktop_ready else "attention"
+        desktop_reason = (
+            None
+            if desktop_ready
+            else "qobuz-playback-running"
+            if qobuz["current_qbzd_playback"]
+            else "desktop-transition-required"
+        )
+        if qobuz_ready:
+            qobuz_state, qobuz_reason = "ready", None
+        elif qobuz["qconnect_state"] in {"retrying", "reconnecting"}:
+            qobuz_state, qobuz_reason = "recovering", "qconnect-retrying"
+        elif qobuz["qbzd_status"] in {"api-unavailable", "api-invalid", "not-observed"}:
+            qobuz_state, qobuz_reason = "attention", "qbzd-readback-unavailable"
+        else:
+            qobuz_state, qobuz_reason = "blocked", "qconnect-not-ready"
+
+    modes: list[dict[str, Any]] = [
+        {
+            "id": "desktop-listening",
+            **OPERATING_MODES["desktop-listening"],
+            "state": desktop_state,
+            "reason": desktop_reason,
+            "configured": configuration["configured_mode"] == "desktop-listening",
+            "quality": {
+                "path": "shared-pipewire-motu",
+                "sample_rate_hz": graph.get("force_rate_hz"),
+                "track_native_proven": False,
+            },
+        },
+        {
+            "id": "qobuz-reference",
+            **OPERATING_MODES["qobuz-reference"],
+            "state": qobuz_state,
+            "reason": qobuz_reason,
+            "configured": configuration["configured_mode"] == "qobuz-reference",
+            "quality": {
+                "path": "qbzd-alsa-direct-motu",
+                "sample_rate_hz": qobuz["track_sample_rate_hz"],
+                "track_native_proven": qobuz["track_native_proven"],
+                "rate_proof_state": qobuz["rate_proof_state"],
+            },
+            "qconnect": {
+                "state": qobuz["qconnect_state"],
+                "session_active": qobuz["qconnect_session_active"],
+            },
+        },
+    ]
+    modes.extend(
+        {
+            "id": mode_id,
+            **spec,
+            "state": "blocked",
+            "reason": "declared-later-mode",
+            "configured": configuration["configured_mode"] == mode_id,
+            "quality": None,
+        }
+        for mode_id, spec in OPERATING_MODES.items()
+        if mode_id in {"recording", "performance"}
+    )
+    mode_states = {mode["id"]: mode for mode in modes}
+    transition = configuration.get("transition")
+    if isinstance(transition, dict):
+        overall_state = transition["state"]
+    else:
+        overall_state = mode_states[configuration["configured_mode"]]["state"]
+    if overall_state not in OPERATING_MODE_STATES:
+        raise ControlError("Betriebsmodusprojektion enthält einen unbekannten Zustand.")
+    external = doctor.get("external_endpoints")
+    if not isinstance(external, dict):
+        external = {}
+    return {
+        "schema_version": 1,
+        "kind": "audio_operating_mode_projection",
+        "state": overall_state,
+        "configured": {
+            "mode": configuration["configured_mode"],
+            "source": configuration.get("source", "persisted"),
+            "transition": transition,
+        },
+        "observed": {
+            "mode": observed_mode,
+            "signal_state": signal_state,
+            "signal_path": signal_path,
+            "qobuz_current_playback": qobuz["current_qbzd_playback"],
+        },
+        "physical": {
+            "motu_m2": motu_present,
+            "authority": "doctor-current-hardware-observation",
+        },
+        "executable": {
+            "desktop-listening": {
+                "allowed": doctor_status == "ok"
+                and motu_present is True
+                and not qobuz["current_qbzd_playback"],
+                "authority": "desktop-mixed-transition-v1",
+            },
+            "qobuz-reference": {
+                "allowed": qobuz_ready,
+                "authority": "qbzd-qconnect-doctor-readback-v1",
+            },
+            "recording": {"allowed": False, "authority": "declared-later-mode"},
+            "performance": {"allowed": False, "authority": "declared-later-mode"},
+        },
+        "modes": modes,
+        "active_signal_path": {
+            "mode": observed_mode,
+            "state": signal_state,
+            "nodes": signal_path,
+        },
+        "read_only_outputs": {
+            "pioneer": external.get("pioneer_vsx_830_k", {}),
+            "bluetooth": external.get("transmitter_1mii_b03_pro", {}),
+        },
+        "truth_boundary": {
+            "track_native_proven": qobuz["track_native_proven"],
+            "track_sample_rate_hz": qobuz["track_sample_rate_hz"],
+            "connected_or_ready_is_track_native": False,
+        },
+    }
 
 
 def validate_doctor_report(report: dict[str, Any]) -> None:
@@ -1668,6 +2197,7 @@ class AudioControl:
         cache_seconds: float = DEFAULT_CACHE_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         telemetry: Any = BUILD_DEFAULT_TELEMETRY,
+        operating_mode_state_path: pathlib.Path = OPERATING_MODE_STATE_PATH,
     ) -> None:
         self.runner = runner or CommandRunner()
         self.action_token = action_token or secrets.token_urlsafe(32)
@@ -1675,6 +2205,7 @@ class AudioControl:
         self.port = port
         self.cache_seconds = cache_seconds
         self.clock = clock
+        self.operating_mode_state_path = operating_mode_state_path
         self._cache_lock = threading.Lock()
         self._truth_sequence = 0
         self._snapshot_lock = threading.Lock()
@@ -2260,6 +2791,404 @@ class AudioControl:
             self._action_lock.release()
 
 
+    def _operating_mode_configuration(self) -> dict[str, Any]:
+        return read_operating_mode_configuration(self.operating_mode_state_path)
+
+    def _store_operating_mode_transition(
+        self,
+        configuration: dict[str, Any],
+        *,
+        request_id: str,
+        target_mode: str,
+        state: str,
+        effect_started: bool,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        return write_operating_mode_configuration(
+            self.operating_mode_state_path,
+            {
+                "schema_version": 1,
+                "kind": "audio_operating_mode_configuration",
+                "configured_mode": configuration["configured_mode"],
+                "transition": {
+                    "request_id": request_id,
+                    "from_mode": configuration["configured_mode"],
+                    "target_mode": target_mode,
+                    "state": state,
+                    "effect_started": effect_started,
+                    "reason": reason,
+                },
+                "last_request": configuration.get("last_request"),
+                "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            },
+        )
+
+    def _store_operating_mode_success(
+        self,
+        configuration: dict[str, Any],
+        *,
+        request_id: str,
+        target_mode: str,
+        audio_mutated: bool | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        receipt = {
+            "request_id": request_id,
+            "target_mode": target_mode,
+            "status": "ready",
+            "configuration_changed": configuration["configured_mode"] != target_mode,
+            "audio_mutated": audio_mutated,
+        }
+        stored = write_operating_mode_configuration(
+            self.operating_mode_state_path,
+            {
+                "schema_version": 1,
+                "kind": "audio_operating_mode_configuration",
+                "configured_mode": target_mode,
+                "transition": None,
+                "last_request": receipt,
+                "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            },
+        )
+        return stored, receipt
+
+    def _clear_operating_mode_transition(
+        self, configuration: dict[str, Any]
+    ) -> dict[str, Any]:
+        return write_operating_mode_configuration(
+            self.operating_mode_state_path,
+            {
+                "schema_version": 1,
+                "kind": "audio_operating_mode_configuration",
+                "configured_mode": configuration["configured_mode"],
+                "transition": None,
+                "last_request": configuration.get("last_request"),
+                "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            },
+        )
+
+    def _apply_desktop_operating_mode(self) -> dict[str, Any]:
+        """Delegate the only routing effect to desktop-mixed-transition-v1."""
+
+        try:
+            transition = load_profile_transition()
+        except ControlError as error:
+            raise OperatingModeError(
+                "desktop_transition_precondition_blocked",
+                "Desktop-Transition ist vor jeder Wirkung nicht verfügbar: "
+                + str(error),
+            ) from error
+        try:
+            plan = transition.build_plan(
+                "desktop-mixed",
+                transition.PLANNER.PHYSICAL.DEFAULT_STATE,
+                transition.PLANNER.LABORATORY.DEFAULT_STATE,
+            )
+        except transition.TransitionError as error:
+            raise OperatingModeError(
+                "desktop_transition_precondition_blocked",
+                "Desktop-Pfad wurde vor jeder Wirkung von der bestehenden "
+                "Profiltransition blockiert: " + error.detail,
+            ) from error
+        try:
+            return transition.apply_plan(
+                "desktop-mixed",
+                plan["plan_sha256"],
+                transition.PLANNER.PHYSICAL.DEFAULT_STATE,
+                transition.PLANNER.LABORATORY.DEFAULT_STATE,
+                self.operating_mode_state_path.parent / "profile-transitions-v1",
+            )
+        except transition.TransitionError as error:
+            raise OperatingModeError(
+                "desktop_transition_blocked",
+                "Desktop-Pfad wurde von der bestehenden Profiltransition blockiert: "
+                + error.detail,
+            ) from error
+
+    def _verify_operating_mode_workloads_idle(self) -> None:
+        recording_status, recording, recording_error = self._recording_probe()
+        whale_status, whale, whale_error = self._whale_status()
+        dauersong_status, dauersong, dauersong_error = self._dauersong_status()
+        if recording_status != "ok":
+            raise OperatingModeError(
+                "operating_mode_authority_unavailable",
+                recording_error or "Recorderzustand ist vor der Modustransition nicht lesbar.",
+            )
+        session = recording.get("session")
+        if isinstance(session, dict) and (
+            session.get("active") is True or session.get("recovery_required") is True
+        ):
+            raise OperatingModeError(
+                "operating_mode_workload_active",
+                "Eine aktive oder zu bergende Aufnahme blockiert die Hörmodustransition.",
+            )
+        if whale_status != "ok":
+            raise OperatingModeError(
+                "operating_mode_authority_unavailable",
+                whale_error or "Buckelwalzustand ist vor der Modustransition nicht lesbar.",
+            )
+        if whale.get("active") is True:
+            raise OperatingModeError(
+                "operating_mode_workload_active",
+                "Die aktive Buckelwalstimme blockiert die Hörmodustransition.",
+            )
+        if dauersong_status != "ok":
+            raise OperatingModeError(
+                "operating_mode_authority_unavailable",
+                dauersong_error or "Dauersongzustand ist vor der Modustransition nicht lesbar.",
+            )
+        if dauersong.get("active") is True:
+            raise OperatingModeError(
+                "operating_mode_workload_active",
+                "Der aktive Dauersong blockiert die Hörmodustransition.",
+            )
+
+    def _operating_mode_result(
+        self,
+        *,
+        request_id: str,
+        target_mode: str,
+        receipt: dict[str, Any],
+        idempotent: bool,
+        reconciled_after_uncertain_effect: bool,
+    ) -> dict[str, Any]:
+        snapshot = self._readback_after_mutation()
+        mode = snapshot.get("operating_mode")
+        if (
+            not isinstance(mode, dict)
+            or mode.get("configured", {}).get("mode") != target_mode
+            or mode.get("state") != "ready"
+        ):
+            raise OperatingModeError(
+                "operating_mode_postcondition_failed",
+                "Der Zielmodus wurde nicht durch den abschließenden System-Readback bestätigt.",
+            )
+        return {
+            "schema_version": 1,
+            "kind": "audio_operating_mode_transition_result",
+            "request_id": request_id,
+            "target_mode": target_mode,
+            "status": "ready",
+            "idempotent": idempotent,
+            "configuration_changed": receipt["configuration_changed"],
+            "audio_mutated": receipt["audio_mutated"],
+            "reconciled_after_uncertain_effect": reconciled_after_uncertain_effect,
+            "operating_mode": mode,
+            "snapshot": snapshot,
+        }
+
+    def perform_operating_mode_transition(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if set(payload) != {"request_id", "target_mode"}:
+            raise OperatingModeError(
+                "operating_mode_request_invalid",
+                "Die Modustransition benötigt genau request_id und target_mode.",
+            )
+        request_id = _validate_operating_mode_request_id(payload.get("request_id"))
+        target_mode = payload.get("target_mode")
+        if target_mode not in OPERATING_MODES:
+            raise OperatingModeError(
+                "operating_mode_request_invalid", "Unbekannter Betriebsmodus."
+            )
+        if OPERATING_MODES[target_mode]["actionable"] is not True:
+            raise OperatingModeError(
+                "operating_mode_not_executable",
+                "Dieser Betriebsmodus ist erst deklariert und hat noch keine Wirkung.",
+            )
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere Audioaktion läuft bereits.")
+        try:
+            if not self._snapshot_lock.acquire(blocking=False):
+                raise ActionBusy(
+                    "Eine Zustandsabfrage verhindert den sicheren Modus-Readback."
+                )
+            try:
+                self.invalidate()
+                configuration = self._operating_mode_configuration()
+                transition = configuration.get("transition")
+                if isinstance(transition, dict):
+                    if (
+                        transition["request_id"] != request_id
+                        or transition["target_mode"] != target_mode
+                    ):
+                        raise OperatingModeError(
+                            "operating_mode_recovery_required",
+                            "Eine unklare frühere Modustransition muss mit derselben Request-ID abgeglichen werden.",
+                        )
+                    doctor_status, doctor, doctor_error = self._doctor()
+                    if not operating_mode_target_ready(
+                        target_mode, doctor_status, doctor
+                    ):
+                        raise OperatingModeError(
+                            "operating_mode_transition_uncertain",
+                            doctor_error
+                            or "Der frühere Mutationsausgang bleibt unklar; es wird keine Wirkung wiederholt.",
+                        )
+                    configuration, receipt = self._store_operating_mode_success(
+                        configuration,
+                        request_id=request_id,
+                        target_mode=target_mode,
+                        audio_mutated=None if transition["effect_started"] else False,
+                    )
+                    return self._operating_mode_result(
+                        request_id=request_id,
+                        target_mode=target_mode,
+                        receipt=receipt,
+                        idempotent=True,
+                        reconciled_after_uncertain_effect=True,
+                    )
+
+                previous = configuration.get("last_request")
+                if isinstance(previous, dict) and previous["request_id"] == request_id:
+                    if previous["target_mode"] != target_mode:
+                        raise OperatingModeError(
+                            "operating_mode_request_conflict",
+                            "Die Request-ID wurde bereits für einen anderen Zielmodus verwendet.",
+                        )
+                    doctor_status, doctor, doctor_error = self._doctor()
+                    if not operating_mode_target_ready(
+                        target_mode, doctor_status, doctor
+                    ):
+                        raise OperatingModeError(
+                            "operating_mode_postcondition_failed",
+                            doctor_error
+                            or "Der frühere Modusbeleg ist nicht mehr aktuell; es wird keine Wirkung wiederholt.",
+                        )
+                    return self._operating_mode_result(
+                        request_id=request_id,
+                        target_mode=target_mode,
+                        receipt=previous,
+                        idempotent=True,
+                        reconciled_after_uncertain_effect=False,
+                    )
+
+                self._verify_operating_mode_workloads_idle()
+                doctor_status, doctor, doctor_error = self._doctor()
+                if doctor_status != "ok":
+                    raise OperatingModeError(
+                        "operating_mode_authority_unavailable",
+                        doctor_error or "Audio-Doctor ist vor der Modustransition nicht lesbar.",
+                    )
+                if doctor.get("hardware", {}).get("motu_m2") is not True:
+                    raise OperatingModeError(
+                        "operating_mode_physical_blocked",
+                        "Das MOTU M2 ist aktuell nicht physisch beobachtet; die Modustransition bleibt blockiert.",
+                    )
+                qobuz = _qobuz_projection(doctor)
+                if target_mode == "desktop-listening" and qobuz["current_qbzd_playback"]:
+                    raise OperatingModeError(
+                        "qobuz_playback_must_stop",
+                        "Qobuz spielt noch direkt über das MOTU. Wiedergabe zuerst in Qobuz stoppen; die Audiozentrale stoppt keinen fremden Player.",
+                    )
+                target_already_ready = operating_mode_target_ready(
+                    target_mode, doctor_status, doctor
+                )
+                if target_mode == "qobuz-reference" and not target_already_ready:
+                    reason = (
+                        "QConnect befindet sich im Wiederaufbau."
+                        if qobuz["qconnect_state"] in {"retrying", "reconnecting"}
+                        else "QBZD/QConnect bestätigt den Referenzpfad noch nicht als bereit."
+                    )
+                    raise OperatingModeError("qobuz_reference_not_ready", reason)
+
+                if target_already_ready:
+                    configuration, receipt = self._store_operating_mode_success(
+                        configuration,
+                        request_id=request_id,
+                        target_mode=target_mode,
+                        audio_mutated=False,
+                    )
+                    return self._operating_mode_result(
+                        request_id=request_id,
+                        target_mode=target_mode,
+                        receipt=receipt,
+                        idempotent=configuration["configured_mode"] == target_mode
+                        and receipt["configuration_changed"] is False,
+                        reconciled_after_uncertain_effect=False,
+                    )
+
+                configuration = self._store_operating_mode_transition(
+                    configuration,
+                    request_id=request_id,
+                    target_mode=target_mode,
+                    state="transitioning",
+                    effect_started=False,
+                    reason=None,
+                )
+                configuration = self._store_operating_mode_transition(
+                    configuration,
+                    request_id=request_id,
+                    target_mode=target_mode,
+                    state="transitioning",
+                    effect_started=True,
+                    reason=None,
+                )
+                effect_result: dict[str, Any] | None = None
+                effect_error: ControlError | None = None
+                try:
+                    effect_result = self._apply_desktop_operating_mode()
+                except ControlError as error:
+                    effect_error = error
+
+                after_status, after_doctor, after_error = self._doctor()
+                if operating_mode_target_ready(
+                    target_mode, after_status, after_doctor
+                ):
+                    mutated = (
+                        effect_result.get("mutated")
+                        if isinstance(effect_result, dict)
+                        and isinstance(effect_result.get("mutated"), bool)
+                        else None
+                    )
+                    configuration, receipt = self._store_operating_mode_success(
+                        configuration,
+                        request_id=request_id,
+                        target_mode=target_mode,
+                        audio_mutated=mutated,
+                    )
+                    return self._operating_mode_result(
+                        request_id=request_id,
+                        target_mode=target_mode,
+                        receipt=receipt,
+                        idempotent=False,
+                        reconciled_after_uncertain_effect=effect_error is not None,
+                    )
+
+                if (
+                    isinstance(effect_error, OperatingModeError)
+                    and effect_error.code
+                    == "desktop_transition_precondition_blocked"
+                ):
+                    self._clear_operating_mode_transition(configuration)
+                    self.invalidate()
+                    raise effect_error
+
+                reason = "authoritative-postcondition-missing"
+                self._store_operating_mode_transition(
+                    configuration,
+                    request_id=request_id,
+                    target_mode=target_mode,
+                    state="recovering",
+                    effect_started=True,
+                    reason=reason,
+                )
+                self.invalidate()
+                detail = (
+                    str(effect_error)
+                    if effect_error is not None
+                    else after_error
+                    or "Desktop-Readback bestätigt den Zielzustand nicht."
+                )
+                raise OperatingModeError(
+                    "operating_mode_transition_uncertain",
+                    detail + " Es wird keine Wirkung automatisch wiederholt.",
+                )
+            finally:
+                self._snapshot_lock.release()
+        finally:
+            self._action_lock.release()
+
+
     def _build_snapshot(self) -> dict[str, Any]:
         profiles = read_profiles()
         whale_contract = read_whale_contract()
@@ -2347,6 +3276,11 @@ class AudioControl:
         projected_profiles = project_profile_readiness(
             profiles, hardware=hardware, physical_unknowns=physical_unknowns
         )
+        operating_mode = project_operating_modes(
+            self._operating_mode_configuration(),
+            doctor_status=doctor_status,
+            doctor=doctor,
+        )
         profile_state_counts: dict[str, int] = {}
         for profile in projected_profiles:
             state = profile["dashboard_state"]
@@ -2389,6 +3323,8 @@ class AudioControl:
                 "runtime_high_warning_count": len(runtime_high_warnings),
                 "onsite_warning_count": len(onsite_high_warnings),
                 "physical_unknown_count": len(physical_unknowns),
+                "operating_mode_state": operating_mode["state"],
+                "configured_operating_mode": operating_mode["configured"]["mode"],
                 "active_whale": bool(whale.get("active")),
                 "active_dauersong": dauersong_active,
                 "dauersong_runtime_safe": dauersong_runtime_safe,
@@ -2404,6 +3340,7 @@ class AudioControl:
                 "profile_state_counts": profile_state_counts,
             },
             "presence": hardware,
+            "operating_mode": operating_mode,
             "doctor": {
                 "status": doctor_status,
                 "error": doctor_error,
@@ -2476,6 +3413,7 @@ class AudioControl:
                 "whale_learning_lesson": True,
                 "whale_control": True,
                 "profile_apply": False,
+                "operating_mode_transition": True,
                 "recording_control": recording_status == "ok",
                 "dauersong_control": dauersong_status == "ok",
             },
@@ -3497,6 +4435,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 f"/api/{API_VERSION}/actions/whale",
                 f"/api/{API_VERSION}/actions/dauersong",
                 f"/api/{API_VERSION}/actions/recording",
+                f"/api/{API_VERSION}/actions/operating-mode",
             }
             or parsed.query
         ):
@@ -3597,12 +4536,21 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 result = self.server.controller.perform_recording_action(payload)
             elif parsed.path == f"/api/{API_VERSION}/actions/dauersong":
                 result = self.server.controller.perform_dauersong_action(payload)
+            elif parsed.path == f"/api/{API_VERSION}/actions/operating-mode":
+                result = self.server.controller.perform_operating_mode_transition(payload)
             else:
                 result = self.server.controller.perform_whale_action(payload)
         except ActionBusy as error:
             self._send_error_json(
                 HTTPStatus.CONFLICT,
                 "audio_action_busy",
+                str(error),
+            )
+            return
+        except OperatingModeError as error:
+            self._send_error_json(
+                HTTPStatus.CONFLICT,
+                error.code,
                 str(error),
             )
             return
@@ -3737,6 +4685,10 @@ def start_managed_service(
         "--property",
         "ProtectHome=read-only",
         "--property",
+        "StateDirectory=audio-control-ui",
+        "--property",
+        "StateDirectoryMode=0700",
+        "--property",
         f"ReadWritePaths={RECORDING_OUTPUT_ROOT} {RECORDING_STATE_ROOT}",
         "--property",
         "ProtectControlGroups=yes",
@@ -3829,6 +4781,7 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
             WHALE_PROFILE,
             ROOT / "docs" / "plans" / "local-audio-control-ui-v1.md",
             ROOT / "docs" / "plans" / "audiozentrale-task-workspaces-v1.md",
+            ROOT / "docs" / "operating-modes-v1.md",
             ROOT / "inventory" / "buckelwal-learning-lesson.v1.json",
             ROOT / "schemas" / "buckelwal-learning-lesson.v1.schema.json",
             WHALE_LESSON_SCRIPT,
@@ -3877,6 +4830,7 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
     )
     required_action_endpoints = {
         "/api/v1/actions/dauersong",
+        "/api/v1/actions/operating-mode",
         "/api/v1/actions/recording",
         "/api/v1/actions/whale",
     }

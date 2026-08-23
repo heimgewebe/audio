@@ -495,6 +495,72 @@ class MismatchedSystemdRunner(SequenceSystemdRunner):
         return result
 
 
+def operating_mode_doctor(
+    *,
+    motu=True,
+    sink="motu-m2",
+    rate=48000,
+    quantum=1024,
+    qconnect="connected",
+    qconnect_session=True,
+    qbzd_status="available",
+    qobuz_ready=True,
+    playing=False,
+    track_native=False,
+):
+    return {
+        "warnings": [],
+        "physical_unknowns": [],
+        "hardware": {"motu_m2": motu, "roland_fp_30x": True},
+        "device_truth": {"desired": {"motu_m2": True, "roland_fp_30x": True}},
+        "graph": {
+            "default_sink": sink,
+            "default_source": "motu-m2",
+            "force_rate_hz": rate,
+            "force_quantum_frames": quantum,
+        },
+        "streaming_sources": {
+            "qobuz": {
+                "selected_reference_provider": "qbzd-qconnect" if qobuz_ready else None,
+                "reference_provider_ready": qobuz_ready,
+                "track_native_proven": track_native,
+                "rate_proof_state": (
+                    "verified-current-track"
+                    if track_native
+                    else "ready-awaiting-playback"
+                    if qobuz_ready
+                    else "blocked"
+                ),
+                "motu_hardware_playback": {
+                    "open": playing,
+                    "pcm_state": "RUNNING" if playing else "CLOSED",
+                    "owner_class": "qbzd" if playing else "unknown",
+                    "rate_hz": 96000 if playing else None,
+                },
+                "qbzd": {
+                    "status": qbzd_status,
+                    "qconnect": {
+                        "state": qconnect,
+                        "session_active": qconnect_session,
+                    },
+                },
+            }
+        },
+        "external_endpoints": {
+            "pioneer_vsx_830_k": {
+                "software_observed": False,
+                "physical_connection": None,
+            },
+            "transmitter_1mii_b03_pro": {
+                "software_observed": False,
+                "physical_connection": None,
+            },
+        },
+        "command_health": [],
+        "read_only_contract": True,
+    }
+
+
 class AudioControlTests(unittest.TestCase):
     def controller(self, runner=None):
         return MODULE.AudioControl(
@@ -578,6 +644,483 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(profiles["desktop-mixed"]["dashboard_state"], "plan-ready")
         self.assertEqual(profiles["voice-recording"]["dashboard_state"], "onsite")
         self.assertEqual(profiles["production"]["dashboard_state"], "planned")
+
+    def test_operating_mode_model_keeps_truth_axes_orthogonal(self):
+        configuration = MODULE.default_operating_mode_configuration()
+        doctor = operating_mode_doctor(qobuz_ready=True, playing=False, track_native=False)
+        projection = MODULE.project_operating_modes(
+            configuration, doctor_status="ok", doctor=doctor
+        )
+        self.assertEqual(projection["state"], "ready")
+        self.assertEqual(projection["configured"]["mode"], "desktop-listening")
+        self.assertEqual(projection["observed"]["mode"], "desktop-listening")
+        self.assertTrue(projection["physical"]["motu_m2"])
+        self.assertTrue(projection["executable"]["qobuz-reference"]["allowed"])
+        self.assertFalse(projection["truth_boundary"]["track_native_proven"])
+        self.assertIsNone(projection["truth_boundary"]["track_sample_rate_hz"])
+        self.assertEqual(
+            {mode["id"] for mode in projection["modes"]},
+            {"desktop-listening", "qobuz-reference", "recording", "performance"},
+        )
+
+    def test_persisted_transition_projects_explicit_transitioning_state(self):
+        configuration = {
+            "schema_version": 1,
+            "kind": "audio_operating_mode_configuration",
+            "configured_mode": "qobuz-reference",
+            "transition": {
+                "request_id": "transitioning-mode-0001",
+                "from_mode": "qobuz-reference",
+                "target_mode": "desktop-listening",
+                "state": "transitioning",
+                "effect_started": False,
+                "reason": None,
+            },
+            "last_request": None,
+            "updated_at": "2026-08-23T12:00:00+00:00",
+        }
+        projection = MODULE.project_operating_modes(
+            MODULE.validate_operating_mode_configuration(configuration),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(sink="spdif"),
+        )
+        self.assertEqual(projection["state"], "transitioning")
+        self.assertEqual(
+            projection["configured"]["transition"]["target_mode"],
+            "desktop-listening",
+        )
+
+    def test_operating_mode_receipt_is_private_and_rejects_symlink_paths(self):
+        configuration = {
+            "schema_version": 1,
+            "kind": "audio_operating_mode_configuration",
+            "configured_mode": "desktop-listening",
+            "transition": None,
+            "last_request": None,
+            "updated_at": "2026-08-23T12:00:00+00:00",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            path = root / "mode.json"
+            MODULE.write_operating_mode_configuration(path, configuration)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            target = root / "target.json"
+            target.write_text("unchanged", encoding="utf-8")
+            alias = root / "alias.json"
+            alias.symlink_to(target)
+            with self.assertRaises(MODULE.ControlError):
+                MODULE.read_operating_mode_configuration(alias)
+            with self.assertRaises(MODULE.ControlError):
+                MODULE.write_operating_mode_configuration(alias, configuration)
+            self.assertEqual(target.read_text(encoding="utf-8"), "unchanged")
+
+    def test_desktop_to_qobuz_binds_ready_qbzd_without_audio_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self.controller()
+            controller.operating_mode_state_path = pathlib.Path(directory) / "mode.json"
+            doctor = operating_mode_doctor(qobuz_ready=True)
+            with (
+                mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+                mock.patch.object(controller, "_apply_desktop_operating_mode") as apply,
+            ):
+                result = controller.perform_operating_mode_transition(
+                    {
+                        "request_id": "desktop-to-qobuz-0001",
+                        "target_mode": "qobuz-reference",
+                    }
+                )
+        apply.assert_not_called()
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(result["configuration_changed"])
+        self.assertFalse(result["audio_mutated"])
+        self.assertEqual(
+            result["snapshot"]["operating_mode"]["configured"]["mode"],
+            "qobuz-reference",
+        )
+        self.assertFalse(
+            result["snapshot"]["operating_mode"]["truth_boundary"][
+                "track_native_proven"
+            ]
+        )
+
+    def test_qobuz_to_desktop_uses_existing_profile_transition_and_readback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            MODULE.write_operating_mode_configuration(
+                path,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_operating_mode_configuration",
+                    "configured_mode": "qobuz-reference",
+                    "transition": None,
+                    "last_request": None,
+                    "updated_at": "2026-08-23T12:00:00+00:00",
+                },
+            )
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            live = {"doctor": operating_mode_doctor(sink="spdif", qobuz_ready=True)}
+
+            def apply_desktop():
+                live["doctor"] = operating_mode_doctor(qobuz_ready=True)
+                return {"status": "applied", "mutated": True}
+
+            with (
+                mock.patch.object(
+                    controller,
+                    "_doctor",
+                    side_effect=lambda: ("ok", live["doctor"], None),
+                ),
+                mock.patch.object(
+                    controller,
+                    "_apply_desktop_operating_mode",
+                    side_effect=apply_desktop,
+                ) as apply,
+            ):
+                result = controller.perform_operating_mode_transition(
+                    {
+                        "request_id": "qobuz-to-desktop-0001",
+                        "target_mode": "desktop-listening",
+                    }
+                )
+        apply.assert_called_once_with()
+        self.assertTrue(result["audio_mutated"])
+        self.assertEqual(result["operating_mode"]["state"], "ready")
+        self.assertEqual(
+            result["operating_mode"]["configured"]["mode"], "desktop-listening"
+        )
+
+    def test_desktop_transition_journal_uses_the_managed_mode_state_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self.controller()
+            state_path = pathlib.Path(directory) / "operating-mode-v1.json"
+            controller.operating_mode_state_path = state_path
+            transition = mock.Mock()
+            transition.TransitionError = RuntimeError
+            transition.PLANNER.PHYSICAL.DEFAULT_STATE = pathlib.Path("physical.json")
+            transition.PLANNER.LABORATORY.DEFAULT_STATE = pathlib.Path("gates.json")
+            transition.build_plan.return_value = {"plan_sha256": "a" * 64}
+            transition.apply_plan.return_value = {
+                "status": "applied",
+                "mutated": True,
+            }
+            with mock.patch.object(
+                MODULE, "load_profile_transition", return_value=transition
+            ):
+                result = controller._apply_desktop_operating_mode()
+
+        self.assertTrue(result["mutated"])
+        transition.apply_plan.assert_called_once_with(
+            "desktop-mixed",
+            "a" * 64,
+            pathlib.Path("physical.json"),
+            pathlib.Path("gates.json"),
+            state_path.parent / "profile-transitions-v1",
+        )
+
+    def test_missing_motu_blocks_mode_transition_before_any_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            doctor = operating_mode_doctor(motu=False, qobuz_ready=False)
+            with (
+                mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+                mock.patch.object(controller, "_apply_desktop_operating_mode") as apply,
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.OperatingModeError, "MOTU M2 ist aktuell nicht physisch"
+                ) as caught:
+                    controller.perform_operating_mode_transition(
+                        {
+                            "request_id": "missing-motu-mode-0001",
+                            "target_mode": "desktop-listening",
+                        }
+                    )
+        self.assertEqual(caught.exception.code, "operating_mode_physical_blocked")
+        apply.assert_not_called()
+        self.assertFalse(path.exists())
+
+    def test_running_qbzd_pcm_blocks_desktop_before_any_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            doctor = operating_mode_doctor(playing=True, track_native=True)
+            with (
+                mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+                mock.patch.object(controller, "_apply_desktop_operating_mode") as apply,
+            ):
+                with self.assertRaises(MODULE.OperatingModeError) as caught:
+                    controller.perform_operating_mode_transition(
+                        {
+                            "request_id": "qbzd-playing-mode-0001",
+                            "target_mode": "desktop-listening",
+                        }
+                    )
+        self.assertEqual(caught.exception.code, "qobuz_playback_must_stop")
+        apply.assert_not_called()
+        self.assertFalse(path.exists())
+
+    def test_active_recorder_blocks_mode_transition_before_doctor_or_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            active_recording = {
+                "session": {"active": True, "recovery_required": False}
+            }
+            with (
+                mock.patch.object(
+                    controller,
+                    "_recording_probe",
+                    return_value=("ok", active_recording, None),
+                ),
+                mock.patch.object(controller, "_doctor") as doctor,
+                mock.patch.object(controller, "_apply_desktop_operating_mode") as apply,
+            ):
+                with self.assertRaises(MODULE.OperatingModeError) as caught:
+                    controller.perform_operating_mode_transition(
+                        {
+                            "request_id": "active-recording-mode-0001",
+                            "target_mode": "qobuz-reference",
+                        }
+                    )
+        self.assertEqual(caught.exception.code, "operating_mode_workload_active")
+        doctor.assert_not_called()
+        apply.assert_not_called()
+        self.assertFalse(path.exists())
+
+    def test_qconnect_retrying_projects_recovering_and_blocks_qobuz_bind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            doctor = operating_mode_doctor(
+                qconnect="retrying",
+                qconnect_session=False,
+                qbzd_status="not-ready",
+                qobuz_ready=False,
+            )
+            projection = MODULE.project_operating_modes(
+                MODULE.default_operating_mode_configuration(),
+                doctor_status="ok",
+                doctor=doctor,
+            )
+            qobuz_mode = next(
+                mode for mode in projection["modes"] if mode["id"] == "qobuz-reference"
+            )
+            self.assertEqual(qobuz_mode["state"], "recovering")
+            self.assertEqual(qobuz_mode["reason"], "qconnect-retrying")
+            with mock.patch.object(
+                controller, "_doctor", return_value=("ok", doctor, None)
+            ):
+                with self.assertRaises(MODULE.OperatingModeError) as caught:
+                    controller.perform_operating_mode_transition(
+                        {
+                            "request_id": "qconnect-retrying-0001",
+                            "target_mode": "qobuz-reference",
+                        }
+                    )
+        self.assertEqual(caught.exception.code, "qobuz_reference_not_ready")
+        self.assertFalse(path.exists())
+
+    def test_qconnect_retrying_cannot_be_hidden_by_inconsistent_ready_flag(self):
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(
+                qconnect="retrying",
+                qconnect_session=False,
+                qbzd_status="not-ready",
+                qobuz_ready=True,
+            ),
+        )
+        qobuz_mode = next(
+            mode for mode in projection["modes"] if mode["id"] == "qobuz-reference"
+        )
+        self.assertEqual(qobuz_mode["state"], "recovering")
+        self.assertFalse(projection["executable"]["qobuz-reference"]["allowed"])
+        self.assertFalse(projection["truth_boundary"]["track_native_proven"])
+
+    def test_response_loss_is_reconciled_by_authoritative_desktop_readback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            MODULE.write_operating_mode_configuration(
+                path,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_operating_mode_configuration",
+                    "configured_mode": "qobuz-reference",
+                    "transition": None,
+                    "last_request": None,
+                    "updated_at": "2026-08-23T12:00:00+00:00",
+                },
+            )
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            live = {"doctor": operating_mode_doctor(sink="spdif")}
+
+            def lost_response():
+                live["doctor"] = operating_mode_doctor()
+                raise MODULE.OperatingModeError(
+                    "desktop_transition_blocked", "Profilantwort ging verloren."
+                )
+
+            with (
+                mock.patch.object(
+                    controller,
+                    "_doctor",
+                    side_effect=lambda: ("ok", live["doctor"], None),
+                ),
+                mock.patch.object(
+                    controller,
+                    "_apply_desktop_operating_mode",
+                    side_effect=lost_response,
+                ) as apply,
+            ):
+                result = controller.perform_operating_mode_transition(
+                    {
+                        "request_id": "response-loss-mode-0001",
+                        "target_mode": "desktop-listening",
+                    }
+                )
+                repeated = controller.perform_operating_mode_transition(
+                    {
+                        "request_id": "response-loss-mode-0001",
+                        "target_mode": "desktop-listening",
+                    }
+                )
+        apply.assert_called_once_with()
+        self.assertTrue(result["reconciled_after_uncertain_effect"])
+        self.assertIsNone(result["audio_mutated"])
+        self.assertTrue(repeated["idempotent"])
+        self.assertFalse(repeated["reconciled_after_uncertain_effect"])
+
+    def test_unclear_mutation_outcome_fails_closed_and_retry_does_not_reapply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            MODULE.write_operating_mode_configuration(
+                path,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_operating_mode_configuration",
+                    "configured_mode": "qobuz-reference",
+                    "transition": None,
+                    "last_request": None,
+                    "updated_at": "2026-08-23T12:00:00+00:00",
+                },
+            )
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            doctor = operating_mode_doctor(sink="spdif")
+            with (
+                mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+                mock.patch.object(
+                    controller,
+                    "_apply_desktop_operating_mode",
+                    side_effect=MODULE.OperatingModeError(
+                        "desktop_transition_blocked", "Antwort unklar."
+                    ),
+                ) as apply,
+            ):
+                payload = {
+                    "request_id": "unclear-mode-outcome-0001",
+                    "target_mode": "desktop-listening",
+                }
+                with self.assertRaises(MODULE.OperatingModeError) as first:
+                    controller.perform_operating_mode_transition(payload)
+                with self.assertRaises(MODULE.OperatingModeError) as retry:
+                    controller.perform_operating_mode_transition(payload)
+                persisted = MODULE.read_operating_mode_configuration(path)
+        self.assertEqual(first.exception.code, "operating_mode_transition_uncertain")
+        self.assertEqual(retry.exception.code, "operating_mode_transition_uncertain")
+        apply.assert_called_once_with()
+        self.assertEqual(persisted["configured_mode"], "qobuz-reference")
+        self.assertEqual(persisted["transition"]["state"], "recovering")
+
+    def test_known_desktop_precondition_failure_clears_nonmutating_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            MODULE.write_operating_mode_configuration(
+                path,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_operating_mode_configuration",
+                    "configured_mode": "qobuz-reference",
+                    "transition": None,
+                    "last_request": None,
+                    "updated_at": "2026-08-23T12:00:00+00:00",
+                },
+            )
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            doctor = operating_mode_doctor(sink="spdif")
+            with (
+                mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+                mock.patch.object(
+                    controller,
+                    "_apply_desktop_operating_mode",
+                    side_effect=MODULE.OperatingModeError(
+                        "desktop_transition_precondition_blocked",
+                        "Plan war vor der Wirkung blockiert.",
+                    ),
+                ) as apply,
+            ):
+                with self.assertRaises(MODULE.OperatingModeError) as caught:
+                    controller.perform_operating_mode_transition(
+                        {
+                            "request_id": "precondition-mode-0001",
+                            "target_mode": "desktop-listening",
+                        }
+                    )
+                persisted = MODULE.read_operating_mode_configuration(path)
+
+        self.assertEqual(
+            caught.exception.code, "desktop_transition_precondition_blocked"
+        )
+        apply.assert_called_once_with()
+        self.assertEqual(persisted["configured_mode"], "qobuz-reference")
+        self.assertIsNone(persisted["transition"])
+
+    def test_current_track_native_requires_current_playback_proof(self):
+        connected = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(qobuz_ready=True, playing=False, track_native=True),
+        )
+        playing = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(qobuz_ready=True, playing=True, track_native=True),
+        )
+        self.assertFalse(connected["truth_boundary"]["track_native_proven"])
+        self.assertIsNone(connected["truth_boundary"]["track_sample_rate_hz"])
+        self.assertTrue(playing["truth_boundary"]["track_native_proven"])
+        self.assertEqual(playing["truth_boundary"]["track_sample_rate_hz"], 96000)
+
+    def test_operating_mode_bind_preserves_recorder_dauersong_whale_and_telemetry_authorities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self.controller()
+            controller.operating_mode_state_path = pathlib.Path(directory) / "mode.json"
+            doctor = operating_mode_doctor(qobuz_ready=True)
+            telemetry = controller.telemetry
+            with mock.patch.object(
+                controller, "_doctor", return_value=("ok", doctor, None)
+            ):
+                before = controller.snapshot(refresh=True)
+                result = controller.perform_operating_mode_transition(
+                    {
+                        "request_id": "authority-preserve-0001",
+                        "target_mode": "qobuz-reference",
+                    }
+                )
+        after = result["snapshot"]
+        self.assertEqual(after["recording"]["authority"], before["recording"]["authority"])
+        self.assertEqual(after["recording"]["actions"], before["recording"]["actions"])
+        self.assertEqual(after["dauersong"]["actions"], before["dauersong"]["actions"])
+        self.assertEqual(after["whale"]["actions"], before["whale"]["actions"])
+        self.assertIs(controller.telemetry, telemetry)
 
     def test_absent_desired_hardware_is_onsite_truth_not_runtime_failure(self):
         controller = self.controller()
@@ -1314,6 +1857,8 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("NoNewPrivileges=yes", command)
         self.assertIn("ProtectSystem=strict", command)
         self.assertIn("ProtectHome=read-only", command)
+        self.assertIn("StateDirectory=audio-control-ui", command)
+        self.assertIn("StateDirectoryMode=0700", command)
         self.assertIn(
             f"ReadWritePaths={MODULE.RECORDING_OUTPUT_ROOT} {MODULE.RECORDING_STATE_ROOT}",
             command,
@@ -1558,7 +2103,8 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("Backend beschäftigt", javascript)
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 3)
+        self.assertIn('fetchJson("/api/v1/actions/operating-mode"', javascript)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 4)
 
     def test_static_surface_prioritizes_compact_functional_controls(self):
         html = (ROOT / "ui" / "index.html").read_text()
@@ -1619,7 +2165,7 @@ class AudioControlTests(unittest.TestCase):
         profile_contracts = json.loads((ROOT / "profiles" / "audio-profile-contracts.v1.json").read_text())
         physical_facts = json.loads((ROOT / "inventory" / "physical-facts.v1.json").read_text())
 
-        self.assertIn("Wiedergabewege", html)
+        self.assertIn("Hörmodi", html)
         self.assertIn('listeningTopology(', javascript)
         self.assertIn('listeningPathCard("Kopfhörer · Referenz"', javascript)
         self.assertIn('listeningPathCard("Lautsprecher · Receiver"', javascript)
@@ -1632,7 +2178,10 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('"MOTU Monitor Out (MOTU-seitig TRS belegt) → Lake People → Focal"', javascript)
         self.assertIn('"MOTU RCA/Cinch (spiegelt Monitor 1/2) → Pioneer → ELAC/Canton"', javascript)
         self.assertIn('"zentraler Hörknoten"', javascript)
-        self.assertIn('Desktop und Mobilgeräte können als Quellen dienen', javascript)
+        self.assertIn(
+            'Zwischen gemeinsamem Desktop-Pfad und geprüftem Qobuz-Referenzpfad wechseln',
+            javascript,
+        )
         self.assertNotIn('homeSignalNode("Quelle", "Qobuz / Desktop"', javascript)
         self.assertNotIn('gemeinsamer Ausgangspunkt', javascript)
         self.assertNotIn('"PC-Ausgang",\n        "Heim-PC"', javascript)
@@ -1696,7 +2245,7 @@ class AudioControlTests(unittest.TestCase):
         for zone in ("home", "listening", "recording", "playing", "library", "system"):
             self.assertIn(f'data-zone="{zone}"', html)
         self.assertIn('class="workspace-zone profile-zone"', html)
-        self.assertIn('id="listening-profile-title">Hörprofile</h3>', html)
+        self.assertIn('id="listening-profile-title">Desktop oder Qobuz</h3>', html)
 
         self.assertIn('document.documentElement.dataset.activeRoute = route;', javascript)
         self.assertIn('byId("view-description").textContent = ROUTES[route].description;', javascript)
@@ -1802,6 +2351,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('document.querySelectorAll("audio.recording-player")', javascript)
         self.assertIn("!audio.paused && !audio.ended", javascript)
         self.assertIn("runWhaleAction", javascript)
+
         self.assertIn("function recordingLibraryActionsAllowed()", javascript)
         self.assertIn("localRecordingLibraryActionsAllowed()", javascript)
         self.assertIn("remoteRecordingLibraryActionsAllowed()", javascript)
@@ -1816,9 +2366,23 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn("WHALE_ACTION_TIMEOUT_MS", javascript)
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 3)
+        self.assertIn('fetchJson("/api/v1/actions/operating-mode"', javascript)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 4)
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
+
+    def test_operating_mode_ui_keeps_uncertain_request_id_and_blocks_other_target(self):
+        javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn(
+            "state.operatingModeRetry?.targetMode === targetMode",
+            javascript,
+        )
+        self.assertIn("return state.operatingModeRetry.requestId", javascript)
+        self.assertIn("const retryForOtherMode =", javascript)
+        self.assertIn(
+            "state.operatingModeActionPending ||\n    retryForOtherMode ||",
+            javascript,
+        )
 
     def test_recording_shortcut_opens_authoritative_action_workspace(self):
         html = (ROOT / "ui" / "index.html").read_text()
@@ -2194,25 +2758,29 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         home_end = javascript.index("function insightCard", home_start)
         home = javascript[home_start:home_end]
         self.assertIn("doctor.streaming_sources?.qobuz", home)
-        self.assertIn("snapshot.qobuz_recovery || {}", home)
-        self.assertIn("qobuzRecovery.required === true", home)
-        self.assertIn("qobuzRecovery.healthy === true", home)
-        self.assertIn("qobuz.track_native_proven === true", home)
+        self.assertIn("snapshot.operating_mode || {}", home)
+        self.assertIn(
+            "operatingMode.truth_boundary?.track_native_proven === true", home
+        )
         self.assertIn('qobuzProvider === "qbzd-qconnect"', home)
-        self.assertIn('const proofStateDetail = {', home)
-        self.assertIn('"hardware-preparing": "Qobuz Connect · Referenzpfad wird vorbereitet"', home)
-        self.assertIn('"ready-awaiting-playback": "Qobuz Connect · Referenzpfad bereit · Ratebeleg bei Wiedergabe"', home)
-        self.assertIn('"desktop-mixed-active": "Qobuz Connect · Desktop-Pfad aktiv · Ratebeleg bei Wiedergabe"', home)
-        self.assertIn('proofStateDetail[qobuz.rate_proof_state]', home)
+        self.assertIn(
+            '"Qobuz Connect bereit · aktueller Track-Native-Beleg offen"', home
+        )
+        self.assertIn('qobuzModeCard.state === "recovering"', home)
         self.assertIn("TRACK-NATIVE ✓", home)
-        self.assertIn("Rate-Mismatch", home)
-        self.assertIn("MOTU-Rate nicht lesbar", home)
-        self.assertIn("QBZD-Snapshot instabil", home)
         self.assertIn("toFixed(qobuzRate % 1000 === 0 ? 0 : 1)", home)
-        self.assertIn("Selbstheilung ${activeCountLabel}/2", home)
-        self.assertIn('" · Recovery prüfen"', home)
         self.assertIn('qobuzSourceTone = "attention"', home)
+        self.assertNotIn("proofStateDetail", home)
+        self.assertNotIn("snapshot.qobuz_recovery", home)
         self.assertNotIn("BITPERFEKT ✓", home)
+        diagnostics = javascript[
+            javascript.index("function renderDiagnostics()") : javascript.index(
+                "function renderSettings()"
+            )
+        ]
+        self.assertIn('"Qobuz PCM"', diagnostics)
+        self.assertIn('"Qobuz Recovery"', diagnostics)
+        self.assertIn("qobuz.rate_proof_state", diagnostics)
 
     def test_sound_library_requires_confirmed_active_whale_truth(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
@@ -2511,12 +3079,17 @@ process.stdout.write(JSON.stringify({{
 class AudioControlHTTPTests(unittest.TestCase):
     def setUp(self):
         self.runner = FakeRunner()
+        self.mode_state_directory = tempfile.TemporaryDirectory()
+        self.mode_state_path = (
+            pathlib.Path(self.mode_state_directory.name) / "operating-mode.json"
+        )
         self.controller = MODULE.AudioControl(
             runner=self.runner,
             action_token="http-token",
             host="127.0.0.1",
             port=0,
             cache_seconds=0,
+            operating_mode_state_path=self.mode_state_path,
         )
         try:
             self.server = MODULE.AudioControlHTTPServer(
@@ -2533,6 +3106,7 @@ class AudioControlHTTPTests(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
         self.server.server_close()
+        self.mode_state_directory.cleanup()
 
     def request(self, method, path, *, body=None, headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
@@ -2647,6 +3221,52 @@ class AudioControlHTTPTests(unittest.TestCase):
         report = json.loads(payload)
         self.assertTrue(report["read_only"])
         self.assertEqual(report["profile"], "desktop-mixed")
+
+    def test_get_head_and_refresh_never_mutate_operating_mode(self):
+        with mock.patch.object(
+            self.controller, "_apply_desktop_operating_mode"
+        ) as apply:
+            for method, path in (
+                ("GET", "/"),
+                ("HEAD", "/api/v1/snapshot"),
+                ("GET", "/api/v1/snapshot?refresh=1"),
+            ):
+                with self.subTest(method=method, path=path):
+                    status, _headers, _payload = self.request(method, path)
+                    self.assertEqual(status, 200)
+        apply.assert_not_called()
+        self.assertFalse(self.mode_state_path.exists())
+
+    def test_operating_mode_endpoint_is_typed_local_and_readback_bound(self):
+        doctor = operating_mode_doctor(qobuz_ready=True)
+        body = json.dumps(
+            {
+                "request_id": "http-mode-transition-0001",
+                "target_mode": "qobuz-reference",
+            }
+        )
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": f"http://127.0.0.1:{self.port}",
+            "X-Audio-Control-Token": "http-token",
+        }
+        with mock.patch.object(
+            self.controller, "_doctor", return_value=("ok", doctor, None)
+        ):
+            status, _headers, payload = self.request(
+                "POST", "/api/v1/actions/operating-mode", body=body, headers=headers
+            )
+            repeated_status, _headers, repeated_payload = self.request(
+                "POST", "/api/v1/actions/operating-mode", body=body, headers=headers
+            )
+        self.assertEqual(status, 200)
+        report = json.loads(payload)
+        self.assertEqual(report["kind"], "audio_operating_mode_transition_result")
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["target_mode"], "qobuz-reference")
+        self.assertFalse(report["audio_mutated"])
+        self.assertEqual(repeated_status, 200)
+        self.assertTrue(json.loads(repeated_payload)["idempotent"])
 
     def test_replay_endpoint_is_synthetic_read_only_and_rejects_query(self):
         before = list(self.runner.calls)
@@ -2818,14 +3438,20 @@ class AudioControlHTTPTests(unittest.TestCase):
 class AudioControlInMemoryHTTPTests(unittest.TestCase):
     def setUp(self):
         self.runner = FakeRunner()
+        self.mode_state_directory = tempfile.TemporaryDirectory()
+        self.mode_state_path = pathlib.Path(self.mode_state_directory.name) / "mode.json"
         self.controller = MODULE.AudioControl(
             runner=self.runner,
             action_token="memory-token",
             host="127.0.0.1",
             port=8765,
             cache_seconds=0,
+            operating_mode_state_path=self.mode_state_path,
         )
         self.server = InMemoryServer(self.controller)
+
+    def tearDown(self):
+        self.mode_state_directory.cleanup()
 
     def request(self, method, path, *, body=b"", headers=None):
         request_headers = {
@@ -2905,6 +3531,47 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         report = json.loads(payload)
         self.assertTrue(report["snapshot"]["whale"]["service"]["active"])
+
+    def test_refresh_is_read_only_and_operating_mode_post_is_explicit(self):
+        with mock.patch.object(
+            self.controller, "_apply_desktop_operating_mode"
+        ) as apply:
+            status, _headers, payload = self.request(
+                "GET", "/api/v1/snapshot?refresh=1"
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(payload)["operating_mode"]["configured"]["mode"],
+            "desktop-listening",
+        )
+        apply.assert_not_called()
+        self.assertFalse(self.mode_state_path.exists())
+
+        doctor = operating_mode_doctor(qobuz_ready=True)
+        body = json.dumps(
+            {
+                "request_id": "memory-mode-action-0001",
+                "target_mode": "qobuz-reference",
+            }
+        ).encode()
+        with mock.patch.object(
+            self.controller, "_doctor", return_value=("ok", doctor, None)
+        ):
+            status, _headers, payload = self.request(
+                "POST",
+                "/api/v1/actions/operating-mode",
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "http://127.0.0.1:8765",
+                    "X-Audio-Control-Token": "memory-token",
+                },
+            )
+        self.assertEqual(status, 200)
+        report = json.loads(payload)
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["target_mode"], "qobuz-reference")
+        self.assertTrue(self.mode_state_path.is_file())
 
     def test_action_rejects_bad_origin_token_and_content_type(self):
         body = json.dumps({"operation": "start", "mode": "realistic"}).encode()
