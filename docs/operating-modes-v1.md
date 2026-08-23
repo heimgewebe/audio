@@ -57,9 +57,23 @@ Player.
 
 Für Desktop wird zunächst der bestehende private, hashgebundene
 `desktop-mixed`-Plan erzeugt und anschließend über dessen typed Apply-Vertrag
-ausgeführt. Sein bestehendes privates Journal liegt dabei unter demselben von
-systemd verwalteten State-Verzeichnis wie der Modusbeleg; die Unit benötigt
-trotz `ProtectHome=read-only` keine neue Schreibfreigabe in das Home-Verzeichnis.
+ausgeführt. Sein kanonisches privates Journal bleibt mit CLI und UI gemeinsam
+unter `~/.local/state/audio/profile-transitions-v1/`; der Modusbeleg selbst liegt
+weiter im von systemd verwalteten `StateDirectory`. Die statische UI-Unit behält
+`ProtectHome=read-only` und erlaubt nur die drei exakten Schreibwurzeln für
+Recorder-Ausgabe, Recorder-State und dieses Transition-Journal. Ein
+releasegebundener `ExecStartPre` in `audio_control.py` legt diese Pfade vor dem
+Sandbox-Start sicher und ohne Audioeffekt an; abweichende Laufzeitpfade werden
+fail-closed abgewiesen.
+
+Die Transition-Laufzeitclosure aus Transition, Planner, Doctor, Physical-/Labor-
+Vertrag, Profilkatalog und den dafür gelesenen Inventaren ist für neue Releases
+hashgebunden. Beim ersten Upgrade bleibt ein alter Releasebeleg lesbar, aber
+Desktop-Routing ist so lange blockiert, bis der neue Deployer diese vollständige
+Closure revisionsgebunden in den Releasebeleg aufgenommen hat. Kandidaten dürfen
+vor Marker-Erzeugung nur im kanonischen privaten Deployment-Validation-Tree
+getestet werden; ein aktivierter markerloser Release bleibt blockiert.
+
 Der Betriebsmodus gilt erst als erfolgreich, wenn ein neuer
 Audio-Doctor-Readback MOTU als anwesend sowie `motu-m2`, 48 kHz und 1024 Frames
 als Desktopzustand bestätigt und kein QBZD-PCM mehr läuft. Für Qobuz ist ein

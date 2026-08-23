@@ -35,6 +35,17 @@ def address_families(path: pathlib.Path) -> set[str]:
     return set(lines[0].split("=", 1)[1].split())
 
 
+def read_write_paths(path: pathlib.Path) -> set[str]:
+    lines = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("ReadWritePaths=")
+    ]
+    if len(lines) != 1:
+        raise AssertionError(f"expected exactly one ReadWritePaths line in {path.name}")
+    return set(lines[0].split("=", 1)[1].split())
+
+
 class AudioControlDeploymentContractTests(unittest.TestCase):
     def test_index_distinguishes_revision_bound_first_hop_from_legacy(self):
         payload = INDEX_PATH.read_bytes()
@@ -63,6 +74,37 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         self.assertIn("StateDirectory=audio-control-ui", ui)
         self.assertIn("StateDirectoryMode=0700", ui)
         self.assertIn("ProtectHome=read-only", ui)
+
+    def test_ui_sandbox_grants_only_exact_runtime_write_roots(self):
+        self.assertEqual(
+            read_write_paths(UI_UNIT_PATH),
+            {
+                "%h/Music/Audio-Aufnahmen",
+                "%h/.local/state/audio/recordings-v1",
+                "%h/.local/state/audio/profile-transitions-v1",
+            },
+        )
+        self.assertNotIn("%h/.local/state", read_write_paths(UI_UNIT_PATH))
+        self.assertNotIn("%h/.local/state/audio", read_write_paths(UI_UNIT_PATH))
+
+    def test_ui_bootstraps_canonical_transition_root_before_sandboxed_start(self):
+        ui = UI_UNIT_PATH.read_text(encoding="utf-8")
+        prepare = (
+            "ExecStartPre=+/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/audio_control.py "
+            "prepare-runtime-state"
+        )
+        start = (
+            "ExecStart=/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/audio_control.py serve"
+        )
+        self.assertIn(prepare, ui)
+        self.assertIn(start, ui)
+        self.assertLess(ui.index(prepare), ui.index(start))
+        self.assertNotIn(
+            "%h/.local/state/audio/profile-transitions-v1",
+            read_write_paths(DEPLOY_UNIT_PATH),
+        )
 
     def test_level_observer_is_pipewire_only_and_coupled_to_the_ui_lifecycle(self):
         self.assertEqual(address_families(LEVEL_OBSERVER_UNIT_PATH), {"AF_UNIX"})

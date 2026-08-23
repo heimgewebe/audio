@@ -87,9 +87,13 @@ Dateirechten `0600`. Sie enthalten die exakten lokalen PipeWire-Namen und den pr
 - keine Freigabe weiterer Profile durch diesen Vertrag.
 
 Der Vertrag belegt weder subjektive Klangqualität noch Bitgenauigkeit,
-sicheren Hörpegel oder Aufnahmebereitschaft. Die Audiozentrale bietet deshalb
-noch keinen Profil-Apply-Knopf; die UI-Integration folgt erst nach separater
-Browser-, Recovery- und Laborabnahme.
+sicheren Hörpegel oder Aufnahmebereitschaft. Einen freien generischen
+Profil-Apply-Knopf bietet die Audiozentrale weiterhin nicht. Seit dem
+Operating-Mode-Vertrag v1 darf jedoch die explizite Hören-Aktion
+`desktop-listening` genau diesen bestehenden `desktop-mixed-transition-v1`-
+Vertrag aufrufen. Vor der Wirkung werden dessen Laufzeitclosure und privates
+Journal fail-closed gebunden; andere Profile erhalten dadurch keine neue
+Apply-Autorität.
 
 ## Aktueller Heim-PC-Readback
 

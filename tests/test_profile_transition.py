@@ -182,6 +182,27 @@ class FakeRunner:
 
 
 class ProfileTransitionTests(unittest.TestCase):
+    def test_state_root_preparation_rejects_symlink_truths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            target = root / "target"
+            target.mkdir()
+            state = root / "state"
+            state.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(MODULE.TransitionError) as context:
+                MODULE.ensure_state_root(state)
+            self.assertEqual(context.exception.code, "state-root-invalid")
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = pathlib.Path(directory) / "state"
+            state.mkdir()
+            target = pathlib.Path(directory) / "target"
+            target.mkdir()
+            (state / "operations").symlink_to(target, target_is_directory=True)
+            with self.assertRaises(MODULE.TransitionError) as context:
+                MODULE.ensure_state_root(state)
+            self.assertEqual(context.exception.code, "state-root-invalid")
+
     def paths(self, directory):
         root = pathlib.Path(directory)
         return (

@@ -140,6 +140,21 @@ REMOTE_BRIDGE_CRITICAL_RELEASE_FILES = (
     "systemd/user/audio-remote-bridge-v1.service",
 )
 REMOTE_BRIDGE_RELEASE_SENTINEL = "tests/test_audio_remote_bridge.py"
+PROFILE_TRANSITION_RELEASE_SENTINEL = (
+    "tests/test_audio_control_profile_transition_release.py"
+)
+PROFILE_TRANSITION_CRITICAL_RELEASE_FILES = (
+    "scripts/profile_transition.py",
+    "scripts/profile_planner.py",
+    "scripts/audio_doctor.py",
+    "scripts/physical_verification.py",
+    "scripts/laboratory_gate.py",
+    "profiles/audio-profiles.v1.json",
+    "inventory/physical-facts.v1.json",
+    "inventory/physical-verification.v1.json",
+    "inventory/laboratory-gates.v1.json",
+    PROFILE_TRANSITION_RELEASE_SENTINEL,
+)
 
 BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
@@ -882,6 +897,8 @@ def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
     if not (release / REMOTE_BRIDGE_RELEASE_SENTINEL).is_file():
         remote_bridge_paths = set(REMOTE_BRIDGE_CRITICAL_RELEASE_FILES)
         paths = [relative for relative in paths if relative not in remote_bridge_paths]
+    if (release / PROFILE_TRANSITION_RELEASE_SENTINEL).is_file():
+        paths.extend(PROFILE_TRANSITION_CRITICAL_RELEASE_FILES)
     if (release / LEVEL_OBSERVER_RELEASE_SENTINEL).is_file():
         paths.extend(LEVEL_OBSERVER_CRITICAL_RELEASE_FILES)
     if (release / QOBUZ_RECOVERY_RELEASE_SENTINEL).is_file():

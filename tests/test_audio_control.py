@@ -790,7 +790,7 @@ class AudioControlTests(unittest.TestCase):
             result["operating_mode"]["configured"]["mode"], "desktop-listening"
         )
 
-    def test_desktop_transition_journal_uses_the_managed_mode_state_directory(self):
+    def test_desktop_transition_journal_uses_the_canonical_transition_default(self):
         with tempfile.TemporaryDirectory() as directory:
             controller = self.controller()
             state_path = pathlib.Path(directory) / "operating-mode-v1.json"
@@ -815,7 +815,7 @@ class AudioControlTests(unittest.TestCase):
             "a" * 64,
             pathlib.Path("physical.json"),
             pathlib.Path("gates.json"),
-            state_path.parent / "profile-transitions-v1",
+            transition.DEFAULT_STATE_ROOT,
         )
 
     def test_missing_motu_blocks_mode_transition_before_any_effect(self):
@@ -1834,12 +1834,26 @@ class AudioControlTests(unittest.TestCase):
 
     def test_managed_start_has_runtime_and_resource_contract(self):
         runner = SequenceSystemdRunner()
-        report = MODULE.start_managed_service(
-            runner,
-            host="127.0.0.1",
-            port=8765,
-            runtime_seconds=3600,
-        )
+        transition_root = pathlib.Path.home() / ".local/state/audio/profile-transitions-v1"
+
+        def prepare_transition_state():
+            self.assertFalse(
+                any(call[0][0] == "systemd-run" for call in runner.calls)
+            )
+            return transition_root
+
+        with mock.patch.object(
+            MODULE,
+            "ensure_profile_transition_state_root",
+            side_effect=prepare_transition_state,
+        ) as prepare:
+            report = MODULE.start_managed_service(
+                runner,
+                host="127.0.0.1",
+                port=8765,
+                runtime_seconds=3600,
+            )
+        prepare.assert_called_once_with()
         self.assertEqual(report["state"], "ready")
         self.assertEqual(report["managed_by"], MODULE.UNIT_MANAGED_BY)
         command = next(
@@ -1860,7 +1874,10 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("StateDirectory=audio-control-ui", command)
         self.assertIn("StateDirectoryMode=0700", command)
         self.assertIn(
-            f"ReadWritePaths={MODULE.RECORDING_OUTPUT_ROOT} {MODULE.RECORDING_STATE_ROOT}",
+            (
+                f"ReadWritePaths={MODULE.RECORDING_OUTPUT_ROOT} "
+                f"{MODULE.RECORDING_STATE_ROOT} {transition_root}"
+            ),
             command,
         )
         self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET", command)
@@ -1874,6 +1891,12 @@ class AudioControlTests(unittest.TestCase):
         runner = MismatchedSystemdRunner()
         with (
             mock.patch.object(MODULE.time, "sleep"),
+            mock.patch.object(
+                MODULE,
+                "ensure_profile_transition_state_root",
+                return_value=pathlib.Path.home()
+                / ".local/state/audio/profile-transitions-v1",
+            ),
             self.assertRaisesRegex(MODULE.ControlError, "keine Laufbereitschaft"),
         ):
             MODULE.start_managed_service(
@@ -1881,6 +1904,42 @@ class AudioControlTests(unittest.TestCase):
                 host="127.0.0.1",
                 port=8765,
                 runtime_seconds=3600,
+            )
+
+    def test_managed_start_fails_before_systemd_when_transition_root_is_unsafe(self):
+        runner = SequenceSystemdRunner()
+        with (
+            mock.patch.object(
+                MODULE,
+                "ensure_profile_transition_state_root",
+                side_effect=MODULE.ControlError("unsafe transition root"),
+            ),
+            self.assertRaisesRegex(MODULE.ControlError, "unsafe transition root"),
+        ):
+            MODULE.start_managed_service(
+                runner,
+                host="127.0.0.1",
+                port=8765,
+                runtime_seconds=3600,
+            )
+        self.assertFalse(any(call[0][0] == "systemd-run" for call in runner.calls))
+
+    def test_transition_state_preparation_reuses_transition_default_and_safety(self):
+        transition = MODULE.load_profile_transition()
+        with tempfile.TemporaryDirectory() as directory:
+            state_root = pathlib.Path(directory) / "audio" / "profile-transitions-v1"
+            with (
+                mock.patch.object(transition, "DEFAULT_STATE_ROOT", state_root),
+                mock.patch.object(MODULE, "PROFILE_TRANSITION_STATE_ROOT", state_root),
+                mock.patch.object(
+                    MODULE, "load_profile_transition", return_value=transition
+                ),
+            ):
+                observed = MODULE.ensure_profile_transition_state_root()
+            self.assertEqual(observed, state_root)
+            self.assertEqual(state_root.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(
+                (state_root / "operations").stat().st_mode & 0o777, 0o700
             )
 
     def test_managed_stop_waits_for_inactive_readback(self):

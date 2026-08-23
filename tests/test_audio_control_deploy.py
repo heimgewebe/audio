@@ -24,6 +24,7 @@ class AudioControlDeployTests(unittest.TestCase):
         commit: str,
         *,
         created_at: int = 1,
+        profile_transition: bool = False,
     ) -> None:
         files = {
             "scripts/audio_control.py": b"print('control')\n",
@@ -78,6 +79,21 @@ class AudioControlDeployTests(unittest.TestCase):
             "tests/test_audio_ipad_pwa.py": b"import unittest\n",
             "tests/test_audio_remote_bridge.py": b"import unittest\n",
         }
+        if profile_transition:
+            files.update(
+                {
+                    "scripts/profile_transition.py": b"DEFAULT_STATE_ROOT = None\n",
+                    "scripts/profile_planner.py": b"# planner\n",
+                    "scripts/audio_doctor.py": b"# doctor\n",
+                    "scripts/physical_verification.py": b"# physical\n",
+                    "scripts/laboratory_gate.py": b"# laboratory\n",
+                    "profiles/audio-profiles.v1.json": b"{}\n",
+                    "inventory/physical-facts.v1.json": b"{}\n",
+                    "inventory/physical-verification.v1.json": b"{}\n",
+                    "inventory/laboratory-gates.v1.json": b"{}\n",
+                    MODULE.PROFILE_TRANSITION_RELEASE_SENTINEL: b"import unittest\n",
+                }
+            )
         for relative, payload in files.items():
             target = release / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -266,6 +282,103 @@ class AudioControlDeployTests(unittest.TestCase):
                         MODULE.DeployError, "Kritische Releasedatei"
                     ):
                         MODULE.release_hashes(release)
+
+    def test_profile_transition_runtime_closure_is_release_critical(self):
+        expected = set(MODULE.PROFILE_TRANSITION_CRITICAL_RELEASE_FILES)
+        commit = "3" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            self.write_release(release, commit, profile_transition=True)
+            self.assertTrue(expected <= set(MODULE.critical_release_paths(release)))
+            marker = MODULE.verify_release_marker(release, expected_commit=commit)
+            self.assertTrue(expected <= set(marker["critical_sha256"]))
+
+        for missing in sorted(
+            expected - {MODULE.PROFILE_TRANSITION_RELEASE_SENTINEL}
+        ):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit, profile_transition=True)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            self.write_release(release, commit, profile_transition=True)
+            (release / MODULE.PROFILE_TRANSITION_RELEASE_SENTINEL).unlink()
+            with self.assertRaisesRegex(MODULE.DeployError, "Gebundene Releasedatei"):
+                MODULE.verify_release_marker(release, expected_commit=commit)
+
+    def test_profile_transition_runtime_drift_fails_service_readback_closed(self):
+        commit = "2" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            self.write_release(release, commit, profile_transition=True)
+            (release / "scripts" / "profile_transition.py").write_text(
+                "tampered transition\n", encoding="utf-8"
+            )
+            with (
+                mock.patch.object(MODULE, "fetch_bytes") as fetch,
+                self.assertRaisesRegex(MODULE.DeployError, "Releasedatei weicht"),
+            ):
+                MODULE.verify_service(
+                    release, host="127.0.0.1", port=8765, attempts=1
+                )
+            fetch.assert_not_called()
+
+    def test_pre_profile_transition_sentinel_marker_upgrade_remains_supported(self):
+        commit = "1" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            deploy_root = pathlib.Path(directory)
+            release = deploy_root / "releases" / commit
+            self.write_release(release, commit)
+            sentinel = release / MODULE.PROFILE_TRANSITION_RELEASE_SENTINEL
+            self.assertFalse(sentinel.exists())
+            self.assertTrue(
+                set(MODULE.PROFILE_TRANSITION_CRITICAL_RELEASE_FILES).isdisjoint(
+                    MODULE.critical_release_paths(release)
+                )
+            )
+            marker_path = release / ".audio-control-release.json"
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_control_release",
+                        "commit": commit,
+                        "created_at_unix": marker["created_at_unix"],
+                        "index_sha256": marker["index_sha256"],
+                        "app_sha256": marker["app_sha256"],
+                        "styles_sha256": marker["styles_sha256"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            MODULE.switch_current(deploy_root, commit)
+            expected_payloads = {
+                relative: (release / relative).read_bytes()
+                for relative in MODULE.critical_release_paths(release)
+            }
+
+            def git_readback(argv, **_kwargs):
+                command = tuple(argv)
+                if command[-1] == "--show-object-format":
+                    return MODULE.CommandResult(command, 0, "sha1\n", "", 0.1)
+                relative = command[-1].split(":", 1)[1]
+                oid = MODULE.git_blob_oid(expected_payloads[relative], "sha1")
+                return MODULE.CommandResult(command, 0, oid + "\n", "", 0.1)
+
+            with mock.patch.object(MODULE, "run_command", side_effect=git_readback):
+                receipt = MODULE.upgrade_current_release_marker(
+                    pathlib.Path(directory) / "repository.git", deploy_root
+                )
+            self.assertTrue(receipt["changed"])
+            upgraded = MODULE.verify_release_marker(release, expected_commit=commit)
+            self.assertEqual(set(upgraded["critical_sha256"]), set(expected_payloads))
 
     def test_level_observer_runtime_files_are_release_critical(self):
         expected = set(MODULE.LEVEL_OBSERVER_CRITICAL_RELEASE_FILES)

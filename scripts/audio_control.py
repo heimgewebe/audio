@@ -113,8 +113,9 @@ LIVE_TELEMETRY = _LazyLiveTelemetry()
 
 
 def load_profile_transition() -> Any:
-    """Load the existing typed desktop transition only when an effect is requested."""
+    """Load the typed desktop transition only after release binding is proven."""
 
+    verify_profile_transition_release_binding()
     global _PROFILE_TRANSITION_MODULE, _PROFILE_TRANSITION_IMPORT_ERROR
     if _PROFILE_TRANSITION_MODULE is not None:
         return _PROFILE_TRANSITION_MODULE
@@ -145,6 +146,28 @@ def load_profile_transition() -> Any:
         _PROFILE_TRANSITION_MODULE = module
         return module
 
+
+def ensure_profile_transition_state_root() -> pathlib.Path:
+    """Prepare the canonical CLI/UI transition journal before sandboxing."""
+
+    transition = load_profile_transition()
+    state_root = transition.DEFAULT_STATE_ROOT
+    if (
+        not isinstance(state_root, pathlib.Path)
+        or not state_root.is_absolute()
+        or state_root != PROFILE_TRANSITION_STATE_ROOT
+    ):
+        raise ControlError("Der kanonische Transition-State-Root ist ungültig.")
+    try:
+        operations = transition.ensure_state_root(state_root)
+    except (transition.TransitionError, OSError) as error:
+        raise ControlError(
+            "Der kanonische Transition-State-Root konnte nicht sicher vorbereitet werden."
+        ) from error
+    if operations != state_root / "operations":
+        raise ControlError("Der kanonische Transition-State-Root ist widersprüchlich.")
+    return state_root
+
 SPEC_BASE_REVISION = "81fab5c57a3609b8b931a2ee5251c4f576368298"
 API_VERSION = "v1"
 UNIT_NAME = "audio-control-ui-v1.service"
@@ -156,6 +179,35 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_CACHE_SECONDS = 4.0
 RELEASE_MARKER = ROOT / ".audio-control-release.json"
+PROFILE_TRANSITION_RELEASE_BINDING_FILES = frozenset(
+    {
+        "scripts/profile_transition.py",
+        "scripts/profile_planner.py",
+        "scripts/audio_doctor.py",
+        "scripts/physical_verification.py",
+        "scripts/laboratory_gate.py",
+        "profiles/audio-profiles.v1.json",
+        "inventory/physical-facts.v1.json",
+        "inventory/physical-verification.v1.json",
+        "inventory/laboratory-gates.v1.json",
+        "tests/test_audio_control_profile_transition_release.py",
+    }
+)
+MAX_RELEASE_MARKER_BYTES = 1_048_576
+_STATE_HOME = pathlib.Path(
+    os.environ.get("XDG_STATE_HOME", str(pathlib.Path.home() / ".local" / "state"))
+).expanduser()
+PROFILE_TRANSITION_STATE_ROOT = _STATE_HOME / "audio" / "profile-transitions-v1"
+STATIC_RECORDING_OUTPUT_ROOT = pathlib.Path.home() / "Music" / "Audio-Aufnahmen"
+STATIC_RECORDING_STATE_ROOT = (
+    pathlib.Path.home() / ".local" / "state" / "audio" / "recordings-v1"
+)
+STATIC_PROFILE_TRANSITION_STATE_ROOT = (
+    pathlib.Path.home() / ".local" / "state" / "audio" / "profile-transitions-v1"
+)
+DEPLOY_RELEASE_ROOT = (
+    pathlib.Path.home() / ".local" / "share" / "audio-control-ui" / "releases"
+)
 DEPLOY_STATE_ROOT = pathlib.Path.home() / ".local" / "state" / "audio-control-deploy"
 DEPLOY_LATEST = DEPLOY_STATE_ROOT / "latest.json"
 RECORDING_OUTPUT_ROOT = pathlib.Path(
@@ -1673,6 +1725,183 @@ def valid_commit_revision(value: Any) -> bool:
     )
 
 
+def _lexical_absolute_directory(path: pathlib.Path, *, label: str) -> pathlib.Path:
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        raise ControlError(f"{label} muss absolut sein.")
+    return pathlib.Path(os.path.normpath(str(expanded)))
+
+
+def _ensure_private_directory_chain(path: pathlib.Path, *, label: str) -> pathlib.Path:
+    absolute = _lexical_absolute_directory(path, label=label)
+    current = pathlib.Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        created = False
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            try:
+                current.mkdir(mode=0o700)
+                metadata = current.lstat()
+                created = True
+            except OSError as error:
+                raise ControlError(f"{label} kann nicht sicher angelegt werden.") from error
+        except OSError as error:
+            raise ControlError(f"{label} kann nicht sicher geprüft werden.") from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ControlError(f"{label} enthält eine unsichere Pfadkomponente.")
+        if created and metadata.st_uid != os.getuid():
+            raise ControlError(f"{label} wurde mit falschem Eigentümer angelegt.")
+    final = absolute.lstat()
+    if final.st_uid != os.getuid():
+        raise ControlError(f"{label} gehört nicht dem aktuellen Nutzer.")
+    absolute.chmod(0o700)
+    return absolute
+
+
+def prepare_runtime_state_bootstrap() -> dict[str, Any]:
+    """Prepare only the exact static service write roots, without audio effects."""
+
+    bindings = (
+        (RECORDING_OUTPUT_ROOT, STATIC_RECORDING_OUTPUT_ROOT, "Recorder-Ausgabe-Root"),
+        (RECORDING_STATE_ROOT, STATIC_RECORDING_STATE_ROOT, "Recorder-State-Root"),
+        (
+            PROFILE_TRANSITION_STATE_ROOT,
+            STATIC_PROFILE_TRANSITION_STATE_ROOT,
+            "Transition-State-Root",
+        ),
+    )
+    normalized: list[tuple[pathlib.Path, str]] = []
+    for observed, expected, label in bindings:
+        observed_root = _lexical_absolute_directory(observed, label=label)
+        expected_root = _lexical_absolute_directory(expected, label=label)
+        if observed_root != expected_root:
+            raise ControlError(
+                f"{label} weicht vom statischen systemd-Schreibvertrag ab."
+            )
+        normalized.append((observed_root, label))
+
+    recording_output = _ensure_private_directory_chain(
+        normalized[0][0], label=normalized[0][1]
+    )
+    recording_state = _ensure_private_directory_chain(
+        normalized[1][0], label=normalized[1][1]
+    )
+    transition_state = _ensure_private_directory_chain(
+        normalized[2][0], label=normalized[2][1]
+    )
+    operations = _ensure_private_directory_chain(
+        transition_state / "operations", label="Transition-Operations-Root"
+    )
+    if (
+        recording_output != STATIC_RECORDING_OUTPUT_ROOT
+        or recording_state != STATIC_RECORDING_STATE_ROOT
+        or transition_state != STATIC_PROFILE_TRANSITION_STATE_ROOT
+        or operations != transition_state / "operations"
+    ):
+        raise ControlError("Runtime-State-Bootstrap ist intern widersprüchlich.")
+    return {
+        "schema_version": 1,
+        "kind": "audio_runtime_state_bootstrap",
+        "status": "ready",
+        "prepared_write_roots": 3,
+        "private_state": True,
+        "audio_mutated": False,
+    }
+
+
+def _source_checkout_present() -> bool:
+    git_entry = ROOT / ".git"
+    try:
+        metadata = git_entry.lstat()
+    except (FileNotFoundError, OSError):
+        return False
+    return not stat.S_ISLNK(metadata.st_mode) and (
+        stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)
+    )
+
+
+def _release_validation_tree_present() -> bool:
+    try:
+        root_info = ROOT.lstat()
+        parent_info = ROOT.parent.lstat()
+    except OSError:
+        return False
+    if (
+        stat.S_ISLNK(root_info.st_mode)
+        or not stat.S_ISDIR(root_info.st_mode)
+        or stat.S_ISLNK(parent_info.st_mode)
+        or not stat.S_ISDIR(parent_info.st_mode)
+    ):
+        return False
+    try:
+        same_parent = ROOT.parent.resolve(strict=True) == DEPLOY_RELEASE_ROOT.resolve(strict=True)
+    except OSError:
+        return False
+    return same_parent and re.fullmatch(r"\.[0-9a-f]{40}\..+", ROOT.name) is not None
+
+
+def _sha256_bound_release_file(path: pathlib.Path) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ControlError("Gebundene Desktop-Transition-Datei ist nicht sicher lesbar.") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ControlError("Gebundene Desktop-Transition-Datei ist nicht regulär.")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            while chunk := handle.read(131_072):
+                digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def verify_profile_transition_release_binding() -> dict[str, Any]:
+    """Fail closed on deployed releases until the transition closure is bound."""
+
+    try:
+        marker_info = RELEASE_MARKER.lstat()
+    except FileNotFoundError:
+        if _source_checkout_present():
+            return {"status": "source-checkout", "bound": False, "executable": True}
+        if _release_validation_tree_present():
+            return {"status": "release-validation", "bound": False, "executable": True}
+        raise ControlError(
+            "Desktop-Transition ist bis zur Release-Bindung nicht verfügbar."
+        ) from None
+    except OSError as error:
+        raise ControlError("Release-Bindung der Desktop-Transition ist nicht lesbar.") from error
+    if stat.S_ISLNK(marker_info.st_mode) or not stat.S_ISREG(marker_info.st_mode):
+        raise ControlError("Release-Bindung der Desktop-Transition ist unsicher.")
+    marker = read_bounded_json_object(
+        RELEASE_MARKER,
+        label="Audio-Control-Releasebeleg",
+        maximum_bytes=MAX_RELEASE_MARKER_BYTES,
+    )
+    if marker.get("kind") != "audio_control_release":
+        raise ControlError("Release-Bindung der Desktop-Transition hat falsche Identität.")
+    critical = marker.get("critical_sha256")
+    if not isinstance(critical, dict):
+        raise ControlError(
+            "Desktop-Transition ist bis zur vollständigen Release-Bindung blockiert."
+        )
+    for relative in sorted(PROFILE_TRANSITION_RELEASE_BINDING_FILES):
+        expected = critical.get(relative)
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise ControlError(
+                "Desktop-Transition ist bis zur vollständigen Release-Bindung blockiert."
+            )
+        target = ROOT.joinpath(*pathlib.PurePosixPath(relative).parts)
+        if _sha256_bound_release_file(target) != expected:
+            raise ControlError("Release-Bindung der Desktop-Transition ist gedriftet.")
+    return {"status": "bound", "bound": True, "executable": True}
+
+
 def release_marker_revision() -> str | None:
     try:
         metadata = RELEASE_MARKER.lstat()
@@ -2895,7 +3124,7 @@ class AudioControl:
                 plan["plan_sha256"],
                 transition.PLANNER.PHYSICAL.DEFAULT_STATE,
                 transition.PLANNER.LABORATORY.DEFAULT_STATE,
-                self.operating_mode_state_path.parent / "profile-transitions-v1",
+                transition.DEFAULT_STATE_ROOT,
             )
         except transition.TransitionError as error:
             raise OperatingModeError(
@@ -4635,6 +4864,7 @@ def start_managed_service(
     status = systemd_status(runner)
     if status.get("active_state") in {"active", "activating", "reloading"}:
         raise ControlError(f"{UNIT_NAME} läuft bereits.")
+    transition_state_root = ensure_profile_transition_state_root()
     recorder_init = runner.run(
         [
             sys.executable,
@@ -4689,7 +4919,10 @@ def start_managed_service(
         "--property",
         "StateDirectoryMode=0700",
         "--property",
-        f"ReadWritePaths={RECORDING_OUTPUT_ROOT} {RECORDING_STATE_ROOT}",
+        (
+            f"ReadWritePaths={RECORDING_OUTPUT_ROOT} {RECORDING_STATE_ROOT} "
+            f"{transition_state_root}"
+        ),
         "--property",
         "ProtectControlGroups=yes",
         "--property",
@@ -4958,6 +5191,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("stop", help="verwalteten Userdienst beenden")
     subparsers.add_parser("status", help="verwalteten Userdienst abfragen")
     subparsers.add_parser("check", help="Repository- und UI-Vertrag prüfen")
+    subparsers.add_parser(
+        "prepare-runtime-state",
+        help="statische private Laufzeitpfade ohne Audioeffekt vorbereiten",
+    )
     return parser
 
 
@@ -4991,6 +5228,8 @@ def main(argv: list[str] | None = None) -> int:
             report = systemd_status(runner)
         elif args.command == "check":
             report = validate_repository_contract()
+        elif args.command == "prepare-runtime-state":
+            report = prepare_runtime_state_bootstrap()
         else:
             raise AssertionError("unreachable")
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
