@@ -2290,8 +2290,8 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn("page-intro", html)
         self.assertNotIn("boundary-card", html)
         self.assertNotIn("Was möchtest du hören oder machen?", html)
+        self.assertIn("Was möchtest du tun?", html)
         self.assertIn('id="home-metrics"', html)
-        self.assertIn('id="home-readiness"', html)
         self.assertIn('id="home-actions"', html)
         self.assertIn('id="home-signal-flow"', html)
         self.assertIn('id="deployment-status"', html)
@@ -2308,7 +2308,6 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotIn(".hero-card", styles)
         self.assertNotIn(".page-intro", styles)
         self.assertIn(".overview-grid", styles)
-        self.assertIn(".readiness-grid", styles)
         self.assertIn(".home-command-grid", styles)
         self.assertIn(".home-action-grid", styles)
         self.assertIn(".home-signal-flow", styles)
@@ -2323,7 +2322,9 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('href: "#aufnehmen"', javascript)
         self.assertIn('href: "#spielen"', javascript)
         self.assertIn('byId("home-metrics")', javascript)
-        self.assertIn('byId("home-readiness")', javascript)
+        self.assertNotIn('byId("home-readiness")', javascript)
+        self.assertIn("homeAttentionItems", javascript)
+        self.assertIn('priority: "secondary"', javascript)
         self.assertIn('byId("deployment-status")', javascript)
         self.assertIn('klaenge: "material"', javascript)
         self.assertIn('now: "home"', javascript)
@@ -3000,6 +3001,25 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         self.assertIn('"Qobuz PCM"', diagnostics)
         self.assertIn('"Qobuz Recovery"', diagnostics)
         self.assertIn("qobuz.rate_proof_state", diagnostics)
+
+    def test_home_attention_filters_context_free_diagnostics(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        attention_start = javascript.index("function homeAttentionItems")
+        attention_end = javascript.index("const SIGNAL_GLYPHS", attention_start)
+        attention = javascript[attention_start:attention_end]
+        self.assertIn('warning.code === "voice-source-not-motu"', attention)
+        self.assertIn('presence.observed?.motu_m2 === true', attention)
+        self.assertIn('warning.code?.startsWith("qobuz-") && qobuzConfigured', attention)
+        self.assertIn('warning.severity === "high"', attention)
+        self.assertNotIn('"high-live-quantum"', attention)
+        self.assertNotIn('"bluetooth-service-inactive"', attention)
+        self.assertIn("return items.slice(0, 2);", attention)
+
+        home_start = javascript.index("function renderHome()")
+        home_end = javascript.index("function insightCard", home_start)
+        home = javascript[home_start:home_end]
+        self.assertIn("insightHost.hidden = attention.length === 0", home)
+        self.assertIn('"MOTU M2 verbinden · dann Desktop, Spotify oder Browser"', home)
 
     def test_sound_library_requires_confirmed_active_whale_truth(self):
         javascript = (ROOT / "ui" / "app.js").read_text()

@@ -112,7 +112,7 @@
             data-focus-summary="Direkter Einstieg in Hören, Aufnehmen und Spielen mit aktuellem Backend- und Geräte-Readback."
           >
             <header class="depth-heading home-heading">
-              <div><p class="eyebrow">Arbeitsplatz</p><h2>Audiozentrale</h2></div>
+              <div><p class="eyebrow">Direkt starten</p><h2>Was möchtest du tun?</h2></div>
               <div class="depth-actions"><a class="secondary-button home-system-link" href="#system">System</a></div>
             </header>
 
@@ -121,6 +121,10 @@
               <nav class="home-action-grid" id="home-actions" aria-label="Schnellzugriff"></nav>
             </div>
 
+            <div class="insight-grid home-insights" id="home-insights" aria-live="polite" hidden></div>
+          </article>
+
+          <div class="workspace-staging" id="workspace-staging" hidden>
             <section class="home-signal-block" aria-labelledby="home-signal-title">
               <div class="section-heading compact home-signal-heading">
                 <div><p class="eyebrow">Wiedergabewege</p><h3 id="home-signal-title">Hören</h3></div>
@@ -128,21 +132,13 @@
               </div>
               <div class="home-signal-flow" id="home-signal-flow"></div>
             </section>
-
             <div class="metric-grid home-metrics" id="home-metrics"></div>
-            <div class="insight-grid home-insights" id="home-insights"></div>
-
-            <div class="depth-detail" hidden>
-              <div class="section-heading compact"><h3>Bereitschaft nach Arbeitsart</h3></div>
-              <div class="readiness-grid" id="home-readiness"></div>
-              <div class="section-heading compact"><h3>Signalbahnen im Detail</h3></div>
-              <div class="active-lane-grid" id="now-signal-lanes">
-                <article class="lane-card" id="recorder-workspace" tabindex="-1" aria-label="Recorder-Arbeitsbereich" data-lane="recording" data-control="recorder-workspace">
-                  <div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div>
-                </article>
-              </div>
+            <div class="active-lane-grid" id="now-signal-lanes">
+              <article class="lane-card" id="recorder-workspace" tabindex="-1" aria-label="Recorder-Arbeitsbereich" data-lane="recording" data-control="recorder-workspace">
+                <div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div>
+              </article>
             </div>
-          </article>
+          </div>
 
           <article
             class="depth-panel telemetry-panel" data-zone="telemetry"

@@ -852,6 +852,12 @@ class TouchAndSafeAreaTests(unittest.TestCase):
         self.assertIn(".icon-button,\n  .dialog-close {\n    width: 44px;\n    height: 44px;", block)
         self.assertIn("height: 44px;", block.split('input[role="switch"] {', 1)[1])
 
+    def test_phone_navigation_keeps_labels_visible(self):
+        phone = self.styles.split("@media (max-width: 620px) {", 1)[-1].split("/* Listening topology v3", 1)[0]
+        self.assertIn(".primary-nav a > span:not(.nav-icon):not(.nav-badge)", phone)
+        self.assertIn("display: inline;", phone)
+        self.assertIn("min-height: 44px;", phone)
+
     def test_coarse_pointer_rules_never_shrink_existing_targets(self):
         block = self.styles.split("@media (pointer: coarse) {", 1)[1]
         brand = block.split(".brand {", 1)[1].split("}", 1)[0]
