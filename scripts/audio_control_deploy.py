@@ -48,6 +48,17 @@ LEVEL_OBSERVER_CRITICAL_RELEASE_FILES = (
     f"systemd/user/{LEVEL_OBSERVER_UNIT}",
     "systemd/user/audio-control-ui-v1.service",
 )
+RECORDER_BOUND_LEVEL_RELEASE_SENTINEL = (
+    "tests/test_audio_recording_source_binding_release.py"
+)
+RECORDER_BOUND_LEVEL_CRITICAL_RELEASE_FILES = (
+    "scripts/motu_capture_identity.py",
+    "scripts/voice_capture_observer.py",
+    "scripts/audio_level_observer.py",
+    "scripts/audio_live_telemetry.py",
+    f"systemd/user/{LEVEL_OBSERVER_UNIT}",
+    RECORDER_BOUND_LEVEL_RELEASE_SENTINEL,
+)
 QOBUZ_RECOVERY_RELEASE_SENTINEL = "tests/test_qobuz_desktop_recovery.py"
 QOBUZ_RECOVERY_CRITICAL_RELEASE_FILES = (
     "scripts/qobuz_desktop_recovery.py",
@@ -901,6 +912,8 @@ def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
         paths.extend(PROFILE_TRANSITION_CRITICAL_RELEASE_FILES)
     if (release / LEVEL_OBSERVER_RELEASE_SENTINEL).is_file():
         paths.extend(LEVEL_OBSERVER_CRITICAL_RELEASE_FILES)
+    if (release / RECORDER_BOUND_LEVEL_RELEASE_SENTINEL).is_file():
+        paths.extend(RECORDER_BOUND_LEVEL_CRITICAL_RELEASE_FILES)
     if (release / QOBUZ_RECOVERY_RELEASE_SENTINEL).is_file():
         paths.extend(QOBUZ_RECOVERY_CRITICAL_RELEASE_FILES)
     if (release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL).is_file():

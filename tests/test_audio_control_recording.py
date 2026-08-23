@@ -255,7 +255,9 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertTrue(plan["ready"])
         self.assertEqual(plan["plan_sha256"], runner.PLAN_SHA)
         self.assertTrue(plan["source"]["bound"])
+        self.assertEqual(plan["source"]["identity_sha256"], "a" * 64)
         self.assertTrue(plan["physical"]["rode_nt1a_connected"])
+        self.assertEqual(plan["physical"]["rode_nt1a_motu_input"], "input-1")
         self.assertEqual(plan["physical"]["motu_phantom_48v"], "on")
         self.assertTrue(plan["laboratory"]["voice_level_measurement"])
         self.assertEqual(

@@ -765,7 +765,7 @@ class RealCollectorTests(unittest.TestCase):
                     with self.assertRaises(MODULE.TelemetryError):
                         collector.sample(None)
 
-    def test_active_pipewire_level_source_is_identified_and_must_be_fresh(self):
+    def test_active_recorder_bound_level_source_is_identified_and_must_be_fresh(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "levels.json"
             collector = MODULE.LevelSourceCollector(source_path=path)
@@ -773,28 +773,38 @@ class RealCollectorTests(unittest.TestCase):
                 "kind": "audio_level_observation",
                 "observer": MODULE.ACTIVE_LEVEL_OBSERVER_ID,
                 "observer_mode": MODULE.ACTIVE_LEVEL_OBSERVER_MODE,
-                "capture_transport": "pipewire-native-shared-stream",
-                "source_selection": "pipewire-default-source",
+                "capture_transport": "pipewire-native-exact-source-stream",
+                "source_selection": "recorder-bound-motu-source",
+                "source_identity_sha256": "a" * 64,
+                "channel_map": "front-left,front-right",
                 "sequence": 1,
                 "observed_at_unix": 1_700_000_000.0,
                 "peak_dbfs": -6.0,
                 "rms_dbfs": -12.0,
                 "channel": "FL/FR",
+                "channels_analysis": [
+                    {"channel": "FL", "peak_dbfs": -6.0, "rms_dbfs": -12.0, "clipped_samples": 0},
+                    {"channel": "FR", "peak_dbfs": -18.0, "rms_dbfs": -24.0, "clipped_samples": 0},
+                ],
             }
             context = MODULE.CollectorContext(None, 100.0, 1_700_000_001.0)
             path.write_text(json.dumps(payload), encoding="utf-8")
 
             value = collector.sample(context)
 
-            self.assertEqual(value["source"], "active-pipewire-shared-capture")
+            self.assertEqual(value["source"], "active-recorder-bound-capture")
             self.assertEqual(value["observer"], MODULE.ACTIVE_LEVEL_OBSERVER_ID)
-            self.assertEqual(value["source_selection"], "pipewire-default-source")
+            self.assertEqual(value["source_selection"], "recorder-bound-motu-source")
+            self.assertEqual(value["source_identity_sha256"], "a" * 64)
+            self.assertEqual(value["channel_map"], "front-left,front-right")
+            self.assertEqual([item["channel"] for item in value["channels_analysis"]], ["FL", "FR"])
+            self.assertEqual(value["channels_analysis"][0]["peak_dbfs"], -6.0)
 
             with self.assertRaisesRegex(MODULE.TelemetryError, "not advanced"):
                 collector.sample(context)
             collector.reset()
             self.assertEqual(
-                collector.sample(context)["source"], "active-pipewire-shared-capture"
+                collector.sample(context)["source"], "active-recorder-bound-capture"
             )
 
             payload["observed_at_unix"] = 1_699_999_990.0
@@ -811,12 +821,19 @@ class RealCollectorTests(unittest.TestCase):
                 "kind": "audio_level_observation",
                 "observer": "unknown-observer",
                 "observer_mode": MODULE.ACTIVE_LEVEL_OBSERVER_MODE,
-                "capture_transport": "pipewire-native-shared-stream",
-                "source_selection": "pipewire-default-source",
+                "capture_transport": "pipewire-native-exact-source-stream",
+                "source_selection": "recorder-bound-motu-source",
+                "source_identity_sha256": "a" * 64,
+                "channel_map": "front-left,front-right",
                 "sequence": 1,
                 "observed_at_unix": 1_700_000_000.0,
                 "peak_dbfs": -6.0,
                 "rms_dbfs": -12.0,
+                "channel": "FL/FR",
+                "channels_analysis": [
+                    {"channel": "FL", "peak_dbfs": -6.0, "rms_dbfs": -12.0, "clipped_samples": 0},
+                    {"channel": "FR", "peak_dbfs": -18.0, "rms_dbfs": -24.0, "clipped_samples": 0},
+                ],
             }
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(MODULE.TelemetryError, "identity"):
@@ -827,6 +844,7 @@ class RealCollectorTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(MODULE.TelemetryError, "future"):
                 collector.sample(context)
+
 
     def test_bounded_reader_rejects_oversized_files(self):
         with tempfile.TemporaryDirectory() as directory:

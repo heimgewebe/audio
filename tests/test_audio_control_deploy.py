@@ -25,6 +25,7 @@ class AudioControlDeployTests(unittest.TestCase):
         *,
         created_at: int = 1,
         profile_transition: bool = False,
+        recorder_binding: bool = False,
     ) -> None:
         files = {
             "scripts/audio_control.py": b"print('control')\n",
@@ -79,6 +80,14 @@ class AudioControlDeployTests(unittest.TestCase):
             "tests/test_audio_ipad_pwa.py": b"import unittest\n",
             "tests/test_audio_remote_bridge.py": b"import unittest\n",
         }
+        if recorder_binding:
+            files.update(
+                {
+                    "scripts/motu_capture_identity.py": b"def source_identity(value): return value\n",
+                    "scripts/voice_capture_observer.py": b"# voice capture\n",
+                    MODULE.RECORDER_BOUND_LEVEL_RELEASE_SENTINEL: b"import unittest\n",
+                }
+            )
         if profile_transition:
             files.update(
                 {
@@ -397,6 +406,28 @@ class AudioControlDeployTests(unittest.TestCase):
                         MODULE.DeployError, "Kritische Releasedatei"
                     ):
                         MODULE.release_hashes(release)
+
+    def test_recorder_bound_level_runtime_closure_is_versioned_and_legacy_safe(self):
+        expected = set(MODULE.RECORDER_BOUND_LEVEL_CRITICAL_RELEASE_FILES)
+        self.assertIn("scripts/motu_capture_identity.py", expected)
+        self.assertIn("scripts/voice_capture_observer.py", expected)
+        commit = "d" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = pathlib.Path(directory) / "legacy"
+            current = pathlib.Path(directory) / "current"
+            self.write_release(legacy, commit)
+            self.write_release(current, commit, recorder_binding=True)
+
+            legacy_payload = MODULE.verify_release_marker(legacy, expected_commit=commit)
+            self.assertNotIn(
+                "scripts/motu_capture_identity.py", legacy_payload["critical_sha256"]
+            )
+            current_payload = MODULE.verify_release_marker(current, expected_commit=commit)
+            self.assertTrue(expected.issubset(set(current_payload["critical_sha256"])))
+
+            (current / "scripts" / "motu_capture_identity.py").unlink()
+            with self.assertRaisesRegex(MODULE.DeployError, "Kritische Releasedatei"):
+                MODULE.release_hashes(current)
 
     def test_qobuz_recovery_runtime_files_are_release_critical(self):
         expected = set(MODULE.QOBUZ_RECOVERY_CRITICAL_RELEASE_FILES)

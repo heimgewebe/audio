@@ -663,6 +663,69 @@ class AudioControlTests(unittest.TestCase):
             {"desktop-listening", "qobuz-reference", "recording", "performance"},
         )
 
+    def test_recording_mode_projects_recorder_authority_without_second_mode_action(self):
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            recording_status="ok",
+            recording={"status": "idle", "session": None},
+        )
+        recording = next(mode for mode in projection["modes"] if mode["id"] == "recording")
+        self.assertEqual(recording["state"], "attention")
+        self.assertEqual(recording["reason"], "recording-preflight-required")
+        self.assertEqual(recording["activity"], "idle")
+        self.assertTrue(projection["executable"]["recording"]["allowed"])
+        self.assertEqual(
+            projection["executable"]["recording"]["authority"],
+            "recorder-plan-hash-and-current-readback",
+        )
+        self.assertFalse(MODULE.OPERATING_MODES["recording"]["actionable"])
+        self.assertEqual(projection["observed"]["mode"], "desktop-listening")
+
+    def test_running_recording_becomes_observed_mode_with_bound_capture_truth(self):
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            recording_status="ok",
+            recording={
+                "status": "running",
+                "session": {
+                    "active": True,
+                    "capture": {"sample_rate_hz": 48_000, "channels": 2},
+                    "source": {"bound": True, "identity_sha256": "a" * 64},
+                    "recovery_required": False,
+                },
+            },
+        )
+        recording = next(mode for mode in projection["modes"] if mode["id"] == "recording")
+        self.assertEqual(recording["state"], "ready")
+        self.assertEqual(recording["activity"], "recording")
+        self.assertEqual(recording["quality"]["sample_rate_hz"], 48_000)
+        self.assertEqual(recording["quality"]["channels"], 2)
+        self.assertTrue(recording["quality"]["source_bound"])
+        self.assertEqual(projection["observed"]["mode"], "recording")
+        self.assertEqual(projection["observed"]["signal_state"], "recording")
+        self.assertEqual(projection["active_signal_path"]["nodes"], ["RØDE NT1-A", "MOTU M2", "Recorder"])
+
+    def test_recording_recovery_projects_recovering_without_claiming_ready(self):
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            recording_status="ok",
+            recording={
+                "status": "recovery-required",
+                "session": {"active": False, "recovery_required": True},
+            },
+        )
+        recording = next(mode for mode in projection["modes"] if mode["id"] == "recording")
+        self.assertEqual(recording["state"], "recovering")
+        self.assertEqual(recording["reason"], "recording-recovery-required")
+        self.assertEqual(recording["activity"], "idle")
+        self.assertEqual(projection["observed"]["mode"], "desktop-listening")
+
     def test_persisted_transition_projects_explicit_transitioning_state(self):
         configuration = {
             "schema_version": 1,
@@ -3176,8 +3239,9 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
     def test_telemetry_ui_separates_active_levels_from_read_only_authority(self):
         html = (ROOT / "ui" / "index.html").read_text()
         self.assertIn("Read-only-Kern · keine Steuerwirkung", html)
-        self.assertIn("aktiver PipeWire-Pegelobserver", html)
-        self.assertIn("geteilten PipeWire-Capture-Strom", html)
+        self.assertIn("exakt an die Recorder-MOTU-Quelle gebundener Pegelobserver", html)
+        self.assertIn("exakt recordergebundenen MOTU-Quelle", html)
+        self.assertIn("ändert keine Default-Quelle", html)
         self.assertNotIn("Passiv beobachtet · nicht wirkend", html)
 
         javascript = (ROOT / "ui" / "app.js").read_text()
@@ -3189,7 +3253,7 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
 const active = {{
   id: "audio-levels",
   availability: "live",
-  value: {{ source: "active-pipewire-shared-capture" }},
+  value: {{ source: "active-recorder-bound-capture" }},
 }};
 const stale = {{ ...active, availability: "stale" }};
 const passive = {{
@@ -3212,12 +3276,12 @@ process.stdout.write(JSON.stringify({{
             text=True,
         )
         result = json.loads(completed.stdout)
-        self.assertIn("Pegel aktiv via PipeWire", result["active"])
+        self.assertIn("Pegel aktiv auf recordergebundener MOTU-Quelle", result["active"])
         for case in ("stale", "passive", "missing"):
             with self.subTest(case=case):
                 self.assertNotIn("Pegel aktiv", result[case])
                 self.assertIn("read-only/ohne Steuerwirkung", result[case])
-        self.assertEqual(result["activeSource"], "Quelle: PipeWire Shared Capture")
+        self.assertEqual(result["activeSource"], "Quelle: exakt recordergebundene MOTU-Aufnahmequelle")
         self.assertEqual(result["passiveSource"], "Quelle: externe Pegeldatei")
         self.assertIn(
             "Telemetriekern: passive-observation · read-only · keine Steuerwirkung",

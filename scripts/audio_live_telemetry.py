@@ -112,7 +112,7 @@ PROC_ASOUND = pathlib.Path("/proc/asound")
 
 LEVEL_SOURCE_ENVIRONMENT = "AUDIO_TELEMETRY_LEVEL_SOURCE"
 ACTIVE_LEVEL_OBSERVER_ID = "audio-control-level-observer-v1"
-ACTIVE_LEVEL_OBSERVER_MODE = "active-pipewire-shared-capture"
+ACTIVE_LEVEL_OBSERVER_MODE = "active-recorder-source-capture"
 MAX_ACTIVE_LEVEL_SOURCE_AGE_SECONDS = 3.0
 MAX_ACTIVE_LEVEL_SOURCE_FUTURE_SECONDS = 1.0
 
@@ -1254,9 +1254,11 @@ class LevelSourceCollector(Collector):
                 value.get("kind") != "audio_level_observation"
                 or observer != ACTIVE_LEVEL_OBSERVER_ID
                 or observer_mode != ACTIVE_LEVEL_OBSERVER_MODE
-                or value.get("capture_transport") != "pipewire-native-shared-stream"
-                or value.get("source_selection")
-                not in {"pipewire-default-source", "explicit-pipewire-target"}
+                or value.get("capture_transport") != "pipewire-native-exact-source-stream"
+                or value.get("source_selection") != "recorder-bound-motu-source"
+                or not isinstance(value.get("source_identity_sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", value["source_identity_sha256"]) is None
+                or value.get("channel_map") != "front-left,front-right"
             ):
                 raise TelemetryError("active level source identity is invalid")
             observed_at = value.get("observed_at_unix")
@@ -1290,17 +1292,60 @@ class LevelSourceCollector(Collector):
         if observation_identity is not None:
             self._last_active_observation = observation_identity
         channel = value.get("channel")
+        channels_analysis: list[dict[str, Any]] = []
+        if active_observer:
+            raw_channels = value.get("channels_analysis")
+            if not isinstance(raw_channels, list) or len(raw_channels) != 2:
+                raise TelemetryError("active level source channel analysis is invalid")
+            observed_channels: list[str] = []
+            for raw_channel in raw_channels:
+                if not isinstance(raw_channel, dict):
+                    raise TelemetryError("active level source channel analysis is invalid")
+                channel_name = raw_channel.get("channel")
+                channel_peak = raw_channel.get("peak_dbfs")
+                channel_rms = raw_channel.get("rms_dbfs")
+                clipped_samples = raw_channel.get("clipped_samples")
+                if (
+                    channel_name not in {"FL", "FR"}
+                    or isinstance(channel_peak, bool)
+                    or not isinstance(channel_peak, (int, float))
+                    or isinstance(channel_rms, bool)
+                    or not isinstance(channel_rms, (int, float))
+                    or not -160.0 <= float(channel_peak) <= 0.0
+                    or not -160.0 <= float(channel_rms) <= 0.0
+                    or float(channel_rms) > float(channel_peak)
+                    or isinstance(clipped_samples, bool)
+                    or not isinstance(clipped_samples, int)
+                    or clipped_samples < 0
+                ):
+                    raise TelemetryError("active level source channel analysis is invalid")
+                observed_channels.append(channel_name)
+                channels_analysis.append(
+                    {
+                        "channel": channel_name,
+                        "peak_dbfs": round(float(channel_peak), 3),
+                        "rms_dbfs": round(float(channel_rms), 3),
+                        "clipping": clipped_samples > 0 or float(channel_peak) >= -0.1,
+                    }
+                )
+            if observed_channels != ["FL", "FR"]:
+                raise TelemetryError("active level source channel order is invalid")
         return {
             "peak_dbfs": round(float(peak), 3),
             "rms_dbfs": round(float(rms), 3),
             "channel": _clip(str(channel), 40) if isinstance(channel, str) else None,
             "source": (
-                "active-pipewire-shared-capture"
+                "active-recorder-bound-capture"
                 if active_observer
                 else "external-passive-level-file"
             ),
             "observer": observer if active_observer else None,
             "source_selection": value.get("source_selection") if active_observer else None,
+            "source_identity_sha256": (
+                value.get("source_identity_sha256") if active_observer else None
+            ),
+            "channel_map": value.get("channel_map") if active_observer else None,
+            "channels_analysis": channels_analysis if active_observer else [],
             "clipping": float(peak) >= -0.1,
         }
 

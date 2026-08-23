@@ -9,7 +9,6 @@ import importlib.util
 import json
 import os
 import pathlib
-import re
 import secrets
 import signal
 import stat
@@ -23,16 +22,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 LAB_PATH = ROOT / "scripts" / "laboratory_gate.py"
 LEVEL_PATH = ROOT / "scripts" / "level_analyzer.py"
 SYSTEM_TRUTH_PATH = ROOT / "scripts" / "system_truth.py"
+MOTU_CAPTURE_IDENTITY_PATH = ROOT / "scripts" / "motu_capture_identity.py"
 PARECORD_PATH = pathlib.Path("/usr/bin/parecord")
 MAX_CAPTURE_SECONDS = 20
 MIN_PASS_SECONDS = 8
 MAX_STDERR_BYTES = 65_536
 MAX_WAV_BYTES = 32_000_000
-SOURCE_SPEC_RE = re.compile(
-    r"^(?P<format>[A-Za-z0-9_-]+) (?P<channels>[0-9]+)ch (?P<rate>[0-9]+)Hz$"
-)
-
-
 def load_module(name: str, path: pathlib.Path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -45,6 +40,9 @@ def load_module(name: str, path: pathlib.Path):
 LAB = load_module("laboratory_gate_for_voice_capture", LAB_PATH)
 LEVEL = load_module("level_analyzer_for_voice_capture", LEVEL_PATH)
 SYSTEM_TRUTH = load_module("system_truth_for_voice_capture", SYSTEM_TRUTH_PATH)
+MOTU_CAPTURE_IDENTITY = load_module(
+    "motu_capture_identity_for_voice_capture", MOTU_CAPTURE_IDENTITY_PATH
+)
 
 
 def utc_now() -> dt.datetime:
@@ -90,75 +88,12 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def _normalize_usb_id(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    result = value.strip().casefold()
-    return result[2:] if result.startswith("0x") else result
-
-
 def _source_volume_values(source: dict[str, Any]) -> list[int]:
-    volume = source.get("volume")
-    if not isinstance(volume, dict) or not volume:
-        return []
-    values: list[int] = []
-    for item in volume.values():
-        if not isinstance(item, dict):
-            return []
-        value = item.get("value")
-        if isinstance(value, bool) or not isinstance(value, int):
-            return []
-        values.append(value)
-    return values
-
+    """Delegate the legacy helper surface to the shared MOTU identity contract."""
+    return MOTU_CAPTURE_IDENTITY.source_volume_values(source)
 
 def _source_identity(source: dict[str, Any]) -> dict[str, Any] | None:
-    properties = source.get("properties")
-    if not isinstance(properties, dict):
-        return None
-    if source.get("monitor_source") not in {"", None}:
-        return None
-    if properties.get("device.class") != "sound":
-        return None
-    if properties.get("media.class") != "Audio/Source":
-        return None
-    vendor_id = _normalize_usb_id(properties.get("device.vendor.id"))
-    product_id = _normalize_usb_id(properties.get("device.product.id"))
-    if vendor_id != "07fd" or product_id != "0008":
-        return None
-    serial = properties.get("device.serial")
-    name = source.get("name")
-    bus_path = properties.get("device.bus_path")
-    if not isinstance(serial, str) or not serial.startswith("MOTU_M2_"):
-        raise ValueError("MOTU source lacks its serial-bound identity")
-    if not isinstance(name, str) or not name.startswith("alsa_input.usb-MOTU_M2_"):
-        raise ValueError("MOTU source node name is invalid")
-    if f"usb-{serial}-00" not in name:
-        raise ValueError("MOTU source node does not match its serial identity")
-    if not isinstance(bus_path, str) or not bus_path:
-        raise ValueError("MOTU source has no USB bus path")
-    match = SOURCE_SPEC_RE.fullmatch(str(source.get("sample_specification", "")))
-    if match is None:
-        raise ValueError("MOTU source sample specification is invalid")
-    sample_format = match.group("format")
-    channels = int(match.group("channels"))
-    rate_hz = int(match.group("rate"))
-    volume_values = _source_volume_values(source)
-    unity_volume = bool(volume_values) and all(value == 65_536 for value in volume_values)
-    identity = {
-        "vendor_id": vendor_id,
-        "product_id": product_id,
-        "serial_sha256": sha256_text(serial),
-        "node_name_sha256": sha256_text(name),
-        "bus_path_sha256": sha256_text(bus_path),
-        "sample_format": sample_format,
-        "sample_rate_hz": rate_hz,
-        "channels": channels,
-        "muted": source.get("mute"),
-        "unity_volume": unity_volume,
-    }
-    identity["fingerprint"] = LAB.canonical_value_sha256(identity)
-    return identity
+    return MOTU_CAPTURE_IDENTITY.source_identity(source)
 
 
 def source_snapshot() -> dict[str, Any]:
