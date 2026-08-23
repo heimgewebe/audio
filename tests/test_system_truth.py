@@ -70,6 +70,19 @@ def doctor_results():
             "",
         ),
         result(
+            ("pactl", "--format=json", "list", "sources"),
+            0,
+            '[{"name":"alsa_input.usb-MOTU_M2_CHECK-00.analog-stereo",'
+            '"monitor_source":"","sample_specification":"s32le 2ch 48000Hz",'
+            '"mute":false,"volume":{"front-left":{"value":65536},'
+            '"front-right":{"value":65536}},"properties":{'
+            '"device.class":"sound","media.class":"Audio/Source",'
+            '"device.vendor.id":"07fd","device.product.id":"0008",'
+            '"device.serial":"MOTU_M2_CHECK",'
+            '"device.bus_path":"pci-test-usb-0:1"}}]',
+            "",
+        ),
+        result(
             ("aconnect", "-l"),
             0,
             "client 20: 'Roland Digital Piano' [type=kernel]\n",

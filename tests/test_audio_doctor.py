@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import pathlib
 import sys
@@ -15,6 +16,31 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+def motu_recorder_source(
+    *,
+    serial: str = "MOTU_M2_SERIAL",
+    bus_path: str = "pci-test-usb-0:1",
+) -> dict[str, object]:
+    return {
+        "name": f"alsa_input.usb-{serial}-00.analog-stereo",
+        "monitor_source": "",
+        "sample_specification": "s32le 2ch 48000Hz",
+        "mute": False,
+        "volume": {
+            "front-left": {"value": 65536},
+            "front-right": {"value": 65536},
+        },
+        "properties": {
+            "device.class": "sound",
+            "media.class": "Audio/Source",
+            "device.vendor.id": "07fd",
+            "device.product.id": "0008",
+            "device.serial": serial,
+            "device.bus_path": bus_path,
+        },
+    }
 
 
 class AudioDoctorTests(unittest.TestCase):
@@ -93,6 +119,89 @@ class AudioDoctorTests(unittest.TestCase):
         self.assertIsNone(report["graph"]["round_trip_latency_ms"])
         self.assertIn("motu_phantom_48v", report["physical_unknowns"])
         self.assertFalse(report["profiles"]["voice_recording"]["software_ready"])
+
+    def test_voice_recording_uses_exact_recorder_source_not_default_source(self):
+        results = [
+            self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n"),
+            self.result(("arecord", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n"),
+            self.result(
+                ("pactl", "info"),
+                "Default Sink: alsa_output.usb-MOTU_M2-00\n"
+                "Default Source: alsa_input.generic\n",
+            ),
+            self.result(
+                ("pactl", "--format=json", "list", "sources"),
+                json.dumps([motu_recorder_source()]),
+            ),
+        ]
+
+        report = MODULE.build_report(results)
+
+        self.assertEqual(
+            report["device_truth"]["configured_defaults"]["default_source"], "other"
+        )
+        recorder = report["device_truth"]["observed"]["motu_m2"]["recorder_capture"]
+        self.assertTrue(recorder["ready"])
+        self.assertEqual(recorder["status"], "ready")
+        self.assertEqual(recorder["match_count"], 1)
+        expected_identity = MODULE.MOTU_CAPTURE_IDENTITY.source_identity(
+            motu_recorder_source()
+        )
+        self.assertIsNotNone(expected_identity)
+        self.assertEqual(recorder["identity_sha256"], expected_identity["fingerprint"])
+        self.assertTrue(report["profiles"]["voice_recording"]["software_ready"])
+        warning_codes = {warning["code"] for warning in report["warnings"]}
+        self.assertNotIn("voice-source-not-motu", warning_codes)
+        encoded = json.dumps(report)
+        self.assertNotIn("MOTU_M2_SERIAL", encoded)
+        self.assertNotIn("alsa_input.usb-MOTU_M2_SERIAL", encoded)
+
+    def test_voice_recording_fails_closed_for_absent_ambiguous_or_invalid_recorder_source(self):
+        second = motu_recorder_source(
+            serial="MOTU_M2_SECOND", bus_path="pci-test-usb-0:2"
+        )
+        invalid = motu_recorder_source()
+        invalid["properties"]["device.serial"] = "BROKEN_SERIAL"
+        cases = (
+            ("absent", [], "absent", 0),
+            (
+                "ambiguous",
+                [motu_recorder_source(), second],
+                "ambiguous",
+                2,
+            ),
+            ("invalid", [invalid], "invalid", 0),
+        )
+        for label, sources, expected_status, expected_count in cases:
+            with self.subTest(label=label):
+                results = [
+                    self.result(
+                        ("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n"
+                    ),
+                    self.result(
+                        ("arecord", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n"
+                    ),
+                    self.result(
+                        ("pactl", "info"),
+                        "Default Sink: alsa_output.usb-MOTU_M2-00\n"
+                        "Default Source: alsa_input.generic\n",
+                    ),
+                    self.result(
+                        ("pactl", "--format=json", "list", "sources"),
+                        json.dumps(sources),
+                    ),
+                ]
+                report = MODULE.build_report(results)
+                recorder = report["device_truth"]["observed"]["motu_m2"][
+                    "recorder_capture"
+                ]
+                self.assertFalse(recorder["ready"])
+                self.assertEqual(recorder["status"], expected_status)
+                self.assertEqual(recorder["match_count"], expected_count)
+                self.assertNotIn("identity_sha256", recorder)
+                self.assertFalse(report["profiles"]["voice_recording"]["software_ready"])
+                warning_codes = {warning["code"] for warning in report["warnings"]}
+                self.assertIn("voice-source-not-motu", warning_codes)
 
     def test_configured_roland_default_does_not_prove_physical_presence(self):
         results = [
