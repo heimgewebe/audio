@@ -97,6 +97,30 @@ Wichtig sind:
 - `plan_sha256`: die Freigabe für exakt diesen Zustand und Sitzungstyp.
 - `required_file_bytes` und `required_free_bytes`: Dateibudget plus Reserve.
 
+## Gebundener Live-Pegel in der Audiozentrale
+
+Der dauerhafte Pegelobserver öffnet einen eigenen PipeWire-Stream auf exakt der
+MOTU-Quelle, deren Identitätsvertrag auch der Recorder verwendet. Er veröffentlicht
+keinen Roh-Gerätenamen, sondern nur den kanonischen Quellen-Hash, FL/FR und die
+zugehörigen Peak-/RMS-Werte. Ein MOTU-Hotplug erzeugt keinen Default-Source-Fallback.
+
+Die Recorderoberfläche zeigt daraus einen Mikrofonpegel nur, wenn zusätzlich eine
+der folgenden Autoritäten vorliegt:
+
+- eine aktive Recorder-Session mit identischem `source.identity_sha256`, oder
+- ein explizit angeforderter, noch zum aktuellen Entwurf passender Recorderplan
+  mit identischem Quellen-Hash.
+
+Der physisch bestätigte Wert `rode_nt1a_motu_input` wählt dabei ausschließlich
+`input-1 → FL` oder `input-2 → FR`. Fehlen Plan/Session, Hashgleichheit oder diese
+Inputbindung, wird kein aggregierter Stereo- oder Default-Source-Pegel als
+Mikrofonpegel ausgegeben. Nach **Plan prüfen** kann der damit gebundene Vorabpegel
+vor dem eigentlichen Record-Start genutzt werden; der Start bleibt trotzdem an
+alle bestehenden Physical-, Laboratory-, Source-, Tool-, Storage- und
+Session-Gates gebunden. Der UI-Pegel ersetzt insbesondere nicht den dauerhaften
+Beleg `voice-level-measurement` und beweist weder 48 V noch Gainstellung oder
+Mikrofonverkabelung aus sich selbst.
+
 ## Aufnahme starten
 
 Der Sitzungstyp muss beim Start identisch angegeben werden:

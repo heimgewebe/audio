@@ -66,14 +66,16 @@ gesamte Pegelmesspfad ist damit **nicht passiv**. Der Observer ändert aber wede
 Defaultquelle noch Profile, Lautstärken oder produktive Routen und hinterlegt
 keine dauerhafte PipeWire-Konfiguration.
 
-Der Stream verwendet `target=auto`. Damit wählt WirePlumber die aktuelle
-PipeWire-Defaultquelle; auf dem vorgesehenen System ist das die MOTU-M2-Quelle.
-Eine flüchtige Node-ID wie `109` wird nicht gespeichert. Ein ausdrücklich
-konfigurierter stabiler `node.name` bleibt über die Kommandozeilenoption
-`--target` möglich, die ausgelieferte Unit folgt aber automatisch dem Default.
-Der Observer greift nie direkt oder exklusiv auf ALSA zu. PipeWire bleibt der
-Shared-Capture-Pfad, sodass Recorder und Voice-Capture parallel eigene Streams
-öffnen können.
+Der Stream verwendet **kein** `target=auto` mehr. Vor jedem Capture wird über
+`pactl --format=json list sources` genau eine MOTU-M2-Quelle mit USB-Vendor/Product
+`07fd:0008`, Serienbindung, Buspfad, 48 kHz, Stereo `s32le`, ungemutetem Zustand
+und Unity-Source-Volume verlangt. Recorder und Pegelobserver benutzen für diese
+Identität denselben wirkungsfreien Helper `scripts/motu_capture_identity.py`.
+Nur der daraus gelesene exakte `node.name` wird intern an `pw-cat --target`
+übergeben; der Rohname erscheint nicht im Telemetriesnapshot. Öffentlich wird
+nur der kanonische Quellen-Hash plus `front-left,front-right` projiziert. Der
+Observer greift nie direkt oder exklusiv auf ALSA zu und ändert insbesondere
+keine Defaultquelle.
 
 `pw-cat` liefert 48 kHz, Stereo `FL/FR` und `f32`. Der Observer berechnet pro
 500-ms-Fenster Sample-Peak und RMS aus den tatsächlich empfangenen Samples. Bei
@@ -88,9 +90,11 @@ diesen absoluten Pfad in `runtime.env` als `AUDIO_TELEMETRY_LEVEL_SOURCE` ein.
 Der passive Dateicollector prüft Schema, Observeridentität, fortschreitende
 Sequenz und Zeitstempel; eine unveränderte, mehr als drei Sekunden alte oder aus
 der Zukunft datierte Beobachtung wird abgewiesen. `RuntimeDirectory=` entfernt
-die Datei bei Dienstende. Bei
-Capture-Stillstand, Geräteverlust oder `pw-cat`-Ende schlägt der Observer
-begrenzt fehl und systemd startet ihn neu; das Panel fällt in dieser Zeit auf
+die Datei bei Dienstende. Fehlt das MOTU beim Boot oder nach Hotplug, bleibt der
+Observer ohne Pegelbeleg aktiv und sucht begrenzt weiter; bei Wiederkehr bindet
+er ausschließlich die erneut verifizierte Recorderquelle. Ein echter
+`pw-cat`-Fehler bei weiterhin identischer Quelle bleibt dagegen ein Fehler, den
+systemd neu startet. Während Quelle oder Capture fehlen, fällt das Panel auf
 `stale`/`unavailable`, statt den letzten Wert als neu auszugeben.
 
 Der Observer ist mit `Wants=` und `PartOf=` an den UI-Dienst gekoppelt, läuft
@@ -110,7 +114,7 @@ eigenem begrenztem Puffer:
 | Strom-ID | Inhalt | Quelle | Intervall | Stale ab |
 | --- | --- | --- | --- | --- |
 | `device-graph` | Knoten-, Link- und Gerätezahl, Inhaltsdigest sowie `baseline`/`none`/`changed`-Ereignis | `pw-dump` | 2 s | 8000 ms |
-| `audio-levels` | Peak und RMS in dBFS | aktive PipeWire-Messung, passiv aus JSON gelesen | 1 s | 3000 ms |
+| `audio-levels` | Peak und RMS in dBFS, FL/FR-Kanalwerte und recordergebundener Quellen-Hash | exakter MOTU-Recorder-Capture, passiv aus JSON gelesen | 1 s | 3000 ms |
 | `midi-activity` | Sequencer-Clients, Ports, Rawmidi-Bytes und Delta | `/proc/asound` | 1 s | 6000 ms |
 | `transport` | `running`, `idle` oder `unknown` | abgeleitet aus `device-graph` | 1 s | 6000 ms |
 | `cpu-load` | Systemlast, CPU-Sekunden und -Prozent des Dienstes | `/proc` | 2 s | 8000 ms |

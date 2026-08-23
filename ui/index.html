@@ -149,7 +149,7 @@
             id="live-telemetry"
             data-depth-panel
             data-focus-title="Live-Telemetrie"
-            data-focus-summary="Read-only-Telemetriekern mit eigener Sequenz, Frische und Fehlerlage; ein aktiver PipeWire-Pegelobserver wird bei verfügbarem Live-Strom separat ausgewiesen."
+            data-focus-summary="Read-only-Telemetriekern mit eigener Sequenz, Frische und Fehlerlage; ein aktiver, exakt an die Recorder-MOTU-Quelle gebundener Pegelobserver wird bei verfügbarem Live-Strom separat ausgewiesen."
           >
             <header class="depth-heading">
               <div><p class="eyebrow">Read-only-Kern · keine Steuerwirkung</p><h2>Live-Telemetrie</h2></div>
@@ -160,7 +160,7 @@
             <div class="depth-detail" hidden>
               <div class="section-heading compact"><h3>Kanäle und Grenzen</h3></div>
               <dl class="service-list" id="telemetry-detail"></dl>
-              <p class="read-only-boundary">Der Telemetriekern ist read-only und hat keine Steuerwirkung: Er ändert keine Standardgeräte, Routen, Profile, Lautstärken oder produktiven Verbindungen. Nur der getrennte Pegelobserver öffnet zur Messung einen geteilten PipeWire-Capture-Strom.</p>
+              <p class="read-only-boundary">Der Telemetriekern ist read-only und hat keine Steuerwirkung: Er ändert keine Standardgeräte, Routen, Profile, Lautstärken oder produktiven Verbindungen. Nur der getrennte Pegelobserver öffnet zur Messung einen Capture-Strom auf der exakt recordergebundenen MOTU-Quelle; er ändert keine Default-Quelle.</p>
             </div>
           </article>
         </section>

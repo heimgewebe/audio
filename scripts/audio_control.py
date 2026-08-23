@@ -266,7 +266,7 @@ OPERATING_MODES = {
     },
     "recording": {
         "label": "Aufnahme",
-        "effect": None,
+        "effect": "recorder-plan-hash-and-current-readback",
         "actionable": False,
     },
     "performance": {
@@ -783,6 +783,8 @@ def project_operating_modes(
     *,
     doctor_status: str,
     doctor: dict[str, Any],
+    recording_status: str = "unavailable",
+    recording: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Project configured, observed, physical and executable truth orthogonally."""
 
@@ -794,7 +796,23 @@ def project_operating_modes(
     if not isinstance(graph, dict):
         graph = {}
     qobuz = _qobuz_projection(doctor)
-    if qobuz["current_qbzd_playback"]:
+    recording = recording if isinstance(recording, dict) else {}
+    recording_session = recording.get("session")
+    recording_session = recording_session if isinstance(recording_session, dict) else {}
+    recording_active = (
+        recording_status == "ok"
+        and recording.get("status") == "running"
+        and recording_session.get("active") is True
+    )
+    recording_recovery = (
+        recording_status == "ok"
+        and recording_session.get("recovery_required") is True
+    )
+    if recording_active:
+        observed_mode = "recording"
+        signal_state = "recording"
+        signal_path = ["RØDE NT1-A", "MOTU M2", "Recorder"]
+    elif qobuz["current_qbzd_playback"]:
         observed_mode = "qobuz-reference"
         signal_state = "playing"
         signal_path = ["Qobuz Connect", "QBZD / ALSA Direct", "MOTU M2"]
@@ -837,6 +855,15 @@ def project_operating_modes(
         else:
             qobuz_state, qobuz_reason = "blocked", "qconnect-not-ready"
 
+    if recording_status != "ok":
+        recording_state, recording_reason = "blocked", "recorder-unavailable"
+    elif recording_recovery:
+        recording_state, recording_reason = "recovering", "recording-recovery-required"
+    elif recording_active:
+        recording_state, recording_reason = "ready", None
+    else:
+        recording_state, recording_reason = "attention", "recording-preflight-required"
+
     modes: list[dict[str, Any]] = [
         {
             "id": "desktop-listening",
@@ -868,17 +895,37 @@ def project_operating_modes(
             },
         },
     ]
-    modes.extend(
+    modes.append(
         {
-            "id": mode_id,
-            **spec,
+            "id": "recording",
+            **OPERATING_MODES["recording"],
+            "state": recording_state,
+            "reason": recording_reason,
+            "configured": configuration["configured_mode"] == "recording",
+            "quality": {
+                "path": "recorder-bound-motu-capture",
+                "sample_rate_hz": recording_session.get("capture", {}).get("sample_rate_hz")
+                if isinstance(recording_session.get("capture"), dict)
+                else None,
+                "channels": recording_session.get("capture", {}).get("channels")
+                if isinstance(recording_session.get("capture"), dict)
+                else None,
+                "source_bound": recording_session.get("source", {}).get("bound") is True
+                if isinstance(recording_session.get("source"), dict)
+                else False,
+            },
+            "activity": "recording" if recording_active else "idle",
+        }
+    )
+    modes.append(
+        {
+            "id": "performance",
+            **OPERATING_MODES["performance"],
             "state": "blocked",
             "reason": "declared-later-mode",
-            "configured": configuration["configured_mode"] == mode_id,
+            "configured": configuration["configured_mode"] == "performance",
             "quality": None,
         }
-        for mode_id, spec in OPERATING_MODES.items()
-        if mode_id in {"recording", "performance"}
     )
     mode_states = {mode["id"]: mode for mode in modes}
     transition = configuration.get("transition")
@@ -921,7 +968,10 @@ def project_operating_modes(
                 "allowed": qobuz_ready,
                 "authority": "qbzd-qconnect-doctor-readback-v1",
             },
-            "recording": {"allowed": False, "authority": "declared-later-mode"},
+            "recording": {
+                "allowed": recording_status == "ok",
+                "authority": "recorder-plan-hash-and-current-readback",
+            },
             "performance": {"allowed": False, "authority": "declared-later-mode"},
         },
         "modes": modes,
@@ -3517,6 +3567,8 @@ class AudioControl:
             self._operating_mode_configuration(),
             doctor_status=doctor_status,
             doctor=doctor,
+            recording_status=recording_status,
+            recording=recording_probe,
         )
         profile_state_counts: dict[str, int] = {}
         for profile in projected_profiles:

@@ -18,9 +18,13 @@ Ausführbar sind zunächst:
   den Sollmodus nur, wenn der aktuelle Doctor-Readback den QBZD-Referenzprovider
   positiv als bereit bestätigt.
 
-`recording` und `performance` sind deklarierte spätere Modi ohne Wirkung. Ihre
-bestehenden Recorder-, Profil- und Instrumentautoritäten werden nicht
-übernommen.
+`recording` wird als beobachteter Betriebszustand aus dem bestehenden
+Recordervertrag projiziert, besitzt aber bewusst **keine** eigene
+Operating-Mode-Wirkung: Plan, Start, Stop und Recovery bleiben ausschließlich
+beim Recorder. Im Leerlauf zeigt der Modus `attention` mit erforderlicher
+Startprüfung, während einer gebundenen Aufnahme `ready`/`recording` und bei
+Recovery-Bedarf `recovering`. `performance` bleibt ein deklarierter späterer
+Modus ohne Wirkung.
 
 ## Wahrheitsebenen
 
@@ -36,6 +40,11 @@ Diese Ebenen werden nicht ineinander umgedeutet. Insbesondere belegt ein
 konfigurierter Qobuz-Modus keine laufende Wiedergabe, eine verbundene
 QConnect-Sitzung kein Track-Native und ein PipeWire-Standardziel keine physische
 MOTU-Anwesenheit.
+
+Für Recording gilt dieselbe Trennung: eine beobachtete MOTU-Quelle belegt weder
+RØDE-Verkabelung noch 48 V, Gain oder einen freigegebenen Mikrofonkanal. Erst der
+Recorderplan bindet Quellen-Hash, physische Fakten und Labor-Gates. Der
+Betriebsmodus übernimmt nur diese Projektion und erzeugt keinen zweiten Plan.
 
 Die Produktzustände sind `ready`, `transitioning`, `attention`, `blocked` und
 `recovering`. QConnect `retrying` oder `reconnecting` wird sichtbar als

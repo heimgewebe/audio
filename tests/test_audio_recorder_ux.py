@@ -22,26 +22,51 @@ class AudioRecorderUXTests(unittest.TestCase):
         self.assertIn("window.clearInterval(state.recordingClockTimer)", self.app)
         self.assertIn("state.recordingClockTimer = null", self.app)
 
-    def test_live_meter_is_aggregated_and_never_claims_unbound_hardware(self):
-        self.assertIn('stream.value?.source !== "active-pipewire-shared-capture"', self.app)
-        self.assertIn('"PipeWire-Standard-Eingang · aggregierter Live-Pegel"', self.app)
-        self.assertIn('"PipeWire-Eingang · aggregierter Live-Pegel"', self.app)
-        self.assertIn('observation.clipping ? " · Clipping" : ""', self.app)
-        self.assertNotIn("MOTU-Eingang · aggregierter Live-Pegel", self.app)
-        self.assertNotIn("Stimme · aggregierter Live-Pegel", self.app)
-        self.assertNotIn("Klavier · aggregierter Live-Pegel", self.app)
+    def test_live_meter_is_bound_to_recorder_source_and_physical_mic_channel(self):
+        self.assertIn('stream.value?.source !== "active-recorder-bound-capture"', self.app)
+        self.assertIn("function recordingLevelBinding()", self.app)
+        self.assertIn('binding.source.identity_sha256 !== observedSourceSha', self.app)
+        self.assertIn('input === "input-1" ? "FL" : input === "input-2" ? "FR" : null', self.app)
+        self.assertIn('stream.value.channels_analysis.find', self.app)
+        self.assertIn('"front-left,front-right"', self.app)
+        self.assertIn('"Pegel nicht an Aufnahme gebunden"', self.app)
+        self.assertIn('"Mikrofonkanal nicht bestätigt"', self.app)
+        self.assertIn('RØDE · MOTU ${input === "input-1" ? "Input 1" : "Input 2"}', self.app)
+        self.assertNotIn('active-pipewire-shared-capture', self.app)
+        self.assertNotIn('aggregierter Live-Pegel', self.app)
 
-    def test_live_meter_exposes_stale_unavailable_and_unverified_states(self):
+    def test_preflight_meter_requires_explicit_current_plan_binding(self):
+        self.assertIn("function recordingPlanBindsDraft()", self.app)
+        self.assertIn('if (recordingPlanBindsDraft() && plan?.source?.bound === true)', self.app)
+        self.assertIn('phase: "preflight"', self.app)
+        self.assertIn('if (recordingPlanBindsDraft()) {', self.app)
+        self.assertIn('"Pegel vor Aufnahme"', self.app)
+        self.assertIn('"Recorderplan gebunden · Vorabpegel wird verifiziert"', self.app)
+        self.assertIn('"Vorabpegel des an den Recorderplan gebundenen RØDE-Kanals"', self.app)
+        self.assertIn('binding.phase === "preflight" ? "Vorabpegel · " : ""', self.app)
+        self.assertNotIn('runOperatingModeTransition("recording")', self.app)
+
+    def test_live_meter_exposes_stale_unavailable_unbound_and_incomplete_states(self):
         for message in (
             "Live-Pegel nicht verfügbar",
             "Pegel veraltet",
             "Pegel startet",
             "Pegel nicht verfügbar",
             "Pegelquelle nicht verifiziert",
+            "Pegel nicht an Aufnahme gebunden",
+            "Mikrofonkanal nicht bestätigt",
             "Pegel unvollständig",
         ):
             self.assertIn(f'"{message}"', self.app)
         self.assertNotIn('value.textContent = "Pegel wird gelesen"', self.app)
+
+    def test_recorder_surface_reads_recording_operating_mode_without_second_mode_action(self):
+        self.assertIn('const operatingRecordingMode = (state.snapshot?.operating_mode?.modes || []).find(', self.app)
+        self.assertIn('mode?.id === "recording"', self.app)
+        self.assertIn('"Betriebsmodus"', self.app)
+        self.assertIn('"recording-preflight-required"', self.app)
+        self.assertIn('"recording-recovery-required"', self.app)
+        self.assertNotIn('runOperatingModeTransition("recording")', self.app)
 
     def test_known_mode_blocker_disables_start_without_blocking_automatic_preflight(self):
         self.assertIn("function recordingModeKnownHardBlocked(mode)", self.app)

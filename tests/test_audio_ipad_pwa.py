@@ -435,11 +435,16 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("state.recordingPlan = null", mode_change)
         self.assertIn("state.recordingPlanInput = null", mode_change)
 
+        binding = self.app.split("function recordingPlanBindsDraft()", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("input?.mode === state.recordingDraft.mode", binding)
+        self.assertIn("plan.mode === state.recordingDraft.mode", binding)
         matcher = self.app.split("function recordingPlanMatchesDraft()", 1)[1].split(
             "\n}", 1
         )[0]
-        self.assertIn("input?.mode === state.recordingDraft.mode", matcher)
-        self.assertIn("plan.mode === state.recordingDraft.mode", matcher)
+        self.assertIn("recordingPlanBindsDraft()", matcher)
+        self.assertIn("state.recordingPlan?.ready === true", matcher)
 
 
 class FeatureDetectionTests(unittest.TestCase):

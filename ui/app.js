@@ -104,6 +104,9 @@ const OPERATING_MODE_REASON_LABELS = {
   "qconnect-retrying": "QConnect verbindet sich erneut",
   "qbzd-readback-unavailable": "QBZD-Readback nicht verlässlich",
   "qconnect-not-ready": "QConnect noch nicht bereit",
+  "recorder-unavailable": "Recorderzustand nicht lesbar",
+  "recording-preflight-required": "Startprüfung wird beim Aufnehmen gebunden",
+  "recording-recovery-required": "Recorder-Recovery erforderlich",
   "declared-later-mode": "Späterer Modus ohne Wirkung",
 };
 
@@ -1373,6 +1376,35 @@ function formatRecordingElapsed(startedAt, nowMs = Date.now()) {
     : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function recordingPlanBindsDraft() {
+  const plan = state.recordingPlan;
+  const input = state.recordingPlanInput;
+  return Boolean(
+    plan &&
+      typeof plan.plan_sha256 === "string" &&
+      input?.name === state.recordingDraft.name &&
+      input?.maximumSeconds === state.recordingDraft.maximumSeconds &&
+      input?.mode === state.recordingDraft.mode &&
+      plan.mode === state.recordingDraft.mode &&
+      plan.session_type ===
+        (state.recordingDraft.mode === "piano-vocal"
+          ? "piano-vocal-performance"
+          : "voice-recording")
+  );
+}
+
+function recordingLevelBinding() {
+  const session = state.snapshot?.recording?.session || null;
+  if (session?.active === true && session?.source?.bound === true) {
+    return { source: session.source, physical: session.physical || {}, phase: "recording" };
+  }
+  const plan = state.recordingPlan;
+  if (recordingPlanBindsDraft() && plan?.source?.bound === true) {
+    return { source: plan.source, physical: plan.physical || {}, phase: "preflight" };
+  }
+  return null;
+}
+
 function recordingLiveLevelState(telemetry = state.telemetry) {
   const stream = (telemetry?.streams || []).find((candidate) => candidate?.id === "audio-levels");
   if (!stream) {
@@ -1402,22 +1434,52 @@ function recordingLiveLevelState(telemetry = state.telemetry) {
             : "Live-Telemetrie meldet keinen aktuellen Pegel",
     };
   }
-  if (stream.value?.source !== "active-pipewire-shared-capture") {
+  if (stream.value?.source !== "active-recorder-bound-capture") {
     return {
       status: "unverified-source",
       observation: null,
       label: "Pegelquelle nicht verifiziert",
-      detail: "Kein belegter Shared-Capture-Pegel",
+      detail: "Kein exakt gebundener Recorder-Source-Pegel",
     };
   }
-  const peak = finiteTelemetryNumber(stream.value?.peak_dbfs);
-  const rms = finiteTelemetryNumber(stream.value?.rms_dbfs);
+  const binding = recordingLevelBinding();
+  const observedSourceSha = stream.value?.source_identity_sha256;
+  if (
+    !binding ||
+    typeof binding.source?.identity_sha256 !== "string" ||
+    typeof observedSourceSha !== "string" ||
+    binding.source.identity_sha256 !== observedSourceSha
+  ) {
+    return {
+      status: "unbound-session",
+      observation: null,
+      label: "Pegel nicht an Aufnahme gebunden",
+      detail: binding
+        ? "Observer-Quelle stimmt nicht mit dem gebundenen Recorderplan überein"
+        : "Zuerst Startprüfung ausführen oder eine laufende Aufnahme binden",
+    };
+  }
+  const input = binding.physical?.rode_nt1a_motu_input;
+  const channel = input === "input-1" ? "FL" : input === "input-2" ? "FR" : null;
+  if (!channel || stream.value?.channel_map !== "front-left,front-right") {
+    return {
+      status: "unverified-channel",
+      observation: null,
+      label: "Mikrofonkanal nicht bestätigt",
+      detail: "RØDE-Eingang oder MOTU-Kanalabbildung ist nicht physisch gebunden",
+    };
+  }
+  const channelObservation = Array.isArray(stream.value?.channels_analysis)
+    ? stream.value.channels_analysis.find((candidate) => candidate?.channel === channel)
+    : null;
+  const peak = finiteTelemetryNumber(channelObservation?.peak_dbfs);
+  const rms = finiteTelemetryNumber(channelObservation?.rms_dbfs);
   if (peak === null || rms === null) {
     return {
       status: "incomplete",
       observation: null,
       label: "Pegel unvollständig",
-      detail: "Peak und RMS sind nicht vollständig lesbar",
+      detail: "Peak und RMS des gebundenen Mikrofonkanals sind nicht vollständig lesbar",
     };
   }
   return {
@@ -1425,13 +1487,12 @@ function recordingLiveLevelState(telemetry = state.telemetry) {
     observation: {
       peak,
       rms,
-      clipping: stream.value?.clipping === true,
+      clipping: channelObservation?.clipping === true,
+      channel,
+      input,
     },
     label: null,
-    detail:
-      stream.value?.source_selection === "pipewire-default-source"
-        ? "PipeWire-Standard-Eingang · aggregierter Live-Pegel"
-        : "PipeWire-Eingang · aggregierter Live-Pegel",
+    detail: `${binding.phase === "preflight" ? "Vorabpegel · " : ""}RØDE · MOTU ${input === "input-1" ? "Input 1" : "Input 2"} · exakt gebundener Kanal ${channel}`,
   };
 }
 
@@ -1474,20 +1535,7 @@ function syncRecordingClock() {
 }
 
 function recordingPlanMatchesDraft() {
-  const plan = state.recordingPlan;
-  const input = state.recordingPlanInput;
-  return Boolean(
-    plan?.ready === true &&
-      typeof plan.plan_sha256 === "string" &&
-      input?.name === state.recordingDraft.name &&
-      input?.maximumSeconds === state.recordingDraft.maximumSeconds &&
-      input?.mode === state.recordingDraft.mode &&
-      plan.mode === state.recordingDraft.mode &&
-      plan.session_type ===
-        (state.recordingDraft.mode === "piano-vocal"
-          ? "piano-vocal-performance"
-          : "voice-recording")
-  );
+  return recordingPlanBindsDraft() && state.recordingPlan?.ready === true;
 }
 
 async function postRecordingAction(payload) {
@@ -1710,6 +1758,32 @@ async function runRecordingAction(payload) {
   }
 }
 
+function appendRecordingLevelMeter(stage, { preflight = false } = {}) {
+  const meter = element("progress", "recording-live-meter");
+  meter.id = "recording-live-level";
+  meter.max = 120;
+  meter.setAttribute(
+    "aria-label",
+    preflight
+      ? "Vorabpegel des an den Recorderplan gebundenen RØDE-Kanals"
+      : "Live-Pegel des exakt gebundenen RØDE-Kanals",
+  );
+  stage.append(meter);
+  const meterCopy = element("div", "recording-live-meter-copy");
+  const meterValue = appendText(meterCopy, "strong", "", "Pegel wird gelesen");
+  meterValue.id = "recording-live-level-value";
+  const meterSource = appendText(
+    meterCopy,
+    "small",
+    "",
+    preflight
+      ? "Recorderplan gebunden · Vorabpegel wird verifiziert"
+      : "Gebundener RØDE-Kanal · Pegel wird verifiziert",
+  );
+  meterSource.id = "recording-live-level-source";
+  stage.append(meterCopy);
+}
+
 function renderRecordingControls(card, recording) {
   const contract = recording.contract || {};
   const source = contract.source || {};
@@ -1752,6 +1826,16 @@ function renderRecordingControls(card, recording) {
   controls.append(productHead);
 
   const facts = element("dl", "truth-list recording-truth");
+  const operatingRecordingMode = (state.snapshot?.operating_mode?.modes || []).find(
+    (mode) => mode?.id === "recording",
+  );
+  detailRow(
+    facts,
+    "Betriebsmodus",
+    operatingRecordingMode
+      ? `${OPERATING_MODE_STATE_LABELS[operatingRecordingMode.state] || operatingRecordingMode.state}${operatingRecordingMode.reason ? ` · ${OPERATING_MODE_REASON_LABELS[operatingRecordingMode.reason] || formatEndpoint(operatingRecordingMode.reason)}` : ""}`
+      : "Recorderprojektion nicht lesbar",
+  );
   detailRow(
     facts,
     "Quelle",
@@ -1788,22 +1872,7 @@ function renderRecordingControls(card, recording) {
     appendText(stage, "span", "recording-live-indicator", "● Aufnahme läuft");
     const elapsed = appendText(stage, "strong", "recording-running-time", "00:00");
     elapsed.id = "recording-running-time";
-    const meter = element("progress", "recording-live-meter");
-    meter.id = "recording-live-level";
-    meter.max = 120;
-    meter.setAttribute("aria-label", "Aggregierter Live-Eingangspegel");
-    stage.append(meter);
-    const meterCopy = element("div", "recording-live-meter-copy");
-    const meterValue = appendText(meterCopy, "strong", "", "Pegel wird gelesen");
-    meterValue.id = "recording-live-level-value";
-    const meterSource = appendText(
-      meterCopy,
-      "small",
-      "",
-      "MOTU-Eingang · aggregierter Pegel",
-    );
-    meterSource.id = "recording-live-level-source";
-    stage.append(meterCopy);
+    appendRecordingLevelMeter(stage);
     const stopButton = element("button", "primary-button recording-stop-button", "■ Aufnahme stoppen");
     stopButton.type = "button";
     stopButton.setAttribute("aria-label", stopActionLabel);
@@ -1883,6 +1952,14 @@ function renderRecordingControls(card, recording) {
       runRecordingStart();
     });
     controls.append(startButton);
+    if (recordingPlanBindsDraft()) {
+      const stage = element("section", "recording-live-stage recording-preflight-level");
+      stage.id = "recording-live-stage";
+      stage.setAttribute("aria-label", "Vorabpegel");
+      appendText(stage, "span", "recording-live-indicator", "Pegel vor Aufnahme");
+      appendRecordingLevelMeter(stage, { preflight: true });
+      controls.append(stage);
+    }
   }
 
   const advanced = element("details", "recording-advanced");
@@ -3652,20 +3729,20 @@ function hasActivePipeWireLevel(streams) {
     (stream) =>
       stream?.id === "audio-levels" &&
       stream.availability === "live" &&
-      stream.value?.source === "active-pipewire-shared-capture",
+      stream.value?.source === "active-recorder-bound-capture",
   );
 }
 
 function telemetryObservationSummary(streams) {
   return hasActivePipeWireLevel(streams)
-    ? "Pegel aktiv via PipeWire · Telemetriekern read-only/ohne Steuerwirkung"
+    ? "Pegel aktiv auf recordergebundener MOTU-Quelle · Telemetriekern read-only/ohne Steuerwirkung"
     : "Telemetriekern read-only/ohne Steuerwirkung";
 }
 
 function telemetryLevelSourceLabel(stream) {
   if (stream?.id !== "audio-levels") return null;
-  if (stream.value?.source === "active-pipewire-shared-capture") {
-    return "Quelle: PipeWire Shared Capture";
+  if (stream.value?.source === "active-recorder-bound-capture") {
+    return "Quelle: exakt recordergebundene MOTU-Aufnahmequelle";
   }
   if (stream.value?.source === "external-passive-level-file") {
     return "Quelle: externe Pegeldatei";

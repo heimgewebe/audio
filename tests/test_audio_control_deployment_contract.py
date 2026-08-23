@@ -112,7 +112,8 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         ui = UI_UNIT_PATH.read_text(encoding="utf-8")
         self.assertIn("PartOf=audio-control-ui-v1.service", observer)
         self.assertIn("RuntimeDirectory=audio-control-level-observer", observer)
-        self.assertIn("--target auto", observer)
+        self.assertNotIn("--target auto", observer)
+        self.assertIn("audio_level_observer.py run --output", observer)
         self.assertIn("Wants=audio-control-level-observer-v1.service", ui)
 
     def test_qobuz_recovery_uses_systemd_exported_state_directory(self):
