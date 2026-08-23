@@ -3,6 +3,7 @@ import importlib.util
 import json
 import math
 import pathlib
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -166,17 +167,26 @@ class AudioLevelObserverTests(unittest.TestCase):
         self.assertIsNone(MODULE._motu_source_binding(wrong))
 
         completed = mock.Mock(returncode=0, stdout=json.dumps([motu_source()]).encode(), stderr=b"")
-        with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
+        with (
+            mock.patch.object(MODULE, "PACTL", pathlib.Path(sys.executable)),
+            mock.patch.object(MODULE.subprocess, "run", return_value=completed),
+        ):
             resolved = MODULE.resolve_recorder_source()
         self.assertEqual(resolved, binding)
 
         completed.stdout = json.dumps([]).encode()
-        with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
+        with (
+            mock.patch.object(MODULE, "PACTL", pathlib.Path(sys.executable)),
+            mock.patch.object(MODULE.subprocess, "run", return_value=completed),
+        ):
             with self.assertRaises(MODULE.SourceUnavailable):
                 MODULE.resolve_recorder_source()
 
         completed.stdout = json.dumps([motu_source(), motu_source()]).encode()
-        with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
+        with (
+            mock.patch.object(MODULE, "PACTL", pathlib.Path(sys.executable)),
+            mock.patch.object(MODULE.subprocess, "run", return_value=completed),
+        ):
             with self.assertRaisesRegex(MODULE.ObserverError, "ambiguous"):
                 MODULE.resolve_recorder_source()
 
