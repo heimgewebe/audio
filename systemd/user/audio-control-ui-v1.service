@@ -18,6 +18,7 @@ EnvironmentFile=-%h/.config/audio-control-deploy.env
 # Optional nur, damit der erste Upgrade-Lauf vor ihrer Erzeugung starten kann.
 EnvironmentFile=-%h/.local/state/audio-control-deploy/runtime.env
 WorkingDirectory=%h/.local/share/audio-control-ui/current
+ExecStartPre=+/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py prepare-runtime-state
 ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py serve --host 127.0.0.1 --port ${AUDIO_CONTROL_PORT}
 Restart=on-failure
 RestartSec=2s
@@ -28,6 +29,9 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
+StateDirectory=audio-control-ui
+StateDirectoryMode=0700
+ReadWritePaths=%h/Music/Audio-Aufnahmen %h/.local/state/audio/recordings-v1 %h/.local/state/audio/profile-transitions-v1
 ProtectControlGroups=yes
 ProtectKernelTunables=yes
 LockPersonality=yes

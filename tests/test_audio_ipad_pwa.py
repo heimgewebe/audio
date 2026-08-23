@@ -538,6 +538,7 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             "    state.loading ||\n"
             "    state.recordingActionPending ||\n"
             "    state.dauersongActionPending ||\n"
+            "    state.operatingModeActionPending ||\n"
             "    state.whaleActionPending ||\n"
             "    !backendAllowed()\n"
             "  ) return;",

@@ -9,7 +9,7 @@ const ROUTES = {
   hoeren: {
     title: "Hören",
     eyebrow: "Wiedergabe und Referenzweg",
-    description: "Desktop und Mobilgeräte können als Quellen dienen; der MOTU M2 ist der zentrale Knoten für Kopfhörer- und Receiverast.",
+    description: "Zwischen gemeinsamem Desktop-Pfad und geprüftem Qobuz-Referenzpfad wechseln; der aktuelle Signalweg bleibt sichtbar.",
   },
   aufnehmen: {
     title: "Aufnehmen",
@@ -86,6 +86,25 @@ const PROFILE_STATE_LABELS = {
   onsite: "vor Ort",
   laboratory: "Labor-Gate",
   planned: "geplant",
+};
+
+const OPERATING_MODE_STATE_LABELS = {
+  ready: "bereit",
+  transitioning: "wechselt",
+  attention: "prüfen",
+  blocked: "blockiert",
+  recovering: "stellt wieder her",
+};
+
+const OPERATING_MODE_REASON_LABELS = {
+  "doctor-unavailable": "Systemzustand nicht lesbar",
+  "motu-not-observed": "MOTU M2 nicht beobachtet",
+  "qobuz-playback-running": "Qobuz-Wiedergabe zuerst stoppen",
+  "desktop-transition-required": "Desktop-Pfad kann wiederhergestellt werden",
+  "qconnect-retrying": "QConnect verbindet sich erneut",
+  "qbzd-readback-unavailable": "QBZD-Readback nicht verlässlich",
+  "qconnect-not-ready": "QConnect noch nicht bereit",
+  "declared-later-mode": "Späterer Modus ohne Wirkung",
 };
 
 const PHYSICAL_FACT_LABELS = {
@@ -364,6 +383,8 @@ const state = {
   },
   recordingActionPending: false,
   dauersongActionPending: false,
+  operatingModeActionPending: false,
+  operatingModeRetry: null,
   recordingDetailsOpen: false,
   recordingClockTimer: null,
   whaleActionPending: false,
@@ -672,9 +693,9 @@ function renderRuntimeMode() {
 function syncRemoteControls() {
   const blocked = !backendAllowed();
   byId("refresh-button").disabled =
-    blocked || state.loading || state.recordingActionPending || state.dauersongActionPending || state.whaleActionPending;
+    blocked || state.loading || state.recordingActionPending || state.dauersongActionPending || state.operatingModeActionPending || state.whaleActionPending;
   byId("diagnostic-refresh").disabled =
-    blocked || state.loading || state.recordingActionPending || state.dauersongActionPending || state.whaleActionPending;
+    blocked || state.loading || state.recordingActionPending || state.dauersongActionPending || state.operatingModeActionPending || state.whaleActionPending;
   byId("auto-refresh-toggle").disabled = blocked;
 }
 
@@ -730,6 +751,8 @@ function stopRemoteActivity() {
   state.recordingPlanInput = null;
   state.recordingActionPending = false;
   state.dauersongActionPending = false;
+  state.operatingModeActionPending = false;
+  state.operatingModeRetry = null;
   state.whaleActionPending = false;
   state.remoteWhaleActionObserved = false;
   state.remoteActionScopes = [];
@@ -919,6 +942,7 @@ async function refreshSnapshot(force = false) {
     state.loading ||
     state.recordingActionPending ||
     state.dauersongActionPending ||
+    state.operatingModeActionPending ||
     state.whaleActionPending ||
     !backendAllowed()
   ) return;
@@ -993,6 +1017,7 @@ function renderTruth() {
   const presence = snapshot.presence || {};
   const summary = snapshot.summary || {};
   const truth = snapshot.truth_stream || {};
+  const operatingMode = snapshot.operating_mode || {};
   const observed = presence.observed_count ?? 0;
   const desired = presence.desired_count ?? 0;
   byId("truth-observed").textContent = doctor.status === "ok" ? `${observed}/${desired} Geräte` : "nicht lesbar";
@@ -1000,8 +1025,13 @@ function renderTruth() {
     doctor.status === "ok"
       ? `Wahrheit Seq ${truth.sequence ?? "—"} · ${truth.freshness || "offen"} · ${truth.age_ms ?? "—"} ms`
       : `kein positiver Zustand angenommen · Fehler ${truth.error_count ?? "—"}`;
-  byId("truth-configured").textContent = graph.force_rate_hz ? `${graph.force_rate_hz} Hz` : "offen";
-  byId("truth-configured-detail").textContent = graph.default_sink ? `Ziel: ${formatEndpoint(graph.default_sink)}` : "kein Ziel lesbar";
+  const configuredMode = operatingMode.modes?.find(
+    (mode) => mode.id === operatingMode.configured?.mode,
+  );
+  byId("truth-configured").textContent = configuredMode?.label || "offen";
+  byId("truth-configured-detail").textContent = graph.default_sink
+    ? `Sollmodus getrennt · Graphziel: ${formatEndpoint(graph.default_sink)}`
+    : "Sollmodus getrennt · kein Graphziel lesbar";
   const physicalCount = summary.physical_unknown_count || 0;
   byId("truth-physical").textContent = physicalCount ? `${physicalCount} offen` : "belegt";
   byId("truth-physical-detail").textContent = physicalCount ? "Vor-Ort-Nachweise fehlen" : "keine offenen Nachweise";
@@ -1105,6 +1135,87 @@ function localDauersongActionsAllowed() {
       typeof state.snapshot?.service?.action_token === "string" &&
       state.snapshot.service.action_token.length >= 16
   );
+}
+
+function localOperatingModeActionsAllowed() {
+  return Boolean(
+    directLoopbackControlOrigin() &&
+      backendAllowed() &&
+      state.remoteBridgeProjection !== true &&
+      state.snapshot?.capabilities?.operating_mode_transition === true &&
+      typeof state.snapshot?.service?.action_token === "string" &&
+      state.snapshot.service.action_token.length >= 16
+  );
+}
+
+function operatingModeRequestId(targetMode) {
+  if (state.operatingModeRetry?.targetMode === targetMode) {
+    return state.operatingModeRetry.requestId;
+  }
+  const randomPart = window.crypto?.randomUUID?.() ||
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
+  return `mode-${randomPart}`;
+}
+
+const OPERATING_MODE_RETRY_ERROR_CODES = new Set([
+  "operating_mode_transition_uncertain",
+  "operating_mode_postcondition_failed",
+]);
+
+function operatingModeFailureNeedsSameRequest(error) {
+  if (!(error instanceof Error)) return true;
+  if (typeof error.code !== "string" || !error.code) return true;
+  return OPERATING_MODE_RETRY_ERROR_CODES.has(error.code);
+}
+
+async function runOperatingModeTransition(targetMode) {
+  if (!localOperatingModeActionsAllowed() || state.operatingModeActionPending) return;
+  const requestId = operatingModeRequestId(targetMode);
+  state.operatingModeRetry = { targetMode, requestId };
+  state.operatingModeActionPending = true;
+  syncRemoteControls();
+  renderOperatingModeCards();
+  try {
+    const result = await fetchJson("/api/v1/actions/operating-mode", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Audio-Control-Token": state.snapshot.service.action_token,
+      },
+      body: JSON.stringify({ request_id: requestId, target_mode: targetMode }),
+      timeoutMs: 70000,
+    });
+    if (
+      result?.kind !== "audio_operating_mode_transition_result" ||
+      result?.status !== "ready" ||
+      result?.target_mode !== targetMode ||
+      result?.snapshot?.operating_mode?.configured?.mode !== targetMode ||
+      result?.snapshot?.operating_mode?.state !== "ready"
+    ) {
+      throw new Error("Der Moduswechsel lieferte keinen passenden Zielzustand.");
+    }
+    state.snapshot = result.snapshot;
+    state.operatingModeRetry = null;
+    showNotice(
+      result.idempotent
+        ? "Modus ist autoritativ bestätigt; keine Wirkung wurde wiederholt."
+        : "Moduswechsel ist durch aktuellen System-Readback bestätigt.",
+      "success",
+    );
+    renderAll();
+  } catch (error) {
+    const keepRetry = operatingModeFailureNeedsSameRequest(error);
+    if (!keepRetry) state.operatingModeRetry = null;
+    showNotice(
+      error instanceof Error
+        ? `${error.message}${keepRetry ? " Erneut versuchen gleicht dieselbe Request-ID ab." : ""}`
+        : "Moduswechsel blieb unklar.",
+    );
+  } finally {
+    state.operatingModeActionPending = false;
+    syncRemoteControls();
+    if (state.snapshot) renderOperatingModeCards();
+  }
 }
 
 async function postDauersongAction(payload) {
@@ -2374,18 +2485,18 @@ function renderHome() {
   const summary = snapshot.summary || {};
   const doctor = snapshot.doctor || {};
   const graph = doctor.graph || {};
+  const operatingMode = snapshot.operating_mode || {};
+  const configuredOperatingMode = operatingMode.configured?.mode || null;
+  const operatingModes = Array.isArray(operatingMode.modes) ? operatingMode.modes : [];
+  const configuredModeCard = operatingModes.find((mode) => mode.id === configuredOperatingMode);
+  const qobuzModeCard = operatingModes.find((mode) => mode.id === "qobuz-reference") || {};
   const qobuz = doctor.streaming_sources?.qobuz || {};
-  const qbzd = qobuz.qbzd || {};
-  const qbzdAudio = qbzd.audio || {};
-  const qobuzRecovery = snapshot.qobuz_recovery || {};
-  const qobuzRecoveryRequired = qobuzRecovery.required === true;
-  const qobuzRecoveryHealthy = qobuzRecovery.healthy === true;
-  const qobuzVerified = qobuz.track_native_proven === true;
+  const qobuzVerified = operatingMode.truth_boundary?.track_native_proven === true;
   const qobuzReady = qobuz.reference_provider_ready === true;
   const qobuzProvider = qobuz.selected_reference_provider || null;
   const qobuzRate =
-    qobuzVerified && Number.isFinite(qbzdAudio.sample_rate_hz)
-      ? qbzdAudio.sample_rate_hz
+    qobuzVerified && Number.isFinite(operatingMode.truth_boundary?.track_sample_rate_hz)
+      ? operatingMode.truth_boundary.track_sample_rate_hz
       : null;
   let qobuzSourceTitle = "Heim-PC / Qobuz";
   let qobuzSourceDetail = "Qobuz-Pfad offen";
@@ -2399,22 +2510,7 @@ function renderHome() {
       qobuzSourceDetail = `Qobuz Connect · ${nativeRate}TRACK-NATIVE ✓`;
       qobuzSourceTone = "observed";
     } else if (qobuzReady) {
-      const proofStateDetail = {
-        "hardware-preparing": "Qobuz Connect · Referenzpfad wird vorbereitet",
-        "ready-awaiting-playback": "Qobuz Connect · Referenzpfad bereit · Ratebeleg bei Wiedergabe",
-        "desktop-mixed-active": "Qobuz Connect · Desktop-Pfad aktiv · Ratebeleg bei Wiedergabe",
-        "rate-mismatch": "Qobuz Connect · Rate-Mismatch · track-native nicht belegt",
-        "motu-rate-unreadable": "Qobuz Connect · MOTU-Rate nicht lesbar · track-native nicht belegt",
-        "qbzd-rate-unreadable": "Qobuz Connect · QBZD-Rate nicht lesbar · track-native nicht belegt",
-        "hardware-owner-unverified": "Qobuz Connect · MOTU-Owner nicht QBZD · track-native nicht belegt",
-        "hardware-snapshot-unstable": "Qobuz Connect · MOTU-Snapshot instabil · track-native nicht belegt",
-        "qbzd-snapshot-unstable": "Qobuz Connect · QBZD-Snapshot instabil · track-native nicht belegt",
-        "qbzd-snapshot-unavailable": "Qobuz Connect · QBZD-Doppelbeleg offen · track-native nicht belegt",
-        "direct-hardware-not-reported": "Qobuz Connect · DirectHardware nicht belegt",
-      };
-      qobuzSourceDetail =
-        proofStateDetail[qobuz.rate_proof_state] ||
-        "Qobuz Connect · Referenzpfad bereit · aktueller Ratebeleg offen";
+      qobuzSourceDetail = "Qobuz Connect bereit · aktueller Track-Native-Beleg offen";
       qobuzSourceTone = "configured";
     }
   } else if (qobuzProvider === "mopidy-legacy") {
@@ -2422,15 +2518,9 @@ function renderHome() {
     qobuzSourceDetail = "Legacy-Mopidy · gemischter Pfad · track-native nicht belegt";
     qobuzSourceTone = "configured";
   }
-  if (qobuzRecoveryRequired) {
-    const activeCountLabel =
-      Number.isInteger(qobuzRecovery.active_count) &&
-      qobuzRecovery.active_count >= 0 &&
-      qobuzRecovery.active_count <= 2
-        ? qobuzRecovery.active_count
-        : "?";
-    qobuzSourceDetail = `${qobuzSourceDetail} · Selbstheilung ${activeCountLabel}/2${qobuzRecoveryHealthy ? "" : " · Recovery prüfen"}`;
-    if (!qobuzRecoveryHealthy) qobuzSourceTone = "attention";
+  if (qobuzModeCard.state === "recovering" || qobuzModeCard.state === "attention") {
+    qobuzSourceDetail = OPERATING_MODE_REASON_LABELS[qobuzModeCard.reason] || "Qobuz-Pfad prüfen";
+    qobuzSourceTone = "attention";
   }
   const presence = snapshot.presence || {};
   const deployment = snapshot.deployment || {};
@@ -2442,7 +2532,6 @@ function renderHome() {
   const motuObserved = presence.observed?.motu_m2 === true;
   const rolandObserved = presence.observed?.roland_fp_30x === true;
   const rate = graph.force_rate_hz || graph.rate_hz || null;
-  const quantum = graph.force_quantum_frames || graph.quantum_frames || null;
   const takeCount = Array.isArray(state.recordingLibrary?.items)
     ? state.recordingLibrary.items.length
     : null;
@@ -2484,7 +2573,6 @@ function renderHome() {
   appendText(foot, "span", "", recordingStatusLabel(recording.status));
   card.append(foot);
 
-  const listening = homeProfileStatus("reference-listening");
   const recordingProfile = homeProfileStatus("voice-recording");
   const playingProfile = homeProfileStatus("piano-software-live");
   const whaleMode = displayMode(snapshot.whale.service?.voice_mode || snapshot.whale.contract?.default_mode);
@@ -2494,9 +2582,9 @@ function renderHome() {
       glyph: "◖",
       eyebrow: "Wiedergabe",
       title: "Hören",
-      status: listening.label,
-      tone: listening.tone,
-      detail: `${formatEndpoint(graph.default_sink)}${rate ? ` · ${rate} Hz` : ""}`,
+      status: OPERATING_MODE_STATE_LABELS[operatingMode.state] || "offen",
+      tone: operatingMode.state === "ready" ? "ready" : "onsite",
+      detail: configuredModeCard?.label || "Hörmodus offen",
     },
     {
       href: "#aufnehmen",
@@ -2548,7 +2636,7 @@ function renderHome() {
       : "physische Receiver-Gates belegt";
 
   byId("home-signal-caption").textContent =
-    `${rate ? `${rate} Hz · ` : ""}2 Quellarten → MOTU M2 · Softwareziel ${formatEndpoint(graph.default_sink)}`;
+    `${configuredModeCard?.label || "Modus offen"} · ${OPERATING_MODE_STATE_LABELS[operatingMode.state] || "unbekannt"} · ${(operatingMode.active_signal_path?.nodes || []).join(" → ") || "Signalweg offen"}`;
   byId("home-signal-flow").replaceChildren(
     listeningTopology(
       [
@@ -2587,12 +2675,12 @@ function renderHome() {
   );
 
   const metrics = [
-    ["Samplerate", rate ? `${rate / 1000} kHz` : "offen", "aktueller Graph"],
-    ["Puffer", quantum ? `${quantum} Frames` : "offen", "aktueller Quantum"],
+    ["Modus", configuredModeCard?.label || "offen", OPERATING_MODE_STATE_LABELS[operatingMode.state] || "unbekannt"],
+    ["Signalweg", operatingMode.active_signal_path?.mode === "qobuz-reference" ? "Qobuz direkt" : operatingMode.active_signal_path?.mode === "desktop-listening" ? "Desktop gemischt" : "offen", operatingMode.active_signal_path?.state || "unbekannt"],
+    ["Qualität", qobuzVerified ? "TRACK-NATIVE ✓" : rate ? `${rate / 1000} kHz` : "offen", qobuzVerified ? "aktuelle Wiedergabe bewiesen" : "kein Track-Native-Beleg"],
     ["MOTU M2", motuObserved ? "beobachtet" : "offen", "zentraler Hörknoten"],
-    ["Ausgaben", "Focal + Pioneer", "Kopfhörer + Lautsprecher"],
   ];
-  const metricGlyphs = { Samplerate: "≋", Puffer: "◫", "MOTU M2": "◖", Ausgaben: "◎" };
+  const metricGlyphs = { Modus: "◫", Signalweg: "⇥", Qualität: "≋", "MOTU M2": "◖" };
   byId("home-metrics").replaceChildren(
     ...metrics.map(([label, value, description]) => {
       const metric = element("article", "metric-card listen-metric-card");
@@ -2873,10 +2961,146 @@ function detailRow(list, term, detail) {
   list.append(row);
 }
 
+function operatingModeStateTone(stateName) {
+  if (stateName === "ready") return "ready";
+  if (stateName === "attention" || stateName === "recovering") return "attention";
+  return "unavailable";
+}
+
+function operatingModeCard(mode, projection) {
+  const card = element("article", "profile-card operating-mode-card");
+  card.dataset.operatingMode = mode.id;
+  card.dataset.modeState = mode.state;
+  const top = element("div", "card-topline");
+  appendText(top, "span", "card-glyph", mode.id === "qobuz-reference" ? "Q" : "◫").setAttribute(
+    "aria-hidden",
+    "true",
+  );
+  appendText(
+    top,
+    "span",
+    `status-pill ${operatingModeStateTone(mode.state)}`,
+    `${mode.configured ? "aktiv · " : ""}${OPERATING_MODE_STATE_LABELS[mode.state] || mode.state}`,
+  );
+  card.append(top);
+  appendText(card, "h3", "", mode.label);
+  appendText(
+    card,
+    "p",
+    "",
+    mode.id === "desktop-listening"
+      ? "Gemeinsamer PipeWire-/MOTU-Pfad für Desktop, Spotify und Browser."
+      : "QBZD/QConnect direkt über ALSA und MOTU; Bereitschaft ist noch kein Track-Native-Beleg.",
+  );
+  const meta = element("div", "card-meta operating-mode-quality");
+  if (mode.id === "desktop-listening") {
+    const rate = mode.quality?.sample_rate_hz;
+    appendText(meta, "span", "", rate ? `${rate / 1000} kHz · gemeinsam gemischt` : "Samplerate offen");
+    appendText(meta, "span", "", "Kein Track-Native-Anspruch");
+  } else if (mode.quality?.track_native_proven === true) {
+    const rate = mode.quality.sample_rate_hz;
+    appendText(meta, "strong", "track-native-proof", `${rate ? `${rate / 1000} kHz · ` : ""}TRACK-NATIVE ✓`);
+  } else {
+    appendText(meta, "span", "", "Track-native aktuell nicht belegt");
+    appendText(
+      meta,
+      "span",
+      "",
+      mode.qconnect?.state
+        ? `QConnect: ${formatEndpoint(mode.qconnect.state)}`
+        : OPERATING_MODE_REASON_LABELS[mode.reason] || "QConnect-Zustand offen",
+    );
+  }
+  if (mode.reason) {
+    appendText(meta, "span", "mode-reason", OPERATING_MODE_REASON_LABELS[mode.reason] || formatEndpoint(mode.reason));
+  }
+  card.append(meta);
+
+  const actions = element("div", "card-actions");
+  const allowed = projection.executable?.[mode.id]?.allowed === true;
+  const pendingForMode =
+    state.operatingModeActionPending && state.operatingModeRetry?.targetMode === mode.id;
+  const retryForMode =
+    !state.operatingModeActionPending && state.operatingModeRetry?.targetMode === mode.id;
+  const retryForOtherMode =
+    state.operatingModeRetry && state.operatingModeRetry.targetMode !== mode.id;
+  const button = element(
+    "button",
+    "secondary-button",
+    pendingForMode
+      ? "Wird abgeglichen …"
+      : mode.configured && mode.state === "ready"
+        ? "Aktiv"
+        : retryForMode
+          ? "Erneut abgleichen"
+          : "Diesen Modus wählen",
+  );
+  button.type = "button";
+  button.disabled =
+    state.operatingModeActionPending ||
+    retryForOtherMode ||
+    (mode.configured && mode.state === "ready") ||
+    !allowed ||
+    !localOperatingModeActionsAllowed();
+  button.addEventListener("click", () => runOperatingModeTransition(mode.id));
+  actions.append(button);
+  if (!localOperatingModeActionsAllowed()) {
+    appendText(actions, "small", "", "Wirkung nur lokal am Heim-PC freigegeben.");
+  } else if (retryForOtherMode) {
+    appendText(actions, "small", "", "Zuerst den unklaren Wechsel mit derselben Request-ID abgleichen.");
+  }
+  card.append(actions);
+  return card;
+}
+
+function readOnlyListeningCard(id, title, detail, observed) {
+  const card = element("article", "profile-card operating-mode-card is-read-only");
+  card.dataset.listeningOutput = id;
+  const top = element("div", "card-topline");
+  appendText(top, "span", "card-glyph", id === "pioneer" ? "⌂" : "⌁").setAttribute("aria-hidden", "true");
+  appendText(top, "span", `status-pill ${observed ? "ready" : "onsite"}`, observed ? "beobachtet" : "physisch offen");
+  card.append(top);
+  appendText(card, "h3", "", title);
+  appendText(card, "p", "", detail);
+  const meta = element("div", "card-meta");
+  appendText(meta, "span", "", "Read-only · keine Moduswirkung");
+  card.append(meta);
+  return card;
+}
+
+function renderOperatingModeCards() {
+  const target = byId("listening-profiles");
+  if (!target || !state.snapshot) return;
+  const projection = state.snapshot.operating_mode || {};
+  const modes = Array.isArray(projection.modes)
+    ? projection.modes.filter((mode) => ["desktop-listening", "qobuz-reference"].includes(mode.id))
+    : [];
+  const outputs = projection.read_only_outputs || {};
+  target.replaceChildren(
+    ...modes.map((mode) => operatingModeCard(mode, projection)),
+    readOnlyListeningCard(
+      "pioneer",
+      "Pioneer / Lautsprecher",
+      outputs.pioneer?.physical_connection === true
+        ? "Physische Verbindung belegt; Eingang, Hörmodus und Pegel bleiben separate Vor-Ort-Wahrheit."
+        : "MOTU-Ausgangspfad vorgesehen; Receiver-Eingang, Hörmodus und Pegel sind vor Ort zu bestätigen.",
+      outputs.pioneer?.software_observed === true,
+    ),
+    readOnlyListeningCard(
+      "bluetooth",
+      "Bluetooth / 1MII",
+      outputs.bluetooth?.physical_connection === true
+        ? "Externer Komfortpfad physisch belegt; ohne Referenz- oder Latenzanspruch."
+        : "Externer Sender und Ziel sind softwareseitig nicht autoritativ beobachtbar.",
+      outputs.bluetooth?.software_observed === true,
+    ),
+  );
+}
+
 function renderProfiles() {
   renderProfileGrid("playing-profiles", profilesFor("playing"));
   renderProfileGrid("recording-profiles", profilesFor("recording"));
-  renderProfileGrid("listening-profiles", profilesFor("listening"));
+  renderOperatingModeCards();
   const recording = state.snapshot.recording;
   const boundary = byId("recording-boundary");
   boundary.replaceChildren();
@@ -2888,11 +3112,13 @@ function renderProfiles() {
     `${recording.detail} Aktuell: ${recordingStatusLabel(recording.status)}.`,
   );
 
-  const listening = profilesFor("listening");
+  const listening = state.snapshot.operating_mode?.modes?.filter(
+    (mode) => ["desktop-listening", "qobuz-reference"].includes(mode.id),
+  ) || [];
   const listeningStat = byId("listen-intro-stat");
   listeningStat.replaceChildren();
   appendText(listeningStat, "strong", "", String(listening.length));
-  appendText(listeningStat, "span", "", "Hörprofile");
+  appendText(listeningStat, "span", "", "klare Hörmodi");
 }
 
 function renderProfileGrid(targetId, profiles) {
@@ -3935,6 +4161,9 @@ function renderDeployment() {
 function renderDiagnostics() {
   const doctor = state.snapshot.doctor;
   const graph = doctor.graph || {};
+  const qobuz = doctor.streaming_sources?.qobuz || {};
+  const playback = qobuz.motu_hardware_playback || {};
+  const qobuzRecovery = state.snapshot.qobuz_recovery || {};
   const summary = state.snapshot.summary || {};
   const presence = state.snapshot.presence || {};
   const deployment = state.snapshot.deployment || {};
@@ -3959,6 +4188,20 @@ function renderDiagnostics() {
     ["Doctor", doctor.status === "ok" ? "lesbar" : "offen"],
     ["Rate", graph.force_rate_hz ? `${graph.force_rate_hz} Hz` : "—"],
     ["Quantum", graph.force_quantum_frames ? `${graph.force_quantum_frames}` : "—"],
+    [
+      "Qobuz PCM",
+      playback.open === true
+        ? `${formatEndpoint(playback.pcm_state)} · ${formatEndpoint(playback.owner_class)}`
+        : playback.open === false
+          ? "geschlossen"
+          : "nicht lesbar",
+    ],
+    [
+      "Qobuz Recovery",
+      qobuzRecovery.required === true
+        ? `${qobuzRecovery.status || "offen"} · ${Number.isInteger(qobuzRecovery.active_count) ? qobuzRecovery.active_count : "?"}/2`
+        : "nicht erforderlich",
+    ],
     ["Werkzeuge", `${available}/${commands.length}`],
   ];
   byId("diagnostic-metrics").replaceChildren(
@@ -3970,7 +4213,11 @@ function renderDiagnostics() {
         card,
         "span",
         "",
-        label === "Quantum" ? "Frames, beobachtet" : "Backend-Readback",
+        label === "Quantum"
+          ? "Frames, beobachtet"
+          : label === "Qobuz PCM"
+            ? `Ratebeleg: ${qobuz.rate_proof_state || "offen"}`
+            : "Backend-Readback",
       );
       return card;
     }),
@@ -4318,6 +4565,7 @@ function autoRefreshBlocked() {
     state.loading ||
     state.recordingActionPending ||
     state.dauersongActionPending ||
+    state.operatingModeActionPending ||
     state.whaleActionPending ||
     state.replayPlaying ||
     recordingPlaybackActive() ||
