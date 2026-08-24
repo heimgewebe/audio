@@ -19,6 +19,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "inventory" / "physical-facts.v1.json"
 TEMPLATE_PATH = ROOT / "inventory" / "physical-verification.v1.json"
 MAX_STATE_BYTES = 65_536
+LEGACY_CATALOG_SHA256_COMPATIBILITY = {
+    # 9ca5db0 -> 93177bd changed only the human-facing Pioneer prompt.
+    # Both raw-file digests describe the same validation contract. Binding each
+    # to the exact semantic digest makes the exception expire automatically
+    # after any later validation-semantic change.
+    "1b8822768b7d809543bb9f037003a828c08177061d54af76c56e58b142f6fd55": (
+        "15295fd0647a83bb59372c3e7ebe6cc7ef781666ef52898b16b2c11bc211c8ca"
+    ),
+    "39a8d395fb8ff44c7466c6c1cd217686ea3b638e6f022edf2ad7e4457fa4deea": (
+        "15295fd0647a83bb59372c3e7ebe6cc7ef781666ef52898b16b2c11bc211c8ca"
+    ),
+}
 DEFAULT_STATE = pathlib.Path(
     os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")
 ) / "audio" / "physical" / "latest.v1.json"
@@ -33,6 +45,28 @@ def load_json(path: pathlib.Path) -> dict[str, Any]:
 
 def sha256_file(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def catalog_semantic_sha256(path: pathlib.Path | None = None) -> str:
+    """Hash validation semantics while excluding human-facing prompt copy."""
+
+    catalog = load_json(path or CATALOG_PATH)
+    facts = catalog.get("facts")
+    if not isinstance(facts, dict):
+        raise ValueError("physical fact catalog has no facts object")
+    semantic = dict(catalog)
+    semantic_facts: dict[str, dict[str, Any]] = {}
+    for key, spec in facts.items():
+        if not isinstance(key, str) or not key or not isinstance(spec, dict):
+            raise ValueError("physical fact catalog contains an invalid fact specification")
+        semantic_facts[key] = {
+            field: value for field, value in spec.items() if field != "prompt"
+        }
+    semantic["facts"] = semantic_facts
+    encoded = json.dumps(
+        semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def parse_value(spec: dict[str, Any], raw: str) -> Any:
@@ -99,7 +133,7 @@ def empty_state() -> dict[str, Any]:
         "schema_version": 1,
         "kind": "physical_audio_observation",
         "updated_at": None,
-        "catalog_sha256": sha256_file(CATALOG_PATH),
+        "catalog_sha256": catalog_semantic_sha256(),
         "template_sha256": sha256_file(TEMPLATE_PATH),
         "facts": {},
         "does_not_establish": [
@@ -113,7 +147,16 @@ def empty_state() -> dict[str, Any]:
 def validate_state(path: pathlib.Path, payload: dict[str, Any]) -> None:
     if payload.get("schema_version") != 1 or payload.get("kind") != "physical_audio_observation":
         raise ValueError("physical observation state has the wrong schema or kind")
-    if payload.get("catalog_sha256") != sha256_file(CATALOG_PATH):
+    semantic_catalog_sha256 = catalog_semantic_sha256()
+    observed_catalog_sha256 = payload.get("catalog_sha256")
+    compatible_legacy_semantic_sha256 = LEGACY_CATALOG_SHA256_COMPATIBILITY.get(
+        observed_catalog_sha256
+    )
+    if not (
+        observed_catalog_sha256 == semantic_catalog_sha256
+        or observed_catalog_sha256 == sha256_file(CATALOG_PATH)
+        or compatible_legacy_semantic_sha256 == semantic_catalog_sha256
+    ):
         raise ValueError("physical fact catalog changed; review observations before reuse")
     if payload.get("template_sha256") != sha256_file(TEMPLATE_PATH):
         raise ValueError("physical verification template changed; review observations before reuse")
@@ -158,6 +201,9 @@ def read_state(path: pathlib.Path) -> dict[str, Any]:
         raise ValueError(f"physical observation state exceeds {MAX_STATE_BYTES} bytes")
     payload = load_json(path)
     validate_state(path, payload)
+    # Normalize compatible legacy/raw bindings in memory. Any later mutation
+    # therefore persists the semantic contract hash without making reads write.
+    payload["catalog_sha256"] = catalog_semantic_sha256()
     return payload
 
 
