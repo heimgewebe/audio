@@ -623,13 +623,30 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
         self.assertEqual(len(result["bytes"]), MODULE.MAX_COMMAND_OUTPUT_BYTES)
         self.assertTrue(result["truncated"])
 
-    def test_journal_parser_returns_payload_and_exact_cursor(self):
+    def test_journal_parser_returns_timestamped_events_and_exact_cursor(self):
         cursor = "s=abc123;i=9;b=boot;m=1;t=2;x=3"
-        delta = MODULE.parse_journal_output(
-            "first line\nsecond line\n-- cursor: " + cursor + "\n"
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {"MESSAGE": "first line", "__REALTIME_TIMESTAMP": "1000000"}
+                ),
+                json.dumps(
+                    {"MESSAGE": "second line", "__REALTIME_TIMESTAMP": "2000000"}
+                ),
+                "-- cursor: " + cursor,
+                "",
+            ]
         )
+        delta = MODULE.parse_journal_output(payload)
         self.assertEqual(delta.cursor, cursor)
         self.assertEqual(delta.text, "first line\nsecond line")
+        self.assertEqual(
+            delta.events,
+            (
+                MODULE.JournalEvent(1_000_000, "first line"),
+                MODULE.JournalEvent(2_000_000, "second line"),
+            ),
+        )
 
     def test_journal_parser_rejects_missing_duplicate_or_malformed_cursor(self):
         invalid = (
@@ -661,24 +678,78 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             )
         )
 
-    def test_network_reachability_requires_complete_qconnect_auth_reject_evidence(self):
-        observed = (
-            "[QConnect/Transport] WebSocket connected\n"
-            "[QConnect/Transport] Authenticated with JWT\n"
-            '[QConnect/Transport] Cloud rejected session: msg_id=0 code=0 descr="auth"'
+    def test_network_reachability_requires_fresh_complete_timestamped_sequence(self):
+        fresh = MODULE.JournalDelta(
+            "s=proof",
+            "",
+            (
+                MODULE.JournalEvent(1_000_000_000, "[QConnect/Transport] WebSocket connected"),
+                MODULE.JournalEvent(1_001_000_000, "[QConnect/Transport] Authenticated with JWT"),
+                MODULE.JournalEvent(
+                    1_002_000_000,
+                    '[QConnect/Transport] Cloud rejected session: msg_id=0 code=0 descr="auth"',
+                ),
+            ),
         )
-        self.assertTrue(MODULE.journal_proves_qconnect_network_reachable(observed))
+        self.assertTrue(
+            MODULE.journal_proves_qconnect_network_reachable(fresh, now_wall=1080.0)
+        )
+        self.assertFalse(
+            MODULE.journal_proves_qconnect_network_reachable(fresh, now_wall=1093.0)
+        )
+        self.assertFalse(
+            MODULE.journal_proves_qconnect_network_reachable(fresh, now_wall=995.0)
+        )
+        self.assertTrue(
+            MODULE.journal_proves_qconnect_network_reachable(fresh, now_wall=997.0)
+        )
+
+        incomplete = MODULE.JournalDelta(
+            "s=incomplete",
+            "",
+            (
+                MODULE.JournalEvent(1_000_000_000, "[QConnect/Transport] WebSocket connected"),
+                MODULE.JournalEvent(1_001_000_000, "[QConnect/Transport] Authenticated with JWT"),
+            ),
+        )
         self.assertFalse(
             MODULE.journal_proves_qconnect_network_reachable(
-                "[QConnect/Transport] WebSocket connected\n"
-                "[QConnect/Transport] Authenticated with JWT"
+                incomplete, now_wall=1002.0
             )
+        )
+
+        slow_sequence = MODULE.JournalDelta(
+            "s=slow",
+            "",
+            (
+                MODULE.JournalEvent(1_000_000_000, "[QConnect/Transport] WebSocket connected"),
+                MODULE.JournalEvent(1_001_000_000, "[QConnect/Transport] Authenticated with JWT"),
+                MODULE.JournalEvent(
+                    1_031_000_001,
+                    '[QConnect/Transport] Cloud rejected session: descr="auth"',
+                ),
+            ),
         )
         self.assertFalse(
             MODULE.journal_proves_qconnect_network_reachable(
-                '[QConnect/Transport] Cloud rejected session: descr="auth"'
+                slow_sequence, now_wall=1032.0
             )
         )
+
+    def test_journal_parser_rejects_unproven_event_timestamps(self):
+        cursor = "s=abc123;i=9;b=boot;m=1;t=2;x=3"
+        invalid_entries = (
+            {"MESSAGE": "WebSocket connected"},
+            {"MESSAGE": "WebSocket connected", "__REALTIME_TIMESTAMP": "not-a-time"},
+            {"MESSAGE": "WebSocket connected", "__REALTIME_TIMESTAMP": "0"},
+        )
+        for entry in invalid_entries:
+            with self.subTest(entry=entry):
+                payload = json.dumps(entry) + "\n-- cursor: " + cursor + "\n"
+                with self.assertRaisesRegex(
+                    MODULE.RecoveryError, "journal-output-invalid"
+                ):
+                    MODULE.parse_journal_output(payload)
 
     def test_only_positive_connected_outcomes_enter_quiet_mode(self):
         for result in ("noop:connected", "noop:recovered-naturally", "recovered"):
@@ -811,16 +882,19 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 )
         self.assertEqual(reconciles, [state_path, state_path, state_path])
 
-    def test_run_loop_keeps_network_override_bounded_to_recent_journal_proof(self):
-        proof = (
-            "[QConnect/Transport] WebSocket connected\n"
-            "[QConnect/Transport] Authenticated with JWT\n"
-            '[QConnect/Transport] Cloud rejected session: msg_id=0 code=0 descr="auth"'
+    def test_run_loop_keeps_network_override_bounded_to_journal_event_time(self):
+        proof_events = (
+            MODULE.JournalEvent(1_000_000_000, "[QConnect/Transport] WebSocket connected"),
+            MODULE.JournalEvent(1_001_000_000, "[QConnect/Transport] Authenticated with JWT"),
+            MODULE.JournalEvent(
+                1_002_000_000,
+                '[QConnect/Transport] Cloud rejected session: msg_id=0 code=0 descr="auth"',
+            ),
         )
         journal = FakeJournalReader(
             [
                 MODULE.JournalDelta("s=0", ""),
-                MODULE.JournalDelta("s=1", proof),
+                MODULE.JournalDelta("s=1", "proof", proof_events),
                 MODULE.JournalDelta("s=2", ""),
                 MODULE.JournalDelta("s=3", ""),
             ]
@@ -850,12 +924,51 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                         monotonic_clock=SequenceClock(
                             [0.0, 0.0, 30.0, 30.0, 121.0, 121.0]
                         ),
+                        wall_clock=SequenceClock([1002.0, 1060.0, 1093.0]),
                     )
 
         self.assertEqual(
             observed_overrides,
             [(state_path, True), (state_path, True), (state_path, False)],
         )
+
+    def test_run_loop_does_not_refresh_stale_journal_proof_when_read_late(self):
+        stale_events = (
+            MODULE.JournalEvent(1_000_000_000, "[QConnect/Transport] WebSocket connected"),
+            MODULE.JournalEvent(1_001_000_000, "[QConnect/Transport] Authenticated with JWT"),
+            MODULE.JournalEvent(
+                1_002_000_000,
+                '[QConnect/Transport] Cloud rejected session: msg_id=0 code=0 descr="auth"',
+            ),
+        )
+        journal = FakeJournalReader(
+            [
+                MODULE.JournalDelta("s=0", ""),
+                MODULE.JournalDelta("s=1", "stale-proof", stale_events),
+            ]
+        )
+        observed_overrides = []
+
+        def fake_reconcile_once(*, state_path, allow_network_offline=False):
+            observed_overrides.append((state_path, allow_network_offline))
+            return "noop:not-candidate"
+
+        def sleeper(_seconds):
+            raise StopLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            with mock.patch.object(MODULE, "reconcile_once", side_effect=fake_reconcile_once):
+                with self.assertRaises(StopLoop):
+                    MODULE.run_loop(
+                        state_path,
+                        journal_reader=journal,
+                        sleeper=sleeper,
+                        monotonic_clock=SequenceClock([500.0, 500.0]),
+                        wall_clock=SequenceClock([1200.0]),
+                    )
+
+        self.assertEqual(observed_overrides, [(state_path, False)])
 
     def test_run_loop_replacement_cursor_is_captured_before_fallback_status(self):
         order = []
