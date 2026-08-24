@@ -350,6 +350,7 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
         "profile",
         "required_physical_facts",
         "required_laboratory_gates",
+        "advisory_laboratory_gates",
         "capture",
         "source",
         "monitoring",
@@ -364,10 +365,20 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
         or not session["profile"]
         or not isinstance(session.get("required_physical_facts"), dict)
         or not isinstance(session.get("required_laboratory_gates"), list)
+        or not isinstance(session.get("advisory_laboratory_gates"), list)
         or any(
             not isinstance(gate, str) or not gate or CONTROL_RE.search(gate)
-            for gate in session["required_laboratory_gates"]
+            for gate in (
+                session["required_laboratory_gates"]
+                + session["advisory_laboratory_gates"]
+            )
         )
+        or len(set(session["required_laboratory_gates"]))
+        != len(session["required_laboratory_gates"])
+        or len(set(session["advisory_laboratory_gates"]))
+        != len(session["advisory_laboratory_gates"])
+        or set(session["required_laboratory_gates"])
+        & set(session["advisory_laboratory_gates"])
     ):
         raise RecordingError(f"recording contract metadata is invalid: {session_type}")
     capture = session.get("capture")
@@ -592,15 +603,24 @@ def _validate_session_contract(session_type: str, session: Any) -> None:
     ):
         raise RecordingError(f"recording process contract is invalid: {session_type}")
     expected = {
-        "voice-recording": ("motu-voice", ["voice-level-measurement"]),
+        "voice-recording": (
+            "motu-voice",
+            [],
+            ["voice-level-measurement"],
+        ),
         "piano-vocal-performance": (
             "motu-voice-with-roland-audio-and-midi",
-            ["voice-level-measurement", "resampling-decision"],
+            ["resampling-decision"],
+            ["voice-level-measurement"],
         ),
-        "roland-audio-recording": ("usb-audio", ["resampling-decision"]),
-        "production-mix-recording": ("named-pipewire-source", []),
+        "roland-audio-recording": ("usb-audio", ["resampling-decision"], []),
+        "production-mix-recording": ("named-pipewire-source", [], []),
     }
-    if (kind, session["required_laboratory_gates"]) != expected[session_type]:
+    if (
+        kind,
+        session["required_laboratory_gates"],
+        session["advisory_laboratory_gates"],
+    ) != expected[session_type]:
         raise RecordingError(
             f"recording session specialization is invalid: {session_type}"
         )
@@ -1484,6 +1504,26 @@ def _readiness_check(check_id: str, blockers: list[str]) -> dict[str, Any]:
     }
 
 
+def _readiness_advisory(advisory_id: str, notices: list[str]) -> dict[str, Any]:
+    unique = sorted(set(notices))
+    return {
+        "id": advisory_id,
+        "status": "attention" if unique else "ready",
+        "notices": unique,
+    }
+
+
+def _empty_laboratory_projection(path: pathlib.Path) -> dict[str, Any]:
+    return {
+        "state_path": str(path),
+        "state_sha256": None,
+        "resolved": [],
+        "invalidated": {},
+        "receipt_sha256": {},
+        "error": None,
+    }
+
+
 def build_plan(
     name: str,
     maximum_seconds: int,
@@ -1534,11 +1574,25 @@ def build_plan(
     physical, physical_blockers = _physical_projection(
         lexical_absolute(physical_state), contract["required_physical_facts"]
     )
-    laboratory, laboratory_blockers = _laboratory_projection(
-        lexical_absolute(laboratory_state),
-        physical,
-        contract["required_laboratory_gates"],
-    )
+    laboratory_path = lexical_absolute(laboratory_state)
+    if contract["required_laboratory_gates"]:
+        laboratory, laboratory_blockers = _laboratory_projection(
+            laboratory_path,
+            physical,
+            contract["required_laboratory_gates"],
+        )
+    else:
+        laboratory = _empty_laboratory_projection(laboratory_path)
+        laboratory_blockers = []
+    if contract["advisory_laboratory_gates"]:
+        advisory_laboratory, advisory_laboratory_notices = _laboratory_projection(
+            laboratory_path,
+            physical,
+            contract["advisory_laboratory_gates"],
+        )
+    else:
+        advisory_laboratory = _empty_laboratory_projection(laboratory_path)
+        advisory_laboratory_notices = []
     source, source_blockers = _source_projection(contract["source"], source_snapshot_fn)
     try:
         recorder = parecord_binding()
@@ -1600,6 +1654,7 @@ def build_plan(
         },
         "physical": physical,
         "laboratory": laboratory,
+        "advisory_laboratory": advisory_laboratory,
         "source": source,
         "monitoring": contract["monitoring"],
         "contracts": contract_bindings(),
@@ -1666,6 +1721,9 @@ def build_plan(
             for blocker in check["blockers"]
         }
     )
+    advisories = [
+        _readiness_advisory("voice-level", advisory_laboratory_notices)
+    ] if contract["advisory_laboratory_gates"] else []
     return {
         "schema_version": 1,
         "kind": "audio_recording_plan",
@@ -1675,6 +1733,7 @@ def build_plan(
         "readiness": {
             "blockers": blockers,
             "checks": readiness_checks,
+            "advisories": advisories,
             "free_bytes": free_bytes,
             "required_file_bytes": required_session_bytes,
             "required_free_bytes": required_session_bytes + capture["free_space_reserve_bytes"],
@@ -2213,6 +2272,7 @@ def _validate_persisted_spec(
         "capture",
         "physical",
         "laboratory",
+        "advisory_laboratory",
         "source",
         "monitoring",
         "contracts",
@@ -2235,8 +2295,9 @@ def _validate_persisted_spec(
     expected_plan_fields = expected_plan_fields | (
         {"performance"} if session_type == "piano-vocal-performance" else set()
     )
+    legacy_plan_fields = expected_plan_fields - {"advisory_laboratory"}
     if (
-        set(plan) != expected_plan_fields
+        frozenset(plan) not in {frozenset(expected_plan_fields), frozenset(legacy_plan_fields)}
         or plan.get("schema_version") != 1
         or plan.get("kind") != "audio_recording_plan_identity"
         or session_type not in SESSION_TYPES
