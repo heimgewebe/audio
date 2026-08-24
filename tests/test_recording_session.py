@@ -1444,6 +1444,36 @@ class RecordingSessionTest(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.RecordingError, "free space fell below"):
                 MODULE._validate_live_preconditions(spec)
 
+    def test_live_voice_preconditions_do_not_rebind_advisory_laboratory_state(self) -> None:
+        spec = self.persisted_spec(session_type="voice-recording", maximum_seconds=1)
+        plan = spec["plan_identity"]
+        self.assertIsNone(plan["laboratory"]["state_sha256"])
+        contract = MODULE.load_catalog("voice-recording")
+        self.assertEqual(contract["required_laboratory_gates"], [])
+        with (
+            mock.patch.object(MODULE, "load_catalog", return_value=contract),
+            mock.patch.object(
+                MODULE, "_physical_projection", return_value=(plan["physical"], [])
+            ),
+            mock.patch.object(MODULE, "_laboratory_projection") as laboratory_projection,
+            mock.patch.object(
+                MODULE, "_source_projection", return_value=(plan["source"], [])
+            ),
+            mock.patch.object(
+                MODULE.shutil,
+                "disk_usage",
+                return_value=MODULE.shutil._ntuple_diskusage(
+                    0,
+                    0,
+                    int(plan["capture"]["free_space_reserve_bytes"])
+                    + int(plan["capture"]["maximum_file_bytes"])
+                    + 1,
+                ),
+            ),
+        ):
+            MODULE._validate_live_preconditions(spec)
+        laboratory_projection.assert_not_called()
+
     def test_live_preconditions_reject_source_identity_drift(self) -> None:
         physical = {"state_path": str(self.base / "physical.json")}
         laboratory = {"state_path": str(self.base / "laboratory.json")}

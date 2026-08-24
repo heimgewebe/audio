@@ -1524,6 +1524,14 @@ def _empty_laboratory_projection(path: pathlib.Path) -> dict[str, Any]:
     }
 
 
+def _hard_laboratory_projection(
+    path: pathlib.Path, physical: dict[str, Any], required: list[str]
+) -> tuple[dict[str, Any], list[str]]:
+    if not required:
+        return _empty_laboratory_projection(path), []
+    return _laboratory_projection(path, physical, required)
+
+
 def build_plan(
     name: str,
     maximum_seconds: int,
@@ -1575,15 +1583,11 @@ def build_plan(
         lexical_absolute(physical_state), contract["required_physical_facts"]
     )
     laboratory_path = lexical_absolute(laboratory_state)
-    if contract["required_laboratory_gates"]:
-        laboratory, laboratory_blockers = _laboratory_projection(
-            laboratory_path,
-            physical,
-            contract["required_laboratory_gates"],
-        )
-    else:
-        laboratory = _empty_laboratory_projection(laboratory_path)
-        laboratory_blockers = []
+    laboratory, laboratory_blockers = _hard_laboratory_projection(
+        laboratory_path,
+        physical,
+        contract["required_laboratory_gates"],
+    )
     if contract["advisory_laboratory_gates"]:
         advisory_laboratory, advisory_laboratory_notices = _laboratory_projection(
             laboratory_path,
@@ -3688,7 +3692,7 @@ def _validate_live_preconditions(spec: dict[str, Any]) -> None:
         pathlib.Path(plan["physical"]["state_path"]),
         contract["required_physical_facts"],
     )
-    laboratory, laboratory_blockers = _laboratory_projection(
+    laboratory, laboratory_blockers = _hard_laboratory_projection(
         pathlib.Path(plan["laboratory"]["state_path"]),
         physical,
         contract["required_laboratory_gates"],
