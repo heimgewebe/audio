@@ -2603,6 +2603,7 @@ function renderHome() {
   const operatingModes = Array.isArray(operatingMode.modes) ? operatingMode.modes : [];
   const configuredModeCard = operatingModes.find((mode) => mode.id === configuredOperatingMode);
   const qobuzModeCard = operatingModes.find((mode) => mode.id === "qobuz-reference") || {};
+  const recordingModeCard = operatingModes.find((mode) => mode.id === "recording") || {};
   const qobuz = doctor.streaming_sources?.qobuz || {};
   const qobuzVerified = operatingMode.truth_boundary?.track_native_proven === true;
   const qobuzReady = qobuz.reference_provider_ready === true;
@@ -2691,7 +2692,11 @@ function renderHome() {
   const whaleMode = displayMode(snapshot.whale.service?.voice_mode || snapshot.whale.contract?.default_mode);
   const listeningNeedsMotu =
     operatingMode.state === "blocked" && configuredModeCard?.reason === "motu-not-observed";
-  const recordingReady = motuObserved && recordingActionsAllowed();
+  const recordingRecovering =
+    recordingModeCard.state === "recovering" ||
+    recording.status === "recovery-required" ||
+    recording.session?.recovery_required === true;
+  const recordingReady = motuObserved && recordingActionsAllowed() && !recordingRecovering;
   const playingReady = rolandObserved && whaleActionsAllowed();
   const actions = [
     {
@@ -2708,13 +2713,23 @@ function renderHome() {
       glyph: "●",
       eyebrow: "Recorder",
       title: "Aufnehmen",
-      status: recording.status === "running" ? "läuft" : !motuObserved ? "vor Ort" : recordingReady ? "bereit" : "prüfen",
+      status: recording.status === "running"
+        ? "läuft"
+        : !motuObserved
+          ? "vor Ort"
+          : recordingRecovering
+            ? "Recovery"
+            : recordingReady
+              ? "bereit"
+              : "prüfen",
       tone: recording.status === "running" || recordingReady ? "ready" : !motuObserved ? "onsite" : "laboratory",
       detail: !motuObserved
         ? "MOTU M2 verbinden · dann Stimme aufnehmen"
-        : recordingReady
-          ? recordingStatusLabel(recording.status)
-          : "MOTU M2 erkannt · Recordersteuerung prüfen",
+        : recordingRecovering
+          ? OPERATING_MODE_REASON_LABELS[recordingModeCard.reason] || "Recorder-Recovery erforderlich"
+          : recordingReady
+            ? recordingStatusLabel(recording.status)
+            : "MOTU M2 erkannt · Recordersteuerung prüfen",
     },
     {
       href: "#spielen",

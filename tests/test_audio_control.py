@@ -3027,9 +3027,16 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         home_end = javascript.index("function insightCard", home_start)
         home = javascript[home_start:home_end]
 
-        self.assertIn("const recordingReady = motuObserved && recordingActionsAllowed();", home)
+        self.assertIn('recordingModeCard.state === "recovering"', home)
+        self.assertIn('recording.status === "recovery-required"', home)
+        self.assertIn("recording.session?.recovery_required === true", home)
+        self.assertIn(
+            "const recordingReady = motuObserved && recordingActionsAllowed() && !recordingRecovering;",
+            home,
+        )
         self.assertIn("const playingReady = rolandObserved && whaleActionsAllowed();", home)
-        self.assertIn('recordingReady ? "bereit" : "prüfen"', home)
+        self.assertIn('? "Recovery"', home)
+        self.assertIn('? "bereit"', home)
         self.assertIn('playingReady ? "bereit" : "prüfen"', home)
         self.assertIn('"MOTU M2 erkannt · Recordersteuerung prüfen"', home)
         self.assertIn('"Roland FP-30X erkannt · Spielsteuerung prüfen"', home)
