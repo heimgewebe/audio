@@ -3176,6 +3176,34 @@ class AudioControl:
             self._action_lock.release()
 
 
+    def _reconcile_laboratory_before_voice_capture(
+        self, laboratory: Any
+    ) -> dict[str, Any]:
+        """Persist a safely migratable laboratory catalog before opening the mic."""
+
+        with laboratory.state_lock(laboratory.DEFAULT_STATE):
+            (
+                state,
+                reconciliation,
+                expected_laboratory_state_sha256,
+            ) = prepare_laboratory_state_for_voice_level(laboratory)
+            if not reconciliation["catalog_reconciled"]:
+                return reconciliation
+            if not self._snapshot_lock.acquire(blocking=False):
+                raise ActionBusy(
+                    "Eine Zustandsabfrage verhindert die sichere Labor-Migration."
+                )
+            try:
+                verify_laboratory_state_preimage(
+                    laboratory, expected_laboratory_state_sha256
+                )
+                laboratory.atomic_write_private(laboratory.DEFAULT_STATE, state)
+                self.invalidate()
+            finally:
+                self._snapshot_lock.release()
+            return reconciliation
+
+
     def _perform_voice_level_acceptance(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
@@ -3201,6 +3229,14 @@ class AudioControl:
                     or "Pegelabnahme ist nur bei freiem Recorder möglich."
                 )
             voice_capture, laboratory, rate_policy = load_voice_level_acceptance_modules()
+            try:
+                reconciliation = self._reconcile_laboratory_before_voice_capture(
+                    laboratory
+                )
+            except (OSError, ValueError) as error:
+                raise ControlError(
+                    "Laborzustand konnte vor der Pegelabnahme nicht sicher migriert werden."
+                ) from error
             try:
                 with tempfile.TemporaryDirectory(
                     prefix="audio-control-level-acceptance-"
@@ -3230,11 +3266,6 @@ class AudioControl:
                 "target_rate_hz": 48_000,
                 "audio_effects": False,
             }
-            reconciliation = {
-                "catalog_reconciled": False,
-                "preserved_gates": [],
-                "invalidated_gates": [],
-            }
             if measurement["passed"]:
                 try:
                     with laboratory.state_lock(laboratory.DEFAULT_STATE):
@@ -3243,9 +3274,11 @@ class AudioControl:
                         )
                         (
                             state,
-                            reconciliation,
+                            post_capture_reconciliation,
                             expected_laboratory_state_sha256,
                         ) = prepare_laboratory_state_for_voice_level(laboratory)
+                        if post_capture_reconciliation["catalog_reconciled"]:
+                            reconciliation = post_capture_reconciliation
                         laboratory.record_gate(
                             state,
                             "voice-level-measurement",
