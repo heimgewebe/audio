@@ -47,6 +47,8 @@ RECORDING_PRODUCT_SCRIPT = ROOT / "scripts" / "recording_product.py"
 VOICE_CAPTURE_OBSERVER_SCRIPT = ROOT / "scripts" / "voice_capture_observer.py"
 RATE_POLICY_OBSERVER_SCRIPT = ROOT / "scripts" / "rate_policy_observer.py"
 LABORATORY_GATE_SCRIPT = ROOT / "scripts" / "laboratory_gate.py"
+QOBUZ_DESKTOP_RECOVERY_SCRIPT = ROOT / "scripts" / "qobuz_desktop_recovery.py"
+MOTU_CAPTURE_IDENTITY_SCRIPT = ROOT / "scripts" / "motu_capture_identity.py"
 VOICE_LEVEL_ACCEPTANCE_SECONDS = 10
 RECORDING_CATALOG = ROOT / "profiles" / "recording-sessions.v1.json"
 REFERENCE_LEVELS = ROOT / "profiles" / "reference-levels.v1.json"
@@ -75,6 +77,9 @@ _PROFILE_TRANSITION_IMPORT_LOCK = threading.Lock()
 _VOICE_LEVEL_ACCEPTANCE_MODULES: tuple[Any, Any, Any] | None = None
 _VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR: BaseException | None = None
 _VOICE_LEVEL_ACCEPTANCE_IMPORT_LOCK = threading.Lock()
+_RECORDING_RECOVERY_MODULES: tuple[Any, Any] | None = None
+_RECORDING_RECOVERY_IMPORT_ERROR: BaseException | None = None
+_RECORDING_RECOVERY_IMPORT_LOCK = threading.Lock()
 
 
 def load_live_telemetry() -> Any:
@@ -194,6 +199,45 @@ def load_voice_level_acceptance_modules() -> tuple[Any, Any, Any]:
         return _VOICE_LEVEL_ACCEPTANCE_MODULES
 
 
+def load_recording_recovery_modules() -> tuple[Any, Any]:
+    """Load shared MOTU recovery safety contracts only for explicit prepare."""
+
+    global _RECORDING_RECOVERY_MODULES, _RECORDING_RECOVERY_IMPORT_ERROR
+    if _RECORDING_RECOVERY_MODULES is not None:
+        return _RECORDING_RECOVERY_MODULES
+    if _RECORDING_RECOVERY_IMPORT_ERROR is not None:
+        raise ControlError("Aufnahmepfad-Reparatur ist nicht verfügbar.") from _RECORDING_RECOVERY_IMPORT_ERROR
+    with _RECORDING_RECOVERY_IMPORT_LOCK:
+        if _RECORDING_RECOVERY_MODULES is not None:
+            return _RECORDING_RECOVERY_MODULES
+        if _RECORDING_RECOVERY_IMPORT_ERROR is not None:
+            raise ControlError("Aufnahmepfad-Reparatur ist nicht verfügbar.") from _RECORDING_RECOVERY_IMPORT_ERROR
+        loaded: list[Any] = []
+        for module_name, path in (
+            ("audio_control_qobuz_desktop_recovery", QOBUZ_DESKTOP_RECOVERY_SCRIPT),
+            ("audio_control_motu_capture_identity", MOTU_CAPTURE_IDENTITY_SCRIPT),
+        ):
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if spec is None or spec.loader is None:
+                error = RuntimeError(f"Modul kann nicht geladen werden: {path.name}")
+                _RECORDING_RECOVERY_IMPORT_ERROR = error
+                raise ControlError("Aufnahmepfad-Reparatur ist nicht verfügbar.") from error
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException as error:
+                if isinstance(error, KeyboardInterrupt):
+                    raise
+                sys.modules.pop(spec.name, None)
+                _RECORDING_RECOVERY_IMPORT_ERROR = error
+                raise ControlError("Aufnahmepfad-Reparatur ist nicht verfügbar.") from error
+            loaded.append(module)
+        qobuz_recovery, motu_identity = loaded
+        _RECORDING_RECOVERY_MODULES = (qobuz_recovery, motu_identity)
+        return _RECORDING_RECOVERY_MODULES
+
+
 def ensure_profile_transition_state_root() -> pathlib.Path:
     """Prepare the canonical CLI/UI transition journal before sandboxing."""
 
@@ -222,6 +266,19 @@ UNIT_MANAGED_BY = "audio-control-ui-v1"
 QOBUZ_DESKTOP_RECOVERY_UNIT = "audio-qobuz-desktop-recovery-v1.service"
 QBZD_QCONNECT_RECOVERY_UNIT = "audio-qbzd-qconnect-recovery-v1.service"
 QOBUZ_RECOVERY_UNITS = (QOBUZ_DESKTOP_RECOVERY_UNIT, QBZD_QCONNECT_RECOVERY_UNIT)
+RECORDING_PRECHECK_STOP_UNITS = ("audio-control-level-observer-v1.service",)
+RECORDING_PATH_RECOVERY_UNITS = (
+    *RECORDING_PRECHECK_STOP_UNITS,
+    QOBUZ_DESKTOP_RECOVERY_UNIT,
+    QBZD_QCONNECT_RECOVERY_UNIT,
+)
+RECORDING_AUDIO_CORE_UNITS = (
+    "pipewire.service",
+    "pipewire-pulse.service",
+    "wireplumber.service",
+)
+RECORDING_SOURCE_READBACK_ATTEMPTS = 6
+RECORDING_SOURCE_READBACK_INTERVAL_SECONDS = 1.0
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_CACHE_SECONDS = 4.0
@@ -3056,8 +3113,249 @@ class AudioControl:
                     )
         return projected
 
+    def _recording_plan_once(
+        self, *, mode: str, safe_name: str, duration: int
+    ) -> dict[str, Any]:
+        mode_spec = RECORDING_MODES[mode]
+        result = self.runner.run(
+            [
+                sys.executable,
+                str(RECORDING_SCRIPT),
+                "plan",
+                safe_name,
+                "--session-type",
+                mode_spec["session_type"],
+                "--maximum-seconds",
+                str(duration),
+                "--root",
+                str(RECORDING_OUTPUT_ROOT),
+                "--state-root",
+                str(RECORDING_STATE_ROOT),
+            ],
+            timeout=30,
+        )
+        report = parse_json_output(result, label="Recorderplan")
+        if result.returncode != 0:
+            raise ControlError(
+                safe_error_message(report, "Recorderplan konnte nicht erstellt werden.")
+            )
+        projected = project_recording_plan(report, mode=mode)
+        projected["contract"] = read_recording_contract(mode)
+        return projected
+
+    def _recording_recovery_unit_active(self, unit: str) -> bool:
+        result = self.runner.run(
+            ["systemctl", "--user", "is-active", unit], timeout=5
+        )
+        state = result.stdout.strip()
+        if result.returncode == 0 and state == "active":
+            return True
+        if result.returncode in {3, 4} and state in {
+            "inactive",
+            "failed",
+            "unknown",
+            "not-found",
+        }:
+            return False
+        raise ControlError(
+            f"Dienstzustand für {unit} ist vor der Aufnahmepfad-Reparatur unklar."
+        )
+
+    def _recording_json_list(self, argv: list[str], *, label: str) -> list[Any]:
+        result = self.runner.run(argv, timeout=5)
+        if result.returncode != 0:
+            raise ControlError(f"{label} konnte vor der Aufnahmepfad-Reparatur nicht geprüft werden.")
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ControlError(f"{label} lieferte keinen gültigen JSON-Zustand.") from error
+        if not isinstance(payload, list):
+            raise ControlError(f"{label} lieferte keinen eindeutigen Listen-Zustand.")
+        return payload
+
+    def _recording_motu_source_count(self) -> int:
+        _qobuz_recovery, motu_identity = load_recording_recovery_modules()
+        sources = self._recording_json_list(
+            ["pactl", "--format=json", "list", "sources"],
+            label="MOTU-Quellenreadback",
+        )
+        count = 0
+        try:
+            for source in sources:
+                if motu_identity.source_identity(source) is not None:
+                    count += 1
+        except ValueError as error:
+            raise ControlError("MOTU-Quellenidentität ist widersprüchlich.") from error
+        return count
+
+    def _recording_assert_motu_pcm_safe(self) -> None:
+        qobuz_recovery, _motu_identity = load_recording_recovery_modules()
+        try:
+            physical = qobuz_recovery.resolve_unique_motu_card(
+                pathlib.Path("/proc/asound"),
+                sound_class_root=pathlib.Path("/sys/class/sound"),
+                sys_devices_root=pathlib.Path("/sys/devices"),
+            )
+            if physical is None:
+                raise ControlError(
+                    "MOTU M2 ist auf ALSA-Ebene nicht eindeutig vorhanden; kein Audio-Neustart."
+                )
+            qobuz_recovery.absence_observation_pcm_safe(
+                physical.card, pathlib.Path("/proc")
+            )
+        except qobuz_recovery.RecoveryError as error:
+            raise ControlError(
+                "MOTU-PCM ist nicht sicher idle; der Audio-Graph bleibt unverändert."
+            ) from error
+
+    def _recording_assert_core_restart_idle(self) -> None:
+        sink_inputs = self._recording_json_list(
+            ["pactl", "--format=json", "list", "sink-inputs"],
+            label="Wiedergabeaktivität",
+        )
+        source_outputs = self._recording_json_list(
+            ["pactl", "--format=json", "list", "source-outputs"],
+            label="Aufnahmeaktivität",
+        )
+        pipewire_objects = self._recording_json_list(
+            ["pw-dump"],
+            label="nativer PipeWire-Graph",
+        )
+        native_audio_streams = 0
+        for item in pipewire_objects:
+            if not isinstance(item, dict) or item.get("type") != "PipeWire:Interface:Node":
+                continue
+            info = item.get("info") if isinstance(item.get("info"), dict) else {}
+            props = info.get("props") if isinstance(info.get("props"), dict) else {}
+            media_class = props.get("media.class")
+            if isinstance(media_class, str) and media_class.startswith("Stream/") and media_class.endswith("/Audio"):
+                native_audio_streams += 1
+        if sink_inputs or source_outputs or native_audio_streams:
+            raise ControlError(
+                "Der Audio-Graph wird nicht neu gestartet, solange andere Wiedergabe oder Aufnahme beziehungsweise ein nativer PipeWire-Audiostream aktiv ist."
+            )
+
+    def _recording_wait_for_unique_motu_source(self) -> bool:
+        for attempt in range(RECORDING_SOURCE_READBACK_ATTEMPTS):
+            source_count = self._recording_motu_source_count()
+            if source_count == 1:
+                return True
+            if source_count > 1:
+                raise ControlError(
+                    "Nach der Reparatur sind mehrere MOTU-Aufnahmequellen sichtbar; Start bleibt gesperrt."
+                )
+            if attempt + 1 < RECORDING_SOURCE_READBACK_ATTEMPTS:
+                time.sleep(RECORDING_SOURCE_READBACK_INTERVAL_SECONDS)
+        return False
+
+    def _converge_recording_path(self) -> None:
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere Audioaktion verhindert die Aufnahmepfad-Reparatur.")
+        try:
+            if not self._snapshot_lock.acquire(blocking=False):
+                raise ActionBusy(
+                    "Eine Zustandsabfrage verhindert die sichere Aufnahmepfad-Reparatur."
+                )
+            try:
+                originally_active: list[str] = []
+                primary_error: ControlError | None = None
+                restore_errors: list[str] = []
+                try:
+                    try:
+                        source_count = self._recording_motu_source_count()
+                        if source_count != 0:
+                            raise ControlError(
+                                "Der Quellenfehler ist nicht als fehlender MOTU-PipeWire-Knoten belegt; kein Audio-Neustart."
+                            )
+
+                        self._recording_assert_motu_pcm_safe()
+                        originally_active = [
+                            unit
+                            for unit in RECORDING_PATH_RECOVERY_UNITS
+                            if self._recording_recovery_unit_active(unit)
+                        ]
+                        precheck_active = [
+                            unit
+                            for unit in originally_active
+                            if unit in RECORDING_PRECHECK_STOP_UNITS
+                        ]
+                        for unit in precheck_active:
+                            result = self.runner.run(
+                                ["systemctl", "--user", "stop", unit], timeout=10
+                            )
+                            if result.returncode != 0:
+                                raise ControlError(
+                                    f"{unit} konnte für die Aufnahmepfad-Reparatur nicht sicher angehalten werden."
+                                )
+
+                        self._recording_assert_core_restart_idle()
+                        for unit in originally_active:
+                            if unit in precheck_active:
+                                continue
+                            result = self.runner.run(
+                                ["systemctl", "--user", "stop", unit], timeout=10
+                            )
+                            if result.returncode != 0:
+                                raise ControlError(
+                                    f"{unit} konnte für die Aufnahmepfad-Reparatur nicht sicher angehalten werden."
+                                )
+
+                        # The stop loop can take tens of seconds. Re-read both
+                        # non-interference gates as the final pre-effect step so
+                        # a client that appeared after the first gate is not torn down.
+                        self._recording_assert_core_restart_idle()
+                        self._recording_assert_motu_pcm_safe()
+
+                        result = self.runner.run(
+                            [
+                                "systemctl",
+                                "--user",
+                                "restart",
+                                *RECORDING_AUDIO_CORE_UNITS,
+                            ],
+                            timeout=20,
+                        )
+                        if result.returncode != 0:
+                            raise ControlError(
+                                "PipeWire/WirePlumber konnten den MOTU-Aufnahmepfad nicht neu aufbauen."
+                            )
+                        self._recording_wait_for_unique_motu_source()
+                    except ControlError as error:
+                        primary_error = error
+                    finally:
+                        for unit in reversed(originally_active):
+                            try:
+                                result = self.runner.run(
+                                    ["systemctl", "--user", "start", unit], timeout=10
+                                )
+                            except ControlError:
+                                restore_errors.append(unit)
+                                continue
+                            if result.returncode != 0:
+                                restore_errors.append(unit)
+                        self.invalidate()
+
+                    if primary_error is not None:
+                        raise primary_error
+                    if restore_errors:
+                        raise ControlError(
+                            "Aufnahmepfad wurde neu aufgebaut, aber begleitende Audiodienste konnten nicht vollständig wiederhergestellt werden: "
+                            + ", ".join(restore_errors)
+                        )
+                finally:
+                    self.invalidate()
+            finally:
+                self._snapshot_lock.release()
+        finally:
+            self._action_lock.release()
+
     def recording_plan(
-        self, *, mode: str = "voice", name: Any, maximum_seconds: Any
+        self,
+        *,
+        mode: str = "voice",
+        name: Any,
+        maximum_seconds: Any,
+        recover_source: bool = False,
     ) -> dict[str, Any]:
         mode_spec = RECORDING_MODES.get(mode)
         if mode_spec is None:
@@ -3067,30 +3365,26 @@ class AudioControl:
         if not self._plan_lock.acquire(blocking=False):
             raise ActionBusy("Eine andere Audio- oder Recorderplanung läuft bereits.")
         try:
-            result = self.runner.run(
-                [
-                    sys.executable,
-                    str(RECORDING_SCRIPT),
-                    "plan",
-                    safe_name,
-                    "--session-type",
-                    mode_spec["session_type"],
-                    "--maximum-seconds",
-                    str(duration),
-                    "--root",
-                    str(RECORDING_OUTPUT_ROOT),
-                    "--state-root",
-                    str(RECORDING_STATE_ROOT),
-                ],
-                timeout=30,
+            projected = self._recording_plan_once(
+                mode=mode, safe_name=safe_name, duration=duration
             )
-            report = parse_json_output(result, label="Recorderplan")
-            if result.returncode != 0:
-                raise ControlError(
-                    safe_error_message(report, "Recorderplan konnte nicht erstellt werden.")
+            blockers = projected.get("readiness", {}).get("blockers", [])
+            recoverable_source_blockers = {
+                "motu-source-not-unique",
+                "roland-audio-source-not-unique",
+                "roland-midi-source-not-unique",
+            }
+            if (
+                recover_source
+                and projected.get("ready") is not True
+                and isinstance(blockers, list)
+                and "motu-source-not-unique" in blockers
+                and set(blockers) <= recoverable_source_blockers
+            ):
+                self._converge_recording_path()
+                projected = self._recording_plan_once(
+                    mode=mode, safe_name=safe_name, duration=duration
                 )
-            projected = project_recording_plan(report, mode=mode)
-            projected["contract"] = read_recording_contract(mode)
             return projected
         finally:
             self._plan_lock.release()
@@ -3441,14 +3735,15 @@ class AudioControl:
             raise ControlError("Recorderaktion muss ein JSON-Objekt sein.")
         operation = payload.get("operation")
         if operation not in (
-            {"plan", "start", "stop", "recover", "measure-level"} | RECORDING_LIBRARY_OPERATIONS
+            {"plan", "prepare", "start", "stop", "recover", "measure-level"}
+            | RECORDING_LIBRARY_OPERATIONS
         ):
             raise ControlError("Unbekannte Recorderaktion.")
         if operation in RECORDING_LIBRARY_OPERATIONS:
             return self._perform_recording_library_action(payload)
         if operation == "measure-level":
             return self._perform_voice_level_acceptance(payload)
-        if operation == "plan":
+        if operation in {"plan", "prepare"}:
             if set(payload) != {"operation", "mode", "name", "maximum_seconds"}:
                 raise ControlError("Recorderplan enthält unbekannte oder fehlende Felder.")
             mode = payload.get("mode")
@@ -3458,11 +3753,12 @@ class AudioControl:
                 mode=mode,
                 name=payload["name"],
                 maximum_seconds=payload["maximum_seconds"],
+                recover_source=operation == "prepare",
             )
             return {
                 "schema_version": 1,
                 "kind": "audio_control_recording_action_result",
-                "operation": "plan",
+                "operation": operation,
                 "mode": mode,
                 "plan": plan,
             }
@@ -4268,7 +4564,7 @@ class AudioControl:
                 "error": recording_error,
                 "detail": (
                     "Hardened Voice-Recorder mit Plan-Hash, MOTU-Quellenbindung, "
-                    "RØDE-/48-V-/Pegel-Gates, Recovery und unveränderlichen Takes."
+                    "RØDE-/48-V-Gates, Pegelhinweisen, Recovery und unveränderlichen Takes."
                 ),
                 "authority": "recorder-plan-hash-and-current-readback",
                 "contract": recording_contract,
@@ -4277,6 +4573,7 @@ class AudioControl:
                 "active_session_id": recording_probe.get("active_session_id"),
                 "actions": [
                     "plan",
+                    "prepare",
                     "measure-level",
                     "start",
                     "stop",

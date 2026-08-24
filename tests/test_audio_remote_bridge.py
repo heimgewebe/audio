@@ -425,10 +425,10 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
             action = json.loads(body.decode("utf-8"))
             operation = action["operation"]
             status = 200
-            if operation == "plan":
+            if operation in {"plan", "prepare"}:
                 result = {
                     "kind": "audio_control_recording_action_result",
-                    "operation": "plan",
+                    "operation": operation,
                     "mode": action["mode"],
                     "plan": {
                         "ready": True,
@@ -825,7 +825,7 @@ class BridgeHTTPTests(unittest.TestCase):
         )
         self.assertEqual(
             set(session["allowed_operations"]["recording"]),
-            {"plan", "start", "stop", "recover", "categorize", "trash", "restore"},
+            {"plan", "prepare", "start", "stop", "recover", "categorize", "trash", "restore"},
         )
         self.assertNotIn("action_token", session)
         self.assertGreaterEqual(len(session["session_token"]), 32)
@@ -985,6 +985,17 @@ class BridgeHTTPTests(unittest.TestCase):
             45 + 30 + 30,
         )
 
+    def test_recording_prepare_timeout_covers_full_path_convergence_budget(self):
+        self.assertEqual(
+            MODULE.recording_backend_timeout_seconds("plan"),
+            MODULE.RECORDING_BACKEND_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            MODULE.recording_backend_timeout_seconds("prepare"),
+            MODULE.RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS,
+        )
+        self.assertGreater(MODULE.RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS, 250)
+
     def test_remote_recording_plan_uses_scoped_session_and_hides_backend_token(self):
         token = self.issue_remote_session()
         before = len(FakeBackendHandler.records)
@@ -1024,6 +1035,34 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(
             records[1]["headers"]["x-audio-control-token"], "local-secret-value"
         )
+        self.assertEqual(json.loads(records[1]["body"]), action)
+
+    def test_remote_recording_prepare_is_explicit_and_returns_bound_plan(self):
+        token = self.issue_remote_session()
+        before = len(FakeBackendHandler.records)
+        action = {
+            "operation": "prepare",
+            "mode": "voice",
+            "name": "ipad-voice.wav",
+            "maximum_seconds": 600,
+        }
+        status, _response_headers, payload = self.request(
+            "POST",
+            MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+            headers={
+                **self.remote_headers(),
+                "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+                "Content-Type": "application/json",
+                MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+            },
+            body=json.dumps(action).encode(),
+        )
+        self.assertEqual(status, 200)
+        decoded = json.loads(payload)
+        self.assertEqual(decoded["operation"], "prepare")
+        self.assertTrue(decoded["plan"]["ready"])
+        records = FakeBackendHandler.records[before:]
+        self.assertEqual([record["method"] for record in records], ["GET", "POST"])
         self.assertEqual(json.loads(records[1]["body"]), action)
 
     def test_remote_recording_requires_exact_session_identity_and_payload(self):

@@ -1586,6 +1586,13 @@ function recordingPlanMatchesDraft() {
   return recordingPlanBindsDraft() && state.recordingPlan?.ready === true;
 }
 
+const RECORDING_ACTION_TIMEOUT_MS = 55000;
+const RECORDING_PREPARE_TIMEOUT_MS = 300000;
+
+function recordingActionTimeoutMs(operation) {
+  return operation === "prepare" ? RECORDING_PREPARE_TIMEOUT_MS : RECORDING_ACTION_TIMEOUT_MS;
+}
+
 async function postRecordingAction(payload) {
   const libraryAction = RECORDING_LIBRARY_ACTIONS.has(payload?.operation);
   const allowed = libraryAction
@@ -1605,7 +1612,7 @@ async function postRecordingAction(payload) {
   ) {
     return fetchJson("/api/v1/actions/recording", {
       method: "POST",
-      timeoutMs: 55000,
+      timeoutMs: recordingActionTimeoutMs(payload?.operation),
       headers: {
         "Content-Type": "application/json",
         "X-Audio-Control-Token": state.snapshot.service.action_token,
@@ -1618,7 +1625,7 @@ async function postRecordingAction(payload) {
   ) {
     return fetchJson("/bridge/v1/actions/recording", {
       method: "POST",
-      timeoutMs: 55000,
+      timeoutMs: recordingActionTimeoutMs(payload?.operation),
       headers: {
         "Content-Type": "application/json",
         "X-Audio-Bridge-Session": state.remoteWhaleSessionToken,
@@ -1629,7 +1636,10 @@ async function postRecordingAction(payload) {
   throw new Error("Recorderaktion ist nicht autorisiert.");
 }
 
-async function requestRecordingPlan({ autoRenameCollision = true } = {}) {
+async function requestRecordingPlan({ autoRenameCollision = true, operation = "plan" } = {}) {
+  if (!new Set(["plan", "prepare"]).has(operation)) {
+    throw new Error("Unbekannte Recorder-Vorbereitungsaktion.");
+  }
   const attemptedNames = new Set();
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const input = {
@@ -1639,12 +1649,12 @@ async function requestRecordingPlan({ autoRenameCollision = true } = {}) {
     };
     attemptedNames.add(input.name);
     const result = await postRecordingAction({
-      operation: "plan",
+      operation,
       mode: input.mode,
       name: input.name,
       maximum_seconds: input.maximumSeconds,
     });
-    if (result.operation !== "plan" || !result.plan) {
+    if (result.operation !== operation || !result.plan) {
       throw new Error("Recorder lieferte keinen gebundenen Aufnahmeplan.");
     }
     const blockers = result.plan?.readiness?.blockers || [];
@@ -1704,13 +1714,12 @@ async function runRecordingStart() {
   syncRecordingLibraryControls();
   renderActiveLanes({ preserveDraft: false });
   try {
-    let plan = state.recordingPlan;
-    let input = state.recordingPlanInput;
-    if (!recordingPlanMatchesDraft()) {
-      const planned = await requestRecordingPlan({ autoRenameCollision: true });
-      plan = planned.result.plan;
-      input = planned.input;
-    }
+    const planned = await requestRecordingPlan({
+      autoRenameCollision: true,
+      operation: "prepare",
+    });
+    const plan = planned.result.plan;
+    const input = planned.input;
     const blockers = plan?.readiness?.blockers || [];
     if (plan?.ready !== true || typeof plan.plan_sha256 !== "string") {
       state.recordingDetailsOpen = true;
@@ -1911,7 +1920,7 @@ function renderRecordingControls(card, recording) {
     "recording-product-hint",
     active
       ? "Der Recorder läuft. Technische Details bleiben darunter verfügbar."
-      : "Startprüfung, Quellenbindung und Dateiname werden beim Start automatisch geprüft.",
+      : "Startprüfung, Quellenbindung und Dateiname werden beim Start automatisch geprüft; ein fehlender MOTU-Aufnahmepfad wird dabei einmal kontrolliert repariert.",
   );
   productHead.append(productCopy);
   controls.append(productHead);
@@ -2130,7 +2139,7 @@ function renderRecordingControls(card, recording) {
     nameInput.addEventListener("input", () => invalidatePlan({ nameEdited: true }));
     durationInput.addEventListener("input", () => invalidatePlan());
 
-    const planButton = element("button", "secondary-button", "Plan prüfen");
+    const planButton = element("button", "secondary-button", "Aufnahmepfad prüfen");
     planButton.type = "button";
     planButton.dataset.control = "plan";
     planButton.disabled = !writable || state.recordingActionPending;
@@ -2601,10 +2610,10 @@ function renderActiveLanes({ preserveDraft = true } = {}) {
       observed: snapshot.presence?.observed?.motu_m2 ? "MOTU beobachtet" : "MOTU nicht beobachtet",
       configured: recordingStatusLabel(recording.status),
       physical: recording.session?.physical?.rode_nt1a_connected === true
-        ? "RØDE + Voice-Gates im Recorderplan belegt"
-        : "Mikrofon-/48-V-/Gain-/Pegel-Gates im Plan zu belegen",
+        ? "RØDE + harte Voice-Gates im Recorderplan belegt · Pegelhinweis optional"
+        : "Mikrofon-/48-V-/Gain-Gates im Plan zu belegen · Pegelhinweis optional",
       executable: recordingActionsAllowed()
-        ? "Voice Plan/Start/Stop/Recovery"
+        ? "Voice Plan/Prepare/Start/Stop/Recovery"
         : state.remoteBridgeProjection === true
           ? "Read-only-Bridge"
           : "fail-closed",
