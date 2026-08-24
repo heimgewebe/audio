@@ -222,6 +222,18 @@ UNIT_MANAGED_BY = "audio-control-ui-v1"
 QOBUZ_DESKTOP_RECOVERY_UNIT = "audio-qobuz-desktop-recovery-v1.service"
 QBZD_QCONNECT_RECOVERY_UNIT = "audio-qbzd-qconnect-recovery-v1.service"
 QOBUZ_RECOVERY_UNITS = (QOBUZ_DESKTOP_RECOVERY_UNIT, QBZD_QCONNECT_RECOVERY_UNIT)
+RECORDING_PATH_RECOVERY_UNITS = (
+    "audio-control-level-observer-v1.service",
+    QOBUZ_DESKTOP_RECOVERY_UNIT,
+    QBZD_QCONNECT_RECOVERY_UNIT,
+    "qbzd.service",
+    "fluidsynth.service",
+)
+RECORDING_AUDIO_CORE_UNITS = (
+    "pipewire.service",
+    "pipewire-pulse.service",
+    "wireplumber.service",
+)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_CACHE_SECONDS = 4.0
@@ -3056,8 +3068,131 @@ class AudioControl:
                     )
         return projected
 
+    def _recording_plan_once(
+        self, *, mode: str, safe_name: str, duration: int
+    ) -> dict[str, Any]:
+        mode_spec = RECORDING_MODES[mode]
+        result = self.runner.run(
+            [
+                sys.executable,
+                str(RECORDING_SCRIPT),
+                "plan",
+                safe_name,
+                "--session-type",
+                mode_spec["session_type"],
+                "--maximum-seconds",
+                str(duration),
+                "--root",
+                str(RECORDING_OUTPUT_ROOT),
+                "--state-root",
+                str(RECORDING_STATE_ROOT),
+            ],
+            timeout=30,
+        )
+        report = parse_json_output(result, label="Recorderplan")
+        if result.returncode != 0:
+            raise ControlError(
+                safe_error_message(report, "Recorderplan konnte nicht erstellt werden.")
+            )
+        projected = project_recording_plan(report, mode=mode)
+        projected["contract"] = read_recording_contract(mode)
+        return projected
+
+    def _recording_recovery_unit_active(self, unit: str) -> bool:
+        result = self.runner.run(
+            ["systemctl", "--user", "is-active", unit], timeout=5
+        )
+        state = result.stdout.strip()
+        if result.returncode == 0 and state == "active":
+            return True
+        if result.returncode in {3, 4} and state in {
+            "inactive",
+            "failed",
+            "unknown",
+            "not-found",
+        }:
+            return False
+        raise ControlError(
+            f"Dienstzustand für {unit} ist vor der Aufnahmepfad-Reparatur unklar."
+        )
+
+    def _converge_recording_path(self) -> None:
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere Audioaktion verhindert die Aufnahmepfad-Reparatur.")
+        try:
+            if not self._snapshot_lock.acquire(blocking=False):
+                raise ActionBusy(
+                    "Eine Zustandsabfrage verhindert die sichere Aufnahmepfad-Reparatur."
+                )
+            try:
+                stopped: list[str] = []
+                primary_error: ControlError | None = None
+                restore_errors: list[str] = []
+                try:
+                    try:
+                        for unit in RECORDING_PATH_RECOVERY_UNITS:
+                            if not self._recording_recovery_unit_active(unit):
+                                continue
+                            result = self.runner.run(
+                                ["systemctl", "--user", "stop", unit], timeout=10
+                            )
+                            if result.returncode != 0:
+                                raise ControlError(
+                                    f"{unit} konnte für die Aufnahmepfad-Reparatur nicht sicher angehalten werden."
+                                )
+                            stopped.append(unit)
+
+                        result = self.runner.run(
+                            [
+                                "systemctl",
+                                "--user",
+                                "restart",
+                                *RECORDING_AUDIO_CORE_UNITS,
+                            ],
+                            timeout=20,
+                        )
+                        if result.returncode != 0:
+                            raise ControlError(
+                                "PipeWire/WirePlumber konnten den MOTU-Aufnahmepfad nicht neu aufbauen."
+                            )
+                        time.sleep(1.0)
+                    except ControlError as error:
+                        primary_error = error
+                    finally:
+                        for unit in reversed(stopped):
+                            try:
+                                result = self.runner.run(
+                                    ["systemctl", "--user", "start", unit], timeout=10
+                                )
+                            except ControlError:
+                                restore_errors.append(unit)
+                                continue
+                            if result.returncode != 0:
+                                restore_errors.append(unit)
+                        self.invalidate()
+
+                    if primary_error is not None:
+                        raise primary_error
+                    if restore_errors:
+                        raise ControlError(
+                            "Aufnahmepfad wurde neu aufgebaut, aber begleitende Audiodienste konnten nicht vollständig wiederhergestellt werden: "
+                            + ", ".join(restore_errors)
+                        )
+                    time.sleep(1.0)
+                finally:
+                    self.invalidate()
+            finally:
+                self._snapshot_lock.release()
+        finally:
+            self._action_lock.release()
+
     def recording_plan(
-        self, *, mode: str = "voice", name: Any, maximum_seconds: Any
+        self,
+        *,
+        mode: str = "voice",
+        name: Any,
+        maximum_seconds: Any,
+        recover_source: bool = False,
     ) -> dict[str, Any]:
         mode_spec = RECORDING_MODES.get(mode)
         if mode_spec is None:
@@ -3067,30 +3202,26 @@ class AudioControl:
         if not self._plan_lock.acquire(blocking=False):
             raise ActionBusy("Eine andere Audio- oder Recorderplanung läuft bereits.")
         try:
-            result = self.runner.run(
-                [
-                    sys.executable,
-                    str(RECORDING_SCRIPT),
-                    "plan",
-                    safe_name,
-                    "--session-type",
-                    mode_spec["session_type"],
-                    "--maximum-seconds",
-                    str(duration),
-                    "--root",
-                    str(RECORDING_OUTPUT_ROOT),
-                    "--state-root",
-                    str(RECORDING_STATE_ROOT),
-                ],
-                timeout=30,
+            projected = self._recording_plan_once(
+                mode=mode, safe_name=safe_name, duration=duration
             )
-            report = parse_json_output(result, label="Recorderplan")
-            if result.returncode != 0:
-                raise ControlError(
-                    safe_error_message(report, "Recorderplan konnte nicht erstellt werden.")
+            blockers = projected.get("readiness", {}).get("blockers", [])
+            recoverable_source_blockers = {
+                "motu-source-not-unique",
+                "roland-audio-source-not-unique",
+                "roland-midi-source-not-unique",
+            }
+            if (
+                recover_source
+                and projected.get("ready") is not True
+                and isinstance(blockers, list)
+                and "motu-source-not-unique" in blockers
+                and set(blockers) <= recoverable_source_blockers
+            ):
+                self._converge_recording_path()
+                projected = self._recording_plan_once(
+                    mode=mode, safe_name=safe_name, duration=duration
                 )
-            projected = project_recording_plan(report, mode=mode)
-            projected["contract"] = read_recording_contract(mode)
             return projected
         finally:
             self._plan_lock.release()
@@ -3441,14 +3572,15 @@ class AudioControl:
             raise ControlError("Recorderaktion muss ein JSON-Objekt sein.")
         operation = payload.get("operation")
         if operation not in (
-            {"plan", "start", "stop", "recover", "measure-level"} | RECORDING_LIBRARY_OPERATIONS
+            {"plan", "prepare", "start", "stop", "recover", "measure-level"}
+            | RECORDING_LIBRARY_OPERATIONS
         ):
             raise ControlError("Unbekannte Recorderaktion.")
         if operation in RECORDING_LIBRARY_OPERATIONS:
             return self._perform_recording_library_action(payload)
         if operation == "measure-level":
             return self._perform_voice_level_acceptance(payload)
-        if operation == "plan":
+        if operation in {"plan", "prepare"}:
             if set(payload) != {"operation", "mode", "name", "maximum_seconds"}:
                 raise ControlError("Recorderplan enthält unbekannte oder fehlende Felder.")
             mode = payload.get("mode")
@@ -3458,11 +3590,12 @@ class AudioControl:
                 mode=mode,
                 name=payload["name"],
                 maximum_seconds=payload["maximum_seconds"],
+                recover_source=operation == "prepare",
             )
             return {
                 "schema_version": 1,
                 "kind": "audio_control_recording_action_result",
-                "operation": "plan",
+                "operation": operation,
                 "mode": mode,
                 "plan": plan,
             }
@@ -4268,7 +4401,7 @@ class AudioControl:
                 "error": recording_error,
                 "detail": (
                     "Hardened Voice-Recorder mit Plan-Hash, MOTU-Quellenbindung, "
-                    "RØDE-/48-V-/Pegel-Gates, Recovery und unveränderlichen Takes."
+                    "RØDE-/48-V-Gates, Pegelhinweisen, Recovery und unveränderlichen Takes."
                 ),
                 "authority": "recorder-plan-hash-and-current-readback",
                 "contract": recording_contract,
@@ -4277,6 +4410,7 @@ class AudioControl:
                 "active_session_id": recording_probe.get("active_session_id"),
                 "actions": [
                     "plan",
+                    "prepare",
                     "measure-level",
                     "start",
                     "stop",

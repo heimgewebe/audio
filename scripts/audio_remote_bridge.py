@@ -47,7 +47,7 @@ WHALE_ACTION_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
 WHALE_ACTION_OPERATIONS = frozenset({"start", "mode", "stop"})
 RECORDING_ACTION_MODES = frozenset({"voice", "piano-vocal"})
 RECORDING_ACTION_OPERATIONS = frozenset(
-    {"plan", "start", "stop", "recover", "categorize", "trash", "restore"}
+    {"plan", "prepare", "start", "stop", "recover", "categorize", "trash", "restore"}
 )
 RECORDING_LIBRARY_CATEGORIES = frozenset(
     {"unsorted", "song", "practice", "idea", "test", "finished"}
@@ -534,7 +534,7 @@ def validate_recording_action_payload(payload: bytes) -> dict[str, Any]:
     operation = decoded.get("operation")
     if operation not in RECORDING_ACTION_OPERATIONS:
         raise RequestRejected("remote recording operation is not allowlisted")
-    if operation == "plan":
+    if operation in {"plan", "prepare"}:
         required = {"operation", "mode", "name", "maximum_seconds"}
     elif operation == "start":
         required = {"operation", "mode", "name", "maximum_seconds", "expected_plan_sha256"}
@@ -544,7 +544,7 @@ def validate_recording_action_payload(payload: bytes) -> dict[str, Any]:
         required = {"operation", "session_id"}
     if set(decoded) != required:
         raise RequestRejected("remote recording action fields do not match the operation contract")
-    if operation in {"plan", "start"}:
+    if operation in {"plan", "prepare", "start"}:
         mode = decoded.get("mode")
         if mode not in RECORDING_ACTION_MODES:
             raise RequestRejected("remote recording mode is not allowlisted")
@@ -898,7 +898,7 @@ def write_backend_recording_action(action: dict[str, Any]) -> tuple[int, bytes, 
                 or decoded.get("operation") != action["operation"]
             ):
                 raise BackendFailure("backend recording action lacks bound result identity")
-            if action["operation"] == "plan":
+            if action["operation"] in {"plan", "prepare"}:
                 plan = decoded.get("plan")
                 if (
                     not isinstance(plan, dict)

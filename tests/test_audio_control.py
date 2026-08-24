@@ -2689,7 +2689,7 @@ class AudioControlTests(unittest.TestCase):
             'runRecordingAction({ operation: "stop", session_id: session?.session_id })',
             controls,
         )
-        for label in ("Plan prüfen", "Aufnahme starten", "Stop", "Recovery"):
+        for label in ("Aufnahmepfad prüfen", "Aufnahme starten", "Stop", "Recovery"):
             with self.subTest(label=label):
                 self.assertEqual(controls.count(f'"{label}"'), 1)
                 self.assertNotIn(f">{label}</button>", html)

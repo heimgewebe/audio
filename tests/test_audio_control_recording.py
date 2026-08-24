@@ -193,6 +193,67 @@ class RecordingActionRunner(FakeRunner):
         return super().run(argv, timeout=timeout)
 
 
+class RecordingRecoveryRunner(RecordingActionRunner):
+    def __init__(self, *, recover_source=True, extra_blocker=None):
+        super().__init__()
+        self.source_ready = False
+        self.recover_source = recover_source
+        self.extra_blocker = extra_blocker
+        self.active_units = set(MODULE.RECORDING_PATH_RECOVERY_UNITS)
+
+    def voice_plan(self, argv):
+        result = super().voice_plan(argv)
+        if self.source_ready:
+            return result
+        payload = json.loads(result.stdout)
+        blockers = ["motu-source-not-unique"]
+        payload["identity"]["source"] = {"identity": None, "identity_sha256": None}
+        for check in payload["readiness"]["checks"]:
+            if check["id"] == "source":
+                check["status"] = "blocked"
+                check["blockers"] = ["motu-source-not-unique"]
+        if self.extra_blocker is not None:
+            blockers.append(self.extra_blocker)
+            for check in payload["readiness"]["checks"]:
+                if check["id"] == "output":
+                    check["status"] = "blocked"
+                    check["blockers"] = [self.extra_blocker]
+                    break
+        payload["ready"] = False
+        payload["readiness"]["blockers"] = sorted(blockers)
+        return self.result(argv, payload)
+
+    def run(self, argv, *, timeout):
+        command = tuple(argv)
+        if command[:3] == ("systemctl", "--user", "is-active"):
+            self.calls.append((command, timeout))
+            unit = command[3]
+            active = unit in self.active_units
+            return MODULE.CommandResult(
+                command, 0 if active else 3, "active\n" if active else "inactive\n", ""
+            )
+        if command[:3] == ("systemctl", "--user", "stop"):
+            self.calls.append((command, timeout))
+            self.active_units.discard(command[3])
+            return MODULE.CommandResult(command, 0, "", "")
+        if command[:3] == ("systemctl", "--user", "start"):
+            self.calls.append((command, timeout))
+            self.active_units.add(command[3])
+            return MODULE.CommandResult(command, 0, "", "")
+        if command[:3] == ("systemctl", "--user", "restart"):
+            self.calls.append((command, timeout))
+            self.assert_core_restart(command)
+            if self.recover_source:
+                self.source_ready = True
+            return MODULE.CommandResult(command, 0, "", "")
+        return super().run(argv, timeout=timeout)
+
+    @staticmethod
+    def assert_core_restart(command):
+        if command[3:] != MODULE.RECORDING_AUDIO_CORE_UNITS:
+            raise AssertionError(f"unexpected audio-core restart: {command!r}")
+
+
 def running_snapshot(session_id, plan_sha, session_type="voice-recording"):
     return {
         "schema_version": 1,
@@ -797,6 +858,132 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertIn("--session-type", plan_call)
         self.assertIn("voice-recording", plan_call)
 
+    def test_recording_plan_stays_read_only_when_motu_source_is_missing(self):
+        runner = RecordingRecoveryRunner(recover_source=True)
+        result = self.controller(runner).perform_recording_action(
+            {
+                "operation": "plan",
+                "mode": "voice",
+                "name": "voice-take.wav",
+                "maximum_seconds": 60,
+            }
+        )
+
+        self.assertEqual(result["operation"], "plan")
+        self.assertFalse(result["plan"]["ready"])
+        self.assertEqual(
+            result["plan"]["readiness"]["blockers"], ["motu-source-not-unique"]
+        )
+        self.assertFalse(
+            any(
+                call[:3] == ("systemctl", "--user", "restart")
+                for call, _timeout in runner.calls
+            )
+        )
+        plan_calls = [
+            call
+            for call, _timeout in runner.calls
+            if len(call) > 2
+            and pathlib.Path(call[1]).name == "audio-record"
+            and call[2] == "plan"
+        ]
+        self.assertEqual(len(plan_calls), 1)
+
+    def test_recording_prepare_repairs_missing_motu_graph_once_then_replans(self):
+        runner = RecordingRecoveryRunner(recover_source=True)
+        controller = self.controller(runner)
+        with mock.patch.object(MODULE.time, "sleep") as sleep:
+            result = controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+
+        self.assertEqual(result["operation"], "prepare")
+        plan = result["plan"]
+        self.assertTrue(plan["ready"])
+        self.assertEqual(plan["readiness"]["blockers"], [])
+        plan_calls = [
+            call
+            for call, _timeout in runner.calls
+            if len(call) > 2
+            and pathlib.Path(call[1]).name == "audio-record"
+            and call[2] == "plan"
+        ]
+        self.assertEqual(len(plan_calls), 2)
+        restart = (
+            "systemctl",
+            "--user",
+            "restart",
+            *MODULE.RECORDING_AUDIO_CORE_UNITS,
+        )
+        self.assertEqual(sum(call == restart for call, _ in runner.calls), 1)
+        self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_recording_prepare_preserves_hard_source_gate_after_failed_recovery(self):
+        runner = RecordingRecoveryRunner(recover_source=False)
+        controller = self.controller(runner)
+        with mock.patch.object(MODULE.time, "sleep"):
+            result = controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+
+        plan = result["plan"]
+        self.assertFalse(plan["ready"])
+        self.assertFalse(plan["source"]["bound"])
+        self.assertEqual(plan["readiness"]["blockers"], ["motu-source-not-unique"])
+        plan_calls = [
+            call
+            for call, _timeout in runner.calls
+            if len(call) > 2
+            and pathlib.Path(call[1]).name == "audio-record"
+            and call[2] == "plan"
+        ]
+        self.assertEqual(len(plan_calls), 2)
+
+    def test_recording_prepare_does_not_recover_when_non_source_blocker_exists(self):
+        runner = RecordingRecoveryRunner(
+            recover_source=True, extra_blocker="output-already-exists"
+        )
+        result = self.controller(runner).perform_recording_action(
+            {
+                "operation": "prepare",
+                "mode": "voice",
+                "name": "voice-take.wav",
+                "maximum_seconds": 60,
+            }
+        )
+
+        plan = result["plan"]
+        self.assertFalse(plan["ready"])
+        self.assertEqual(
+            plan["readiness"]["blockers"],
+            ["motu-source-not-unique", "output-already-exists"],
+        )
+        self.assertFalse(
+            any(
+                call[:3] == ("systemctl", "--user", "restart")
+                for call, _timeout in runner.calls
+            )
+        )
+        plan_calls = [
+            call
+            for call, _timeout in runner.calls
+            if len(call) > 2
+            and pathlib.Path(call[1]).name == "audio-record"
+            and call[2] == "plan"
+        ]
+        self.assertEqual(len(plan_calls), 1)
+
     def test_recording_plan_rejects_inconsistent_structured_preflight(self):
         runner = RecordingActionRunner()
         original = runner.voice_plan
@@ -1203,7 +1390,8 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertIn('function ensureAutomaticTakeNameFree()', javascript)
         self.assertIn('RECORDING_COLLISION_BLOCKERS', javascript)
         self.assertIn('async function runRecordingStart()', javascript)
-        self.assertIn('await requestRecordingPlan({ autoRenameCollision: true })', javascript)
+        self.assertIn('operation: "prepare"', javascript)
+        self.assertIn('"Aufnahmepfad prüfen"', javascript)
         self.assertIn('const attemptedNames = new Set();', javascript)
         self.assertIn('attemptedNames.add(input.name);', javascript)
         self.assertIn('nextAutomaticTakeName(input.mode, attemptedNames)', javascript)
