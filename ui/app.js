@@ -4,7 +4,7 @@ const ROUTES = {
   home: {
     title: "Home",
     eyebrow: "Arbeitsbereiche",
-    description: "Direkter Einstieg in Hören, Aufnehmen und Spielen mit aktuellem System-Readback.",
+    description: "Hören, Aufnehmen oder Spielen direkt starten. Technische Details bleiben im jeweiligen Arbeitsbereich und unter System.",
   },
   hoeren: {
     title: "Hören",
@@ -130,7 +130,7 @@ const PHYSICAL_FACT_LABELS = {
 };
 
 const WARNING_LABELS = {
-  "voice-source-not-motu": "Mikrofonquelle ist nicht das MOTU M2",
+  "voice-source-not-motu": "MOTU-Aufnahmequelle prüfen",
   "high-live-quantum": "Großer Live-Puffer",
   "bluetooth-service-inactive": "System-Bluetooth ist inaktiv",
   "qobuz-qbzd-api-unavailable": "Qobuz-Referenzpfad nicht erreichbar",
@@ -510,10 +510,6 @@ function profileStateTone(stateName) {
   if (stateName === "onsite") return "onsite";
   if (stateName === "planned") return "planned";
   return "laboratory";
-}
-
-function profilesByArea(area) {
-  return profilesFor(area);
 }
 
 /*
@@ -2486,8 +2482,8 @@ function homeProfileStatus(profileId) {
   };
 }
 
-function homeActionCard({ href, glyph, eyebrow, title, status, tone, detail }) {
-  const card = element("a", "home-action-card");
+function homeActionCard({ href, glyph, eyebrow, title, status, tone, detail, priority = "primary" }) {
+  const card = element("a", `home-action-card is-${priority}`);
   card.href = href;
   appendText(card, "span", "home-action-glyph", glyph).setAttribute("aria-hidden", "true");
   const copy = element("span", "home-action-copy");
@@ -2498,6 +2494,56 @@ function homeActionCard({ href, glyph, eyebrow, title, status, tone, detail }) {
   appendText(card, "span", `home-action-state ${tone || "planned"}`, status);
   appendText(card, "span", "home-action-arrow", "→").setAttribute("aria-hidden", "true");
   return card;
+}
+
+function homeAttentionItems({ doctor, presence, operatingMode, deployment }) {
+  const items = [];
+  if (doctor.status !== "ok") {
+    items.push({
+      title: "Systemzustand nicht vollständig lesbar",
+      detail: "Die technische Kontrollfläche unter System zeigt, welche Laufzeitwahrheit fehlt.",
+      severity: "high",
+    });
+  }
+  if (deployment.in_sync === false) {
+    items.push({
+      title: "Audiozentrale nicht synchron",
+      detail: "Quelle und laufende Version weichen voneinander ab. Details stehen unter System.",
+      severity: "medium",
+    });
+  }
+
+  const qobuzConfigured = operatingMode.configured?.mode === "qobuz-reference";
+  const warnings = Array.isArray(doctor.warnings) ? doctor.warnings : [];
+  for (const warning of warnings) {
+    if (items.length >= 2) break;
+    if (warning.code === "voice-source-not-motu") {
+      if (presence.observed?.motu_m2 === true) {
+        items.push({
+          title: WARNING_LABELS[warning.code],
+          detail: "Das MOTU M2 ist sichtbar, aber die gebundene Recorder-Quelle fehlt oder ist nicht eindeutig.",
+          severity: "high",
+        });
+      }
+      continue;
+    }
+    if (warning.code?.startsWith("qobuz-") && qobuzConfigured) {
+      items.push({
+        title: WARNING_LABELS[warning.code] || "Qobuz High Quality prüfen",
+        detail: "Der ausgewählte Qobuz-Referenzpfad ist noch nicht vollständig bereit. Öffne Hören für den aktuellen Readback.",
+        severity: warning.severity || "medium",
+      });
+      continue;
+    }
+    if (warning.severity === "high") {
+      items.push({
+        title: WARNING_LABELS[warning.code] || warning.code || "Systemhinweis",
+        detail: warning.detail || "Unter System stehen die technischen Details.",
+        severity: "high",
+      });
+    }
+  }
+  return items.slice(0, 2);
 }
 
 const SIGNAL_GLYPHS = Object.freeze({
@@ -2630,8 +2676,8 @@ function renderHome() {
     "",
     runtimeHealthy
       ? hardwareOffline
-        ? "Zentrale bereit · Hardware nicht gesehen"
-        : "Zentrale bereit · Geräte gelesen"
+        ? "Audiozentrale bereit"
+        : "Audiozentrale bereit · Geräte gelesen"
       : "Systemzustand prüfen",
   );
   appendText(
@@ -2639,38 +2685,42 @@ function renderHome() {
     "p",
     "",
     runtimeHealthy
-      ? `${formatEndpoint(graph.default_sink)}${rate ? ` · ${rate} Hz` : ""} · ${deployment.in_sync ? "Deployment synchron" : deploymentStateLabel(deployment.status)}`
+      ? hardwareOffline
+        ? "Heim-PC und Oberfläche laufen. MOTU M2 und Roland werden aktuell nicht beobachtet."
+        : `${formatEndpoint(graph.default_sink)}${rate ? ` · ${rate} Hz` : ""} · ${deployment.in_sync ? "Deployment synchron" : deploymentStateLabel(deployment.status)}`
       : "Mindestens eine Laufzeitwahrheit ist nicht verlässlich lesbar.",
   );
   card.append(copy);
 
   const foot = element("div", "state-foot home-state-foot");
-  appendText(foot, "span", motuObserved ? "is-positive" : "", motuObserved ? "MOTU M2 beobachtet" : "MOTU M2 offen");
-  appendText(foot, "span", rolandObserved ? "is-positive" : "", rolandObserved ? "Roland beobachtet" : "Roland offen");
+  appendText(foot, "span", motuObserved ? "is-positive" : "", motuObserved ? "MOTU M2 da" : "MOTU vor Ort offen");
+  appendText(foot, "span", rolandObserved ? "is-positive" : "", rolandObserved ? "Roland da" : "Roland vor Ort offen");
   appendText(foot, "span", "", recordingStatusLabel(recording.status));
   card.append(foot);
 
   const recordingProfile = homeProfileStatus("voice-recording");
   const playingProfile = homeProfileStatus("piano-software-live");
   const whaleMode = displayMode(snapshot.whale.service?.voice_mode || snapshot.whale.contract?.default_mode);
+  const listeningNeedsMotu =
+    operatingMode.state === "blocked" && configuredModeCard?.reason === "motu-not-observed";
   const actions = [
     {
       href: "#hoeren",
       glyph: "◖",
       eyebrow: "Wiedergabe",
       title: "Hören",
-      status: OPERATING_MODE_STATE_LABELS[operatingMode.state] || "offen",
-      tone: operatingMode.state === "ready" ? "ready" : "onsite",
-      detail: configuredModeCard?.label || "Hörmodus offen",
+      status: listeningNeedsMotu ? "vor Ort" : OPERATING_MODE_STATE_LABELS[operatingMode.state] || "offen",
+      tone: operatingMode.state === "ready" ? "ready" : listeningNeedsMotu ? "onsite" : "laboratory",
+      detail: listeningNeedsMotu ? "MOTU M2 verbinden · dann Desktop, Spotify oder Browser" : configuredModeCard?.label || "Hörmodus offen",
     },
     {
       href: "#aufnehmen",
       glyph: "●",
       eyebrow: "Recorder",
       title: "Aufnehmen",
-      status: recording.status === "running" ? "läuft" : recordingProfile.label,
-      tone: recording.status === "running" || recordingActionsAllowed() ? "ready" : recordingProfile.tone,
-      detail: `${recordingStatusLabel(recording.status)} · ${motuObserved ? "MOTU da" : "MOTU offen"}`,
+      status: recording.status === "running" ? "läuft" : motuObserved ? recordingProfile.label : "vor Ort",
+      tone: recording.status === "running" ? "ready" : !motuObserved ? "onsite" : recordingActionsAllowed() ? "ready" : recordingProfile.tone,
+      detail: motuObserved ? recordingStatusLabel(recording.status) : "MOTU M2 verbinden · dann Stimme aufnehmen",
     },
     {
       href: "#spielen",
@@ -2679,7 +2729,7 @@ function renderHome() {
       title: "Spielen",
       status: activeWhale ? `${whaleMode} aktiv` : playingProfile.label,
       tone: activeWhale ? "ready" : playingProfile.tone,
-      detail: rolandObserved ? "Roland FP-30X beobachtet" : "Roland FP-30X nicht beobachtet",
+      detail: rolandObserved ? "Roland FP-30X bereit" : "Roland FP-30X verbinden · dann spielen",
     },
     {
       href: "#material",
@@ -2697,6 +2747,7 @@ function renderHome() {
           ? `${whaleMode} · Wal aktiv`
           : "Walstimmen, Takes und Replay"
         : "Replay verfügbar · Livezustand nicht lesbar",
+      priority: "secondary",
     },
   ];
   byId("home-actions").replaceChildren(...actions.map(homeActionCard));
@@ -2775,59 +2826,11 @@ function renderHome() {
     }),
   );
 
-  const readinessAreas = [
-    ["Hören", "listening", "hoeren"],
-    ["Spielen", "playing", "spielen"],
-    ["Aufnehmen", "recording", "aufnehmen"],
-  ];
-  byId("home-readiness").replaceChildren(
-    ...readinessAreas.map(([label, area, alias]) => {
-      const profiles = profilesByArea(area);
-      const readiness = element("a", "readiness-card");
-      readiness.href = `#${alias}`;
-      const heading = element("div", "readiness-heading");
-      appendText(heading, "h3", "", label);
-      appendText(heading, "span", "", `${profiles.length} Profile`);
-      readiness.append(heading);
-      const states = element("div", "readiness-states");
-      for (const profile of profiles) {
-        const stateName = profileState(profile);
-        appendText(
-          states,
-          "span",
-          `readiness-chip ${profileStateTone(stateName)}`,
-          `${displayProfile(profile.id)} · ${PROFILE_STATE_LABELS[stateName] || stateName}`,
-        );
-      }
-      readiness.append(states);
-      return readiness;
-    }),
-  );
-
-  const warnings = Array.isArray(doctor.warnings) ? doctor.warnings.slice(0, 3) : [];
-  if (warnings.length === 0) {
-    byId("home-insights").replaceChildren(
-      insightCard("System", doctor.status === "ok" ? "Keine Doctor-Warnungen" : "Doctor nicht lesbar", doctor.status === "ok" ? "ok" : "high"),
-      insightCard(
-        "Vor Ort",
-        `${summary.physical_unknown_count || 0} Belege offen`,
-        summary.physical_unknown_count ? "onsite" : "ok",
-      ),
-      insightCard("Deployment", deployment.in_sync ? "Runtime und Quelle synchron" : deploymentStateLabel(deployment.status), deployment.in_sync ? "ok" : "medium"),
-    );
-    return;
-  }
-  byId("home-insights").replaceChildren(
-    ...warnings.map((warning) => {
-      const onsite =
-        warning.code === "voice-source-not-motu" &&
-        presence.observed?.motu_m2 !== true;
-      return insightCard(
-        WARNING_LABELS[warning.code] || warning.code || "Hinweis",
-        warning.detail || "Doctor-Hinweis ohne Detail",
-        onsite ? "onsite" : warning.severity || "medium",
-      );
-    }),
+  const insightHost = byId("home-insights");
+  const attention = homeAttentionItems({ doctor, presence, operatingMode, deployment });
+  insightHost.hidden = attention.length === 0;
+  insightHost.replaceChildren(
+    ...attention.map((item) => insightCard(item.title, item.detail, item.severity)),
   );
 }
 
