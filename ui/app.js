@@ -1587,7 +1587,7 @@ function recordingPlanMatchesDraft() {
 }
 
 const RECORDING_ACTION_TIMEOUT_MS = 55000;
-const RECORDING_PREPARE_TIMEOUT_MS = 240000;
+const RECORDING_PREPARE_TIMEOUT_MS = 260000;
 
 function recordingActionTimeoutMs(operation) {
   return operation === "prepare" ? RECORDING_PREPARE_TIMEOUT_MS : RECORDING_ACTION_TIMEOUT_MS;

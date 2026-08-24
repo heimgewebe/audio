@@ -1392,7 +1392,7 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertIn('async function runRecordingStart()', javascript)
         self.assertIn('operation: "prepare"', javascript)
         self.assertIn('"Aufnahmepfad prüfen"', javascript)
-        self.assertIn("const RECORDING_PREPARE_TIMEOUT_MS = 240000;", javascript)
+        self.assertIn("const RECORDING_PREPARE_TIMEOUT_MS = 260000;", javascript)
         self.assertEqual(
             javascript.count("timeoutMs: recordingActionTimeoutMs(payload?.operation)"),
             2,
