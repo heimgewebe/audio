@@ -27,7 +27,11 @@ logs observed for the target fault include `Lifecycle -> Reconnecting`,
 `Cloud rejected session`, reconnect scheduling/exhaustion and the maximum-retry
 message; any of these wakes the full status reconciliation within the same
 30-second cadence as the previous implementation. Journal text never authorizes
-a restart by itself.
+a restart by itself. A narrow exception only attests network reachability when
+the same recent bounded journal delta contains `WebSocket connected`,
+`Authenticated with JWT` and `Cloud rejected session`. That attestation may
+substitute for QBZD's contradictory `network.online=false` for 90 seconds; all
+other restart gates remain authoritative.
 
 Once the status path arms a recovery candidate, the watchdog returns to the
 original full 30-second reconciliation cadence through stabilization, backoff,
@@ -61,7 +65,9 @@ survive additional restart-edge observations:
 
 - the fixed loopback status endpoint `127.0.0.1:8182/api/status` returns bounded,
   strict API-v1 JSON;
-- Qobuz authentication is `logged_in` and the network is reported online;
+- Qobuz authentication is `logged_in` and either the network is reported online,
+  or a QConnect delta from the last 90 seconds proves that the WebSocket connected,
+  JWT authentication succeeded, and the cloud then rejected the session;
 - QConnect is `retrying` or `reconnecting` with no active session;
 - QBZD is configured for ALSA and exactly `front:CARD=M2,DEV=0`;
 - the configured MOTU device is present and QBZD reports its device closed;
@@ -95,8 +101,9 @@ wall-clock time is retained only as diagnostic recovery time.
 
 State JSON rejects non-finite numbers, negative control timestamps, incomplete
 process bindings and stale state from another boot. Malformed state, unreadable
-status, offline/logged-out state, active-device state, service-identity
-ambiguity, unreadable ALSA ownership, or any changed observation fails closed.
+status, logged-out state, offline state without the short-lived QConnect network
+attestation above, active-device state, service-identity ambiguity, unreadable
+ALSA ownership, or any changed observation fails closed.
 
 There is no atomic exclusion primitive shared with arbitrary non-cooperating
 ALSA/QBZD activity. Playback could theoretically begin in the very small

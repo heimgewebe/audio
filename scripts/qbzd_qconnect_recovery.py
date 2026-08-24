@@ -49,6 +49,12 @@ QCONNECT_JOURNAL_TRIGGERS = (
     "Max reconnect attempts exceeded",
     "[QConnect] Reconnect exhausted",
 )
+QCONNECT_NETWORK_REACHABILITY_MARKERS = (
+    "WebSocket connected",
+    "Authenticated with JWT",
+    "Cloud rejected session:",
+)
+NETWORK_REACHABILITY_EVIDENCE_SECONDS = 90.0
 STATE_SCHEMA_VERSION = 2
 
 
@@ -342,6 +348,10 @@ def read_journal_delta(cursor: str | None = None) -> JournalDelta:
 
 def journal_requires_status(text: str) -> bool:
     return any(trigger in text for trigger in QCONNECT_JOURNAL_TRIGGERS)
+
+
+def journal_proves_qconnect_network_reachable(text: str) -> bool:
+    return all(marker in text for marker in QCONNECT_NETWORK_REACHABILITY_MARKERS)
 
 
 def _read_bounded_text(path: pathlib.Path, error_code: str) -> str:
@@ -668,10 +678,12 @@ def _is_healthy(status: QbzdStatus) -> bool:
     return status.qconnect_state == "connected" and status.session_active
 
 
-def _is_recovery_candidate(status: QbzdStatus) -> bool:
+def _is_recovery_candidate(
+    status: QbzdStatus, *, allow_network_offline: bool = False
+) -> bool:
     return (
         status.auth_state == "logged_in"
-        and status.network_online is True
+        and (status.network_online is True or allow_network_offline)
         and status.qconnect_state in {"retrying", "reconnecting"}
         and status.session_active is False
         and status.audio_backend.casefold() == "alsa"
@@ -792,6 +804,7 @@ def reconcile_once(
     monotonic_clock: Clock = time.monotonic,
     wall_clock: Clock = time.time,
     boot_id_reader: BootIdReader | None = None,
+    allow_network_offline: bool = False,
 ) -> str:
     try:
         state = _load_state(state_path)
@@ -817,7 +830,7 @@ def reconcile_once(
             if cleared != state:
                 _store_state(state_path, cleared)
             return "noop:connected"
-        if not _is_recovery_candidate(first):
+        if not _is_recovery_candidate(first, allow_network_offline=allow_network_offline):
             if state["retry_since_monotonic"] is not None:
                 updated = _clear_candidate(
                     state,
@@ -871,7 +884,7 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(second):
+        if not _is_recovery_candidate(second, allow_network_offline=allow_network_offline):
             _store_state(
                 state_path,
                 _clear_candidate(
@@ -913,7 +926,7 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(final_status):
+        if not _is_recovery_candidate(final_status, allow_network_offline=allow_network_offline):
             _store_state(
                 state_path,
                 _clear_candidate(
@@ -1046,7 +1059,7 @@ def run_loop(
     cursor: str | None = None
     last_status_monotonic: float | None = None
     fast_followup = True
-    reconcile_call = reconciler or (lambda path: reconcile_once(state_path=path))
+    network_evidence_observed_at: float | None = None
 
     # Capture the journal edge before the startup status read. A QConnect change
     # that races with startup is therefore seen either by that status read or by
@@ -1082,6 +1095,16 @@ def run_loop(
                 cursor = None
 
         now_monotonic = _clock_value(monotonic_clock, "loop-monotonic")
+        if journal_proves_qconnect_network_reachable(journal_text):
+            network_evidence_observed_at = now_monotonic
+        elif network_evidence_observed_at is not None and (
+            now_monotonic < network_evidence_observed_at
+            or now_monotonic - network_evidence_observed_at
+            > NETWORK_REACHABILITY_EVIDENCE_SECONDS
+        ):
+            network_evidence_observed_at = None
+        allow_network_offline = network_evidence_observed_at is not None
+
         reason = adaptive_poll_reason(
             fast_followup=fast_followup,
             journal_available=journal_available,
@@ -1090,11 +1113,19 @@ def run_loop(
             now_monotonic=now_monotonic,
         )
         if reason is not None:
-            result = reconcile_call(state_path)
+            if reconciler is None:
+                result = reconcile_once(
+                    state_path=state_path,
+                    allow_network_offline=allow_network_offline,
+                )
+            else:
+                result = reconciler(state_path)
             last_status_monotonic = _clock_value(
                 monotonic_clock, "loop-status-monotonic"
             )
             fast_followup = _fast_followup_required(result)
+            if not fast_followup:
+                network_evidence_observed_at = None
             if result != previous and not result.startswith("noop:"):
                 print(json.dumps({"qbzd_qconnect_recovery": result}), flush=True)
             previous = result

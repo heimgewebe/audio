@@ -155,6 +155,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
         runner=None,
         pcm=None,
         boot=BOOT,
+        allow_network_offline=False,
     ):
         return MODULE.reconcile_once(
             state_path=state_path,
@@ -166,6 +167,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             monotonic_clock=SequenceClock(monotonic),
             wall_clock=SequenceClock(wall or [1000.0] * 20),
             boot_id_reader=lambda: boot,
+            allow_network_offline=allow_network_offline,
         )
 
     def test_classifies_expected_status_payload(self):
@@ -430,6 +432,27 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                     self.assertEqual(result, "noop:not-candidate")
                     self.assertEqual(runner.commands, [])
 
+    def test_journal_attested_network_reachability_allows_offline_status_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(state_path, self.candidate_state())
+            runner = FakeRunner()
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[
+                    status(online=False),
+                    status(online=False),
+                    status(online=False),
+                    healthy(),
+                ],
+                services=[SERVICE_A, SERVICE_A, SERVICE_A, SERVICE_B],
+                monotonic=[400.0, 402.0, 403.0, 403.5, 404.0],
+                runner=runner,
+                allow_network_offline=True,
+            )
+            self.assertEqual(result, "recovered")
+            self.assertEqual(runner.commands, [TRY_RESTART])
+
     def test_process_change_at_final_gate_blocks_restart_and_rearms(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = self.state_path(tmp)
@@ -638,6 +661,25 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             )
         )
 
+    def test_network_reachability_requires_complete_qconnect_auth_reject_evidence(self):
+        observed = (
+            "[QConnect/Transport] WebSocket connected\n"
+            "[QConnect/Transport] Authenticated with JWT\n"
+            '[QConnect/Transport] Cloud rejected session: msg_id=0 code=0 descr="auth"'
+        )
+        self.assertTrue(MODULE.journal_proves_qconnect_network_reachable(observed))
+        self.assertFalse(
+            MODULE.journal_proves_qconnect_network_reachable(
+                "[QConnect/Transport] WebSocket connected\n"
+                "[QConnect/Transport] Authenticated with JWT"
+            )
+        )
+        self.assertFalse(
+            MODULE.journal_proves_qconnect_network_reachable(
+                '[QConnect/Transport] Cloud rejected session: descr="auth"'
+            )
+        )
+
     def test_only_positive_connected_outcomes_enter_quiet_mode(self):
         for result in ("noop:connected", "noop:recovered-naturally", "recovered"):
             with self.subTest(result=result):
@@ -768,6 +810,52 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                     ),
                 )
         self.assertEqual(reconciles, [state_path, state_path, state_path])
+
+    def test_run_loop_keeps_network_override_bounded_to_recent_journal_proof(self):
+        proof = (
+            "[QConnect/Transport] WebSocket connected\n"
+            "[QConnect/Transport] Authenticated with JWT\n"
+            '[QConnect/Transport] Cloud rejected session: msg_id=0 code=0 descr="auth"'
+        )
+        journal = FakeJournalReader(
+            [
+                MODULE.JournalDelta("s=0", ""),
+                MODULE.JournalDelta("s=1", proof),
+                MODULE.JournalDelta("s=2", ""),
+                MODULE.JournalDelta("s=3", ""),
+            ]
+        )
+        observed_overrides = []
+        results = iter(["armed", "noop:stabilizing", "noop:not-candidate"])
+        sleeps = 0
+
+        def fake_reconcile_once(*, state_path, allow_network_offline=False):
+            observed_overrides.append((state_path, allow_network_offline))
+            return next(results)
+
+        def sleeper(_seconds):
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps == 3:
+                raise StopLoop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            with mock.patch.object(MODULE, "reconcile_once", side_effect=fake_reconcile_once):
+                with self.assertRaises(StopLoop):
+                    MODULE.run_loop(
+                        state_path,
+                        journal_reader=journal,
+                        sleeper=sleeper,
+                        monotonic_clock=SequenceClock(
+                            [0.0, 0.0, 30.0, 30.0, 121.0, 121.0]
+                        ),
+                    )
+
+        self.assertEqual(
+            observed_overrides,
+            [(state_path, True), (state_path, True), (state_path, False)],
+        )
 
     def test_run_loop_replacement_cursor_is_captured_before_fallback_status(self):
         order = []
