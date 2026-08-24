@@ -202,6 +202,7 @@ class RecordingRecoveryRunner(RecordingActionRunner):
         active_streams=False,
         source_ready_after_queries=1,
         stop_uncertain_unit=None,
+        activate_streams_on_stop_unit=None,
     ):
         super().__init__()
         self.source_ready = False
@@ -210,6 +211,7 @@ class RecordingRecoveryRunner(RecordingActionRunner):
         self.active_streams = active_streams
         self.source_ready_after_queries = source_ready_after_queries
         self.stop_uncertain_unit = stop_uncertain_unit
+        self.activate_streams_on_stop_unit = activate_streams_on_stop_unit
         self.restart_performed = False
         self.source_queries_after_restart = 0
         self.active_units = set(MODULE.RECORDING_PATH_RECOVERY_UNITS)
@@ -270,6 +272,8 @@ class RecordingRecoveryRunner(RecordingActionRunner):
         if command[:3] == ("systemctl", "--user", "stop"):
             self.calls.append((command, timeout))
             self.active_units.discard(command[3])
+            if command[3] == self.activate_streams_on_stop_unit:
+                self.active_streams = True
             if command[3] == self.stop_uncertain_unit:
                 raise MODULE.ControlError("simulated uncertain stop")
             return MODULE.CommandResult(command, 0, "", "")
@@ -989,7 +993,7 @@ class AudioControlRecordingTests(unittest.TestCase):
                 mock.call(MODULE.RECORDING_SOURCE_READBACK_INTERVAL_SECONDS),
             ],
         )
-        pcm_safe.assert_called_once_with()
+        self.assertEqual(pcm_safe.call_count, 2)
 
     def test_recording_prepare_preserves_hard_source_gate_after_failed_recovery(self):
         runner = RecordingRecoveryRunner(recover_source=False)
@@ -1082,6 +1086,56 @@ class AudioControlRecordingTests(unittest.TestCase):
             )
         pcm_safe.assert_called_once_with()
 
+        self.assertFalse(runner.restart_performed)
+        self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
+
+    def test_recording_prepare_rechecks_stream_idle_immediately_before_restart(self):
+        late_unit = MODULE.QOBUZ_DESKTOP_RECOVERY_UNIT
+        runner = RecordingRecoveryRunner(activate_streams_on_stop_unit=late_unit)
+        controller = self.controller(runner)
+        with (
+            mock.patch.object(controller, "_recording_assert_motu_pcm_safe"),
+            self.assertRaisesRegex(MODULE.ControlError, "andere Wiedergabe oder Aufnahme"),
+        ):
+            controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+
+        self.assertFalse(runner.restart_performed)
+        sink_reads = [
+            call
+            for call, _timeout in runner.calls
+            if call == ("pactl", "--format=json", "list", "sink-inputs")
+        ]
+        self.assertEqual(len(sink_reads), 2)
+        self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
+
+    def test_recording_prepare_rechecks_direct_pcm_immediately_before_restart(self):
+        runner = RecordingRecoveryRunner()
+        controller = self.controller(runner)
+        with (
+            mock.patch.object(
+                controller,
+                "_recording_assert_motu_pcm_safe",
+                side_effect=[None, MODULE.ControlError("late direct MOTU PCM busy")],
+            ) as pcm_safe,
+            self.assertRaisesRegex(MODULE.ControlError, "late direct MOTU PCM busy"),
+        ):
+            controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+
+        self.assertEqual(pcm_safe.call_count, 2)
         self.assertFalse(runner.restart_performed)
         self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
 

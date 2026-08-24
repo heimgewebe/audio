@@ -3287,6 +3287,12 @@ class AudioControl:
                                     f"{unit} konnte für die Aufnahmepfad-Reparatur nicht sicher angehalten werden."
                                 )
 
+                        # The stop loop can take tens of seconds. Re-read both
+                        # non-interference gates as the final pre-effect step so
+                        # a client that appeared after the first gate is not torn down.
+                        self._recording_assert_core_restart_idle()
+                        self._recording_assert_motu_pcm_safe()
+
                         result = self.runner.run(
                             [
                                 "systemctl",
