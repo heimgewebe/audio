@@ -203,6 +203,8 @@ class RecordingRecoveryRunner(RecordingActionRunner):
         source_ready_after_queries=1,
         stop_uncertain_unit=None,
         activate_streams_on_stop_unit=None,
+        native_streams=False,
+        activate_native_streams_on_stop_unit=None,
     ):
         super().__init__()
         self.source_ready = False
@@ -212,6 +214,8 @@ class RecordingRecoveryRunner(RecordingActionRunner):
         self.source_ready_after_queries = source_ready_after_queries
         self.stop_uncertain_unit = stop_uncertain_unit
         self.activate_streams_on_stop_unit = activate_streams_on_stop_unit
+        self.native_streams = native_streams
+        self.activate_native_streams_on_stop_unit = activate_native_streams_on_stop_unit
         self.restart_performed = False
         self.source_queries_after_restart = 0
         self.active_units = set(MODULE.RECORDING_PATH_RECOVERY_UNITS)
@@ -274,6 +278,8 @@ class RecordingRecoveryRunner(RecordingActionRunner):
             self.active_units.discard(command[3])
             if command[3] == self.activate_streams_on_stop_unit:
                 self.active_streams = True
+            if command[3] == self.activate_native_streams_on_stop_unit:
+                self.native_streams = True
             if command[3] == self.stop_uncertain_unit:
                 raise MODULE.ControlError("simulated uncertain stop")
             return MODULE.CommandResult(command, 0, "", "")
@@ -293,6 +299,21 @@ class RecordingRecoveryRunner(RecordingActionRunner):
         if command == ("pactl", "--format=json", "list", "source-outputs"):
             self.calls.append((command, timeout))
             return MODULE.CommandResult(command, 0, "[]", "")
+        if command == ("pw-dump",):
+            self.calls.append((command, timeout))
+            payload = []
+            if self.native_streams:
+                payload.append(
+                    {
+                        "id": 77,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "state": "running",
+                            "props": {"media.class": "Stream/Output/Audio"},
+                        },
+                    }
+                )
+            return MODULE.CommandResult(command, 0, json.dumps(payload), "")
         if command == ("pactl", "--format=json", "list", "sources"):
             self.calls.append((command, timeout))
             if self.restart_performed:
@@ -1087,6 +1108,51 @@ class AudioControlRecordingTests(unittest.TestCase):
         pcm_safe.assert_called_once_with()
 
         self.assertFalse(runner.restart_performed)
+        self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
+
+    def test_recording_prepare_refuses_native_pipewire_audio_stream(self):
+        runner = RecordingRecoveryRunner(native_streams=True)
+        controller = self.controller(runner)
+        with (
+            mock.patch.object(controller, "_recording_assert_motu_pcm_safe"),
+            self.assertRaisesRegex(MODULE.ControlError, "nativer PipeWire-Audiostream"),
+        ):
+            controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+
+        self.assertFalse(runner.restart_performed)
+        self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
+
+    def test_recording_prepare_rechecks_native_pipewire_stream_before_restart(self):
+        late_unit = MODULE.QOBUZ_DESKTOP_RECOVERY_UNIT
+        runner = RecordingRecoveryRunner(
+            activate_native_streams_on_stop_unit=late_unit
+        )
+        controller = self.controller(runner)
+        with (
+            mock.patch.object(controller, "_recording_assert_motu_pcm_safe"),
+            self.assertRaisesRegex(MODULE.ControlError, "nativer PipeWire-Audiostream"),
+        ):
+            controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+
+        self.assertFalse(runner.restart_performed)
+        pw_dump_reads = [
+            call for call, _timeout in runner.calls if call == ("pw-dump",)
+        ]
+        self.assertEqual(len(pw_dump_reads), 2)
         self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
 
     def test_recording_prepare_rechecks_stream_idle_immediately_before_restart(self):

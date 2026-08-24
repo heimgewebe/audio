@@ -3217,9 +3217,22 @@ class AudioControl:
             ["pactl", "--format=json", "list", "source-outputs"],
             label="Aufnahmeaktivität",
         )
-        if sink_inputs or source_outputs:
+        pipewire_objects = self._recording_json_list(
+            ["pw-dump"],
+            label="nativer PipeWire-Graph",
+        )
+        native_audio_streams = 0
+        for item in pipewire_objects:
+            if not isinstance(item, dict) or item.get("type") != "PipeWire:Interface:Node":
+                continue
+            info = item.get("info") if isinstance(item.get("info"), dict) else {}
+            props = info.get("props") if isinstance(info.get("props"), dict) else {}
+            media_class = props.get("media.class")
+            if isinstance(media_class, str) and media_class.startswith("Stream/") and media_class.endswith("/Audio"):
+                native_audio_streams += 1
+        if sink_inputs or source_outputs or native_audio_streams:
             raise ControlError(
-                "Der Audio-Graph wird nicht neu gestartet, solange andere Wiedergabe oder Aufnahme aktiv ist."
+                "Der Audio-Graph wird nicht neu gestartet, solange andere Wiedergabe oder Aufnahme beziehungsweise ein nativer PipeWire-Audiostream aktiv ist."
             )
 
     def _recording_wait_for_unique_motu_source(self) -> bool:
