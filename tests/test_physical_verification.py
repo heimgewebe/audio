@@ -84,7 +84,7 @@ class PhysicalVerificationTests(unittest.TestCase):
         parsed = MODULE.parse_timestamp("2026-07-27T12:00:00+02:00", "test")
         self.assertIsNotNone(parsed.utcoffset())
 
-    def test_prompt_copy_does_not_change_catalog_semantic_hash(self):
+    def test_catalog_binding_ignores_unobserved_prompt_changes(self):
         catalog = MODULE.load_json(MODULE.CATALOG_PATH)
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -92,76 +92,124 @@ class PhysicalVerificationTests(unittest.TestCase):
             changed = root / "changed.json"
             original.write_text(json.dumps(catalog, ensure_ascii=False))
             catalog["facts"]["pioneer_pc_connection"]["prompt"] = (
-                "Eine rein redaktionell geänderte Frage"
+                "Eine andere Pioneer-Frage"
             )
             changed.write_text(json.dumps(catalog, ensure_ascii=False))
             self.assertNotEqual(MODULE.sha256_file(original), MODULE.sha256_file(changed))
             self.assertEqual(
-                MODULE.catalog_semantic_sha256(original),
-                MODULE.catalog_semantic_sha256(changed),
+                MODULE.catalog_observation_sha256(
+                    ["rode_nt1a_connected"], original
+                ),
+                MODULE.catalog_observation_sha256(
+                    ["rode_nt1a_connected"], changed
+                ),
             )
 
-    def test_validation_contract_change_changes_catalog_semantic_hash(self):
+    def test_catalog_binding_tracks_observed_prompt_and_validation_semantics(self):
         catalog = MODULE.load_json(MODULE.CATALOG_PATH)
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             original = root / "original.json"
-            changed = root / "changed.json"
+            prompt_changed = root / "prompt.json"
+            validation_changed = root / "validation.json"
+            rules_changed = root / "rules.json"
             original.write_text(json.dumps(catalog, ensure_ascii=False))
-            catalog["facts"]["motu_phantom_48v"]["values"] = ["on"]
-            changed.write_text(json.dumps(catalog, ensure_ascii=False))
-            self.assertNotEqual(
-                MODULE.catalog_semantic_sha256(original),
-                MODULE.catalog_semantic_sha256(changed),
+
+            prompt_catalog = json.loads(json.dumps(catalog))
+            prompt_catalog["facts"]["rode_nt1a_connected"]["prompt"] = (
+                "Ist das Mikrofon tatsächlich per XLR verbunden?"
+            )
+            prompt_changed.write_text(json.dumps(prompt_catalog, ensure_ascii=False))
+
+            validation_catalog = json.loads(json.dumps(catalog))
+            validation_catalog["facts"]["rode_nt1a_connected"][
+                "allowed_evidence"
+            ] = ["measured"]
+            validation_changed.write_text(
+                json.dumps(validation_catalog, ensure_ascii=False)
             )
 
-    def test_current_raw_catalog_binding_is_normalized_without_read_side_effect(self):
+            rules_catalog = json.loads(json.dumps(catalog))
+            rules_catalog["rules"].append("new global observation rule")
+            rules_changed.write_text(json.dumps(rules_catalog, ensure_ascii=False))
+
+            baseline = MODULE.catalog_observation_sha256(
+                ["rode_nt1a_connected"], original
+            )
+            for candidate in (prompt_changed, validation_changed, rules_changed):
+                self.assertNotEqual(
+                    baseline,
+                    MODULE.catalog_observation_sha256(
+                        ["rode_nt1a_connected"], candidate
+                    ),
+                )
+
+    def test_record_refreshes_observation_scoped_catalog_binding(self):
+        state = MODULE.empty_state()
+        MODULE.record_fact(state, "rode_nt1a_connected", "true", "visual")
+        self.assertEqual(
+            state["catalog_sha256"],
+            MODULE.catalog_observation_sha256(state["facts"]),
+        )
+
+    def test_current_raw_catalog_binding_normalizes_without_read_side_effect(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "state.json"
             state = MODULE.empty_state()
+            MODULE.record_fact(state, "rode_nt1a_connected", "true", "visual")
             state["catalog_sha256"] = MODULE.sha256_file(MODULE.CATALOG_PATH)
             MODULE.atomic_write_private(path, state)
             before = path.read_bytes()
             loaded = MODULE.read_state(path)
             self.assertEqual(
-                loaded["catalog_sha256"], MODULE.catalog_semantic_sha256()
+                loaded["catalog_sha256"],
+                MODULE.catalog_observation_sha256(loaded["facts"]),
             )
             self.assertEqual(path.read_bytes(), before)
 
-    def test_known_prompt_only_legacy_binding_is_semantically_scoped(self):
-        legacy = "1b8822768b7d809543bb9f037003a828c08177061d54af76c56e58b142f6fd55"
-        current_raw = "39a8d395fb8ff44c7466c6c1cd217686ea3b638e6f022edf2ad7e4457fa4deea"
-        self.assertEqual(MODULE.sha256_file(MODULE.CATALOG_PATH), current_raw)
-        for raw_digest in (legacy, current_raw):
-            self.assertEqual(
-                MODULE.LEGACY_CATALOG_SHA256_COMPATIBILITY[raw_digest],
-                MODULE.catalog_semantic_sha256(),
+    def test_proven_legacy_prompt_transition_accepts_only_unaffected_facts(self):
+        self.assertTrue(
+            MODULE.legacy_prompt_only_catalog_compatible(
+                MODULE.LEGACY_PROMPT_ONLY_SOURCE_SHA256,
+                MODULE.LEGACY_PROMPT_ONLY_SUCCESSOR_SHA256,
+                ["rode_nt1a_connected"],
             )
+        )
+        self.assertFalse(
+            MODULE.legacy_prompt_only_catalog_compatible(
+                MODULE.LEGACY_PROMPT_ONLY_SOURCE_SHA256,
+                MODULE.LEGACY_PROMPT_ONLY_SUCCESSOR_SHA256,
+                ["pioneer_pc_connection"],
+            )
+        )
+        self.assertFalse(
+            MODULE.legacy_prompt_only_catalog_compatible(
+                MODULE.LEGACY_PROMPT_ONLY_SOURCE_SHA256,
+                "f" * 64,
+                ["rode_nt1a_connected"],
+            )
+        )
+
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            path = root / "state.json"
+            unaffected = root / "unaffected.json"
             state = MODULE.empty_state()
-            state["catalog_sha256"] = legacy
             MODULE.record_fact(state, "rode_nt1a_connected", "true", "visual")
-            MODULE.atomic_write_private(path, state)
-            loaded = MODULE.read_state(path)
+            state["catalog_sha256"] = MODULE.LEGACY_PROMPT_ONLY_SOURCE_SHA256
+            MODULE.atomic_write_private(unaffected, state)
+            loaded = MODULE.read_state(unaffected)
             self.assertEqual(
-                loaded["catalog_sha256"], MODULE.catalog_semantic_sha256()
+                loaded["catalog_sha256"],
+                MODULE.catalog_observation_sha256(loaded["facts"]),
             )
 
-            changed_catalog = MODULE.load_json(MODULE.CATALOG_PATH)
-            changed_catalog["facts"]["rode_nt1a_connected"][
-                "allowed_evidence"
-            ] = ["measured"]
-            changed_path = root / "catalog.json"
-            changed_path.write_text(json.dumps(changed_catalog, ensure_ascii=False))
-            original_catalog_path = MODULE.CATALOG_PATH
-            MODULE.CATALOG_PATH = changed_path
-            try:
-                with self.assertRaisesRegex(ValueError, "physical fact catalog changed"):
-                    MODULE.read_state(path)
-            finally:
-                MODULE.CATALOG_PATH = original_catalog_path
+            changed = root / "changed.json"
+            state = MODULE.empty_state()
+            MODULE.record_fact(state, "pioneer_pc_connection", "RCA", "visual")
+            state["catalog_sha256"] = MODULE.LEGACY_PROMPT_ONLY_SOURCE_SHA256
+            MODULE.atomic_write_private(changed, state)
+            with self.assertRaisesRegex(ValueError, "physical fact catalog changed"):
+                MODULE.read_state(changed)
 
     def test_unknown_catalog_binding_stays_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:

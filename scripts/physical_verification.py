@@ -12,6 +12,7 @@ import pathlib
 import re
 import stat
 import tempfile
+from collections.abc import Iterable
 from typing import Any
 
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -19,18 +20,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "inventory" / "physical-facts.v1.json"
 TEMPLATE_PATH = ROOT / "inventory" / "physical-verification.v1.json"
 MAX_STATE_BYTES = 65_536
-LEGACY_CATALOG_SHA256_COMPATIBILITY = {
-    # 9ca5db0 -> 93177bd changed only the human-facing Pioneer prompt.
-    # Both raw-file digests describe the same validation contract. Binding each
-    # to the exact semantic digest makes the exception expire automatically
-    # after any later validation-semantic change.
-    "1b8822768b7d809543bb9f037003a828c08177061d54af76c56e58b142f6fd55": (
-        "15295fd0647a83bb59372c3e7ebe6cc7ef781666ef52898b16b2c11bc211c8ca"
-    ),
-    "39a8d395fb8ff44c7466c6c1cd217686ea3b638e6f022edf2ad7e4457fa4deea": (
-        "15295fd0647a83bb59372c3e7ebe6cc7ef781666ef52898b16b2c11bc211c8ca"
-    ),
-}
+LEGACY_PROMPT_ONLY_SOURCE_SHA256 = (
+    "1b8822768b7d809543bb9f037003a828c08177061d54af76c56e58b142f6fd55"
+)
+LEGACY_PROMPT_ONLY_SUCCESSOR_SHA256 = (
+    "39a8d395fb8ff44c7466c6c1cd217686ea3b638e6f022edf2ad7e4457fa4deea"
+)
+LEGACY_PROMPT_ONLY_CHANGED_FACTS = frozenset({"pioneer_pc_connection"})
 DEFAULT_STATE = pathlib.Path(
     os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state")
 ) / "audio" / "physical" / "latest.v1.json"
@@ -47,26 +43,40 @@ def sha256_file(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def catalog_semantic_sha256(path: pathlib.Path | None = None) -> str:
-    """Hash validation semantics while excluding human-facing prompt copy."""
+def catalog_observation_sha256(
+    fact_keys: Iterable[str], path: pathlib.Path | None = None
+) -> str:
+    """Hash global catalog rules plus only the fact specs bound by this state."""
 
     catalog = load_json(path or CATALOG_PATH)
     facts = catalog.get("facts")
     if not isinstance(facts, dict):
         raise ValueError("physical fact catalog has no facts object")
-    semantic = dict(catalog)
-    semantic_facts: dict[str, dict[str, Any]] = {}
-    for key, spec in facts.items():
-        if not isinstance(key, str) or not key or not isinstance(spec, dict):
-            raise ValueError("physical fact catalog contains an invalid fact specification")
-        semantic_facts[key] = {
-            field: value for field, value in spec.items() if field != "prompt"
-        }
-    semantic["facts"] = semantic_facts
+    key_set = set(fact_keys)
+    if any(not isinstance(key, str) or not key for key in key_set):
+        raise ValueError("physical observation contains an invalid fact key")
+    keys = sorted(key_set)
+    unknown = sorted(set(keys) - set(facts))
+    if unknown:
+        raise ValueError(f"physical observation refers to unknown facts: {', '.join(unknown)}")
+    scoped = {key: value for key, value in catalog.items() if key != "facts"}
+    scoped["facts"] = {key: facts[key] for key in keys}
     encoded = json.dumps(
-        semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        scoped, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def legacy_prompt_only_catalog_compatible(
+    observed_sha256: Any, current_raw_sha256: str, fact_keys: Iterable[str]
+) -> bool:
+    """Allow the one proven prompt-only legacy transition for unaffected facts."""
+
+    return bool(
+        observed_sha256 == LEGACY_PROMPT_ONLY_SOURCE_SHA256
+        and current_raw_sha256 == LEGACY_PROMPT_ONLY_SUCCESSOR_SHA256
+        and set(fact_keys).isdisjoint(LEGACY_PROMPT_ONLY_CHANGED_FACTS)
+    )
 
 
 def parse_value(spec: dict[str, Any], raw: str) -> Any:
@@ -133,7 +143,7 @@ def empty_state() -> dict[str, Any]:
         "schema_version": 1,
         "kind": "physical_audio_observation",
         "updated_at": None,
-        "catalog_sha256": catalog_semantic_sha256(),
+        "catalog_sha256": catalog_observation_sha256(()),
         "template_sha256": sha256_file(TEMPLATE_PATH),
         "facts": {},
         "does_not_establish": [
@@ -147,17 +157,6 @@ def empty_state() -> dict[str, Any]:
 def validate_state(path: pathlib.Path, payload: dict[str, Any]) -> None:
     if payload.get("schema_version") != 1 or payload.get("kind") != "physical_audio_observation":
         raise ValueError("physical observation state has the wrong schema or kind")
-    semantic_catalog_sha256 = catalog_semantic_sha256()
-    observed_catalog_sha256 = payload.get("catalog_sha256")
-    compatible_legacy_semantic_sha256 = LEGACY_CATALOG_SHA256_COMPATIBILITY.get(
-        observed_catalog_sha256
-    )
-    if not (
-        observed_catalog_sha256 == semantic_catalog_sha256
-        or observed_catalog_sha256 == sha256_file(CATALOG_PATH)
-        or compatible_legacy_semantic_sha256 == semantic_catalog_sha256
-    ):
-        raise ValueError("physical fact catalog changed; review observations before reuse")
     if payload.get("template_sha256") != sha256_file(TEMPLATE_PATH):
         raise ValueError("physical verification template changed; review observations before reuse")
     catalog = load_json(CATALOG_PATH).get("facts", {})
@@ -167,6 +166,17 @@ def validate_state(path: pathlib.Path, payload: dict[str, Any]) -> None:
     unknown = sorted(set(facts) - set(catalog))
     if unknown:
         raise ValueError(f"physical observation state contains unknown facts: {', '.join(unknown)}")
+    observed_catalog_sha256 = payload.get("catalog_sha256")
+    current_raw_catalog_sha256 = sha256_file(CATALOG_PATH)
+    expected_observation_sha256 = catalog_observation_sha256(facts)
+    if not (
+        observed_catalog_sha256 == expected_observation_sha256
+        or observed_catalog_sha256 == current_raw_catalog_sha256
+        or legacy_prompt_only_catalog_compatible(
+            observed_catalog_sha256, current_raw_catalog_sha256, facts
+        )
+    ):
+        raise ValueError("physical fact catalog changed; review observations before reuse")
     observed_times: list[dt.datetime] = []
     for key, item in facts.items():
         if not isinstance(item, dict):
@@ -201,9 +211,9 @@ def read_state(path: pathlib.Path) -> dict[str, Any]:
         raise ValueError(f"physical observation state exceeds {MAX_STATE_BYTES} bytes")
     payload = load_json(path)
     validate_state(path, payload)
-    # Normalize compatible legacy/raw bindings in memory. Any later mutation
-    # therefore persists the semantic contract hash without making reads write.
-    payload["catalog_sha256"] = catalog_semantic_sha256()
+    # Normalize raw/legacy catalog bindings only in memory. A later explicit
+    # mutation persists the observation-scoped binding; reads remain read-only.
+    payload["catalog_sha256"] = catalog_observation_sha256(payload.get("facts", {}))
     return payload
 
 
@@ -257,6 +267,7 @@ def record_fact(
         "observed_at": observed_at,
         "authority": "explicit-human-observation",
     }
+    state["catalog_sha256"] = catalog_observation_sha256(state["facts"])
     state["updated_at"] = observed_at
 
 
@@ -310,6 +321,9 @@ def main() -> int:
             if args.key not in catalog:
                 raise ValueError(f"unknown physical fact: {args.key}")
             state.get("facts", {}).pop(args.key, None)
+            state["catalog_sha256"] = catalog_observation_sha256(
+                state.get("facts", {})
+            )
             state["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             atomic_write_private(args.state, state)
     print(json.dumps(status_payload(state, args.state), ensure_ascii=False, indent=2))
