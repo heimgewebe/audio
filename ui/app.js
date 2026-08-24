@@ -232,7 +232,10 @@ const RECORDING_BLOCKER_LABELS = Object.freeze({
   "midi-output-already-exists": "MIDI-Dateiname ist bereits belegt",
   "manifest-output-already-exists": "Take-Manifest ist bereits belegt",
   "physical-state-invalid": "Vor-Ort-Zustand ist nicht sicher lesbar",
-  "laboratory-state-invalid": "Pegelabnahme ist nicht sicher lesbar",
+  "laboratory-state-invalid": "Pegelabnahme muss erneuert werden",
+  "voice-capture-clipped": "Mikrofonpegel übersteuert",
+  "voice-peak-outside-target": "Mikrofonpegel liegt außerhalb des Zielbereichs",
+  "voice-capture-too-short": "Pegelabnahme war zu kurz",
   "motu-source-not-unique": "MOTU-Mikrofonquelle fehlt oder ist nicht eindeutig",
   "roland-audio-source-not-unique": "Roland-Audioquelle fehlt oder ist nicht eindeutig",
   "roland-midi-source-not-unique": "Roland-MIDI-Port fehlt oder ist nicht eindeutig",
@@ -354,6 +357,45 @@ function recordingBlockerLabel(blocker) {
     return "Aufnahmequelle fehlt oder ist nicht eindeutig";
   }
   return `Technisches Start-Gate: ${blocker}`;
+}
+
+function recordingLevelAcceptanceGuidance(measurement) {
+  const blockers = Array.isArray(measurement?.blockers) ? measurement.blockers : [];
+  const peak = Number.isFinite(measurement?.peak_dbfs) ? measurement.peak_dbfs : null;
+  const target = Array.isArray(measurement?.target_peak_dbfs)
+    ? measurement.target_peak_dbfs
+    : [];
+  const targetMin = Number.isFinite(target[0]) ? target[0] : null;
+  const targetMax = Number.isFinite(target[1]) ? target[1] : null;
+  const guidance = [];
+  const consumed = new Set();
+
+  if (blockers.includes("voice-capture-clipped")) {
+    guidance.push("Pegel übersteuert – Gain am MOTU reduzieren und erneut messen");
+    consumed.add("voice-capture-clipped");
+    consumed.add("voice-peak-outside-target");
+  } else if (
+    blockers.includes("voice-peak-outside-target") &&
+    peak !== null &&
+    targetMin !== null &&
+    targetMax !== null
+  ) {
+    if (peak < targetMin) {
+      guidance.push(
+        `Pegel zu niedrig (${peak.toFixed(1)} dBFS) – Gain am MOTU erhöhen oder näher ans Mikrofon gehen und erneut messen`,
+      );
+      consumed.add("voice-peak-outside-target");
+    } else if (peak > targetMax) {
+      guidance.push(
+        `Pegel zu hoch (${peak.toFixed(1)} dBFS) – Gain am MOTU reduzieren oder Abstand zum Mikrofon vergrößern und erneut messen`,
+      );
+      consumed.add("voice-peak-outside-target");
+    }
+  }
+  guidance.push(
+    ...blockers.filter((blocker) => !consumed.has(blocker)).map(recordingBlockerLabel),
+  );
+  return guidance.join(" · ");
 }
 
 const state = {
@@ -1742,9 +1784,7 @@ async function runRecordingAction(payload) {
             pianoMode && !rolandReady ? "info" : "success",
           );
         } else {
-          const reason = (measurement.blockers || [])
-            .map(recordingBlockerLabel)
-            .join(" · ");
+          const reason = recordingLevelAcceptanceGuidance(measurement);
           showNotice(
             `Pegelabnahme noch nicht bestanden · Peak ${peak} · Ziel −12…−6 dBFS${reason ? ` · ${reason}` : ""}.`,
             "info",
