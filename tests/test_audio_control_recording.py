@@ -404,6 +404,21 @@ class AudioControlRecordingTests(unittest.TestCase):
         fake_lab = mock.Mock()
         fake_lab.DEFAULT_STATE = pathlib.Path("/private/lab.json")
         fake_lab.PHYSICAL.DEFAULT_STATE = pathlib.Path("/private/physical.json")
+        lock_active = {"value": False}
+
+        @contextlib.contextmanager
+        def shared_state_lock(_path):
+            self.assertFalse(lock_active["value"])
+            lock_active["value"] = True
+            try:
+                yield
+            finally:
+                lock_active["value"] = False
+
+        fake_lab.state_lock.side_effect = shared_state_lock
+        fake_lab.atomic_write_private.side_effect = (
+            lambda _path, _state: self.assertTrue(lock_active["value"])
+        )
         state = {"gates": {}}
         reconciliation = {
             "catalog_reconciled": True,
@@ -460,10 +475,12 @@ class AudioControlRecordingTests(unittest.TestCase):
         )
         self.assertTrue(result["rate_policy_refresh"]["passed"])
         self.assertTrue(result["resampling_refresh"]["passed"])
+        fake_lab.state_lock.assert_called_once_with(fake_lab.DEFAULT_STATE)
         verify_preimage.assert_called_once_with(fake_lab, "a" * 64)
         fake_lab.atomic_write_private.assert_called_once_with(
             fake_lab.DEFAULT_STATE, state
         )
+        self.assertFalse(lock_active["value"])
         self.assertTrue(result["laboratory_reconciliation"]["catalog_reconciled"])
 
     def test_laboratory_preimage_drift_blocks_write(self):

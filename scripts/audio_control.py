@@ -252,6 +252,10 @@ STATIC_RECORDING_STATE_ROOT = (
 STATIC_PROFILE_TRANSITION_STATE_ROOT = (
     pathlib.Path.home() / ".local" / "state" / "audio" / "profile-transitions-v1"
 )
+STATIC_LABORATORY_STATE_ROOT = (
+    pathlib.Path.home() / ".local" / "state" / "audio" / "laboratory"
+)
+LABORATORY_STATE_ROOT = _STATE_HOME / "audio" / "laboratory"
 DEPLOY_RELEASE_ROOT = (
     pathlib.Path.home() / ".local" / "share" / "audio-control-ui" / "releases"
 )
@@ -2109,6 +2113,22 @@ def _ensure_private_directory_chain(path: pathlib.Path, *, label: str) -> pathli
     return absolute
 
 
+def ensure_laboratory_state_root() -> pathlib.Path:
+    """Prepare the exact private laboratory root used by the service sandbox."""
+
+    observed = _lexical_absolute_directory(
+        LABORATORY_STATE_ROOT, label="Laboratory-State-Root"
+    )
+    expected = _lexical_absolute_directory(
+        STATIC_LABORATORY_STATE_ROOT, label="Laboratory-State-Root"
+    )
+    if observed != expected:
+        raise ControlError(
+            "Laboratory-State-Root weicht vom statischen systemd-Schreibvertrag ab."
+        )
+    return _ensure_private_directory_chain(observed, label="Laboratory-State-Root")
+
+
 def prepare_runtime_state_bootstrap() -> dict[str, Any]:
     """Prepare only the exact static service write roots, without audio effects."""
 
@@ -2119,6 +2139,11 @@ def prepare_runtime_state_bootstrap() -> dict[str, Any]:
             PROFILE_TRANSITION_STATE_ROOT,
             STATIC_PROFILE_TRANSITION_STATE_ROOT,
             "Transition-State-Root",
+        ),
+        (
+            LABORATORY_STATE_ROOT,
+            STATIC_LABORATORY_STATE_ROOT,
+            "Laboratory-State-Root",
         ),
     )
     normalized: list[tuple[pathlib.Path, str]] = []
@@ -2140,6 +2165,9 @@ def prepare_runtime_state_bootstrap() -> dict[str, Any]:
     transition_state = _ensure_private_directory_chain(
         normalized[2][0], label=normalized[2][1]
     )
+    laboratory_state = _ensure_private_directory_chain(
+        normalized[3][0], label=normalized[3][1]
+    )
     operations = _ensure_private_directory_chain(
         transition_state / "operations", label="Transition-Operations-Root"
     )
@@ -2147,6 +2175,7 @@ def prepare_runtime_state_bootstrap() -> dict[str, Any]:
         recording_output != STATIC_RECORDING_OUTPUT_ROOT
         or recording_state != STATIC_RECORDING_STATE_ROOT
         or transition_state != STATIC_PROFILE_TRANSITION_STATE_ROOT
+        or laboratory_state != STATIC_LABORATORY_STATE_ROOT
         or operations != transition_state / "operations"
     ):
         raise ControlError("Runtime-State-Bootstrap ist intern widersprüchlich.")
@@ -2154,7 +2183,7 @@ def prepare_runtime_state_bootstrap() -> dict[str, Any]:
         "schema_version": 1,
         "kind": "audio_runtime_state_bootstrap",
         "status": "ready",
-        "prepared_write_roots": 3,
+        "prepared_write_roots": 4,
         "private_state": True,
         "audio_mutated": False,
     }
@@ -3208,91 +3237,94 @@ class AudioControl:
             }
             if measurement["passed"]:
                 try:
-                    laboratory.validate_evidence(
-                        "voice-level-measurement", evidence
-                    )
-                    (
-                        state,
-                        reconciliation,
-                        expected_laboratory_state_sha256,
-                    ) = prepare_laboratory_state_for_voice_level(laboratory)
-                    laboratory.record_gate(
-                        state,
-                        "voice-level-measurement",
-                        evidence,
-                        laboratory.PHYSICAL.DEFAULT_STATE,
-                        replace=True,
-                    )
-                    try:
-                        rate_policy_evidence = rate_policy.rate_policy_evidence(
-                            "rate-policy-decision"
+                    with laboratory.state_lock(laboratory.DEFAULT_STATE):
+                        laboratory.validate_evidence(
+                            "voice-level-measurement", evidence
                         )
-                    except (OSError, ValueError):
-                        rate_policy_refresh = {
-                            "passed": False,
-                            "blockers": ["rate-policy-observation-unavailable"],
-                            "default_graph_rate_hz": 48_000,
-                            "audio_effects": False,
-                        }
-                    else:
-                        rate_policy_refresh = project_rate_policy_refresh(
-                            rate_policy_evidence
+                        (
+                            state,
+                            reconciliation,
+                            expected_laboratory_state_sha256,
+                        ) = prepare_laboratory_state_for_voice_level(laboratory)
+                        laboratory.record_gate(
+                            state,
+                            "voice-level-measurement",
+                            evidence,
+                            laboratory.PHYSICAL.DEFAULT_STATE,
+                            replace=True,
                         )
-                        if rate_policy_refresh["passed"]:
-                            laboratory.validate_evidence(
-                                "rate-policy-decision", rate_policy_evidence
+                        try:
+                            rate_policy_evidence = rate_policy.rate_policy_evidence(
+                                "rate-policy-decision"
                             )
-                            laboratory.record_gate(
-                                state,
-                                "rate-policy-decision",
-                                rate_policy_evidence,
-                                laboratory.PHYSICAL.DEFAULT_STATE,
-                                replace=True,
+                        except (OSError, ValueError):
+                            rate_policy_refresh = {
+                                "passed": False,
+                                "blockers": ["rate-policy-observation-unavailable"],
+                                "default_graph_rate_hz": 48_000,
+                                "audio_effects": False,
+                            }
+                        else:
+                            rate_policy_refresh = project_rate_policy_refresh(
+                                rate_policy_evidence
                             )
-                    try:
-                        resampling_evidence = rate_policy.rate_policy_evidence(
-                            "resampling-decision"
-                        )
-                    except (OSError, ValueError):
-                        resampling_refresh = {
-                            "passed": False,
-                            "blockers": ["resampling-observation-unavailable"],
-                            "source_rate_hz": 44_100,
-                            "target_rate_hz": 48_000,
-                            "audio_effects": False,
-                        }
-                    else:
-                        resampling_refresh = project_resampling_refresh(
-                            resampling_evidence
-                        )
-                        if resampling_refresh["passed"]:
-                            laboratory.validate_evidence(
-                                "resampling-decision", resampling_evidence
+                            if rate_policy_refresh["passed"]:
+                                laboratory.validate_evidence(
+                                    "rate-policy-decision", rate_policy_evidence
+                                )
+                                laboratory.record_gate(
+                                    state,
+                                    "rate-policy-decision",
+                                    rate_policy_evidence,
+                                    laboratory.PHYSICAL.DEFAULT_STATE,
+                                    replace=True,
+                                )
+                        try:
+                            resampling_evidence = rate_policy.rate_policy_evidence(
+                                "resampling-decision"
                             )
-                            laboratory.record_gate(
-                                state,
-                                "resampling-decision",
-                                resampling_evidence,
-                                laboratory.PHYSICAL.DEFAULT_STATE,
-                                replace=True,
+                        except (OSError, ValueError):
+                            resampling_refresh = {
+                                "passed": False,
+                                "blockers": ["resampling-observation-unavailable"],
+                                "source_rate_hz": 44_100,
+                                "target_rate_hz": 48_000,
+                                "audio_effects": False,
+                            }
+                        else:
+                            resampling_refresh = project_resampling_refresh(
+                                resampling_evidence
                             )
+                            if resampling_refresh["passed"]:
+                                laboratory.validate_evidence(
+                                    "resampling-decision", resampling_evidence
+                                )
+                                laboratory.record_gate(
+                                    state,
+                                    "resampling-decision",
+                                    resampling_evidence,
+                                    laboratory.PHYSICAL.DEFAULT_STATE,
+                                    replace=True,
+                                )
+                        if not self._snapshot_lock.acquire(blocking=False):
+                            raise ActionBusy(
+                                "Eine Zustandsabfrage verhindert den sicheren Pegel-Readback."
+                            )
+                        try:
+                            verify_laboratory_state_preimage(
+                                laboratory, expected_laboratory_state_sha256
+                            )
+                            laboratory.atomic_write_private(
+                                laboratory.DEFAULT_STATE, state
+                            )
+                            self.invalidate()
+                            snapshot = self._readback_after_mutation()
+                        finally:
+                            self._snapshot_lock.release()
                 except (OSError, ValueError) as error:
                     raise ControlError(
                         "Pegelbeleg konnte nicht sicher an den Laborzustand gebunden werden."
                     ) from error
-                if not self._snapshot_lock.acquire(blocking=False):
-                    raise ActionBusy(
-                        "Eine Zustandsabfrage verhindert den sicheren Pegel-Readback."
-                    )
-                try:
-                    verify_laboratory_state_preimage(
-                        laboratory, expected_laboratory_state_sha256
-                    )
-                    laboratory.atomic_write_private(laboratory.DEFAULT_STATE, state)
-                    self.invalidate()
-                    snapshot = self._readback_after_mutation()
-                finally:
-                    self._snapshot_lock.release()
             else:
                 snapshot = self.snapshot(refresh=True)
             return {
@@ -5389,6 +5421,7 @@ def start_managed_service(
     if status.get("active_state") in {"active", "activating", "reloading"}:
         raise ControlError(f"{UNIT_NAME} läuft bereits.")
     transition_state_root = ensure_profile_transition_state_root()
+    laboratory_state_root = ensure_laboratory_state_root()
     recorder_init = runner.run(
         [
             sys.executable,
@@ -5445,7 +5478,7 @@ def start_managed_service(
         "--property",
         (
             f"ReadWritePaths={RECORDING_OUTPUT_ROOT} {RECORDING_STATE_ROOT} "
-            f"{transition_state_root}"
+            f"{transition_state_root} {laboratory_state_root}"
         ),
         "--property",
         "ProtectControlGroups=yes",

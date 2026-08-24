@@ -82,6 +82,7 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
                 "%h/Music/Audio-Aufnahmen",
                 "%h/.local/state/audio/recordings-v1",
                 "%h/.local/state/audio/profile-transitions-v1",
+                "%h/.local/state/audio/laboratory",
             },
         )
         self.assertNotIn("%h/.local/state", read_write_paths(UI_UNIT_PATH))

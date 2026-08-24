@@ -182,7 +182,7 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
             "schema_version": 1,
             "kind": "audio_runtime_state_bootstrap",
             "status": "ready",
-            "prepared_write_roots": 3,
+            "prepared_write_roots": 4,
             "private_state": True,
             "audio_mutated": False,
         }
@@ -201,6 +201,7 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
             output = base / "Music" / "Audio-Aufnahmen"
             recording = base / ".local" / "state" / "audio" / "recordings-v1"
             transition = base / ".local" / "state" / "audio" / "profile-transitions-v1"
+            laboratory = base / ".local" / "state" / "audio" / "laboratory"
             with (
                 mock.patch.object(CONTROL, "RECORDING_OUTPUT_ROOT", output),
                 mock.patch.object(CONTROL, "STATIC_RECORDING_OUTPUT_ROOT", output),
@@ -210,14 +211,20 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
                 mock.patch.object(
                     CONTROL, "STATIC_PROFILE_TRANSITION_STATE_ROOT", transition
                 ),
+                mock.patch.object(CONTROL, "LABORATORY_STATE_ROOT", laboratory),
+                mock.patch.object(
+                    CONTROL, "STATIC_LABORATORY_STATE_ROOT", laboratory
+                ),
             ):
                 receipt = CONTROL.prepare_runtime_state_bootstrap()
             self.assertEqual(receipt["status"], "ready")
-            self.assertEqual(receipt["prepared_write_roots"], 3)
+            self.assertEqual(receipt["prepared_write_roots"], 4)
             self.assertTrue(receipt["private_state"])
             self.assertFalse(receipt["audio_mutated"])
             self.assertNotIn(str(base), repr(receipt))
-            for path in (output, recording, transition, transition / "operations"):
+            for path in (
+                output, recording, transition, laboratory, transition / "operations"
+            ):
                 self.assertTrue(path.is_dir())
                 self.assertEqual(path.stat().st_mode & 0o777, 0o700)
 
@@ -228,6 +235,7 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
             expected_output = base / "Music" / "Audio-Aufnahmen"
             recording = base / ".local" / "state" / "audio" / "recordings-v1"
             transition = base / ".local" / "state" / "audio" / "profile-transitions-v1"
+            laboratory = base / ".local" / "state" / "audio" / "laboratory"
             with (
                 mock.patch.object(CONTROL, "RECORDING_OUTPUT_ROOT", output),
                 mock.patch.object(
@@ -239,6 +247,10 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
                 mock.patch.object(
                     CONTROL, "STATIC_PROFILE_TRANSITION_STATE_ROOT", transition
                 ),
+                mock.patch.object(CONTROL, "LABORATORY_STATE_ROOT", laboratory),
+                mock.patch.object(
+                    CONTROL, "STATIC_LABORATORY_STATE_ROOT", laboratory
+                ),
                 self.assertRaisesRegex(CONTROL.ControlError, "systemd-Schreibvertrag"),
             ):
                 CONTROL.prepare_runtime_state_bootstrap()
@@ -246,6 +258,7 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
             self.assertFalse(expected_output.exists())
             self.assertFalse(recording.exists())
             self.assertFalse(transition.exists())
+            self.assertFalse(laboratory.exists())
 
     def test_base_bound_bootstrap_rejects_symlink_path_component(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -257,6 +270,7 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
             output = linked / "Audio-Aufnahmen"
             recording = base / ".local" / "state" / "audio" / "recordings-v1"
             transition = base / ".local" / "state" / "audio" / "profile-transitions-v1"
+            laboratory = base / ".local" / "state" / "audio" / "laboratory"
             with (
                 mock.patch.object(CONTROL, "RECORDING_OUTPUT_ROOT", output),
                 mock.patch.object(CONTROL, "STATIC_RECORDING_OUTPUT_ROOT", output),
@@ -265,6 +279,10 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
                 mock.patch.object(CONTROL, "PROFILE_TRANSITION_STATE_ROOT", transition),
                 mock.patch.object(
                     CONTROL, "STATIC_PROFILE_TRANSITION_STATE_ROOT", transition
+                ),
+                mock.patch.object(CONTROL, "LABORATORY_STATE_ROOT", laboratory),
+                mock.patch.object(
+                    CONTROL, "STATIC_LABORATORY_STATE_ROOT", laboratory
                 ),
                 self.assertRaisesRegex(CONTROL.ControlError, "unsichere Pfadkomponente"),
             ):
