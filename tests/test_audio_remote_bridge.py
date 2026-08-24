@@ -985,6 +985,17 @@ class BridgeHTTPTests(unittest.TestCase):
             45 + 30 + 30,
         )
 
+    def test_recording_prepare_timeout_covers_full_path_convergence_budget(self):
+        self.assertEqual(
+            MODULE.recording_backend_timeout_seconds("plan"),
+            MODULE.RECORDING_BACKEND_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            MODULE.recording_backend_timeout_seconds("prepare"),
+            MODULE.RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS,
+        )
+        self.assertGreater(MODULE.RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS, 210)
+
     def test_remote_recording_plan_uses_scoped_session_and_hides_backend_token(self):
         token = self.issue_remote_session()
         before = len(FakeBackendHandler.records)

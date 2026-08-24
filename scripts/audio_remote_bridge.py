@@ -64,6 +64,11 @@ BACKEND_TIMEOUT_SECONDS = 6.0
 # The bridge must outlive that backend contract so a successful stop cannot be
 # misreported remotely merely because post-stop verification is still running.
 RECORDING_BACKEND_TIMEOUT_SECONDS = 120.0
+# Recorder prepare may run two bounded 30 s plans plus service-state checks,
+# controlled stops/restores and one 20 s PipeWire core restart.  Keep the
+# bridge beyond that complete backend bound so successful convergence is not
+# misreported as a remote timeout.
+RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 240.0
 REQUEST_IO_TIMEOUT_SECONDS = 6.0
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
@@ -73,6 +78,14 @@ MAX_RECORDING_AUDIO_STREAM_BYTES = 6_000_000_000
 MAX_CONCURRENT_REQUESTS = 8
 MAX_CONDITIONAL_HEADER_BYTES = 4096
 MAX_RANGE_HEADER_BYTES = 128
+
+
+def recording_backend_timeout_seconds(operation: str) -> float:
+    return (
+        RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS
+        if operation == "prepare"
+        else RECORDING_BACKEND_TIMEOUT_SECONDS
+    )
 ACCEPTANCE_STATE_PATH = (
     pathlib.Path.home() / ".local" / "state" / "audio-remote-bridge-v1" / "acceptance.json"
 )
@@ -872,8 +885,9 @@ def write_backend_whale_action(action: dict[str, str]) -> tuple[int, bytes, int]
 def write_backend_recording_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
     token = read_backend_action_token("recording")
     body = json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    backend_timeout = recording_backend_timeout_seconds(str(action.get("operation", "")))
     connection = http.client.HTTPConnection(
-        BACKEND_HOST, BACKEND_PORT, timeout=RECORDING_BACKEND_TIMEOUT_SECONDS
+        BACKEND_HOST, BACKEND_PORT, timeout=backend_timeout
     )
     try:
         connection.putrequest("POST", "/api/v1/actions/recording", skip_host=True, skip_accept_encoding=True)

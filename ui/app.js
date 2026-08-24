@@ -1586,6 +1586,13 @@ function recordingPlanMatchesDraft() {
   return recordingPlanBindsDraft() && state.recordingPlan?.ready === true;
 }
 
+const RECORDING_ACTION_TIMEOUT_MS = 55000;
+const RECORDING_PREPARE_TIMEOUT_MS = 240000;
+
+function recordingActionTimeoutMs(operation) {
+  return operation === "prepare" ? RECORDING_PREPARE_TIMEOUT_MS : RECORDING_ACTION_TIMEOUT_MS;
+}
+
 async function postRecordingAction(payload) {
   const libraryAction = RECORDING_LIBRARY_ACTIONS.has(payload?.operation);
   const allowed = libraryAction
@@ -1605,7 +1612,7 @@ async function postRecordingAction(payload) {
   ) {
     return fetchJson("/api/v1/actions/recording", {
       method: "POST",
-      timeoutMs: 55000,
+      timeoutMs: recordingActionTimeoutMs(payload?.operation),
       headers: {
         "Content-Type": "application/json",
         "X-Audio-Control-Token": state.snapshot.service.action_token,
@@ -1618,7 +1625,7 @@ async function postRecordingAction(payload) {
   ) {
     return fetchJson("/bridge/v1/actions/recording", {
       method: "POST",
-      timeoutMs: 55000,
+      timeoutMs: recordingActionTimeoutMs(payload?.operation),
       headers: {
         "Content-Type": "application/json",
         "X-Audio-Bridge-Session": state.remoteWhaleSessionToken,
