@@ -44,6 +44,10 @@ WHALE_LESSON_SCRIPT = ROOT / "scripts" / "whale_learning_lesson.py"
 LIVE_TELEMETRY_SCRIPT = ROOT / "scripts" / "audio_live_telemetry.py"
 RECORDING_SCRIPT = ROOT / "scripts" / "audio-record"
 RECORDING_PRODUCT_SCRIPT = ROOT / "scripts" / "recording_product.py"
+VOICE_CAPTURE_OBSERVER_SCRIPT = ROOT / "scripts" / "voice_capture_observer.py"
+RATE_POLICY_OBSERVER_SCRIPT = ROOT / "scripts" / "rate_policy_observer.py"
+LABORATORY_GATE_SCRIPT = ROOT / "scripts" / "laboratory_gate.py"
+VOICE_LEVEL_ACCEPTANCE_SECONDS = 10
 RECORDING_CATALOG = ROOT / "profiles" / "recording-sessions.v1.json"
 REFERENCE_LEVELS = ROOT / "profiles" / "reference-levels.v1.json"
 _REPLAY_SPEC = importlib.util.spec_from_file_location(
@@ -68,6 +72,9 @@ _LIVE_TELEMETRY_IMPORT_LOCK = threading.Lock()
 _PROFILE_TRANSITION_MODULE: Any | None = None
 _PROFILE_TRANSITION_IMPORT_ERROR: BaseException | None = None
 _PROFILE_TRANSITION_IMPORT_LOCK = threading.Lock()
+_VOICE_LEVEL_ACCEPTANCE_MODULES: tuple[Any, Any, Any] | None = None
+_VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR: BaseException | None = None
+_VOICE_LEVEL_ACCEPTANCE_IMPORT_LOCK = threading.Lock()
 
 
 def load_live_telemetry() -> Any:
@@ -145,6 +152,46 @@ def load_profile_transition() -> Any:
             raise ControlError("Desktop-Transition ist nicht verfügbar.") from error
         _PROFILE_TRANSITION_MODULE = module
         return module
+
+
+def load_voice_level_acceptance_modules() -> tuple[Any, Any, Any]:
+    """Load voice-capture and laboratory modules only after an explicit action."""
+
+    global _VOICE_LEVEL_ACCEPTANCE_MODULES, _VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR
+    if _VOICE_LEVEL_ACCEPTANCE_MODULES is not None:
+        return _VOICE_LEVEL_ACCEPTANCE_MODULES
+    if _VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR is not None:
+        raise ControlError("Pegelabnahme ist nicht verfügbar.") from _VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR
+    with _VOICE_LEVEL_ACCEPTANCE_IMPORT_LOCK:
+        if _VOICE_LEVEL_ACCEPTANCE_MODULES is not None:
+            return _VOICE_LEVEL_ACCEPTANCE_MODULES
+        if _VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR is not None:
+            raise ControlError("Pegelabnahme ist nicht verfügbar.") from _VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR
+        loaded: list[Any] = []
+        for module_name, path in (
+            ("audio_control_laboratory_gate", LABORATORY_GATE_SCRIPT),
+            ("audio_control_voice_capture_observer", VOICE_CAPTURE_OBSERVER_SCRIPT),
+            ("audio_control_rate_policy_observer", RATE_POLICY_OBSERVER_SCRIPT),
+        ):
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if spec is None or spec.loader is None:
+                error = RuntimeError(f"Modul kann nicht geladen werden: {path.name}")
+                _VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR = error
+                raise ControlError("Pegelabnahme ist nicht verfügbar.") from error
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException as error:
+                if isinstance(error, KeyboardInterrupt):
+                    raise
+                sys.modules.pop(spec.name, None)
+                _VOICE_LEVEL_ACCEPTANCE_IMPORT_ERROR = error
+                raise ControlError("Pegelabnahme ist nicht verfügbar.") from error
+            loaded.append(module)
+        laboratory, voice_capture, rate_policy = loaded
+        _VOICE_LEVEL_ACCEPTANCE_MODULES = (voice_capture, laboratory, rate_policy)
+        return _VOICE_LEVEL_ACCEPTANCE_MODULES
 
 
 def ensure_profile_transition_state_root() -> pathlib.Path:
@@ -1571,6 +1618,258 @@ def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> di
     return projected
 
 
+def project_voice_level_acceptance_evidence(evidence: Any) -> dict[str, Any]:
+    if not isinstance(evidence, dict) or (
+        evidence.get("schema_version") != 1
+        or evidence.get("kind") != "audio_level_measurement_evidence"
+        or evidence.get("gate") != "voice-level-measurement"
+        or evidence.get("result") not in {"pass", "fail"}
+    ):
+        raise ControlError("Pegelabnahme lieferte einen fremden Messvertrag.")
+    blockers = evidence.get("blockers")
+    if (
+        not isinstance(blockers, list)
+        or not all(isinstance(item, str) and item for item in blockers)
+        or blockers != sorted(set(blockers))
+        or (evidence["result"] == "pass") != (len(blockers) == 0)
+    ):
+        raise ControlError("Pegelabnahme lieferte widersprüchliche Blocker.")
+    analysis = evidence.get("analysis")
+    peak: float | None = None
+    rms: float | None = None
+    duration: float | None = None
+    clipping: bool | None = None
+    if analysis is not None:
+        if not isinstance(analysis, dict) or analysis.get("kind") != "audio_level_analysis":
+            raise ControlError("Pegelabnahme lieferte keine gültige Audioanalyse.")
+        for raw, label in (
+            (analysis.get("maximum_peak_dbfs"), "Peak"),
+            (analysis.get("maximum_rms_dbfs"), "RMS"),
+            (analysis.get("duration_seconds"), "Dauer"),
+        ):
+            if raw is not None and (
+                isinstance(raw, bool)
+                or not isinstance(raw, (int, float))
+                or not math.isfinite(float(raw))
+            ):
+                raise ControlError(f"Pegelabnahme lieferte einen ungültigen {label}-Wert.")
+        peak = (
+            float(analysis["maximum_peak_dbfs"])
+            if analysis.get("maximum_peak_dbfs") is not None
+            else None
+        )
+        rms = (
+            float(analysis["maximum_rms_dbfs"])
+            if analysis.get("maximum_rms_dbfs") is not None
+            else None
+        )
+        duration = (
+            float(analysis["duration_seconds"])
+            if analysis.get("duration_seconds") is not None
+            else None
+        )
+        channels = analysis.get("channels_analysis")
+        if channels is not None:
+            if not isinstance(channels, list) or not all(
+                isinstance(item, dict) for item in channels
+            ):
+                raise ControlError("Pegelabnahme lieferte ungültige Kanaldaten.")
+            clipping = any(
+                isinstance(item.get("clipped_samples"), int)
+                and not isinstance(item.get("clipped_samples"), bool)
+                and item.get("clipped_samples", 0) > 0
+                for item in channels
+            )
+    return {
+        "passed": evidence["result"] == "pass",
+        "blockers": list(blockers),
+        "peak_dbfs": peak,
+        "rms_dbfs": rms,
+        "duration_seconds": duration,
+        "clipping": clipping,
+        "target_peak_dbfs": [-12.0, -6.0],
+        "capture_seconds": VOICE_LEVEL_ACCEPTANCE_SECONDS,
+        "audio_retained": False,
+    }
+
+
+def project_rate_policy_refresh(evidence: Any) -> dict[str, Any]:
+    if not isinstance(evidence, dict) or (
+        evidence.get("schema_version") != 1
+        or evidence.get("kind") != "audio_policy_decision"
+        or evidence.get("gate") != "rate-policy-decision"
+        or evidence.get("result") not in {"pass", "fail"}
+    ):
+        raise ControlError("Rate-Policy-Prüfung lieferte einen fremden Vertrag.")
+    blockers = evidence.get("blockers")
+    if (
+        not isinstance(blockers, list)
+        or not all(isinstance(item, str) and item for item in blockers)
+        or blockers != sorted(set(blockers))
+        or (evidence["result"] == "pass") != (len(blockers) == 0)
+    ):
+        raise ControlError("Rate-Policy-Prüfung lieferte widersprüchliche Blocker.")
+    return {
+        "passed": evidence["result"] == "pass",
+        "blockers": list(blockers),
+        "default_graph_rate_hz": 48_000,
+        "audio_effects": False,
+    }
+
+
+def project_resampling_refresh(evidence: Any) -> dict[str, Any]:
+    if not isinstance(evidence, dict) or (
+        evidence.get("schema_version") != 1
+        or evidence.get("kind") != "audio_policy_decision"
+        or evidence.get("gate") != "resampling-decision"
+        or evidence.get("result") not in {"pass", "fail"}
+    ):
+        raise ControlError("Roland-Sampleratenprüfung lieferte einen fremden Vertrag.")
+    blockers = evidence.get("blockers")
+    if (
+        not isinstance(blockers, list)
+        or not all(isinstance(item, str) and item for item in blockers)
+        or blockers != sorted(set(blockers))
+        or (evidence["result"] == "pass") != (len(blockers) == 0)
+    ):
+        raise ControlError("Roland-Sampleratenprüfung lieferte widersprüchliche Blocker.")
+    return {
+        "passed": evidence["result"] == "pass",
+        "blockers": list(blockers),
+        "source_rate_hz": 44_100,
+        "target_rate_hz": 48_000,
+        "audio_effects": False,
+    }
+
+
+def prepare_laboratory_state_for_voice_level(
+    laboratory: Any,
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    """Prepare current lab state and bind it to the exact read preimage."""
+
+    state_path = laboratory.DEFAULT_STATE
+    physical_path = laboratory.PHYSICAL.DEFAULT_STATE
+    if state_path.is_symlink():
+        raise ControlError("Laborzustand ist kein vertrauenswürdiger regulärer Zustand.")
+    expected_state_sha256: str | None = None
+    if state_path.exists():
+        try:
+            expected_state_sha256 = laboratory.sha256_file(state_path)
+        except OSError as error:
+            raise ControlError("Laborzustand konnte nicht stabil gelesen werden.") from error
+    try:
+        state = laboratory.read_state(state_path)
+    except ValueError as error:
+        if str(error) != "audio profile catalog changed; review existing evidence":
+            raise ControlError(
+                "Laborzustand ist beschädigt oder nicht sicher migrierbar."
+            ) from error
+    else:
+        try:
+            observed_after = (
+                laboratory.sha256_file(state_path) if state_path.exists() else None
+            )
+        except OSError as error:
+            raise ControlError("Laborzustand änderte sich während des Lesens.") from error
+        if observed_after != expected_state_sha256:
+            raise ControlError("Laborzustand änderte sich während des Lesens.")
+        return state, {
+            "catalog_reconciled": False,
+            "preserved_gates": [],
+            "invalidated_gates": [],
+        }, expected_state_sha256
+    if (
+        state_path.is_symlink()
+        or not state_path.is_file()
+        or stat.S_IMODE(state_path.stat().st_mode) != 0o600
+    ):
+        raise ControlError(
+            "Veralteter Laborzustand ist nicht sicher archivierungsfähig."
+        )
+    try:
+        stale = laboratory.load_json(
+            state_path, maximum_bytes=laboratory.MAX_STATE_BYTES
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise ControlError("Veralteter Laborzustand ist nicht sicher lesbar.") from error
+    if (
+        stale.get("schema_version") != 1
+        or stale.get("kind") != "audio_laboratory_gate_state"
+        or stale.get("catalog_sha256")
+        != laboratory.sha256_file(laboratory.CATALOG_PATH)
+        or not isinstance(stale.get("gates"), dict)
+        or stale.get("profile_catalog_sha256")
+        == laboratory.operational_profile_catalog_sha256()
+    ):
+        raise ControlError(
+            "Laborzustand weicht über den bekannten Profilkatalog-Drift hinaus ab."
+        )
+    try:
+        observed_after = laboratory.sha256_file(state_path)
+    except OSError as error:
+        raise ControlError("Laborzustand änderte sich während der Migration.") from error
+    if expected_state_sha256 is None or observed_after != expected_state_sha256:
+        raise ControlError("Laborzustand änderte sich während der Migration.")
+    stale_sha = expected_state_sha256
+    archive_path = state_path.with_name(
+        f"{state_path.name}.stale-{stale_sha[:16]}.json"
+    )
+    if archive_path.exists():
+        if archive_path.is_symlink() or laboratory.sha256_file(archive_path) != stale_sha:
+            raise ControlError(
+                "Vorhandenes Laborarchiv stimmt nicht mit dem veralteten Zustand überein."
+            )
+    else:
+        try:
+            os.link(state_path, archive_path, follow_symlinks=False)
+        except OSError as error:
+            raise ControlError(
+                "Veralteter Laborzustand konnte nicht sicher archiviert werden."
+            ) from error
+    fresh = laboratory.empty_state()
+    preserved: list[str] = []
+    invalidated: list[str] = []
+    for gate in sorted(stale["gates"]):
+        receipt = stale["gates"].get(gate)
+        evidence = receipt.get("evidence") if isinstance(receipt, dict) else None
+        try:
+            if (
+                not isinstance(receipt, dict)
+                or receipt.get("status") != "passed"
+                or not isinstance(evidence, dict)
+                or receipt.get("evidence_sha256")
+                != laboratory.canonical_sha256(evidence)
+            ):
+                raise ValueError("invalid stale receipt")
+            laboratory.validate_evidence(gate, evidence)
+            laboratory.record_gate(fresh, gate, evidence, physical_path)
+        except (KeyError, OSError, ValueError):
+            invalidated.append(gate)
+        else:
+            preserved.append(gate)
+    return fresh, {
+        "catalog_reconciled": True,
+        "preserved_gates": preserved,
+        "invalidated_gates": invalidated,
+    }, stale_sha
+
+
+def verify_laboratory_state_preimage(laboratory: Any, expected_sha256: str | None) -> None:
+    state_path = laboratory.DEFAULT_STATE
+    if state_path.is_symlink():
+        raise ActionBusy("Laborzustand wurde parallel verändert; Pegelabnahme bitte erneut starten.")
+    try:
+        observed = laboratory.sha256_file(state_path) if state_path.exists() else None
+    except OSError as error:
+        raise ActionBusy(
+            "Laborzustand wurde parallel verändert; Pegelabnahme bitte erneut starten."
+        ) from error
+    if observed != expected_sha256:
+        raise ActionBusy(
+            "Laborzustand wurde parallel verändert; Pegelabnahme bitte erneut starten."
+        )
+
+
 def validate_recording_media_binding(report: dict[str, Any], session_id: str) -> None:
     if (
         report.get("schema_version") != 1
@@ -2847,16 +3146,180 @@ class AudioControl:
         finally:
             self._action_lock.release()
 
+
+    def _perform_voice_level_acceptance(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        if set(payload) != {"operation"}:
+            raise ControlError("Pegelabnahme benötigt genau das Feld operation.")
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere Audioaktion läuft bereits.")
+        try:
+            recording_status, recording_probe, recording_error = self._recording_probe()
+            session = (
+                recording_probe.get("session")
+                if isinstance(recording_probe, dict)
+                else None
+            )
+            if (
+                recording_status != "ok"
+                or recording_probe.get("status") != "idle"
+                or recording_probe.get("active_session_id") is not None
+                or (isinstance(session, dict) and session.get("active") is True)
+            ):
+                raise ControlError(
+                    recording_error
+                    or "Pegelabnahme ist nur bei freiem Recorder möglich."
+                )
+            voice_capture, laboratory, rate_policy = load_voice_level_acceptance_modules()
+            try:
+                with tempfile.TemporaryDirectory(
+                    prefix="audio-control-level-acceptance-"
+                ) as directory:
+                    private = pathlib.Path(directory)
+                    private.chmod(0o700)
+                    evidence = voice_capture.capture_voice_evidence(
+                        VOICE_LEVEL_ACCEPTANCE_SECONDS,
+                        laboratory.PHYSICAL.DEFAULT_STATE,
+                        private / "voice-level-reference.wav",
+                    )
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                raise ControlError(
+                    "Pegelabnahme konnte nicht sicher ausgeführt werden."
+                ) from error
+            measurement = project_voice_level_acceptance_evidence(evidence)
+            rate_policy_refresh = {
+                "passed": False,
+                "blockers": ["voice-level-not-passed"],
+                "default_graph_rate_hz": 48_000,
+                "audio_effects": False,
+            }
+            resampling_refresh = {
+                "passed": False,
+                "blockers": ["voice-level-not-passed"],
+                "source_rate_hz": 44_100,
+                "target_rate_hz": 48_000,
+                "audio_effects": False,
+            }
+            reconciliation = {
+                "catalog_reconciled": False,
+                "preserved_gates": [],
+                "invalidated_gates": [],
+            }
+            if measurement["passed"]:
+                try:
+                    laboratory.validate_evidence(
+                        "voice-level-measurement", evidence
+                    )
+                    (
+                        state,
+                        reconciliation,
+                        expected_laboratory_state_sha256,
+                    ) = prepare_laboratory_state_for_voice_level(laboratory)
+                    laboratory.record_gate(
+                        state,
+                        "voice-level-measurement",
+                        evidence,
+                        laboratory.PHYSICAL.DEFAULT_STATE,
+                        replace=True,
+                    )
+                    try:
+                        rate_policy_evidence = rate_policy.rate_policy_evidence(
+                            "rate-policy-decision"
+                        )
+                    except (OSError, ValueError):
+                        rate_policy_refresh = {
+                            "passed": False,
+                            "blockers": ["rate-policy-observation-unavailable"],
+                            "default_graph_rate_hz": 48_000,
+                            "audio_effects": False,
+                        }
+                    else:
+                        rate_policy_refresh = project_rate_policy_refresh(
+                            rate_policy_evidence
+                        )
+                        if rate_policy_refresh["passed"]:
+                            laboratory.validate_evidence(
+                                "rate-policy-decision", rate_policy_evidence
+                            )
+                            laboratory.record_gate(
+                                state,
+                                "rate-policy-decision",
+                                rate_policy_evidence,
+                                laboratory.PHYSICAL.DEFAULT_STATE,
+                                replace=True,
+                            )
+                    try:
+                        resampling_evidence = rate_policy.rate_policy_evidence(
+                            "resampling-decision"
+                        )
+                    except (OSError, ValueError):
+                        resampling_refresh = {
+                            "passed": False,
+                            "blockers": ["resampling-observation-unavailable"],
+                            "source_rate_hz": 44_100,
+                            "target_rate_hz": 48_000,
+                            "audio_effects": False,
+                        }
+                    else:
+                        resampling_refresh = project_resampling_refresh(
+                            resampling_evidence
+                        )
+                        if resampling_refresh["passed"]:
+                            laboratory.validate_evidence(
+                                "resampling-decision", resampling_evidence
+                            )
+                            laboratory.record_gate(
+                                state,
+                                "resampling-decision",
+                                resampling_evidence,
+                                laboratory.PHYSICAL.DEFAULT_STATE,
+                                replace=True,
+                            )
+                except (OSError, ValueError) as error:
+                    raise ControlError(
+                        "Pegelbeleg konnte nicht sicher an den Laborzustand gebunden werden."
+                    ) from error
+                if not self._snapshot_lock.acquire(blocking=False):
+                    raise ActionBusy(
+                        "Eine Zustandsabfrage verhindert den sicheren Pegel-Readback."
+                    )
+                try:
+                    verify_laboratory_state_preimage(
+                        laboratory, expected_laboratory_state_sha256
+                    )
+                    laboratory.atomic_write_private(laboratory.DEFAULT_STATE, state)
+                    self.invalidate()
+                    snapshot = self._readback_after_mutation()
+                finally:
+                    self._snapshot_lock.release()
+            else:
+                snapshot = self.snapshot(refresh=True)
+            return {
+                "schema_version": 1,
+                "kind": "audio_control_recording_action_result",
+                "operation": "measure-level",
+                "measurement": measurement,
+                "rate_policy_refresh": rate_policy_refresh,
+                "resampling_refresh": resampling_refresh,
+                "laboratory_reconciliation": reconciliation,
+                "snapshot": snapshot,
+            }
+        finally:
+            self._action_lock.release()
+
     def perform_recording_action(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ControlError("Recorderaktion muss ein JSON-Objekt sein.")
         operation = payload.get("operation")
         if operation not in (
-            {"plan", "start", "stop", "recover"} | RECORDING_LIBRARY_OPERATIONS
+            {"plan", "start", "stop", "recover", "measure-level"} | RECORDING_LIBRARY_OPERATIONS
         ):
             raise ControlError("Unbekannte Recorderaktion.")
         if operation in RECORDING_LIBRARY_OPERATIONS:
             return self._perform_recording_library_action(payload)
+        if operation == "measure-level":
+            return self._perform_voice_level_acceptance(payload)
         if operation == "plan":
             if set(payload) != {"operation", "mode", "name", "maximum_seconds"}:
                 raise ControlError("Recorderplan enthält unbekannte oder fehlende Felder.")
@@ -3686,6 +4149,7 @@ class AudioControl:
                 "active_session_id": recording_probe.get("active_session_id"),
                 "actions": [
                     "plan",
+                    "measure-level",
                     "start",
                     "stop",
                     "recover",
