@@ -3,7 +3,7 @@
   "kind": "audio_recording_session_catalog",
   "sessions": {
     "voice-recording": {
-      "purpose": "Record the Rode NT1-A through the serial-bound MOTU M2 source after physical and level gates pass.",
+      "purpose": "Record the Rode NT1-A through the serial-bound MOTU M2 after physical and source checks; level acceptance remains advisory guidance.",
       "profile": "voice-recording",
       "required_physical_facts": {
         "rode_nt1a_connected": true,
@@ -14,9 +14,7 @@
         "motu_phantom_48v": "on",
         "motu_input_gain_reference": "non-empty-string"
       },
-      "required_laboratory_gates": [
-        "voice-level-measurement"
-      ],
+      "required_laboratory_gates": [],
       "capture": {
         "sample_rate_hz": 48000,
         "sample_format": "s32le",
@@ -63,7 +61,10 @@
         "publication_policy": "same-directory-hardlink-no-replace",
         "client_name": "audio-voice-recording",
         "stream_name_prefix": "voice-recording"
-      }
+      },
+      "advisory_laboratory_gates": [
+        "voice-level-measurement"
+      ]
     },
     "piano-vocal-performance": {
       "purpose": "Record RØDE NT1-A through the serial-bound MOTU M2 together with the real Roland FP-30X USB audio and the unique Roland ALSA MIDI performance as one plan-bound take.",
@@ -78,7 +79,6 @@
         "motu_input_gain_reference": "non-empty-string"
       },
       "required_laboratory_gates": [
-        "voice-level-measurement",
         "resampling-decision"
       ],
       "capture": {
@@ -160,7 +160,10 @@
         "publication_policy": "manifest-last-hardlink-no-replace",
         "client_name": "audio-piano-vocal-performance",
         "stream_name_prefix": "piano-vocal-performance"
-      }
+      },
+      "advisory_laboratory_gates": [
+        "voice-level-measurement"
+      ]
     },
     "roland-audio-recording": {
       "purpose": "Record the unique Roland FP-30X USB audio source into the 48 kHz production format after the explicit single-stage resampling decision passes.",
@@ -216,7 +219,8 @@
         "publication_policy": "same-directory-hardlink-no-replace",
         "client_name": "audio-roland-recording",
         "stream_name_prefix": "roland-audio-recording"
-      }
+      },
+      "advisory_laboratory_gates": []
     },
     "production-mix-recording": {
       "purpose": "Record one unique stereo PipeWire production mix source whose upstream graph may combine voice, Roland and software instruments without hiding its node identity.",
@@ -271,7 +275,8 @@
         "publication_policy": "same-directory-hardlink-no-replace",
         "client_name": "audio-production-recording",
         "stream_name_prefix": "production-mix-recording"
-      }
+      },
+      "advisory_laboratory_gates": []
     }
   },
   "rules": [

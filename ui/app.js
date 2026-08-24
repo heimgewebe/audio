@@ -219,11 +219,15 @@ const RECORDING_COLLISION_BLOCKERS = new Set([
 const RECORDING_PREFLIGHT_LABELS = Object.freeze({
   output: "Zieldatei",
   physical: "Mikrofon und MOTU",
-  laboratory: "Pegelabnahme",
+  laboratory: "Technischer Audiopfad",
   source: "Audio- und MIDI-Quellen",
   tools: "Recorder-Werkzeuge",
   storage: "Speicherplatz",
   session: "Recorder-Zustand",
+});
+
+const RECORDING_ADVISORY_LABELS = Object.freeze({
+  "voice-level": "Pegelhinweis",
 });
 
 const RECORDING_BLOCKER_LABELS = Object.freeze({
@@ -232,7 +236,7 @@ const RECORDING_BLOCKER_LABELS = Object.freeze({
   "midi-output-already-exists": "MIDI-Dateiname ist bereits belegt",
   "manifest-output-already-exists": "Take-Manifest ist bereits belegt",
   "physical-state-invalid": "Vor-Ort-Zustand ist nicht sicher lesbar",
-  "laboratory-state-invalid": "Pegelabnahme muss erneuert werden",
+  "laboratory-state-invalid": "Technischer Audiopfad ist nicht aktuell",
   "voice-capture-clipped": "Mikrofonpegel übersteuert",
   "voice-peak-outside-target": "Mikrofonpegel liegt außerhalb des Zielbereichs",
   "voice-capture-too-short": "Pegelabnahme war zu kurz",
@@ -335,7 +339,7 @@ function recordingBlockerLabel(blocker) {
   if (blocker.startsWith("laboratory-gate:")) {
     const gate = blocker.slice("laboratory-gate:".length);
     return gate === "voice-level-measurement"
-      ? "Mikrofonpegel wurde noch nicht gültig abgenommen"
+      ? "Pegel wurde noch nicht im Zielbereich bestätigt"
       : `Laborprüfung ${gate} ist noch offen`;
   }
   const sourceField = blocker.match(
@@ -357,6 +361,12 @@ function recordingBlockerLabel(blocker) {
     return "Aufnahmequelle fehlt oder ist nicht eindeutig";
   }
   return `Technisches Start-Gate: ${blocker}`;
+}
+
+function recordingAdvisoryNoticeLabel(notice) {
+  return notice === "laboratory-state-invalid"
+    ? "Pegelhinweis ist nicht aktuell"
+    : recordingBlockerLabel(notice);
 }
 
 function recordingLevelAcceptanceGuidance(measurement) {
@@ -1665,7 +1675,7 @@ async function runRecordingLevelAcceptance() {
   if (state.recordingActionPending) return;
   if (!localRecordingActionsAllowed()) {
     showNotice(
-      "Pegelabnahme ist nur direkt am Heim-PC verfügbar; sie öffnet den Mikrofoneingang für exakt 10 Sekunden.",
+      "Die optionale Pegelprüfung ist nur direkt am Heim-PC verfügbar; sie öffnet den Mikrofoneingang für exakt 10 Sekunden.",
       "info",
     );
     return;
@@ -1765,7 +1775,7 @@ async function runRecordingAction(payload) {
       if (result.operation === "measure-level") {
         const measurement = result.measurement;
         if (typeof measurement?.passed !== "boolean") {
-          throw new Error("Pegelabnahme lieferte keinen autoritativen Mess-Readback.");
+          throw new Error("Pegelprüfung lieferte keinen autoritativen Mess-Readback.");
         }
         const peak = Number.isFinite(measurement.peak_dbfs)
           ? `${measurement.peak_dbfs.toFixed(1)} dBFS`
@@ -1780,13 +1790,13 @@ async function runRecordingAction(payload) {
           const rolandReady = result.resampling_refresh?.passed === true;
           const pianoMode = state.recordingDraft.mode === "piano-vocal";
           showNotice(
-            `Pegelabnahme bestanden · Peak ${peak} · Ziel −12…−6 dBFS${rolandReady ? " · Roland-Pfad ebenfalls gebunden." : pianoMode ? " · Roland-Sampleratenprüfung noch offen." : "."}`,
+            `Pegelhinweis im Zielbereich · Peak ${peak} · Ziel −12…−6 dBFS${rolandReady ? " · Roland-Pfad ebenfalls gebunden." : pianoMode ? " · Roland-Sampleratenprüfung noch offen." : "."}`,
             pianoMode && !rolandReady ? "info" : "success",
           );
         } else {
           const reason = recordingLevelAcceptanceGuidance(measurement);
           showNotice(
-            `Pegelabnahme noch nicht bestanden · Peak ${peak} · Ziel −12…−6 dBFS${reason ? ` · ${reason}` : ""}.`,
+            `Pegelhinweis außerhalb des Zielbereichs · Peak ${peak} · Ziel −12…−6 dBFS${reason ? ` · ${reason}` : ""} · Aufnahme bleibt möglich.`,
             "info",
           );
         }
@@ -2003,7 +2013,7 @@ function renderRecordingControls(card, recording) {
         : "Ergebnis: Gesang als WAV",
     );
     const levelAcceptance = element("section", "recording-level-acceptance");
-    appendText(levelAcceptance, "strong", "", "Pegelabnahme vor dem ersten Take");
+    appendText(levelAcceptance, "strong", "", "Pegelhinweis vor dem Take (optional)");
     appendText(
       levelAcceptance,
       "p",
@@ -2013,7 +2023,7 @@ function renderRecordingControls(card, recording) {
     const levelButton = element(
       "button",
       "secondary-button",
-      "Pegelabnahme starten (10 s)",
+      "Pegel 10 s prüfen (optional)",
     );
     levelButton.type = "button";
     levelButton.dataset.control = "measure-level";
@@ -2026,7 +2036,7 @@ function renderRecordingControls(card, recording) {
         levelAcceptance,
         "small",
         "read-only-boundary",
-        "Die Pegelabnahme ist absichtlich nur direkt am Heim-PC verfügbar, weil sie den Mikrofoneingang kurz öffnet.",
+        "Die optionale Pegelprüfung ist nur direkt am Heim-PC verfügbar, weil sie den Mikrofoneingang kurz öffnet.",
       );
     }
     controls.append(levelAcceptance);
@@ -2180,6 +2190,45 @@ function renderRecordingControls(card, recording) {
         checklist.append(item);
       }
       advanced.append(checklist);
+    }
+    const advisories = Array.isArray(plan.readiness?.advisories)
+      ? plan.readiness.advisories
+      : [];
+    if (advisories.length) {
+      const advisoryList = element("ul", "recording-preflight recording-advisories");
+      advisoryList.setAttribute("aria-label", "Aufnahmehinweise");
+      for (const advisory of advisories) {
+        const attention = advisory?.status === "attention";
+        const item = element(
+          "li",
+          `recording-preflight-item ${attention ? "advisory" : "ready"}`,
+        );
+        appendText(
+          item,
+          "span",
+          "recording-preflight-mark",
+          attention ? "i" : "✓",
+        ).setAttribute("aria-hidden", "true");
+        const copy = element("span", "recording-preflight-copy");
+        appendText(
+          copy,
+          "strong",
+          "",
+          RECORDING_ADVISORY_LABELS[advisory.id] || advisory.id || "Hinweis",
+        );
+        const notices = Array.isArray(advisory?.notices) ? advisory.notices : [];
+        appendText(
+          copy,
+          "small",
+          "",
+          attention
+            ? `${notices.map(recordingAdvisoryNoticeLabel).join(" · ") || "Pegel noch nicht geprüft"} · Aufnahme ist trotzdem möglich`
+            : "Pegel geprüft · bleibt eine Empfehlung, keine Startbedingung",
+        );
+        item.append(copy);
+        advisoryList.append(item);
+      }
+      advanced.append(advisoryList);
     }
   }
   controls.append(advanced);

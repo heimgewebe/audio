@@ -2779,7 +2779,8 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   border-color: var(--mint-border);
 }
 
-.recording-preflight-item.blocked {
+.recording-preflight-item.blocked,
+.recording-preflight-item.advisory {
   border-color: rgba(225, 185, 104, 0.28);
 }
 
@@ -2792,8 +2793,13 @@ html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel) {
   color: var(--mint-strong);
 }
 
-.recording-preflight-item.blocked .recording-preflight-mark {
+.recording-preflight-item.blocked .recording-preflight-mark,
+.recording-preflight-item.advisory .recording-preflight-mark {
   color: var(--amber);
+}
+
+.recording-advisories {
+  margin-top: 6px;
 }
 
 .recording-preflight-copy {

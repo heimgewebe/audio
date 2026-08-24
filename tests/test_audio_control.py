@@ -2660,7 +2660,7 @@ class AudioControlTests(unittest.TestCase):
         for label in (
             "Zieldatei",
             "Mikrofon und MOTU",
-            "Pegelabnahme",
+            "Technischer Audiopfad",
             "Audio- und MIDI-Quellen",
             "Recorder-Werkzeuge",
             "Speicherplatz",
@@ -2668,6 +2668,8 @@ class AudioControlTests(unittest.TestCase):
         ):
             self.assertIn(f'"{label}"', javascript)
         self.assertIn('element("ul", "recording-preflight")', javascript)
+        self.assertIn('"voice-level": "Pegelhinweis"', javascript)
+        self.assertIn("Aufnahme ist trotzdem möglich", javascript)
         self.assertIn(
             '"Take finalisiert; die WAV-Datei wurde als aktuelle Datei verifiziert."',
             javascript,

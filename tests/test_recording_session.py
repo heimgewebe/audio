@@ -338,6 +338,19 @@ class RecordingSessionTest(unittest.TestCase):
                 "production-mix-recording",
             },
         )
+        self.assertEqual(contracts["voice-recording"]["required_laboratory_gates"], [])
+        self.assertEqual(
+            contracts["voice-recording"]["advisory_laboratory_gates"],
+            ["voice-level-measurement"],
+        )
+        self.assertEqual(
+            contracts["piano-vocal-performance"]["required_laboratory_gates"],
+            ["resampling-decision"],
+        )
+        self.assertEqual(
+            contracts["piano-vocal-performance"]["advisory_laboratory_gates"],
+            ["voice-level-measurement"],
+        )
         self.assertEqual(
             contracts["roland-audio-recording"]["required_laboratory_gates"],
             ["resampling-decision"],
@@ -1127,9 +1140,141 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertEqual(
             plan["readiness"]["blockers"],
             [
-                "laboratory-gate:voice-level-measurement",
                 "motu-source-not-unique",
                 "physical-fact:rode_nt1a_connected",
+            ],
+        )
+        self.assertEqual(
+            plan["readiness"]["advisories"],
+            [
+                {
+                    "id": "voice-level",
+                    "status": "attention",
+                    "notices": ["laboratory-gate:voice-level-measurement"],
+                }
+            ],
+        )
+
+    def test_voice_level_is_advisory_and_does_not_block_recording_readiness(self) -> None:
+        physical = {
+            "state_sha256": "5" * 64,
+            "facts": {
+                "rode_nt1a_connected": True,
+                "rode_nt1a_motu_input": "input-1",
+                "motu_phantom_48v": "on",
+                "motu_input_gain_reference": "mark 10",
+            },
+            "error": None,
+        }
+        source_identity = self.source_identity("voice-recording")
+        source = {
+            "identity": source_identity,
+            "identity_sha256": MODULE.canonical_sha256(source_identity),
+            "error": None,
+        }
+        advisory = {
+            "state_sha256": "6" * 64,
+            "resolved": [],
+            "invalidated": {"voice-level-measurement": "missing"},
+            "receipt_sha256": {},
+            "error": None,
+        }
+        with (
+            mock.patch.object(MODULE, "_physical_projection", return_value=(physical, [])),
+            mock.patch.object(
+                MODULE,
+                "_laboratory_projection",
+                return_value=(
+                    advisory,
+                    ["laboratory-gate:voice-level-measurement"],
+                ),
+            ),
+            mock.patch.object(MODULE, "_source_projection", return_value=(source, [])),
+            mock.patch.object(MODULE, "contract_bindings", return_value=[]),
+            mock.patch.object(MODULE, "parecord_binding", return_value={}),
+        ):
+            plan = MODULE.build_plan(
+                "voice-advisory.wav",
+                10,
+                session_type="voice-recording",
+                output_root=self.output,
+                state_root=self.state,
+                disk_usage_fn=lambda _path: types.SimpleNamespace(free=20_000_000_000),
+            )
+        self.assertTrue(plan["ready"])
+        self.assertEqual(plan["readiness"]["blockers"], [])
+        self.assertEqual(
+            plan["readiness"]["advisories"],
+            [
+                {
+                    "id": "voice-level",
+                    "status": "attention",
+                    "notices": ["laboratory-gate:voice-level-measurement"],
+                }
+            ],
+        )
+
+    def test_piano_resampling_remains_hard_while_voice_level_is_advisory(self) -> None:
+        physical = {
+            "state_sha256": "5" * 64,
+            "facts": {
+                "rode_nt1a_connected": True,
+                "rode_nt1a_motu_input": "input-1",
+                "motu_phantom_48v": "on",
+                "motu_input_gain_reference": "mark 10",
+            },
+            "error": None,
+        }
+        source_identity = self.source_identity("piano-vocal-performance")
+        source = {
+            "identity": source_identity,
+            "identity_sha256": MODULE.canonical_sha256(source_identity),
+            "error": None,
+        }
+
+        def laboratory_projection(_path, _physical, required):
+            gate = required[0]
+            projection = {
+                "state_sha256": "6" * 64,
+                "resolved": [],
+                "invalidated": {gate: "missing"},
+                "receipt_sha256": {},
+                "error": None,
+            }
+            return projection, [f"laboratory-gate:{gate}"]
+
+        with (
+            mock.patch.object(MODULE, "_physical_projection", return_value=(physical, [])),
+            mock.patch.object(
+                MODULE, "_laboratory_projection", side_effect=laboratory_projection
+            ),
+            mock.patch.object(MODULE, "_source_projection", return_value=(source, [])),
+            mock.patch.object(MODULE, "contract_bindings", return_value=[]),
+            mock.patch.object(MODULE, "parecord_binding", return_value={}),
+            mock.patch.object(MODULE, "arecordmidi_binding", return_value={}),
+            mock.patch.object(MODULE, "ffmpeg_binding", return_value={}),
+        ):
+            plan = MODULE.build_plan(
+                "piano-advisory.wav",
+                10,
+                session_type="piano-vocal-performance",
+                output_root=self.output,
+                state_root=self.state,
+                disk_usage_fn=lambda _path: types.SimpleNamespace(free=20_000_000_000),
+            )
+        self.assertFalse(plan["ready"])
+        self.assertEqual(
+            plan["readiness"]["blockers"],
+            ["laboratory-gate:resampling-decision"],
+        )
+        self.assertEqual(
+            plan["readiness"]["advisories"],
+            [
+                {
+                    "id": "voice-level",
+                    "status": "attention",
+                    "notices": ["laboratory-gate:voice-level-measurement"],
+                }
             ],
         )
 
@@ -1298,6 +1443,36 @@ class RecordingSessionTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(MODULE.RecordingError, "free space fell below"):
                 MODULE._validate_live_preconditions(spec)
+
+    def test_live_voice_preconditions_do_not_rebind_advisory_laboratory_state(self) -> None:
+        spec = self.persisted_spec(session_type="voice-recording", maximum_seconds=1)
+        plan = spec["plan_identity"]
+        self.assertIsNone(plan["laboratory"]["state_sha256"])
+        contract = MODULE.load_catalog("voice-recording")
+        self.assertEqual(contract["required_laboratory_gates"], [])
+        with (
+            mock.patch.object(MODULE, "load_catalog", return_value=contract),
+            mock.patch.object(
+                MODULE, "_physical_projection", return_value=(plan["physical"], [])
+            ),
+            mock.patch.object(MODULE, "_laboratory_projection") as laboratory_projection,
+            mock.patch.object(
+                MODULE, "_source_projection", return_value=(plan["source"], [])
+            ),
+            mock.patch.object(
+                MODULE.shutil,
+                "disk_usage",
+                return_value=MODULE.shutil._ntuple_diskusage(
+                    0,
+                    0,
+                    int(plan["capture"]["free_space_reserve_bytes"])
+                    + int(plan["capture"]["maximum_file_bytes"])
+                    + 1,
+                ),
+            ),
+        ):
+            MODULE._validate_live_preconditions(spec)
+        laboratory_projection.assert_not_called()
 
     def test_live_preconditions_reject_source_identity_drift(self) -> None:
         physical = {"state_path": str(self.base / "physical.json")}
@@ -1585,6 +1760,14 @@ class RecordingSessionTest(unittest.TestCase):
         bad_root["plan_sha256"] = MODULE.canonical_sha256(bad_root["plan_identity"])
         with self.assertRaisesRegex(MODULE.RecordingError, "state root"):
             MODULE._validate_persisted_spec(bad_root, state_root=self.state)
+
+    def test_pre_advisory_voice_spec_remains_readable_for_recovery(self) -> None:
+        spec = self.persisted_spec()
+        plan = spec["plan_identity"]
+        advisory = plan.pop("advisory_laboratory")
+        plan["laboratory"] = advisory
+        spec["plan_sha256"] = MODULE.canonical_sha256(plan)
+        MODULE._validate_persisted_spec(spec, state_root=self.state)
 
     def test_session_state_rejects_malformed_process_identity(self) -> None:
         state = {

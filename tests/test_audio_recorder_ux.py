@@ -48,7 +48,8 @@ class AudioRecorderUXTests(unittest.TestCase):
 
     def test_level_acceptance_is_explicit_local_and_discards_measurement_audio(self):
         self.assertIn('async function runRecordingLevelAcceptance()', self.app)
-        self.assertIn('"Pegelabnahme starten (10 s)"', self.app)
+        self.assertIn('"Pegel 10 s prüfen (optional)"', self.app)
+        self.assertIn('"Pegelhinweis vor dem Take (optional)"', self.app)
         self.assertIn('operation: "measure-level"', self.app)
         self.assertIn('!localRecordingActionsAllowed() || state.recordingActionPending', self.app)
         self.assertIn('Die Mess-WAV wird danach verworfen.', self.app)
@@ -56,7 +57,13 @@ class AudioRecorderUXTests(unittest.TestCase):
         self.assertNotIn('/bridge/v1/actions/recording', block)
 
     def test_level_acceptance_explains_refresh_and_out_of_range_direction(self):
-        self.assertIn('"laboratory-state-invalid": "Pegelabnahme muss erneuert werden"', self.app)
+        self.assertIn(
+            '"laboratory-state-invalid": "Technischer Audiopfad ist nicht aktuell"',
+            self.app,
+        )
+        self.assertIn('function recordingAdvisoryNoticeLabel(notice)', self.app)
+        self.assertIn('"Pegelhinweis ist nicht aktuell"', self.app)
+        self.assertIn("Aufnahme bleibt möglich", self.app)
         self.assertIn('function recordingLevelAcceptanceGuidance(measurement)', self.app)
         self.assertIn('blockers.includes("voice-capture-clipped")', self.app)
         self.assertIn('blockers.includes("voice-peak-outside-target")', self.app)

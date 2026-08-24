@@ -367,6 +367,7 @@ RECORDING_READINESS_CHECK_IDS = (
     "storage",
     "session",
 )
+RECORDING_ADVISORY_IDS = ("voice-level",)
 ONSITE_WARNING_CODES = frozenset({"voice-source-not-motu"})
 PROFILE_AREAS = {
     "desktop-mixed": "listening",
@@ -1187,6 +1188,10 @@ def read_voice_recording_contract() -> dict[str, Any]:
     laboratory = require_list(
         voice.get("required_laboratory_gates"), label="Recorderprofil laboratory"
     )
+    advisory_laboratory = require_list(
+        voice.get("advisory_laboratory_gates"),
+        label="Recorderprofil advisory laboratory",
+    )
     expected_physical = {
         "rode_nt1a_connected": True,
         "rode_nt1a_motu_input": ["input-1", "input-2"],
@@ -1196,7 +1201,8 @@ def read_voice_recording_contract() -> dict[str, Any]:
     if (
         voice.get("profile") != "voice-recording"
         or physical != expected_physical
-        or laboratory != ["voice-level-measurement"]
+        or laboratory != []
+        or advisory_laboratory != ["voice-level-measurement"]
         or source.get("kind") != "motu-voice"
         or source.get("vendor_id") != "07fd"
         or source.get("product_id") != "0008"
@@ -1252,6 +1258,7 @@ def read_voice_recording_contract() -> dict[str, Any]:
         },
         "required_physical_facts": expected_physical,
         "required_laboratory_gates": list(laboratory),
+        "advisory_laboratory_gates": list(advisory_laboratory),
         "capture": {
             "container": capture["container"],
             "sample_rate_hz": capture["sample_rate_hz"],
@@ -1287,12 +1294,22 @@ def read_recording_contract(mode: str) -> dict[str, Any]:
         source.get("roland_audio"), label="Performance-Roland-Audio"
     )
     midi = require_mapping(source.get("midi"), label="Performance-MIDI")
+    performance_laboratory = require_list(
+        performance.get("required_laboratory_gates"),
+        label="Performance laboratory",
+    )
+    performance_advisory_laboratory = require_list(
+        performance.get("advisory_laboratory_gates"),
+        label="Performance advisory laboratory",
+    )
     if (
         performance.get("profile") != "voice-recording"
         or performance.get("capture")
         != require_mapping(
             sessions.get("voice-recording"), label="Recorderprofil Stimme"
         ).get("capture")
+        or performance_laboratory != ["resampling-decision"]
+        or performance_advisory_laboratory != ["voice-level-measurement"]
         or source.get("kind") != "motu-voice-with-roland-audio-and-midi"
         or roland_audio.get("kind") != "usb-audio"
         or roland_audio.get("vendor_id") != "0582"
@@ -1333,6 +1350,8 @@ def read_recording_contract(mode: str) -> dict[str, Any]:
             },
         },
         "product": "Stereo-Mix WAV + Roland MIDI",
+        "required_laboratory_gates": list(performance_laboratory),
+        "advisory_laboratory_gates": list(performance_advisory_laboratory),
     }
 
 
@@ -1509,7 +1528,14 @@ def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> di
     physical = require_mapping(identity.get("physical"), label="Recorderplan physical")
     facts = require_mapping(physical.get("facts", {}), label="Recorderplan physical.facts")
     laboratory = require_mapping(identity.get("laboratory"), label="Recorderplan laboratory")
-    resolved = require_list(laboratory.get("resolved", []), label="Recorderplan laboratory.resolved")
+    require_list(laboratory.get("resolved", []), label="Recorderplan laboratory.resolved")
+    advisory_laboratory = require_mapping(
+        identity.get("advisory_laboratory"), label="Recorderplan advisory laboratory"
+    )
+    advisory_resolved = require_list(
+        advisory_laboratory.get("resolved", []),
+        label="Recorderplan advisory laboratory.resolved",
+    )
     source = require_mapping(identity.get("source"), label="Recorderplan source")
     source_identity = source.get("identity")
     if source_identity is not None and not isinstance(source_identity, dict):
@@ -1560,6 +1586,37 @@ def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> di
         raise ControlError("Recorderplan widerspricht sich bei den Startblockern.")
     if report["ready"] != all(check["status"] == "ready" for check in projected_checks):
         raise ControlError("Recorderplan widerspricht sich beim Bereitschaftsstatus.")
+    raw_advisories = require_list(
+        readiness.get("advisories"), label="Recorderplan advisories"
+    )
+    if len(raw_advisories) != len(RECORDING_ADVISORY_IDS):
+        raise ControlError("Recorderplan enthält keine vollständigen Aufnahmehinweise.")
+    projected_advisories: list[dict[str, Any]] = []
+    observed_advisory_ids: list[str] = []
+    for raw_advisory in raw_advisories:
+        advisory = require_mapping(raw_advisory, label="Recorderplan advisory")
+        if set(advisory) != {"id", "status", "notices"}:
+            raise ControlError("Recorderplan enthält einen ungültigen Aufnahmehinweis.")
+        advisory_id = advisory.get("id")
+        status = advisory.get("status")
+        notices = require_list(
+            advisory.get("notices"), label="Recorderplan advisory notices"
+        )
+        if (
+            not isinstance(advisory_id, str)
+            or advisory_id not in RECORDING_ADVISORY_IDS
+            or status not in {"ready", "attention"}
+            or not all(isinstance(item, str) and item for item in notices)
+            or notices != sorted(set(notices))
+            or (status == "ready") != (len(notices) == 0)
+        ):
+            raise ControlError("Recorderplan enthält einen widersprüchlichen Aufnahmehinweis.")
+        observed_advisory_ids.append(advisory_id)
+        projected_advisories.append(
+            {"id": advisory_id, "status": status, "notices": list(notices)}
+        )
+    if tuple(observed_advisory_ids) != RECORDING_ADVISORY_IDS:
+        raise ControlError("Recorderplan enthält keine kanonische Hinweisreihenfolge.")
     audio_identity = (
         source_identity.get("audio")
         if mode == "piano-vocal" and isinstance(source_identity, dict)
@@ -1587,7 +1644,9 @@ def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> di
             "motu_phantom_48v": facts.get("motu_phantom_48v"),
             "motu_input_gain_reference": bool(facts.get("motu_input_gain_reference")),
         },
-        "laboratory": {"voice_level_measurement": "voice-level-measurement" in resolved},
+        "laboratory": {
+            "voice_level_measurement": "voice-level-measurement" in advisory_resolved
+        },
         "source": {
             "bound": isinstance(source_identity, dict),
             "identity_sha256": source.get("identity_sha256"),
@@ -1599,6 +1658,7 @@ def project_recording_plan(report: dict[str, Any], *, mode: str = "voice") -> di
         "readiness": {
             "blockers": blockers,
             "checks": projected_checks,
+            "advisories": projected_advisories,
             "free_bytes": readiness.get("free_bytes"),
             "required_file_bytes": readiness.get("required_file_bytes"),
             "required_free_bytes": readiness.get("required_free_bytes"),
@@ -3204,6 +3264,61 @@ class AudioControl:
             return reconciliation
 
 
+    def _refresh_recording_rate_policy_gates(
+        self, laboratory: Any, rate_policy: Any, state: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        try:
+            rate_policy_evidence = rate_policy.rate_policy_evidence(
+                "rate-policy-decision"
+            )
+        except (OSError, ValueError):
+            rate_policy_refresh = {
+                "passed": False,
+                "blockers": ["rate-policy-observation-unavailable"],
+                "default_graph_rate_hz": 48_000,
+                "audio_effects": False,
+            }
+        else:
+            rate_policy_refresh = project_rate_policy_refresh(rate_policy_evidence)
+            if rate_policy_refresh["passed"]:
+                laboratory.validate_evidence(
+                    "rate-policy-decision", rate_policy_evidence
+                )
+                laboratory.record_gate(
+                    state,
+                    "rate-policy-decision",
+                    rate_policy_evidence,
+                    laboratory.PHYSICAL.DEFAULT_STATE,
+                    replace=True,
+                )
+        try:
+            resampling_evidence = rate_policy.rate_policy_evidence(
+                "resampling-decision"
+            )
+        except (OSError, ValueError):
+            resampling_refresh = {
+                "passed": False,
+                "blockers": ["resampling-observation-unavailable"],
+                "source_rate_hz": 44_100,
+                "target_rate_hz": 48_000,
+                "audio_effects": False,
+            }
+        else:
+            resampling_refresh = project_resampling_refresh(resampling_evidence)
+            if resampling_refresh["passed"]:
+                laboratory.validate_evidence(
+                    "resampling-decision", resampling_evidence
+                )
+                laboratory.record_gate(
+                    state,
+                    "resampling-decision",
+                    resampling_evidence,
+                    laboratory.PHYSICAL.DEFAULT_STATE,
+                    replace=True,
+                )
+        return rate_policy_refresh, resampling_refresh
+
+
     def _perform_voice_level_acceptance(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
@@ -3253,32 +3368,20 @@ class AudioControl:
                     "Pegelabnahme konnte nicht sicher ausgeführt werden."
                 ) from error
             measurement = project_voice_level_acceptance_evidence(evidence)
-            rate_policy_refresh = {
-                "passed": False,
-                "blockers": ["voice-level-not-passed"],
-                "default_graph_rate_hz": 48_000,
-                "audio_effects": False,
-            }
-            resampling_refresh = {
-                "passed": False,
-                "blockers": ["voice-level-not-passed"],
-                "source_rate_hz": 44_100,
-                "target_rate_hz": 48_000,
-                "audio_effects": False,
-            }
-            if measurement["passed"]:
-                try:
-                    with laboratory.state_lock(laboratory.DEFAULT_STATE):
+            try:
+                with laboratory.state_lock(laboratory.DEFAULT_STATE):
+                    (
+                        state,
+                        post_capture_reconciliation,
+                        expected_laboratory_state_sha256,
+                    ) = prepare_laboratory_state_for_voice_level(laboratory)
+                    if post_capture_reconciliation["catalog_reconciled"]:
+                        reconciliation = post_capture_reconciliation
+                    state_changed = post_capture_reconciliation["catalog_reconciled"]
+                    if measurement["passed"]:
                         laboratory.validate_evidence(
                             "voice-level-measurement", evidence
                         )
-                        (
-                            state,
-                            post_capture_reconciliation,
-                            expected_laboratory_state_sha256,
-                        ) = prepare_laboratory_state_for_voice_level(laboratory)
-                        if post_capture_reconciliation["catalog_reconciled"]:
-                            reconciliation = post_capture_reconciliation
                         laboratory.record_gate(
                             state,
                             "voice-level-measurement",
@@ -3286,62 +3389,22 @@ class AudioControl:
                             laboratory.PHYSICAL.DEFAULT_STATE,
                             replace=True,
                         )
-                        try:
-                            rate_policy_evidence = rate_policy.rate_policy_evidence(
-                                "rate-policy-decision"
-                            )
-                        except (OSError, ValueError):
-                            rate_policy_refresh = {
-                                "passed": False,
-                                "blockers": ["rate-policy-observation-unavailable"],
-                                "default_graph_rate_hz": 48_000,
-                                "audio_effects": False,
-                            }
-                        else:
-                            rate_policy_refresh = project_rate_policy_refresh(
-                                rate_policy_evidence
-                            )
-                            if rate_policy_refresh["passed"]:
-                                laboratory.validate_evidence(
-                                    "rate-policy-decision", rate_policy_evidence
-                                )
-                                laboratory.record_gate(
-                                    state,
-                                    "rate-policy-decision",
-                                    rate_policy_evidence,
-                                    laboratory.PHYSICAL.DEFAULT_STATE,
-                                    replace=True,
-                                )
-                        try:
-                            resampling_evidence = rate_policy.rate_policy_evidence(
-                                "resampling-decision"
-                            )
-                        except (OSError, ValueError):
-                            resampling_refresh = {
-                                "passed": False,
-                                "blockers": ["resampling-observation-unavailable"],
-                                "source_rate_hz": 44_100,
-                                "target_rate_hz": 48_000,
-                                "audio_effects": False,
-                            }
-                        else:
-                            resampling_refresh = project_resampling_refresh(
-                                resampling_evidence
-                            )
-                            if resampling_refresh["passed"]:
-                                laboratory.validate_evidence(
-                                    "resampling-decision", resampling_evidence
-                                )
-                                laboratory.record_gate(
-                                    state,
-                                    "resampling-decision",
-                                    resampling_evidence,
-                                    laboratory.PHYSICAL.DEFAULT_STATE,
-                                    replace=True,
-                                )
+                        state_changed = True
+                    (
+                        rate_policy_refresh,
+                        resampling_refresh,
+                    ) = self._refresh_recording_rate_policy_gates(
+                        laboratory, rate_policy, state
+                    )
+                    state_changed = (
+                        state_changed
+                        or rate_policy_refresh["passed"]
+                        or resampling_refresh["passed"]
+                    )
+                    if state_changed:
                         if not self._snapshot_lock.acquire(blocking=False):
                             raise ActionBusy(
-                                "Eine Zustandsabfrage verhindert den sicheren Pegel-Readback."
+                                "Eine Zustandsabfrage verhindert den sicheren Pegel-/Pfad-Readback."
                             )
                         try:
                             verify_laboratory_state_preimage(
@@ -3354,12 +3417,12 @@ class AudioControl:
                             snapshot = self._readback_after_mutation()
                         finally:
                             self._snapshot_lock.release()
-                except (OSError, ValueError) as error:
-                    raise ControlError(
-                        "Pegelbeleg konnte nicht sicher an den Laborzustand gebunden werden."
-                    ) from error
-            else:
-                snapshot = self.snapshot(refresh=True)
+                    else:
+                        snapshot = self.snapshot(refresh=True)
+            except (OSError, ValueError) as error:
+                raise ControlError(
+                    "Pegel-/Pfadbeleg konnte nicht sicher an den Laborzustand gebunden werden."
+                ) from error
             return {
                 "schema_version": 1,
                 "kind": "audio_control_recording_action_result",
