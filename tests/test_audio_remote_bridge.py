@@ -994,7 +994,7 @@ class BridgeHTTPTests(unittest.TestCase):
             MODULE.recording_backend_timeout_seconds("prepare"),
             MODULE.RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS,
         )
-        self.assertGreater(MODULE.RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS, 210)
+        self.assertGreater(MODULE.RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS, 250)
 
     def test_remote_recording_plan_uses_scoped_session_and_hides_backend_token(self):
         token = self.issue_remote_session()

@@ -68,7 +68,7 @@ RECORDING_BACKEND_TIMEOUT_SECONDS = 120.0
 # controlled stops/restores and one 20 s PipeWire core restart.  Keep the
 # bridge beyond that complete backend bound so successful convergence is not
 # misreported as a remote timeout.
-RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 240.0
+RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
 REQUEST_IO_TIMEOUT_SECONDS = 6.0
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384

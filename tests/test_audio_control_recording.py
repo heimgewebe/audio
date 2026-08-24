@@ -194,12 +194,47 @@ class RecordingActionRunner(FakeRunner):
 
 
 class RecordingRecoveryRunner(RecordingActionRunner):
-    def __init__(self, *, recover_source=True, extra_blocker=None):
+    def __init__(
+        self,
+        *,
+        recover_source=True,
+        extra_blocker=None,
+        active_streams=False,
+        source_ready_after_queries=1,
+        stop_uncertain_unit=None,
+    ):
         super().__init__()
         self.source_ready = False
         self.recover_source = recover_source
         self.extra_blocker = extra_blocker
+        self.active_streams = active_streams
+        self.source_ready_after_queries = source_ready_after_queries
+        self.stop_uncertain_unit = stop_uncertain_unit
+        self.restart_performed = False
+        self.source_queries_after_restart = 0
         self.active_units = set(MODULE.RECORDING_PATH_RECOVERY_UNITS)
+
+    @staticmethod
+    def motu_source():
+        serial = "MOTU_M2_TESTSERIAL"
+        return {
+            "name": f"alsa_input.usb-{serial}-00.analog-stereo",
+            "monitor_source": "",
+            "mute": False,
+            "sample_specification": "s32le 2ch 48000Hz",
+            "volume": {
+                "front-left": {"value": 65_536},
+                "front-right": {"value": 65_536},
+            },
+            "properties": {
+                "device.class": "sound",
+                "media.class": "Audio/Source",
+                "device.vendor.id": "07fd",
+                "device.product.id": "0008",
+                "device.serial": serial,
+                "device.bus_path": "pci-test-usb-test",
+            },
+        }
 
     def voice_plan(self, argv):
         result = super().voice_plan(argv)
@@ -235,6 +270,8 @@ class RecordingRecoveryRunner(RecordingActionRunner):
         if command[:3] == ("systemctl", "--user", "stop"):
             self.calls.append((command, timeout))
             self.active_units.discard(command[3])
+            if command[3] == self.stop_uncertain_unit:
+                raise MODULE.ControlError("simulated uncertain stop")
             return MODULE.CommandResult(command, 0, "", "")
         if command[:3] == ("systemctl", "--user", "start"):
             self.calls.append((command, timeout))
@@ -243,9 +280,26 @@ class RecordingRecoveryRunner(RecordingActionRunner):
         if command[:3] == ("systemctl", "--user", "restart"):
             self.calls.append((command, timeout))
             self.assert_core_restart(command)
-            if self.recover_source:
-                self.source_ready = True
+            self.restart_performed = True
             return MODULE.CommandResult(command, 0, "", "")
+        if command == ("pactl", "--format=json", "list", "sink-inputs"):
+            self.calls.append((command, timeout))
+            payload = [{"index": 1}] if self.active_streams else []
+            return MODULE.CommandResult(command, 0, json.dumps(payload), "")
+        if command == ("pactl", "--format=json", "list", "source-outputs"):
+            self.calls.append((command, timeout))
+            return MODULE.CommandResult(command, 0, "[]", "")
+        if command == ("pactl", "--format=json", "list", "sources"):
+            self.calls.append((command, timeout))
+            if self.restart_performed:
+                self.source_queries_after_restart += 1
+                if (
+                    self.recover_source
+                    and self.source_queries_after_restart >= self.source_ready_after_queries
+                ):
+                    self.source_ready = True
+            payload = [self.motu_source()] if self.source_ready else []
+            return MODULE.CommandResult(command, 0, json.dumps(payload), "")
         return super().run(argv, timeout=timeout)
 
     @staticmethod
@@ -890,9 +944,14 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertEqual(len(plan_calls), 1)
 
     def test_recording_prepare_repairs_missing_motu_graph_once_then_replans(self):
-        runner = RecordingRecoveryRunner(recover_source=True)
+        runner = RecordingRecoveryRunner(
+            recover_source=True, source_ready_after_queries=3
+        )
         controller = self.controller(runner)
-        with mock.patch.object(MODULE.time, "sleep") as sleep:
+        with (
+            mock.patch.object(controller, "_recording_assert_motu_pcm_safe") as pcm_safe,
+            mock.patch.object(MODULE.time, "sleep") as sleep,
+        ):
             result = controller.perform_recording_action(
                 {
                     "operation": "prepare",
@@ -922,12 +981,23 @@ class AudioControlRecordingTests(unittest.TestCase):
         )
         self.assertEqual(sum(call == restart for call, _ in runner.calls), 1)
         self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
-        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(runner.source_queries_after_restart, 3)
+        self.assertEqual(
+            sleep.call_args_list,
+            [
+                mock.call(MODULE.RECORDING_SOURCE_READBACK_INTERVAL_SECONDS),
+                mock.call(MODULE.RECORDING_SOURCE_READBACK_INTERVAL_SECONDS),
+            ],
+        )
+        pcm_safe.assert_called_once_with()
 
     def test_recording_prepare_preserves_hard_source_gate_after_failed_recovery(self):
         runner = RecordingRecoveryRunner(recover_source=False)
         controller = self.controller(runner)
-        with mock.patch.object(MODULE.time, "sleep"):
+        with (
+            mock.patch.object(controller, "_recording_assert_motu_pcm_safe"),
+            mock.patch.object(MODULE.time, "sleep") as sleep,
+        ):
             result = controller.perform_recording_action(
                 {
                     "operation": "prepare",
@@ -949,6 +1019,120 @@ class AudioControlRecordingTests(unittest.TestCase):
             and call[2] == "plan"
         ]
         self.assertEqual(len(plan_calls), 2)
+        self.assertEqual(
+            runner.source_queries_after_restart, MODULE.RECORDING_SOURCE_READBACK_ATTEMPTS
+        )
+        self.assertEqual(
+            sleep.call_count, MODULE.RECORDING_SOURCE_READBACK_ATTEMPTS - 1
+        )
+
+    def test_recording_prepare_checks_direct_pcm_before_stopping_any_service(self):
+        runner = RecordingRecoveryRunner()
+        controller = self.controller(runner)
+        with (
+            mock.patch.object(
+                controller,
+                "_recording_assert_motu_pcm_safe",
+                side_effect=MODULE.ControlError("direct MOTU PCM busy"),
+            ),
+            self.assertRaisesRegex(MODULE.ControlError, "direct MOTU PCM busy"),
+        ):
+            controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+
+        self.assertFalse(
+            any(
+                call[:3] == ("systemctl", "--user", "stop")
+                for call, _timeout in runner.calls
+            )
+        )
+        self.assertFalse(runner.restart_performed)
+
+    def test_recording_recovery_owns_only_control_plane_services(self):
+        self.assertTrue(
+            set(MODULE.RECORDING_PATH_RECOVERY_UNITS).isdisjoint(
+                {"qbzd.service", "fluidsynth.service"}
+            )
+        )
+        self.assertEqual(
+            MODULE.RECORDING_PRECHECK_STOP_UNITS,
+            ("audio-control-level-observer-v1.service",),
+        )
+
+    def test_recording_prepare_refuses_core_restart_while_playback_is_active(self):
+        runner = RecordingRecoveryRunner(active_streams=True)
+        controller = self.controller(runner)
+        with (
+            mock.patch.object(controller, "_recording_assert_motu_pcm_safe") as pcm_safe,
+            self.assertRaisesRegex(MODULE.ControlError, "andere Wiedergabe oder Aufnahme"),
+        ):
+            controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+        pcm_safe.assert_called_once_with()
+
+        self.assertFalse(runner.restart_performed)
+        self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
+
+    def test_recording_prepare_restores_original_units_after_uncertain_stop(self):
+        unit = MODULE.RECORDING_PATH_RECOVERY_UNITS[0]
+        runner = RecordingRecoveryRunner(stop_uncertain_unit=unit)
+        controller = self.controller(runner)
+        with (
+            mock.patch.object(controller, "_recording_assert_motu_pcm_safe"),
+            self.assertRaisesRegex(MODULE.ControlError, "simulated uncertain stop"),
+        ):
+            controller.perform_recording_action(
+                {
+                    "operation": "prepare",
+                    "mode": "voice",
+                    "name": "voice-take.wav",
+                    "maximum_seconds": 60,
+                }
+            )
+
+        self.assertFalse(runner.restart_performed)
+        self.assertEqual(runner.active_units, set(MODULE.RECORDING_PATH_RECOVERY_UNITS))
+        self.assertIn(
+            (("systemctl", "--user", "start", unit), 10),
+            runner.calls,
+        )
+
+    def test_recording_pcm_idle_gate_reuses_shared_qobuz_safety_contract(self):
+        class RecoveryError(RuntimeError):
+            pass
+
+        qobuz_recovery = mock.Mock()
+        qobuz_recovery.RecoveryError = RecoveryError
+        physical = mock.Mock(card=pathlib.Path("/proc/asound/card7"))
+        qobuz_recovery.resolve_unique_motu_card.return_value = physical
+        controller = self.controller(RecordingRecoveryRunner())
+        with mock.patch.object(
+            MODULE,
+            "load_recording_recovery_modules",
+            return_value=(qobuz_recovery, mock.Mock()),
+        ):
+            controller._recording_assert_motu_pcm_safe()
+
+        qobuz_recovery.resolve_unique_motu_card.assert_called_once_with(
+            pathlib.Path("/proc/asound"),
+            sound_class_root=pathlib.Path("/sys/class/sound"),
+            sys_devices_root=pathlib.Path("/sys/devices"),
+        )
+        qobuz_recovery.absence_observation_pcm_safe.assert_called_once_with(
+            physical.card, pathlib.Path("/proc")
+        )
 
     def test_recording_prepare_does_not_recover_when_non_source_blocker_exists(self):
         runner = RecordingRecoveryRunner(
@@ -1392,7 +1576,7 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertIn('async function runRecordingStart()', javascript)
         self.assertIn('operation: "prepare"', javascript)
         self.assertIn('"Aufnahmepfad prüfen"', javascript)
-        self.assertIn("const RECORDING_PREPARE_TIMEOUT_MS = 260000;", javascript)
+        self.assertIn("const RECORDING_PREPARE_TIMEOUT_MS = 300000;", javascript)
         self.assertEqual(
             javascript.count("timeoutMs: recordingActionTimeoutMs(payload?.operation)"),
             2,
