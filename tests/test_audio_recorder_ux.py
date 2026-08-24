@@ -46,6 +46,15 @@ class AudioRecorderUXTests(unittest.TestCase):
         self.assertIn('binding.phase === "preflight" ? "Vorabpegel · " : ""', self.app)
         self.assertNotIn('runOperatingModeTransition("recording")', self.app)
 
+    def test_level_acceptance_is_explicit_local_and_discards_measurement_audio(self):
+        self.assertIn('async function runRecordingLevelAcceptance()', self.app)
+        self.assertIn('"Pegelabnahme starten (10 s)"', self.app)
+        self.assertIn('operation: "measure-level"', self.app)
+        self.assertIn('!localRecordingActionsAllowed() || state.recordingActionPending', self.app)
+        self.assertIn('Die Mess-WAV wird danach verworfen.', self.app)
+        block = self.app.split('async function runRecordingLevelAcceptance()', 1)[1].split('function syncRecordingLibraryControls()', 1)[0]
+        self.assertNotIn('/bridge/v1/actions/recording', block)
+
     def test_live_meter_exposes_stale_unavailable_unbound_and_incomplete_states(self):
         for message in (
             "Live-Pegel nicht verfügbar",

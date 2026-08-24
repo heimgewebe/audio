@@ -1041,6 +1041,7 @@ class BridgeHTTPTests(unittest.TestCase):
             ({**headers, MODULE.REMOTE_ACTION_TOKEN_HEADER: "x" * 40}, valid_stop, 403),
             (headers, {"operation": "stop"}, 400),
             (headers, {"operation": "recover", "session_id": "bad"}, 400),
+            (headers, {"operation": "measure-level"}, 400),
             (headers, {"operation": "plan", "mode": "voice", "name": "../x.wav", "maximum_seconds": 60}, 400),
         )
         for candidate_headers, action, expected in cases:

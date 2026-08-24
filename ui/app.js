@@ -1618,6 +1618,19 @@ async function requestRecordingPlan({ autoRenameCollision = true } = {}) {
   throw new Error("Für den nächsten Take konnte kein freier Dateiname gefunden werden.");
 }
 
+
+async function runRecordingLevelAcceptance() {
+  if (state.recordingActionPending) return;
+  if (!localRecordingActionsAllowed()) {
+    showNotice(
+      "Pegelabnahme ist nur direkt am Heim-PC verfügbar; sie öffnet den Mikrofoneingang für exakt 10 Sekunden.",
+      "info",
+    );
+    return;
+  }
+  await runRecordingAction({ operation: "measure-level" });
+}
+
 function syncRecordingLibraryControls() {
   const target = byId("library-takes");
   if (!target) return;
@@ -1707,6 +1720,38 @@ async function runRecordingAction(payload) {
       state.snapshot = result.snapshot;
       state.recordingPlan = null;
       state.recordingPlanInput = null;
+      if (result.operation === "measure-level") {
+        const measurement = result.measurement;
+        if (typeof measurement?.passed !== "boolean") {
+          throw new Error("Pegelabnahme lieferte keinen autoritativen Mess-Readback.");
+        }
+        const peak = Number.isFinite(measurement.peak_dbfs)
+          ? `${measurement.peak_dbfs.toFixed(1)} dBFS`
+          : "nicht messbar";
+        if (measurement.passed) {
+          try {
+            await requestRecordingPlan({ autoRenameCollision: false });
+          } catch (_error) {
+            state.recordingPlan = null;
+            state.recordingPlanInput = null;
+          }
+          const rolandReady = result.resampling_refresh?.passed === true;
+          const pianoMode = state.recordingDraft.mode === "piano-vocal";
+          showNotice(
+            `Pegelabnahme bestanden · Peak ${peak} · Ziel −12…−6 dBFS${rolandReady ? " · Roland-Pfad ebenfalls gebunden." : pianoMode ? " · Roland-Sampleratenprüfung noch offen." : "."}`,
+            pianoMode && !rolandReady ? "info" : "success",
+          );
+        } else {
+          const reason = (measurement.blockers || [])
+            .map(recordingBlockerLabel)
+            .join(" · ");
+          showNotice(
+            `Pegelabnahme noch nicht bestanden · Peak ${peak} · Ziel −12…−6 dBFS${reason ? ` · ${reason}` : ""}.`,
+            "info",
+          );
+        }
+        return;
+      }
       if (["stop", "recover"].includes(result.operation)) state.recordingDetailsOpen = false;
       await loadRecordingLibrary({ render: false });
       if (
@@ -1917,6 +1962,34 @@ function renderRecordingControls(card, recording) {
         ? `Ergebnis: ${pianoVocalProduct}`
         : "Ergebnis: Gesang als WAV",
     );
+    const levelAcceptance = element("section", "recording-level-acceptance");
+    appendText(levelAcceptance, "strong", "", "Pegelabnahme vor dem ersten Take");
+    appendText(
+      levelAcceptance,
+      "p",
+      "recording-product-hint",
+      "Nach dem Klick 10 Sekunden in normaler Aufnahme-Lautstärke singen oder sprechen. Ziel: Peaks −12…−6 dBFS, kein Clipping. Die Mess-WAV wird danach verworfen. Für Klavier + Gesang wird zugleich die Roland-Sampleratenbindung neu geprüft.",
+    );
+    const levelButton = element(
+      "button",
+      "secondary-button",
+      "Pegelabnahme starten (10 s)",
+    );
+    levelButton.type = "button";
+    levelButton.dataset.control = "measure-level";
+    levelButton.disabled =
+      !localRecordingActionsAllowed() || state.recordingActionPending;
+    levelButton.addEventListener("click", runRecordingLevelAcceptance);
+    levelAcceptance.append(levelButton);
+    if (!localRecordingActionsAllowed()) {
+      appendText(
+        levelAcceptance,
+        "small",
+        "read-only-boundary",
+        "Die Pegelabnahme ist absichtlich nur direkt am Heim-PC verfügbar, weil sie den Mikrofoneingang kurz öffnet.",
+      );
+    }
+    controls.append(levelAcceptance);
     let modeBlockerMessage = null;
     if (selectedMode?.actionable !== true && selectedMode?.blocker) {
       modeBlockerMessage = appendText(

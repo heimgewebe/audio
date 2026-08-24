@@ -19,6 +19,11 @@ class RecordingSourceBindingReleaseTests(unittest.TestCase):
         expected = {
             "scripts/motu_capture_identity.py",
             "scripts/voice_capture_observer.py",
+            "scripts/level_analyzer.py",
+            "scripts/system_truth.py",
+            "scripts/laboratory_gate.py",
+            "scripts/physical_verification.py",
+            "scripts/rate_policy_observer.py",
             "scripts/audio_level_observer.py",
             "scripts/audio_live_telemetry.py",
             f"systemd/user/{MODULE.LEVEL_OBSERVER_UNIT}",
