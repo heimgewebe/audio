@@ -3021,6 +3021,22 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         self.assertIn("insightHost.hidden = attention.length === 0", home)
         self.assertIn('"MOTU M2 verbinden · dann Desktop, Spotify oder Browser"', home)
 
+    def test_home_task_status_uses_runtime_actionability_not_profile_gates(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        home_start = javascript.index("function renderHome()")
+        home_end = javascript.index("function insightCard", home_start)
+        home = javascript[home_start:home_end]
+
+        self.assertIn("const recordingReady = motuObserved && recordingActionsAllowed();", home)
+        self.assertIn("const playingReady = rolandObserved && whaleActionsAllowed();", home)
+        self.assertIn('recordingReady ? "bereit" : "prüfen"', home)
+        self.assertIn('playingReady ? "bereit" : "prüfen"', home)
+        self.assertIn('"MOTU M2 erkannt · Recordersteuerung prüfen"', home)
+        self.assertIn('"Roland FP-30X erkannt · Spielsteuerung prüfen"', home)
+        self.assertNotIn("recordingProfile.label", home)
+        self.assertNotIn("playingProfile.label", home)
+        self.assertNotIn("function homeProfileStatus", javascript)
+
     def test_sound_library_requires_confirmed_active_whale_truth(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         sounds_start = javascript.index("function renderSounds()")

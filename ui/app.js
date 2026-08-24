@@ -2472,16 +2472,6 @@ function homeProfile(profileId) {
   return (state.snapshot?.profiles || []).find((profile) => profile.id === profileId) || null;
 }
 
-function homeProfileStatus(profileId) {
-  const profile = homeProfile(profileId);
-  if (!profile) return { label: "nicht katalogisiert", tone: "planned" };
-  const stateName = profileState(profile);
-  return {
-    label: PROFILE_STATE_LABELS[stateName] || stateName,
-    tone: profileStateTone(stateName),
-  };
-}
-
 function homeActionCard({ href, glyph, eyebrow, title, status, tone, detail, priority = "primary" }) {
   const card = element("a", `home-action-card is-${priority}`);
   card.href = href;
@@ -2698,11 +2688,11 @@ function renderHome() {
   appendText(foot, "span", "", recordingStatusLabel(recording.status));
   card.append(foot);
 
-  const recordingProfile = homeProfileStatus("voice-recording");
-  const playingProfile = homeProfileStatus("piano-software-live");
   const whaleMode = displayMode(snapshot.whale.service?.voice_mode || snapshot.whale.contract?.default_mode);
   const listeningNeedsMotu =
     operatingMode.state === "blocked" && configuredModeCard?.reason === "motu-not-observed";
+  const recordingReady = motuObserved && recordingActionsAllowed();
+  const playingReady = rolandObserved && whaleActionsAllowed();
   const actions = [
     {
       href: "#hoeren",
@@ -2718,18 +2708,26 @@ function renderHome() {
       glyph: "●",
       eyebrow: "Recorder",
       title: "Aufnehmen",
-      status: recording.status === "running" ? "läuft" : motuObserved ? recordingProfile.label : "vor Ort",
-      tone: recording.status === "running" ? "ready" : !motuObserved ? "onsite" : recordingActionsAllowed() ? "ready" : recordingProfile.tone,
-      detail: motuObserved ? recordingStatusLabel(recording.status) : "MOTU M2 verbinden · dann Stimme aufnehmen",
+      status: recording.status === "running" ? "läuft" : !motuObserved ? "vor Ort" : recordingReady ? "bereit" : "prüfen",
+      tone: recording.status === "running" || recordingReady ? "ready" : !motuObserved ? "onsite" : "laboratory",
+      detail: !motuObserved
+        ? "MOTU M2 verbinden · dann Stimme aufnehmen"
+        : recordingReady
+          ? recordingStatusLabel(recording.status)
+          : "MOTU M2 erkannt · Recordersteuerung prüfen",
     },
     {
       href: "#spielen",
       glyph: "♬",
       eyebrow: "Instrumente",
       title: "Spielen",
-      status: activeWhale ? `${whaleMode} aktiv` : playingProfile.label,
-      tone: activeWhale ? "ready" : playingProfile.tone,
-      detail: rolandObserved ? "Roland FP-30X bereit" : "Roland FP-30X verbinden · dann spielen",
+      status: activeWhale ? `${whaleMode} aktiv` : !rolandObserved ? "vor Ort" : playingReady ? "bereit" : "prüfen",
+      tone: activeWhale || playingReady ? "ready" : !rolandObserved ? "onsite" : "laboratory",
+      detail: !rolandObserved
+        ? "Roland FP-30X verbinden · dann spielen"
+        : playingReady
+          ? "Roland FP-30X bereit"
+          : "Roland FP-30X erkannt · Spielsteuerung prüfen",
     },
     {
       href: "#material",
