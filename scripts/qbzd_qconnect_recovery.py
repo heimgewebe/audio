@@ -49,6 +49,14 @@ QCONNECT_JOURNAL_TRIGGERS = (
     "Max reconnect attempts exceeded",
     "[QConnect] Reconnect exhausted",
 )
+QCONNECT_NETWORK_REACHABILITY_MARKERS = (
+    "WebSocket connected",
+    "Authenticated with JWT",
+    "Cloud rejected session:",
+)
+NETWORK_REACHABILITY_EVIDENCE_SECONDS = 90.0
+QCONNECT_NETWORK_SEQUENCE_SECONDS = 30.0
+NETWORK_REACHABILITY_FUTURE_SKEW_SECONDS = 5.0
 STATE_SCHEMA_VERSION = 2
 
 
@@ -79,9 +87,16 @@ class QbzdService:
 
 
 @dataclass(frozen=True)
+class JournalEvent:
+    realtime_usec: int
+    message: str
+
+
+@dataclass(frozen=True)
 class JournalDelta:
     cursor: str
     text: str
+    events: tuple[JournalEvent, ...] = ()
 
 
 StatusReader = Callable[[], QbzdStatus]
@@ -246,7 +261,36 @@ def parse_journal_output(payload: str) -> JournalDelta:
     if cursor_indexes != [len(lines) - 1]:
         raise RecoveryError("journal-cursor-invalid")
     cursor = _validate_journal_cursor(lines[-1][len(JOURNAL_CURSOR_PREFIX) :])
-    return JournalDelta(cursor=cursor, text="\n".join(lines[:-1]))
+    events: list[JournalEvent] = []
+    for line in lines[:-1]:
+        if not line:
+            continue
+        try:
+            entry = _strict_json_loads(line)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise RecoveryError("journal-output-invalid") from exc
+        if not isinstance(entry, dict):
+            raise RecoveryError("journal-output-invalid")
+        message = entry.get("MESSAGE")
+        realtime = entry.get("__REALTIME_TIMESTAMP")
+        if not isinstance(message, str):
+            raise RecoveryError("journal-output-invalid")
+        if isinstance(realtime, bool):
+            raise RecoveryError("journal-output-invalid")
+        if isinstance(realtime, int):
+            realtime_usec = realtime
+        elif isinstance(realtime, str) and realtime.isascii() and realtime.isdigit():
+            realtime_usec = int(realtime)
+        else:
+            raise RecoveryError("journal-output-invalid")
+        if realtime_usec <= 0:
+            raise RecoveryError("journal-output-invalid")
+        events.append(JournalEvent(realtime_usec=realtime_usec, message=message))
+    return JournalDelta(
+        cursor=cursor,
+        text="\n".join(event.message for event in events),
+        events=tuple(events),
+    )
 
 
 def _drain_journal_stream(stream: Any, result: dict[str, Any]) -> None:
@@ -275,7 +319,7 @@ def read_journal_delta(cursor: str | None = None) -> JournalDelta:
         "--unit",
         QBZD_UNIT,
         "--no-pager",
-        "--output=cat",
+        "--output=json",
         "--show-cursor",
     ]
     if cursor is None:
@@ -342,6 +386,57 @@ def read_journal_delta(cursor: str | None = None) -> JournalDelta:
 
 def journal_requires_status(text: str) -> bool:
     return any(trigger in text for trigger in QCONNECT_JOURNAL_TRIGGERS)
+
+
+def journal_qconnect_network_reachability_timestamp(
+    delta: JournalDelta,
+) -> float | None:
+    connected_at: float | None = None
+    authenticated_at: float | None = None
+    proof_at: float | None = None
+    connected_marker, authenticated_marker, rejected_marker = (
+        QCONNECT_NETWORK_REACHABILITY_MARKERS
+    )
+    for event in delta.events:
+        event_at = event.realtime_usec / 1_000_000.0
+        message = event.message
+        if connected_marker in message:
+            connected_at = event_at
+            authenticated_at = None
+        if authenticated_marker in message:
+            if (
+                connected_at is not None
+                and 0.0 <= event_at - connected_at <= QCONNECT_NETWORK_SEQUENCE_SECONDS
+            ):
+                authenticated_at = event_at
+            else:
+                connected_at = None
+                authenticated_at = None
+        if rejected_marker in message:
+            if (
+                connected_at is not None
+                and authenticated_at is not None
+                and connected_at <= authenticated_at <= event_at
+                and event_at - connected_at <= QCONNECT_NETWORK_SEQUENCE_SECONDS
+            ):
+                proof_at = event_at
+            connected_at = None
+            authenticated_at = None
+    return proof_at
+
+
+def journal_proves_qconnect_network_reachable(
+    delta: JournalDelta, *, now_wall: float
+) -> bool:
+    proof_at = journal_qconnect_network_reachability_timestamp(delta)
+    if proof_at is None or not math.isfinite(now_wall) or now_wall < 0.0:
+        return False
+    age = now_wall - proof_at
+    return (
+        -NETWORK_REACHABILITY_FUTURE_SKEW_SECONDS
+        <= age
+        <= NETWORK_REACHABILITY_EVIDENCE_SECONDS
+    )
 
 
 def _read_bounded_text(path: pathlib.Path, error_code: str) -> str:
@@ -668,10 +763,12 @@ def _is_healthy(status: QbzdStatus) -> bool:
     return status.qconnect_state == "connected" and status.session_active
 
 
-def _is_recovery_candidate(status: QbzdStatus) -> bool:
+def _is_recovery_candidate(
+    status: QbzdStatus, *, allow_network_offline: bool = False
+) -> bool:
     return (
         status.auth_state == "logged_in"
-        and status.network_online is True
+        and (status.network_online is True or allow_network_offline)
         and status.qconnect_state in {"retrying", "reconnecting"}
         and status.session_active is False
         and status.audio_backend.casefold() == "alsa"
@@ -792,6 +889,7 @@ def reconcile_once(
     monotonic_clock: Clock = time.monotonic,
     wall_clock: Clock = time.time,
     boot_id_reader: BootIdReader | None = None,
+    allow_network_offline: bool = False,
 ) -> str:
     try:
         state = _load_state(state_path)
@@ -817,7 +915,7 @@ def reconcile_once(
             if cleared != state:
                 _store_state(state_path, cleared)
             return "noop:connected"
-        if not _is_recovery_candidate(first):
+        if not _is_recovery_candidate(first, allow_network_offline=allow_network_offline):
             if state["retry_since_monotonic"] is not None:
                 updated = _clear_candidate(
                     state,
@@ -871,7 +969,7 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(second):
+        if not _is_recovery_candidate(second, allow_network_offline=allow_network_offline):
             _store_state(
                 state_path,
                 _clear_candidate(
@@ -913,7 +1011,7 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(final_status):
+        if not _is_recovery_candidate(final_status, allow_network_offline=allow_network_offline):
             _store_state(
                 state_path,
                 _clear_candidate(
@@ -1041,12 +1139,13 @@ def run_loop(
     journal_reader: JournalReader = read_journal_delta,
     sleeper: Sleeper = time.sleep,
     monotonic_clock: Clock = time.monotonic,
+    wall_clock: Clock = time.time,
 ) -> None:
     previous: str | None = None
     cursor: str | None = None
     last_status_monotonic: float | None = None
     fast_followup = True
-    reconcile_call = reconciler or (lambda path: reconcile_once(state_path=path))
+    network_evidence_realtime: float | None = None
 
     # Capture the journal edge before the startup status read. A QConnect change
     # that races with startup is therefore seen either by that status read or by
@@ -1058,12 +1157,13 @@ def run_loop(
 
     while True:
         journal_text = ""
+        journal_delta: JournalDelta | None = None
         journal_available = cursor is not None
         if cursor is not None:
             try:
-                delta = journal_reader(cursor)
-                cursor = delta.cursor
-                journal_text = delta.text
+                journal_delta = journal_reader(cursor)
+                cursor = journal_delta.cursor
+                journal_text = journal_delta.text
                 journal_available = True
             except RecoveryError:
                 cursor = None
@@ -1082,6 +1182,25 @@ def run_loop(
                 cursor = None
 
         now_monotonic = _clock_value(monotonic_clock, "loop-monotonic")
+        now_wall = _clock_value(wall_clock, "loop-wall")
+        if (
+            journal_delta is not None
+            and journal_proves_qconnect_network_reachable(
+                journal_delta, now_wall=now_wall
+            )
+        ):
+            network_evidence_realtime = (
+                journal_qconnect_network_reachability_timestamp(journal_delta)
+            )
+        if network_evidence_realtime is not None:
+            evidence_age = now_wall - network_evidence_realtime
+            if (
+                evidence_age < -NETWORK_REACHABILITY_FUTURE_SKEW_SECONDS
+                or evidence_age > NETWORK_REACHABILITY_EVIDENCE_SECONDS
+            ):
+                network_evidence_realtime = None
+        allow_network_offline = network_evidence_realtime is not None
+
         reason = adaptive_poll_reason(
             fast_followup=fast_followup,
             journal_available=journal_available,
@@ -1090,11 +1209,19 @@ def run_loop(
             now_monotonic=now_monotonic,
         )
         if reason is not None:
-            result = reconcile_call(state_path)
+            if reconciler is None:
+                result = reconcile_once(
+                    state_path=state_path,
+                    allow_network_offline=allow_network_offline,
+                )
+            else:
+                result = reconciler(state_path)
             last_status_monotonic = _clock_value(
                 monotonic_clock, "loop-status-monotonic"
             )
             fast_followup = _fast_followup_required(result)
+            if not fast_followup:
+                network_evidence_realtime = None
             if result != previous and not result.startswith("noop:"):
                 print(json.dumps({"qbzd_qconnect_recovery": result}), flush=True)
             previous = result
