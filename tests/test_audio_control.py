@@ -1954,6 +1954,7 @@ class AudioControlTests(unittest.TestCase):
     def test_managed_start_has_runtime_and_resource_contract(self):
         runner = SequenceSystemdRunner()
         transition_root = pathlib.Path.home() / ".local/state/audio/profile-transitions-v1"
+        laboratory_root = pathlib.Path.home() / ".local/state/audio/laboratory"
 
         def prepare_transition_state():
             self.assertFalse(
@@ -1961,11 +1962,18 @@ class AudioControlTests(unittest.TestCase):
             )
             return transition_root
 
-        with mock.patch.object(
-            MODULE,
-            "ensure_profile_transition_state_root",
-            side_effect=prepare_transition_state,
-        ) as prepare:
+        with (
+            mock.patch.object(
+                MODULE,
+                "ensure_profile_transition_state_root",
+                side_effect=prepare_transition_state,
+            ) as prepare,
+            mock.patch.object(
+                MODULE,
+                "ensure_laboratory_state_root",
+                return_value=laboratory_root,
+            ) as prepare_laboratory,
+        ):
             report = MODULE.start_managed_service(
                 runner,
                 host="127.0.0.1",
@@ -1973,6 +1981,7 @@ class AudioControlTests(unittest.TestCase):
                 runtime_seconds=3600,
             )
         prepare.assert_called_once_with()
+        prepare_laboratory.assert_called_once_with()
         self.assertEqual(report["state"], "ready")
         self.assertEqual(report["managed_by"], MODULE.UNIT_MANAGED_BY)
         command = next(
@@ -1995,7 +2004,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn(
             (
                 f"ReadWritePaths={MODULE.RECORDING_OUTPUT_ROOT} "
-                f"{MODULE.RECORDING_STATE_ROOT} {transition_root}"
+                f"{MODULE.RECORDING_STATE_ROOT} {transition_root} {laboratory_root}"
             ),
             command,
         )
@@ -2015,6 +2024,11 @@ class AudioControlTests(unittest.TestCase):
                 "ensure_profile_transition_state_root",
                 return_value=pathlib.Path.home()
                 / ".local/state/audio/profile-transitions-v1",
+            ),
+            mock.patch.object(
+                MODULE,
+                "ensure_laboratory_state_root",
+                return_value=pathlib.Path.home() / ".local/state/audio/laboratory",
             ),
             self.assertRaisesRegex(MODULE.ControlError, "keine Laufbereitschaft"),
         ):

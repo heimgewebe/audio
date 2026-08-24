@@ -85,6 +85,11 @@ class AudioControlDeployTests(unittest.TestCase):
                 {
                     "scripts/motu_capture_identity.py": b"def source_identity(value): return value\n",
                     "scripts/voice_capture_observer.py": b"# voice capture\n",
+                    "scripts/level_analyzer.py": b"# level analyzer\n",
+                    "scripts/system_truth.py": b"# system truth\n",
+                    "scripts/laboratory_gate.py": b"# laboratory\n",
+                    "scripts/physical_verification.py": b"# physical\n",
+                    "scripts/rate_policy_observer.py": b"# rate policy\n",
                     MODULE.RECORDER_BOUND_LEVEL_RELEASE_SENTINEL: b"import unittest\n",
                 }
             )

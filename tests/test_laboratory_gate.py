@@ -1,8 +1,11 @@
+import fcntl
 import importlib.util
+import os
 import json
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -14,6 +17,40 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LaboratoryGateTests(unittest.TestCase):
+
+    def test_state_lock_is_private_and_excludes_second_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = pathlib.Path(directory) / "laboratory" / "gates.v1.json"
+            lock_path = state_path.with_name(f"{state_path.name}.lock")
+            with MODULE.state_lock(state_path):
+                self.assertTrue(lock_path.is_file())
+                self.assertEqual(lock_path.stat().st_mode & 0o777, 0o600)
+                descriptor = os.open(lock_path, os.O_RDWR | os.O_CLOEXEC)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(descriptor)
+
+    def test_mutating_cli_init_uses_shared_state_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = pathlib.Path(directory) / "laboratory" / "gates.v1.json"
+            original = list(__import__("sys").argv)
+            __import__("sys").argv = [
+                "laboratory_gate.py",
+                "--state",
+                str(state_path),
+                "init",
+            ]
+            try:
+                with mock.patch.object(
+                    MODULE, "state_lock", wraps=MODULE.state_lock
+                ) as lock:
+                    self.assertEqual(MODULE.main(), 0)
+                lock.assert_called_once_with(state_path)
+            finally:
+                __import__("sys").argv = original
+
     def physical_state(self, root):
         path = pathlib.Path(root) / "physical.json"
         MODULE.PHYSICAL.atomic_write_private(path, MODULE.PHYSICAL.empty_state())

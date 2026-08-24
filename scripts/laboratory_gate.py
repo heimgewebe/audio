@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -15,6 +16,7 @@ import re
 import stat
 import sys
 import tempfile
+from contextlib import contextmanager
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -1806,6 +1808,39 @@ def read_state(path: pathlib.Path) -> dict[str, Any]:
     return state
 
 
+@contextmanager
+def state_lock(path: pathlib.Path):
+    """Serialize every canonical laboratory-state writer through one sibling lock."""
+
+    if path.is_symlink():
+        raise ValueError("laboratory gate state must not be a symbolic link")
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    parent_meta = parent.lstat()
+    if stat.S_ISLNK(parent_meta.st_mode) or not stat.S_ISDIR(parent_meta.st_mode):
+        raise ValueError("laboratory gate state parent must be a regular directory")
+    if parent_meta.st_uid != os.getuid():
+        raise ValueError("laboratory gate state parent has the wrong owner")
+    parent.chmod(0o700)
+    lock_path = path.with_name(f"{path.name}.lock")
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("laboratory gate lock must be a regular file")
+        if metadata.st_uid != os.getuid():
+            raise ValueError("laboratory gate lock has the wrong owner")
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
 def atomic_write_private(path: pathlib.Path, payload: dict[str, Any]) -> None:
     if path.is_symlink():
         raise ValueError("laboratory gate state must not be a symbolic link")
@@ -1957,27 +1992,31 @@ def main() -> int:
     clear.add_argument("gate", choices=sorted(load_catalog()))
     args = parser.parse_args()
 
-    if args.command == "init":
-        if args.state.exists():
-            raise ValueError(f"laboratory gate state already exists: {args.state}")
-        state = empty_state()
-        atomic_write_private(args.state, state)
-    else:
+    if args.command == "status":
         state = read_state(args.state)
-        if args.command == "record":
-            evidence = load_json(args.evidence, maximum_bytes=MAX_EVIDENCE_BYTES)
-            record_gate(
-                state,
-                args.gate,
-                evidence,
-                args.physical_state,
-                replace=args.replace,
-            )
+    elif args.command == "init":
+        with state_lock(args.state):
+            if args.state.exists():
+                raise ValueError(f"laboratory gate state already exists: {args.state}")
+            state = empty_state()
             atomic_write_private(args.state, state)
-        elif args.command == "clear":
-            state.get("gates", {}).pop(args.gate, None)
-            state["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-            atomic_write_private(args.state, state)
+    else:
+        with state_lock(args.state):
+            state = read_state(args.state)
+            if args.command == "record":
+                evidence = load_json(args.evidence, maximum_bytes=MAX_EVIDENCE_BYTES)
+                record_gate(
+                    state,
+                    args.gate,
+                    evidence,
+                    args.physical_state,
+                    replace=args.replace,
+                )
+                atomic_write_private(args.state, state)
+            elif args.command == "clear":
+                state.get("gates", {}).pop(args.gate, None)
+                state["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+                atomic_write_private(args.state, state)
     print(
         json.dumps(
             status_payload(state, args.state, args.physical_state),

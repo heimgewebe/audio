@@ -3,6 +3,7 @@ import io
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -244,6 +245,255 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertEqual(
             contract["levels"]["authority"], "reference-targets-not-live-measurement"
         )
+
+
+    def test_voice_level_evidence_projection_is_path_free_and_fail_closed(self):
+        evidence = {
+            "schema_version": 1,
+            "kind": "audio_level_measurement_evidence",
+            "gate": "voice-level-measurement",
+            "result": "fail",
+            "blockers": ["voice-peak-outside-target"],
+            "source_wav": {
+                "name": "private.wav",
+                "sha256": "a" * 64,
+                "bytes": 1000,
+            },
+            "analysis": {
+                "kind": "audio_level_analysis",
+                "maximum_peak_dbfs": -32.0,
+                "maximum_rms_dbfs": -40.0,
+                "duration_seconds": 10.0,
+                "channels_analysis": [{"channel": "FL", "clipped_samples": 0}],
+            },
+        }
+        projected = MODULE.project_voice_level_acceptance_evidence(evidence)
+        self.assertFalse(projected["passed"])
+        self.assertEqual(projected["peak_dbfs"], -32.0)
+        self.assertFalse(projected["audio_retained"])
+        self.assertNotIn("source_wav", projected)
+        with self.assertRaisesRegex(MODULE.ControlError, "widersprüchliche"):
+            MODULE.project_voice_level_acceptance_evidence(
+                {**evidence, "result": "pass"}
+            )
+
+    def test_profile_stale_laboratory_state_is_archived_before_reconciliation(self):
+        _voice_capture, laboratory, _rate_policy = MODULE.load_voice_level_acceptance_modules()
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = pathlib.Path(directory) / "gates.v1.json"
+            stale = laboratory.empty_state()
+            stale["profile_catalog_sha256"] = "0" * 64
+            laboratory.atomic_write_private(state_path, stale)
+            stale_sha = laboratory.sha256_file(state_path)
+            with mock.patch.object(laboratory, "DEFAULT_STATE", state_path):
+                (
+                    fresh,
+                    reconciliation,
+                    expected_state_sha256,
+                ) = MODULE.prepare_laboratory_state_for_voice_level(laboratory)
+            archive = state_path.with_name(
+                f"{state_path.name}.stale-{stale_sha[:16]}.json"
+            )
+            self.assertTrue(reconciliation["catalog_reconciled"])
+            self.assertEqual(reconciliation["preserved_gates"], [])
+            self.assertEqual(reconciliation["invalidated_gates"], [])
+            self.assertEqual(laboratory.sha256_file(archive), stale_sha)
+            self.assertEqual(expected_state_sha256, stale_sha)
+            self.assertEqual(
+                fresh["profile_catalog_sha256"],
+                laboratory.operational_profile_catalog_sha256(),
+            )
+            self.assertEqual(laboratory.sha256_file(state_path), stale_sha)
+
+    def test_measure_level_is_explicit_and_never_records_failed_evidence(self):
+        runner = RecordingActionRunner()
+        controller = self.controller(runner)
+        failed_evidence = {
+            "schema_version": 1,
+            "kind": "audio_level_measurement_evidence",
+            "gate": "voice-level-measurement",
+            "result": "fail",
+            "blockers": ["voice-peak-outside-target"],
+            "analysis": {
+                "kind": "audio_level_analysis",
+                "maximum_peak_dbfs": -30.0,
+                "maximum_rms_dbfs": -38.0,
+                "duration_seconds": 10.0,
+                "channels_analysis": [{"channel": "FL", "clipped_samples": 0}],
+            },
+        }
+        fake_voice = mock.Mock()
+        fake_voice.capture_voice_evidence.return_value = failed_evidence
+        fake_lab = mock.Mock()
+        fake_lab.PHYSICAL.DEFAULT_STATE = pathlib.Path("/private/physical.json")
+        fake_rate = mock.Mock()
+        with (
+            mock.patch.object(
+                MODULE,
+                "load_voice_level_acceptance_modules",
+                return_value=(fake_voice, fake_lab, fake_rate),
+            ),
+            mock.patch.object(
+                controller,
+                "_recording_probe",
+                return_value=(
+                    "ok",
+                    {"status": "idle", "active_session_id": None, "session": None},
+                    None,
+                ),
+            ),
+            mock.patch.object(
+                controller,
+                "snapshot",
+                return_value={"kind": "audio_control_snapshot"},
+            ),
+        ):
+            result = controller.perform_recording_action(
+                {"operation": "measure-level"}
+            )
+        self.assertFalse(result["measurement"]["passed"])
+        fake_lab.record_gate.assert_not_called()
+        fake_lab.atomic_write_private.assert_not_called()
+        fake_voice.capture_voice_evidence.assert_called_once()
+        fake_rate.rate_policy_evidence.assert_not_called()
+        self.assertEqual(result["rate_policy_refresh"]["blockers"], ["voice-level-not-passed"])
+        self.assertEqual(result["resampling_refresh"]["blockers"], ["voice-level-not-passed"])
+        with self.assertRaisesRegex(MODULE.ControlError, "genau"):
+            controller.perform_recording_action(
+                {"operation": "measure-level", "duration": 20}
+            )
+
+    def test_measure_level_records_only_valid_passing_evidence_and_returns_readback(self):
+        runner = RecordingActionRunner()
+        controller = self.controller(runner)
+        passing_evidence = {
+            "schema_version": 1,
+            "kind": "audio_level_measurement_evidence",
+            "gate": "voice-level-measurement",
+            "result": "pass",
+            "blockers": [],
+            "analysis": {
+                "kind": "audio_level_analysis",
+                "maximum_peak_dbfs": -9.0,
+                "maximum_rms_dbfs": -20.0,
+                "duration_seconds": 10.0,
+                "channels_analysis": [{"channel": "FL", "clipped_samples": 0}],
+            },
+        }
+        fake_voice = mock.Mock()
+        fake_voice.capture_voice_evidence.return_value = passing_evidence
+        fake_rate = mock.Mock()
+        rate_policy_evidence = {
+            "schema_version": 1,
+            "kind": "audio_policy_decision",
+            "gate": "rate-policy-decision",
+            "result": "pass",
+            "blockers": [],
+        }
+        resampling_evidence = {
+            "schema_version": 1,
+            "kind": "audio_policy_decision",
+            "gate": "resampling-decision",
+            "result": "pass",
+            "blockers": [],
+        }
+        fake_rate.rate_policy_evidence.side_effect = lambda gate: {
+            "rate-policy-decision": rate_policy_evidence,
+            "resampling-decision": resampling_evidence,
+        }[gate]
+        fake_lab = mock.Mock()
+        fake_lab.DEFAULT_STATE = pathlib.Path("/private/lab.json")
+        fake_lab.PHYSICAL.DEFAULT_STATE = pathlib.Path("/private/physical.json")
+        lock_active = {"value": False}
+
+        @contextlib.contextmanager
+        def shared_state_lock(_path):
+            self.assertFalse(lock_active["value"])
+            lock_active["value"] = True
+            try:
+                yield
+            finally:
+                lock_active["value"] = False
+
+        fake_lab.state_lock.side_effect = shared_state_lock
+        fake_lab.atomic_write_private.side_effect = (
+            lambda _path, _state: self.assertTrue(lock_active["value"])
+        )
+        state = {"gates": {}}
+        reconciliation = {
+            "catalog_reconciled": True,
+            "preserved_gates": ["xrun-stability-test"],
+            "invalidated_gates": ["rate-policy-decision"],
+        }
+        with (
+            mock.patch.object(
+                MODULE,
+                "load_voice_level_acceptance_modules",
+                return_value=(fake_voice, fake_lab, fake_rate),
+            ),
+            mock.patch.object(
+                MODULE,
+                "prepare_laboratory_state_for_voice_level",
+                return_value=(state, reconciliation, "a" * 64),
+            ),
+            mock.patch.object(
+                MODULE, "verify_laboratory_state_preimage"
+            ) as verify_preimage,
+            mock.patch.object(
+                controller,
+                "_recording_probe",
+                return_value=(
+                    "ok",
+                    {"status": "idle", "active_session_id": None, "session": None},
+                    None,
+                ),
+            ),
+            mock.patch.object(
+                controller,
+                "_readback_after_mutation",
+                return_value={"kind": "audio_control_snapshot"},
+            ),
+        ):
+            result = controller.perform_recording_action(
+                {"operation": "measure-level"}
+            )
+        self.assertTrue(result["measurement"]["passed"])
+        fake_lab.validate_evidence.assert_has_calls(
+            [
+                mock.call("voice-level-measurement", passing_evidence),
+                mock.call("rate-policy-decision", rate_policy_evidence),
+                mock.call("resampling-decision", resampling_evidence),
+            ]
+        )
+        self.assertEqual(fake_lab.record_gate.call_count, 3)
+        self.assertEqual(
+            fake_rate.rate_policy_evidence.call_args_list,
+            [
+                mock.call("rate-policy-decision"),
+                mock.call("resampling-decision"),
+            ],
+        )
+        self.assertTrue(result["rate_policy_refresh"]["passed"])
+        self.assertTrue(result["resampling_refresh"]["passed"])
+        fake_lab.state_lock.assert_called_once_with(fake_lab.DEFAULT_STATE)
+        verify_preimage.assert_called_once_with(fake_lab, "a" * 64)
+        fake_lab.atomic_write_private.assert_called_once_with(
+            fake_lab.DEFAULT_STATE, state
+        )
+        self.assertFalse(lock_active["value"])
+        self.assertTrue(result["laboratory_reconciliation"]["catalog_reconciled"])
+
+    def test_laboratory_preimage_drift_blocks_write(self):
+        fake_lab = mock.Mock()
+        fake_lab.DEFAULT_STATE = pathlib.Path("/private/lab.json")
+        with (
+            mock.patch.object(pathlib.Path, "is_symlink", return_value=False),
+            mock.patch.object(pathlib.Path, "exists", return_value=True),
+        ):
+            fake_lab.sha256_file.return_value = "b" * 64
+            with self.assertRaises(MODULE.ActionBusy):
+                MODULE.verify_laboratory_state_preimage(fake_lab, "a" * 64)
+
 
     def test_recording_plan_is_typed_path_free_and_plan_hash_bound(self):
         runner = RecordingActionRunner()
@@ -662,6 +912,7 @@ class AudioControlRecordingTests(unittest.TestCase):
         self.assertIn('/api/v1/actions/whale', javascript)
         self.assertIn('/api/v1/actions/dauersong', javascript)
         self.assertIn('/api/v1/actions/operating-mode', javascript)
+        self.assertIn('operation: \"measure-level\"', javascript)
         self.assertNotIn('/bridge/v1/actions/dauersong', javascript)
         self.assertIn("state.remoteBridgeProjection = true", javascript)
         self.assertIn("state.remoteBridgeProjection !== true", javascript)
