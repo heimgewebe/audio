@@ -92,6 +92,18 @@ class FakeRunner:
         raise AssertionError(f"unexpected command: {argv!r}")
 
 
+class FakeQconnectRunner:
+    def __init__(self, *, fail_action=None):
+        self.commands = []
+        self.fail_action = fail_action
+
+    def __call__(self, service, action):
+        self.commands.append((service, action))
+        if action == self.fail_action:
+            raise MODULE.RecoveryError(f"qconnect-command-failed:{action}")
+        return f"qconnect {action} ok"
+
+
 class FakeJournalReader:
     def __init__(self, values):
         self.values = list(values)
@@ -123,6 +135,8 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
         next_attempt=0.0,
         failures=0,
         restart_armed=None,
+        qconnect_next_attempt=9999.0,
+        qconnect_failures=0,
     ):
         state = MODULE._default_state(BOOT)
         state.update(
@@ -132,6 +146,8 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 "retry_since_monotonic": retry_since,
                 "failures": failures,
                 "next_attempt_monotonic": next_attempt,
+                "qconnect_failures": qconnect_failures,
+                "qconnect_next_attempt_monotonic": qconnect_next_attempt,
             }
         )
         if restart_armed is not None:
@@ -153,6 +169,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
         monotonic,
         wall=None,
         runner=None,
+        qconnect_runner=None,
         pcm=None,
         boot=BOOT,
         allow_network_offline=False,
@@ -162,6 +179,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             status_reader=SequenceReader(statuses),
             service_reader=SequenceReader(services),
             runner=runner or FakeRunner(),
+            qconnect_action_runner=qconnect_runner or FakeQconnectRunner(),
             pcm_idle_checker=pcm or (lambda _service: None),
             sleeper=lambda _seconds: None,
             monotonic_clock=SequenceClock(monotonic),
@@ -230,7 +248,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(state_data["retry_since_monotonic"], 100.0)
             self.assertEqual(runner.commands, [])
 
-    def test_five_minute_stability_is_required(self):
+    def test_daemon_restart_still_waits_five_minutes_while_qconnect_is_backed_off(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = self.state_path(tmp)
             MODULE._store_state(state_path, self.candidate_state())
@@ -240,7 +258,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 services=[SERVICE_A],
                 monotonic=[399.9],
             )
-            self.assertEqual(result, "noop:stabilizing")
+            self.assertEqual(result, "noop:qconnect-backoff")
 
     def test_process_restart_resets_five_minute_window(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -278,7 +296,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 replacement.start_ticks,
             )
 
-    def test_wall_clock_jump_does_not_satisfy_stability(self):
+    def test_wall_clock_jump_does_not_satisfy_daemon_restart_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = self.state_path(tmp)
             MODULE._store_state(state_path, self.candidate_state())
@@ -289,7 +307,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 monotonic=[399.0],
                 wall=[10_000_000_000.0],
             )
-            self.assertEqual(result, "noop:stabilizing")
+            self.assertEqual(result, "noop:qconnect-backoff")
 
     def test_boot_change_discards_old_monotonic_binding(self):
         new_boot = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -1058,6 +1076,208 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
         self.assertEqual(reconciles, [state_path, state_path])
         self.assertEqual(journal.calls, [None, None, None])
 
+    def test_qconnect_action_executes_only_exact_live_proc_image(self):
+        completed = MODULE.subprocess.CompletedProcess(
+            args=(), returncode=0, stdout=b"qconnect ok\n", stderr=b""
+        )
+        proc_root = pathlib.Path("/synthetic-proc")
+        with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            result = MODULE.run_qconnect_action(
+                SERVICE_A, "disable", proc_root=proc_root
+            )
+        self.assertEqual(result, "qconnect ok\n")
+        self.assertEqual(
+            run.call_args.args[0],
+            (str(proc_root / str(SERVICE_A.pid) / "exe"), "qconnect", "disable"),
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], MODULE.COMMAND_TIMEOUT_SECONDS)
+        self.assertFalse(run.call_args.kwargs["check"])
+
+    def test_qconnect_action_rejects_unknown_verb_before_subprocess(self):
+        with mock.patch.object(MODULE.subprocess, "run") as run:
+            with self.assertRaisesRegex(
+                MODULE.RecoveryError, "qconnect-action-not-allowed"
+            ):
+                MODULE.run_qconnect_action(SERVICE_A, "restart")
+        run.assert_not_called()
+
+    def test_qconnect_cycle_recovers_after_ninety_seconds_without_daemon_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            runner = FakeRunner()
+            qconnect = FakeQconnectRunner()
+            checked = []
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(), status(), status(), healthy()],
+                services=[SERVICE_A] * 5,
+                monotonic=[200.0, 202.0, 203.0, 203.5, 204.0],
+                wall=[1000.0, 1002.0, 1003.0, 1004.0],
+                runner=runner,
+                qconnect_runner=qconnect,
+                pcm=lambda service: checked.append(service),
+            )
+            self.assertEqual(result, "recovered:qconnect")
+            self.assertEqual(runner.commands, [])
+            self.assertEqual(
+                [action for _service, action in qconnect.commands],
+                ["disable", "enable"],
+            )
+            self.assertEqual(checked, [SERVICE_A, SERVICE_A, SERVICE_A])
+            state = MODULE._load_state(state_path)
+            self.assertEqual(state["qconnect_failures"], 0)
+            self.assertGreaterEqual(state["qconnect_next_attempt_monotonic"], 1104.0)
+
+    def test_qconnect_cycle_binds_executable_and_blocks_drift_between_actions(self):
+        drifted = MODULE.QbzdService(
+            pid=SERVICE_A.pid,
+            start_ticks=SERVICE_A.start_ticks,
+            cgroup=SERVICE_A.cgroup,
+            executable=pathlib.Path("/opt/other/qbzd"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            qconnect = FakeQconnectRunner()
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(), status(), status()],
+                services=[SERVICE_A, SERVICE_A, SERVICE_A, drifted],
+                monotonic=[200.0, 202.0, 203.0, 203.5, 204.0],
+                qconnect_runner=qconnect,
+            )
+            self.assertEqual(
+                result, "blocked:qbzd-process-changed-during-qconnect-cycle"
+            )
+            self.assertEqual(
+                [action for _service, action in qconnect.commands], ["disable"]
+            )
+            state = MODULE._load_state(state_path)
+            self.assertEqual(state["qconnect_failures"], 1)
+            self.assertEqual(
+                state["qconnect_armed_executable"], str(SERVICE_A.executable)
+            )
+
+    def test_qconnect_enable_failure_is_durably_backed_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            qconnect = FakeQconnectRunner(fail_action="enable")
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(), status(), status()],
+                services=[SERVICE_A] * 4,
+                monotonic=[200.0, 202.0, 203.0, 203.5, 204.0],
+                qconnect_runner=qconnect,
+            )
+            self.assertEqual(result, "blocked:qconnect-command-failed:enable")
+            state = MODULE._load_state(state_path)
+            self.assertEqual(state["qconnect_failures"], 1)
+            self.assertGreaterEqual(state["qconnect_next_attempt_monotonic"], 324.0)
+
+            followup = self.reconcile(
+                state_path=state_path,
+                statuses=[status()],
+                services=[SERVICE_A],
+                monotonic=[250.0],
+                qconnect_runner=FakeQconnectRunner(),
+            )
+            self.assertEqual(followup, "noop:qconnect-backoff")
+
+    def test_qconnect_readback_failure_is_bounded_and_backed_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            qconnect = FakeQconnectRunner()
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[
+                    status(),
+                    status(),
+                    status(),
+                    *([status()] * MODULE.QCONNECT_READBACK_ATTEMPTS),
+                ],
+                services=[SERVICE_A] * 4,
+                monotonic=[200.0, 202.0, 203.0, 203.5, 224.0],
+                qconnect_runner=qconnect,
+            )
+            self.assertEqual(result, "blocked:qconnect-readback")
+            state = MODULE._load_state(state_path)
+            self.assertEqual(state["qconnect_failures"], 1)
+            self.assertGreaterEqual(state["qconnect_next_attempt_monotonic"], 344.0)
+
+    def test_failed_qconnect_cycle_falls_back_to_daemon_restart_after_five_minutes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            runner = FakeRunner()
+            qconnect = FakeQconnectRunner(fail_action="disable")
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[
+                    status(),
+                    status(),
+                    status(),
+                    status(),
+                    status(),
+                    healthy(),
+                ],
+                services=[SERVICE_A, SERVICE_A, SERVICE_A, SERVICE_A, SERVICE_A, SERVICE_B],
+                monotonic=[
+                    400.0,
+                    402.0,
+                    403.0,
+                    403.5,
+                    404.0,
+                    405.0,
+                    406.0,
+                    407.0,
+                    408.0,
+                ],
+                runner=runner,
+                qconnect_runner=qconnect,
+            )
+            self.assertEqual(result, "recovered")
+            self.assertEqual(runner.commands, [TRY_RESTART])
+            self.assertEqual(
+                [action for _service, action in qconnect.commands], ["disable"]
+            )
+
+    def test_legacy_v2_state_migrates_without_granting_qconnect_effect_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            legacy = {
+                "schema_version": 2,
+                "boot_id": BOOT,
+                "candidate_pid": SERVICE_A.pid,
+                "candidate_start_ticks": SERVICE_A.start_ticks,
+                "retry_since_monotonic": 100.0,
+                "failures": 1,
+                "next_attempt_monotonic": 900.0,
+                "last_recovered_at_unix": None,
+                "restart_armed_monotonic": None,
+                "restart_armed_pid": None,
+                "restart_armed_start_ticks": None,
+            }
+            state_path.write_text(json.dumps(legacy), encoding="utf-8")
+            state_path.chmod(0o600)
+            migrated = MODULE._load_state(state_path)
+            self.assertEqual(migrated["schema_version"], 3)
+            self.assertEqual(migrated["qconnect_failures"], 0)
+            self.assertEqual(migrated["qconnect_next_attempt_monotonic"], 0.0)
+            self.assertIsNone(migrated["qconnect_armed_monotonic"])
+
     def test_command_contract_allows_only_observe_and_try_restart(self):
         MODULE.check_contract()
         with self.assertRaisesRegex(MODULE.RecoveryError, "command-not-allowed"):
@@ -1070,7 +1290,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             state_path = self.state_path(tmp)
             MODULE._store_state(state_path, MODULE._default_state(BOOT))
             self.assertEqual(state_path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(json.loads(state_path.read_text())["schema_version"], 2)
+            self.assertEqual(json.loads(state_path.read_text())["schema_version"], 3)
             target = pathlib.Path(tmp) / "target"
             target.write_text("{}", encoding="utf-8")
             state_path.unlink()
@@ -1089,6 +1309,12 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 "111 (qbzd) " + " ".join(fields) + "\n", encoding="utf-8"
             )
             (process / "cgroup").write_text(f"0::{SERVICE_A.cgroup}\n", encoding="utf-8")
+            binary_dir = proc_root / "binary"
+            binary_dir.mkdir()
+            binary = binary_dir / "qbzd"
+            binary.write_bytes(b"fake-qbzd")
+            binary.chmod(0o700)
+            (process / "exe").symlink_to(binary)
 
             def service_runner(argv):
                 self.assertIn("--property=MainPID", argv)
@@ -1100,6 +1326,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(observed.pid, 111)
             self.assertEqual(observed.start_ticks, 12345)
             self.assertEqual(observed.cgroup, SERVICE_A.cgroup)
+            self.assertEqual(observed.executable, binary)
 
     def test_post_effect_state_write_failure_cannot_repeat_immediately(self):
         with tempfile.TemporaryDirectory() as tmp:

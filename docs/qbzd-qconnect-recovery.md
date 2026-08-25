@@ -2,15 +2,19 @@
 
 `audio-qbzd-qconnect-recovery-v1.service` repairs one bounded failure mode of the
 headless Qobuz reference path: QBZD remains alive and authenticated locally, but
-QConnect stays in `retrying`/`reconnecting` and the Qobuz cloud repeatedly
-rejects the session until the daemon is restarted.
+QConnect stays in `retrying`/`reconnecting`, has no active session and the Qobuz
+cloud repeatedly rejects or fails to establish the control session. This is the
+backend state observed alongside stale or contradictory remote-control behavior.
 
 The recovery is deliberately narrower than a generic watchdog. It never
 restarts PipeWire, PipeWire-Pulse, WirePlumber, the host, or the Audiozentrale.
-Its only deliberate mutation is `systemctl --user try-restart qbzd.service`.
-`try-restart` is used so an intentionally inactive QBZD is not started by the
-watchdog. The watcher has only an ordering dependency on `qbzd.service`; it does
-not pull that service in.
+After 90 seconds of one continuously bound stuck QConnect candidate it first
+cycles only QConnect with the verified live QBZD image: `qbzd qconnect disable`
+followed by `qbzd qconnect enable`. A broader
+`systemctl --user try-restart qbzd.service` remains the fallback only after the
+original five-minute stuck window. `try-restart` is used so an intentionally
+inactive QBZD is not started by the watchdog. The watcher has only an ordering
+dependency on `qbzd.service`; it does not pull that service in.
 
 ## Adaptive observation without healthy-state ALSA probe noise
 
@@ -38,10 +42,14 @@ other restart gates remain authoritative. Missing, malformed or stale event time
 fails closed.
 
 Once the status path arms a recovery candidate, the watchdog returns to the
-original full 30-second reconciliation cadence through stabilization, backoff,
-restart-edge gating and connected readback. The five-minute stuck requirement,
-QBZD process binding, boot binding, ALSA ownership gates, durable pre-effect arm
-and post-effect cooldown are therefore unchanged.
+full 30-second reconciliation cadence. The candidate remains bound to the same
+boot, PID and process start tick. Before 90 seconds there is no effect. From 90
+seconds onward a due candidate may receive the narrow QConnect-only cycle, but
+only after the same status, process and ALSA-idle gates are rechecked at the
+effect edge. QConnect recovery has its own durable pre-effect arm, bounded
+readback and exponential backoff. The broader daemon restart still requires the
+original five-minute stuck window and retains its original repeated restart-edge
+gates, durable arm and post-effect cooldown.
 
 Two fail-safe fallbacks prevent the journal optimization from becoming a new
 single point of failure:
@@ -63,9 +71,11 @@ transition is proven and keeps the previous worst-case wake-up latency while
 reducing healthy watchdog status calls from 120 to at most 12 per hour, apart
 from service startup and explicit diagnostics.
 
-A restart attempt is allowed only after all of these conditions remain true for
-at least five minutes on the same boot and the same QBZD process identity, then
-survive additional restart-edge observations:
+A QConnect-only repair is allowed only after all of these conditions remain true
+for at least 90 seconds on the same boot and the same QBZD process identity and
+survive additional effect-edge observations. A daemon restart requires the same
+conditions to remain true for at least five minutes and then survive the
+original restart-edge observations:
 
 - the fixed loopback status endpoint `127.0.0.1:8182/api/status` returns bounded,
   strict API-v1 JSON;
@@ -79,9 +89,10 @@ survive additional restart-edge observations:
 - the configured MOTU device is present and QBZD reports its device closed;
 - `qbzd.service` is active, has one positive `MainPID`, `/proc/<pid>/comm` is
   exactly `qbzd`, and the process start tick plus systemd cgroup remain stable;
-- the five-minute timer is based on a monotonic clock and is bound to the boot
-  ID, PID and process start tick. A QBZD restart or host reboot therefore starts
-  a fresh observation window; wall-clock jumps cannot satisfy it;
+- both the 90-second QConnect threshold and the five-minute daemon threshold
+  derive from the same monotonic candidate age bound to boot ID, PID and process
+  start tick. A QBZD restart or host reboot therefore starts a fresh observation
+  window; wall-clock jumps cannot satisfy either threshold;
 - every `/proc/asound/card*/pcm*/sub*/status` entry is bounded and readable.
   For each open PCM, the kernel-reported owner task is resolved through
   `/proc/<tid>/status` to its TGID and through `/proc/<tid>/cgroup` to its
@@ -89,11 +100,20 @@ survive additional restart-edge observations:
   same `qbzd.service` cgroup, blocks recovery even if QBZD's own
   `device_open` field is stale;
 - QConnect state, service identity, boot identity and the ALSA-owner gate are
-  repeated at the restart edge immediately before the effect.
+  repeated immediately before either effect. The QConnect-only path additionally
+  binds `/proc/<pid>/exe` to an absolute regular `qbzd` image and rechecks the
+  complete service identity between `disable` and `enable`.
 
-The restart attempt is durably armed **before** `try-restart`: the exact process
-identity and a minimum 15-minute retry deadline are fsynced first. If the
-`systemctl` response is lost, the service is killed after the effect, or a
+The QConnect-only effect is durably armed **before** `qconnect disable`: exact
+PID, process start tick and executable identity plus a minimum retry deadline are
+fsynced first. A successful `disable`/`enable` is accepted only when bounded
+readback reaches `connected` with an active session on the same service identity.
+Failure receives QConnect-specific exponential backoff from 120 seconds up to 15
+minutes, so a partial or ambiguous control-session cycle is not hammered.
+
+The broader restart attempt remains durably armed **before** `try-restart`: the
+exact process identity and a minimum 15-minute retry deadline are fsynced first.
+If the `systemctl` response is lost, the service is killed after the effect, or a
 post-effect state write fails, a new observer run cannot immediately repeat the
 restart. A later healthy QConnect read turns that pending arm into a successful
 recovery cooldown without another mutation.
@@ -101,9 +121,15 @@ recovery cooldown without another mutation.
 After `try-restart` returns, bounded readback waits up to one minute for QConnect
 to reach `connected` with an active session. The 15-minute success cooldown is
 measured from the **confirmed healthy readback**, not from the beginning of the
-attempt. Failed readback starts exponential backoff from its completion time,
-from 15 minutes up to one hour. Control deadlines use the monotonic clock;
-wall-clock time is retained only as diagnostic recovery time.
+attempt. Failed daemon-restart readback starts exponential backoff from its
+completion time, from 15 minutes up to one hour. Control deadlines use the
+monotonic clock; wall-clock time is retained only as diagnostic recovery time.
+
+This watchdog can repair the proven backend failure class, but it does not treat
+client UI metadata as authoritative. If QBZD already reports `connected` with an
+active session while a Qobuz client independently displays the wrong track, this
+watchdog deliberately does nothing: that would require a separate, evidence-bound
+client/playback-identity observer rather than guessing from UI state.
 
 State JSON rejects non-finite numbers, negative control timestamps, incomplete
 process bindings and stale state from another boot. Malformed state, unreadable
