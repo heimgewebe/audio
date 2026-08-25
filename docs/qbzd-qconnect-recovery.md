@@ -104,8 +104,11 @@ original restart-edge observations:
   `device_open` field is stale;
 - QConnect state, service identity, boot identity and the ALSA-owner gate are
   repeated immediately before either effect. The QConnect-only path additionally
-  binds `/proc/<pid>/exe` to an absolute regular `qbzd` image and rechecks the
-  complete service identity between `disable` and `enable`.
+  opens the previously observed absolute `qbzd` image first, verifies that pinned
+  file descriptor against the current `/proc/<pid>/exe`, PID start tick and
+  service cgroup, and executes through `/proc/self/fd/<fd>`. PID reuse therefore
+  cannot redirect the action to a different process image. The complete service
+  identity is rechecked again between `disable` and `enable`.
 
 The QConnect-only effect is durably armed **before** `qconnect disable`: exact
 PID, process start tick and executable identity plus a minimum retry deadline are

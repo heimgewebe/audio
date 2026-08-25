@@ -1128,22 +1128,83 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
         self.assertEqual(reconciles, [state_path, state_path])
         self.assertEqual(journal.calls, [None, None, None])
 
-    def test_qconnect_action_executes_only_exact_live_proc_image(self):
+    def test_qconnect_action_executes_only_pinned_reverified_image(self):
         completed = MODULE.subprocess.CompletedProcess(
             args=(), returncode=0, stdout=b"qconnect ok\n", stderr=b""
         )
-        proc_root = pathlib.Path("/synthetic-proc")
-        with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
-            result = MODULE.run_qconnect_action(
-                SERVICE_A, "disable", proc_root=proc_root
+        with tempfile.TemporaryDirectory() as tmp:
+            proc_root = pathlib.Path(tmp) / "proc"
+            process = proc_root / str(SERVICE_A.pid)
+            process.mkdir(parents=True)
+            binary = pathlib.Path(tmp) / "qbzd"
+            binary.write_bytes(b"fake-qbzd")
+            binary.chmod(0o700)
+            (process / "comm").write_text("qbzd\n", encoding="utf-8")
+            fields = ["S", *(["1"] * 18), str(SERVICE_A.start_ticks)]
+            (process / "stat").write_text(
+                f"{SERVICE_A.pid} (qbzd) " + " ".join(fields) + "\n",
+                encoding="utf-8",
             )
+            (process / "cgroup").write_text(
+                f"0::{SERVICE_A.cgroup}\n", encoding="utf-8"
+            )
+            (process / "exe").symlink_to(binary)
+            service = MODULE.QbzdService(
+                pid=SERVICE_A.pid,
+                start_ticks=SERVICE_A.start_ticks,
+                cgroup=SERVICE_A.cgroup,
+                executable=binary,
+            )
+            with mock.patch.object(
+                MODULE.subprocess, "run", return_value=completed
+            ) as run:
+                result = MODULE.run_qconnect_action(
+                    service, "disable", proc_root=proc_root
+                )
         self.assertEqual(result, "qconnect ok\n")
-        self.assertEqual(
-            run.call_args.args[0],
-            (str(proc_root / str(SERVICE_A.pid) / "exe"), "qconnect", "disable"),
-        )
+        invoked = run.call_args.args[0]
+        self.assertEqual(invoked[1:], ("qconnect", "disable"))
+        self.assertTrue(invoked[0].startswith("/proc/self/fd/"))
+        pinned_fd = int(invoked[0].rsplit("/", 1)[1])
+        self.assertEqual(run.call_args.kwargs["pass_fds"], (pinned_fd,))
         self.assertEqual(run.call_args.kwargs["timeout"], MODULE.COMMAND_TIMEOUT_SECONDS)
         self.assertFalse(run.call_args.kwargs["check"])
+
+    def test_qconnect_action_rejects_pid_reuse_before_exec(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc_root = pathlib.Path(tmp) / "proc"
+            process = proc_root / str(SERVICE_A.pid)
+            process.mkdir(parents=True)
+            expected_binary = pathlib.Path(tmp) / "qbzd"
+            expected_binary.write_bytes(b"expected-qbzd")
+            expected_binary.chmod(0o700)
+            reused_binary = pathlib.Path(tmp) / "other-qbzd"
+            reused_binary.write_bytes(b"reused-process-image")
+            reused_binary.chmod(0o700)
+            (process / "comm").write_text("qbzd\n", encoding="utf-8")
+            fields = ["S", *(["1"] * 18), str(SERVICE_A.start_ticks)]
+            (process / "stat").write_text(
+                f"{SERVICE_A.pid} (qbzd) " + " ".join(fields) + "\n",
+                encoding="utf-8",
+            )
+            (process / "cgroup").write_text(
+                f"0::{SERVICE_A.cgroup}\n", encoding="utf-8"
+            )
+            (process / "exe").symlink_to(reused_binary)
+            service = MODULE.QbzdService(
+                pid=SERVICE_A.pid,
+                start_ticks=SERVICE_A.start_ticks,
+                cgroup=SERVICE_A.cgroup,
+                executable=expected_binary,
+            )
+            with mock.patch.object(MODULE.subprocess, "run") as run:
+                with self.assertRaisesRegex(
+                    MODULE.RecoveryError, "qbzd-process-unverified"
+                ):
+                    MODULE.run_qconnect_action(
+                        service, "disable", proc_root=proc_root
+                    )
+            run.assert_not_called()
 
     def test_qconnect_action_rejects_unknown_verb_before_subprocess(self):
         with mock.patch.object(MODULE.subprocess, "run") as run:

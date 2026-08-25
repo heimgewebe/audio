@@ -247,24 +247,67 @@ def run_qconnect_action(
     *,
     proc_root: pathlib.Path = pathlib.Path("/proc"),
 ) -> str:
-    """Run exactly one supported QConnect control verb through the live QBZD image."""
+    """Run one supported QConnect verb through a pinned, reverified QBZD image."""
     if action not in {"disable", "enable"}:
         raise RecoveryError("qconnect-action-not-allowed")
     if service.pid <= 0 or service.start_ticks <= 0 or service.executable.name != "qbzd":
         raise RecoveryError("qbzd-process-unverified")
-    executable = proc_root / str(service.pid) / "exe"
+
+    # Open the executable path observed for the bound service before consulting
+    # the mutable /proc PID link. The descriptor pins that exact filesystem
+    # object, so PID reuse cannot redirect exec to an unrelated process image.
     try:
-        completed = subprocess.run(  # noqa: S603 - /proc PID is identity-bound above
-            (str(executable), "qconnect", action),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=COMMAND_TIMEOUT_SECONDS,
-            check=False,
-            env={**os.environ, "LC_ALL": "C.UTF-8"},
+        executable_fd = os.open(service.executable, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError as exc:
+        raise RecoveryError("qbzd-process-unverified") from exc
+    try:
+        try:
+            pinned_metadata = os.fstat(executable_fd)
+        except OSError as exc:
+            raise RecoveryError("qbzd-process-unverified") from exc
+        if not stat.S_ISREG(pinned_metadata.st_mode):
+            raise RecoveryError("qbzd-process-unverified")
+
+        process_root = proc_root / str(service.pid)
+        if _read_bounded_text(process_root / "comm", "qbzd-process-unverified") != "qbzd":
+            raise RecoveryError("qbzd-process-unverified")
+        current_start_ticks = _parse_start_ticks(
+            _read_bounded_text(process_root / "stat", "qbzd-process-unverified")
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RecoveryError(f"qconnect-command-unavailable:{action}") from exc
+        current_cgroup = _parse_unified_cgroup(
+            _read_bounded_text(process_root / "cgroup", "qbzd-process-unverified"),
+            "qbzd-process-unverified",
+        )
+        if current_start_ticks != service.start_ticks or current_cgroup != service.cgroup:
+            raise RecoveryError("qbzd-process-unverified")
+        try:
+            proc_executable_metadata = (process_root / "exe").stat(follow_symlinks=True)
+        except OSError as exc:
+            raise RecoveryError("qbzd-process-unverified") from exc
+        if (
+            not stat.S_ISREG(proc_executable_metadata.st_mode)
+            or proc_executable_metadata.st_dev != pinned_metadata.st_dev
+            or proc_executable_metadata.st_ino != pinned_metadata.st_ino
+        ):
+            raise RecoveryError("qbzd-process-unverified")
+
+        pinned_executable = f"/proc/self/fd/{executable_fd}"
+        try:
+            completed = subprocess.run(  # noqa: S603 - executable is the verified pinned fd
+                (pinned_executable, "qconnect", action),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=COMMAND_TIMEOUT_SECONDS,
+                check=False,
+                env={**os.environ, "LC_ALL": "C.UTF-8"},
+                pass_fds=(executable_fd,),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RecoveryError(f"qconnect-command-unavailable:{action}") from exc
+    finally:
+        os.close(executable_fd)
+
     if len(completed.stdout) > MAX_COMMAND_OUTPUT_BYTES or len(completed.stderr) > MAX_COMMAND_OUTPUT_BYTES:
         raise RecoveryError(f"qconnect-command-output-limit:{action}")
     if completed.returncode != 0:
