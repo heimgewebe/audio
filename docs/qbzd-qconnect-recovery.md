@@ -36,10 +36,13 @@ a timestamped bounded journal sequence contains `WebSocket connected`,
 `Authenticated with JWT` and `Cloud rejected session` in that order within
 30 seconds. Freshness comes from journald's `__REALTIME_TIMESTAMP`, not from
 when the watchdog happens to read the delta. The rejection event must be no more
-than 90 seconds old (with only a five-second future-clock tolerance). That
-attestation may substitute for QBZD's contradictory `network.online=false`; all
-other restart gates remain authoritative. Missing, malformed or stale event time
-fails closed.
+than 90 seconds old (with only a five-second future-clock tolerance). The exact
+journal event timestamp is carried into reconciliation and its freshness is
+revalidated against the current wall clock at every status gate and immediately
+before either QConnect cycling or daemon restart. That attestation may substitute
+for QBZD's contradictory `network.online=false`; all other recovery gates remain
+authoritative. Missing, malformed, expired or future-skewed event time fails
+closed.
 
 Once the status path arms a recovery candidate, the watchdog returns to the
 full 30-second reconciliation cadence. The candidate remains bound to the same
@@ -106,10 +109,16 @@ original restart-edge observations:
 
 The QConnect-only effect is durably armed **before** `qconnect disable`: exact
 PID, process start tick and executable identity plus a minimum retry deadline are
-fsynced first. A successful `disable`/`enable` is accepted only when bounded
-readback reaches `connected` with an active session on the same service identity.
-Failure receives QConnect-specific exponential backoff from 120 seconds up to 15
-minutes, so a partial or ambiguous control-session cycle is not hammered.
+fsynced first. That arm also persists a separate **re-enable obligation** before
+disable. It is cleared only after QConnect is observed enabled again. If disable
+or enable has an error, the next reconcile restores `qconnect enable` first; this
+obligation survives a QBZD or host restart and blocks the broader daemon restart
+until the control plane is enabled again. This prevents a partial disable/enable
+cycle from silently leaving QConnect off. A successful cycle is accepted only
+when bounded readback reaches `connected` with an active session on the same
+service identity. Failure receives QConnect-specific exponential backoff from
+120 seconds up to 15 minutes, so a partial or ambiguous control-session cycle is
+not hammered.
 
 The broader restart attempt remains durably armed **before** `try-restart`: the
 exact process identity and a minimum 15-minute retry deadline are fsynced first.

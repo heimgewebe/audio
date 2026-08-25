@@ -691,6 +691,7 @@ def _default_state(boot_id: str | None = None) -> dict[str, Any]:
         "qconnect_armed_pid": None,
         "qconnect_armed_start_ticks": None,
         "qconnect_armed_executable": None,
+        "qconnect_reenable_required": False,
         "qconnect_failures": 0,
         "qconnect_next_attempt_monotonic": 0.0,
         "failures": 0,
@@ -770,6 +771,7 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
         qconnect_pid = None
         qconnect_start = None
         qconnect_executable = None
+        qconnect_reenable_required = False
         qconnect_failures = 0
         qconnect_next_attempt = 0.0
     else:
@@ -787,6 +789,9 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
         qconnect_executable = _optional_absolute_executable(
             state.get("qconnect_armed_executable")
         )
+        qconnect_reenable_required = state.get("qconnect_reenable_required")
+        if not isinstance(qconnect_reenable_required, bool):
+            raise RecoveryError("state-invalid:qconnect-reenable-required")
         qconnect_failures = state.get("qconnect_failures")
         if (
             isinstance(qconnect_failures, bool)
@@ -836,6 +841,7 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
         "qconnect_armed_pid": qconnect_pid,
         "qconnect_armed_start_ticks": qconnect_start,
         "qconnect_armed_executable": qconnect_executable,
+        "qconnect_reenable_required": qconnect_reenable_required,
         "qconnect_failures": qconnect_failures,
         "qconnect_next_attempt_monotonic": qconnect_next_attempt,
         "failures": failures,
@@ -888,6 +894,25 @@ def _clock_value(clock: Clock, label: str) -> float:
     if not math.isfinite(normalized) or normalized < 0:
         raise RecoveryError(f"clock-invalid:{label}")
     return normalized
+
+
+def _network_reachability_evidence_active(
+    evidence_realtime: float | None, *, now_wall: float
+) -> bool:
+    if evidence_realtime is None:
+        return False
+    if isinstance(evidence_realtime, bool) or not isinstance(
+        evidence_realtime, (int, float)
+    ):
+        raise RecoveryError("network-attestation-time-invalid")
+    observed = float(evidence_realtime)
+    if not math.isfinite(observed) or observed < 0:
+        raise RecoveryError("network-attestation-time-invalid")
+    age = now_wall - observed
+    return (
+        age >= -NETWORK_REACHABILITY_FUTURE_SKEW_SECONDS
+        and age <= NETWORK_REACHABILITY_EVIDENCE_SECONDS
+    )
 
 
 def _is_healthy(status: QbzdStatus) -> bool:
@@ -952,6 +977,7 @@ def _clear_candidate(
         "qconnect_armed_pid": None,
         "qconnect_armed_start_ticks": None,
         "qconnect_armed_executable": None,
+        "qconnect_reenable_required": False,
         "qconnect_failures": 0 if healthy else state["qconnect_failures"],
         "qconnect_next_attempt_monotonic": (
             max(
@@ -984,6 +1010,7 @@ def _qconnect_effect_armed_state(
         "qconnect_armed_pid": service.pid,
         "qconnect_armed_start_ticks": service.start_ticks,
         "qconnect_armed_executable": str(service.executable),
+        "qconnect_reenable_required": True,
         "qconnect_next_attempt_monotonic": max(
             float(state["qconnect_next_attempt_monotonic"]),
             now_monotonic + QCONNECT_FAILURE_BACKOFF_BASE_SECONDS,
@@ -1050,6 +1077,7 @@ def _success_state(
         "qconnect_armed_pid": None,
         "qconnect_armed_start_ticks": None,
         "qconnect_armed_executable": None,
+        "qconnect_reenable_required": False,
         "qconnect_failures": 0,
         "qconnect_next_attempt_monotonic": now_monotonic + SUCCESS_COOLDOWN_SECONDS,
         "failures": 0,
@@ -1059,6 +1087,22 @@ def _success_state(
         "restart_armed_pid": None,
         "restart_armed_start_ticks": None,
     }
+
+
+def _qconnect_control_enabled(status: QbzdStatus) -> bool:
+    return status.qconnect_state in {"connected", "retrying", "reconnecting"}
+
+
+def _clear_qconnect_effect_obligation(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **state,
+        "qconnect_armed_monotonic": None,
+        "qconnect_armed_pid": None,
+        "qconnect_armed_start_ticks": None,
+        "qconnect_armed_executable": None,
+        "qconnect_reenable_required": False,
+    }
+
 
 
 def reconcile_once(
@@ -1074,7 +1118,7 @@ def reconcile_once(
     monotonic_clock: Clock = time.monotonic,
     wall_clock: Clock = time.time,
     boot_id_reader: BootIdReader | None = None,
-    allow_network_offline: bool = False,
+    network_reachability_evidence_realtime: float | None = None,
 ) -> str:
     try:
         state = _load_state(state_path)
@@ -1084,10 +1128,63 @@ def reconcile_once(
         now_monotonic = _clock_value(monotonic_clock, "monotonic")
         now_unix = _clock_value(wall_clock, "wall")
         if state["boot_id"] not in {None, boot_id}:
+            reenable_required = bool(state["qconnect_reenable_required"])
             state = _default_state(boot_id)
+            if reenable_required:
+                state["qconnect_reenable_required"] = True
             _store_state(state_path, state)
         elif state["boot_id"] is None:
             state = {**state, "boot_id": boot_id}
+
+        service_probe = service_reader or (
+            lambda: read_qbzd_service(runner=runner, proc_root=proc_root)
+        )
+        qconnect_effect = qconnect_action_runner or (
+            lambda service, action: run_qconnect_action(
+                service, action, proc_root=proc_root
+            )
+        )
+
+        # A successful or outcome-unknown disable creates a durable obligation
+        # to restore QConnect. Resolve it before any further recovery effect,
+        # including a daemon restart. The obligation intentionally survives a
+        # host or QBZD restart because the disable setting may persist.
+        if state["qconnect_reenable_required"] and not _is_healthy(first):
+            if _qconnect_control_enabled(first):
+                state = _clear_qconnect_effect_obligation(state)
+                _store_state(state_path, state)
+            else:
+                restore_service = service_probe()
+                try:
+                    qconnect_effect(restore_service, "enable")
+                except RecoveryError as exc:
+                    failed_at = _clock_value(monotonic_clock, "monotonic")
+                    state = _qconnect_failure_state(state, failed_at)
+                    _store_state(state_path, state)
+                    return f"blocked:qconnect-reenable:{exc}"
+
+                restored_status: QbzdStatus | None = None
+                for attempt in range(QCONNECT_READBACK_ATTEMPTS):
+                    observed = status_reader()
+                    if _qconnect_control_enabled(observed):
+                        restored_status = observed
+                        break
+                    if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
+                        sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
+                restored_at = _clock_value(monotonic_clock, "monotonic")
+                restored_unix = _clock_value(wall_clock, "wall")
+                if restored_status is None:
+                    state = _qconnect_failure_state(state, restored_at)
+                    _store_state(state_path, state)
+                    return "blocked:qconnect-reenable-readback"
+                if _is_healthy(restored_status):
+                    _store_state(
+                        state_path, _success_state(boot_id, restored_at, restored_unix)
+                    )
+                    return "recovered:qconnect-reenabled"
+                state = _clear_qconnect_effect_obligation(state)
+                _store_state(state_path, state)
+                return "restored:qconnect-enabled"
 
         if _is_healthy(first):
             cleared = _clear_candidate(
@@ -1100,7 +1197,12 @@ def reconcile_once(
             if cleared != state:
                 _store_state(state_path, cleared)
             return "noop:connected"
-        if not _is_recovery_candidate(first, allow_network_offline=allow_network_offline):
+        if not _is_recovery_candidate(
+            first,
+            allow_network_offline=_network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=now_unix
+            ),
+        ):
             if state["retry_since_monotonic"] is not None:
                 updated = _clear_candidate(
                     state,
@@ -1114,16 +1216,8 @@ def reconcile_once(
                 _store_state(state_path, {**state, "boot_id": boot_id})
             return "noop:not-candidate"
 
-        service_probe = service_reader or (
-            lambda: read_qbzd_service(runner=runner, proc_root=proc_root)
-        )
         pcm_idle = pcm_idle_checker or (
             lambda service: require_qbzd_pcm_idle(service, proc_root=proc_root)
-        )
-        qconnect_effect = qconnect_action_runner or (
-            lambda service, action: run_qconnect_action(
-                service, action, proc_root=proc_root
-            )
         )
         service = service_probe()
         retry_since = state["retry_since_monotonic"]
@@ -1164,7 +1258,12 @@ def reconcile_once(
                     ),
                 )
                 return "noop:recovered-naturally"
-            if not _is_recovery_candidate(second, allow_network_offline=allow_network_offline):
+            if not _is_recovery_candidate(
+                second,
+                allow_network_offline=_network_reachability_evidence_active(
+                    network_reachability_evidence_realtime, now_wall=second_unix
+                ),
+            ):
                 _store_state(
                     state_path,
                     _clear_candidate(
@@ -1203,7 +1302,12 @@ def reconcile_once(
                     ),
                 )
                 return "noop:recovered-naturally"
-            if not _is_recovery_candidate(final_status, allow_network_offline=allow_network_offline):
+            if not _is_recovery_candidate(
+                final_status,
+                allow_network_offline=_network_reachability_evidence_active(
+                    network_reachability_evidence_realtime, now_wall=final_unix
+                ),
+            ):
                 _store_state(
                     state_path,
                     _clear_candidate(
@@ -1228,6 +1332,12 @@ def reconcile_once(
             pcm_idle(final_service)
 
             effect_monotonic = _clock_value(monotonic_clock, "monotonic")
+            if final_status.network_online is False:
+                effect_unix = _clock_value(wall_clock, "wall")
+                if not _network_reachability_evidence_active(
+                    network_reachability_evidence_realtime, now_wall=effect_unix
+                ):
+                    return "blocked:network-attestation-expired"
             qconnect_armed = _qconnect_effect_armed_state(
                 state, final_service, effect_monotonic
             )
@@ -1245,10 +1355,13 @@ def reconcile_once(
                 qconnect_error = exc
 
             qconnect_recovered = False
+            qconnect_enabled_observed = False
             if qconnect_error is None:
                 for attempt in range(QCONNECT_READBACK_ATTEMPTS):
                     try:
                         after = status_reader()
+                        if _qconnect_control_enabled(after):
+                            qconnect_enabled_observed = True
                         if _is_healthy(after):
                             if service_probe() != final_service:
                                 raise RecoveryError("qbzd-process-changed-after-qconnect-cycle")
@@ -1258,6 +1371,8 @@ def reconcile_once(
                         pass
                     if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
                         sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
+            if qconnect_enabled_observed:
+                qconnect_armed = _clear_qconnect_effect_obligation(qconnect_armed)
             completion_monotonic = _clock_value(monotonic_clock, "monotonic")
             completion_unix = _clock_value(wall_clock, "wall")
             restart_now = completion_monotonic
@@ -1270,6 +1385,10 @@ def reconcile_once(
 
             state = _qconnect_failure_state(qconnect_armed, completion_monotonic)
             _store_state(state_path, state)
+            if state["qconnect_reenable_required"]:
+                if qconnect_error is not None:
+                    return f"blocked:{qconnect_error}"
+                return "blocked:qconnect-reenable-required"
             if stuck_age < STUCK_SECONDS:
                 if qconnect_error is not None:
                     return f"blocked:{qconnect_error}"
@@ -1303,7 +1422,12 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(second, allow_network_offline=allow_network_offline):
+        if not _is_recovery_candidate(
+            second,
+            allow_network_offline=_network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=second_unix
+            ),
+        ):
             _store_state(
                 state_path,
                 _clear_candidate(
@@ -1345,7 +1469,12 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(final_status, allow_network_offline=allow_network_offline):
+        if not _is_recovery_candidate(
+            final_status,
+            allow_network_offline=_network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=final_unix
+            ),
+        ):
             _store_state(
                 state_path,
                 _clear_candidate(
@@ -1370,6 +1499,12 @@ def reconcile_once(
         pcm_idle(final_service)
 
         effect_monotonic = _clock_value(monotonic_clock, "monotonic")
+        if final_status.network_online is False:
+            effect_unix = _clock_value(wall_clock, "wall")
+            if not _network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=effect_unix
+            ):
+                return "blocked:network-attestation-expired"
         armed_effect = _effect_armed_state(state, final_service, effect_monotonic)
         # Persist the attempt and minimum backoff before the only broad
         # mutation. If systemctl loses its reply or the process dies after this
@@ -1533,8 +1668,6 @@ def run_loop(
                 or evidence_age > NETWORK_REACHABILITY_EVIDENCE_SECONDS
             ):
                 network_evidence_realtime = None
-        allow_network_offline = network_evidence_realtime is not None
-
         reason = adaptive_poll_reason(
             fast_followup=fast_followup,
             journal_available=journal_available,
@@ -1546,7 +1679,7 @@ def run_loop(
             if reconciler is None:
                 result = reconcile_once(
                     state_path=state_path,
-                    allow_network_offline=allow_network_offline,
+                    network_reachability_evidence_realtime=network_evidence_realtime,
                 )
             else:
                 result = reconciler(state_path)
