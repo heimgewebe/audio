@@ -33,6 +33,7 @@ REMOTE_BRIDGE_UNIT = "audio-remote-bridge-v1.service"
 LEVEL_OBSERVER_UNIT = "audio-control-level-observer-v1.service"
 QOBUZ_RECOVERY_UNIT = "audio-qobuz-desktop-recovery-v1.service"
 QBZD_QCONNECT_RECOVERY_UNIT = "audio-qbzd-qconnect-recovery-v1.service"
+QBZD_QCONNECT_RECOVERY_STATE_DIRECTORY = "audio-qbzd-qconnect-recovery"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 SERVICE_STOP_READBACK_ATTEMPTS = 6
@@ -1434,6 +1435,36 @@ def stop_qbzd_qconnect_recovery_for_rollback(
     raise DeployError("Rollback konnte QBZD-QConnect-Recovery nicht sicher stoppen.")
 
 
+def prepare_qbzd_qconnect_recovery_state_for_rollback(
+    release: pathlib.Path,
+) -> dict[str, Any]:
+    script = release / "scripts" / "qbzd_qconnect_recovery.py"
+    if not script.is_file() or script.is_symlink():
+        raise DeployError(
+            "Rollback kann den QBZD-QConnect-State nicht vorbereiten: "
+            "Recovery-Skript fehlt im Kandidaten-Release."
+        )
+    result = run_command(
+        [
+            "systemd-run",
+            "--user",
+            "--wait",
+            "--pipe",
+            "--collect",
+            "--quiet",
+            "--property=Type=exec",
+            f"--property=StateDirectory={QBZD_QCONNECT_RECOVERY_STATE_DIRECTORY}",
+            "--property=StateDirectoryMode=0700",
+            "--property=RuntimeMaxSec=50s",
+            sys.executable,
+            str(script),
+            "prepare-rollback",
+        ],
+        timeout=60,
+    )
+    return result.receipt()
+
+
 def release_file_changed(
     previous_release: pathlib.Path | None,
     release: pathlib.Path,
@@ -1936,6 +1967,13 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     raise DeployError(
                         "Deployment fehlgeschlagen und QBZD-QConnect-Recovery "
                         f"konnte vor dem Rollback nicht gestoppt werden: {error}"
+                    ) from deployment_error
+                try:
+                    prepare_qbzd_qconnect_recovery_state_for_rollback(release)
+                except Exception as error:
+                    raise DeployError(
+                        "Deployment fehlgeschlagen und der QBZD-QConnect-State "
+                        f"konnte nicht rollback-kompatibel vorbereitet werden: {error}"
                     ) from deployment_error
             if qobuz_recovery_candidate_exposed:
                 try:

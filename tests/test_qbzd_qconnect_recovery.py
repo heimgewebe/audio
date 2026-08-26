@@ -1472,6 +1472,103 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertFalse(migrated["qconnect_reenable_required"])
             self.assertIsNone(migrated["qconnect_armed_monotonic"])
 
+    def test_state_file_from_environment_uses_systemd_export(self):
+        with mock.patch.dict(
+            MODULE.os.environ,
+            {"STATE_DIRECTORY": "/tmp/qbzd-recovery-state"},
+            clear=False,
+        ):
+            self.assertEqual(
+                MODULE._state_file_from_environment(),
+                pathlib.Path("/tmp/qbzd-recovery-state/state.json"),
+            )
+
+    def test_state_file_from_environment_fails_closed_without_single_absolute_path(self):
+        for value in ("", "relative/path", "/tmp/one:/tmp/two"):
+            with self.subTest(value=value), mock.patch.dict(
+                MODULE.os.environ, {"STATE_DIRECTORY": value}, clear=False
+            ):
+                with self.assertRaises(MODULE.RecoveryError):
+                    MODULE._state_file_from_environment()
+
+    def test_prepare_rollback_projects_exact_legacy_v2_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            state = self.candidate_state(qconnect_next_attempt=77.0)
+            MODULE._store_state(state_path, state)
+
+            result = MODULE.prepare_rollback_state(state_path=state_path)
+
+            self.assertEqual(result, "rollback-state:v2-ready")
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["schema_version"], 2)
+            self.assertEqual(
+                set(persisted),
+                {
+                    "schema_version",
+                    "boot_id",
+                    "candidate_pid",
+                    "candidate_start_ticks",
+                    "retry_since_monotonic",
+                    "failures",
+                    "next_attempt_monotonic",
+                    "last_recovered_at_unix",
+                    "restart_armed_monotonic",
+                    "restart_armed_pid",
+                    "restart_armed_start_ticks",
+                },
+            )
+
+    def test_prepare_rollback_reenables_qconnect_before_v2_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            state = MODULE._qconnect_effect_armed_state(
+                self.candidate_state(qconnect_next_attempt=0.0), SERVICE_A, 203.5
+            )
+            MODULE._store_state(state_path, state)
+            statuses = iter(
+                [status(qconnect="disabled"), status(qconnect="retrying")]
+            )
+            qconnect = FakeQconnectRunner()
+
+            result = MODULE.prepare_rollback_state(
+                state_path=state_path,
+                status_reader=lambda: next(statuses),
+                service_reader=lambda: SERVICE_A,
+                qconnect_action_runner=qconnect,
+                sleeper=lambda _seconds: None,
+            )
+
+            self.assertEqual(result, "rollback-state:v2-ready")
+            self.assertEqual(
+                [action for _service, action in qconnect.commands], ["enable"]
+            )
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["schema_version"], 2)
+            self.assertNotIn("qconnect_reenable_required", persisted)
+
+    def test_prepare_rollback_keeps_v3_obligation_when_reenable_readback_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            state = MODULE._qconnect_effect_armed_state(
+                self.candidate_state(qconnect_next_attempt=0.0), SERVICE_A, 203.5
+            )
+            MODULE._store_state(state_path, state)
+            qconnect = FakeQconnectRunner()
+
+            result = MODULE.prepare_rollback_state(
+                state_path=state_path,
+                status_reader=lambda: status(qconnect="disabled"),
+                service_reader=lambda: SERVICE_A,
+                qconnect_action_runner=qconnect,
+                sleeper=lambda _seconds: None,
+            )
+
+            self.assertEqual(result, "blocked:qconnect-reenable-readback")
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["schema_version"], 3)
+            self.assertTrue(persisted["qconnect_reenable_required"])
+
     def test_command_contract_allows_only_observe_and_try_restart(self):
         MODULE.check_contract()
         with self.assertRaisesRegex(MODULE.RecoveryError, "command-not-allowed"):

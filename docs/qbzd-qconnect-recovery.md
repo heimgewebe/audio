@@ -164,6 +164,16 @@ systemd 249 user manager this directory is below the user configuration root;
 other systemd versions may resolve the managed state root differently without
 changing the service contract.
 
+Schema v3 adds QConnect-specific durable effect state that the previous schema-v2
+watchdog cannot parse. A deployment rollback therefore stops the candidate
+watchdog first and runs that candidate release's `prepare-rollback` helper in a
+short-lived systemd user service with the same `StateDirectory=` contract. The
+helper resolves any pending QConnect re-enable obligation before atomically
+projecting the validated state onto the exact schema-v2 field set. If re-enable
+or its readback cannot be proven, or the state is invalid, rollback fails closed
+before the previous watchdog is restarted. No filesystem root is guessed by the
+deployer; systemd exports the effective `STATE_DIRECTORY` to the helper.
+
 The service is pulled in by `audio-control-ui-v1.service`, ordered after
 `qbzd.service`, and `PartOf` the Audiozentrale lifecycle so revision-bound deploy
 or rollback cannot leave candidate recovery code running across a release

@@ -1222,6 +1222,34 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertTrue(report["qobuz_recovery"]["active"])
             self.assertEqual(len(report["qobuz_recovery"]["activation"]), 1)
 
+    def test_qbzd_rollback_preparer_uses_systemd_managed_state_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            script = release / "scripts" / "qbzd_qconnect_recovery.py"
+            script.parent.mkdir(parents=True)
+            script.write_text("print('recovery')\n", encoding="utf-8")
+            result = MODULE.CommandResult(("systemd-run",), 0, "{}\n", "", 0.1)
+
+            with mock.patch.object(MODULE, "run_command", return_value=result) as run:
+                receipt = MODULE.prepare_qbzd_qconnect_recovery_state_for_rollback(
+                    release
+                )
+
+            self.assertEqual(receipt["returncode"], 0)
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[0], "systemd-run")
+            self.assertIn("--user", argv)
+            self.assertIn("--wait", argv)
+            self.assertIn("--collect", argv)
+            self.assertIn("--property=Type=exec", argv)
+            self.assertIn(
+                "--property=StateDirectory=audio-qbzd-qconnect-recovery", argv
+            )
+            self.assertIn("--property=StateDirectoryMode=0700", argv)
+            self.assertIn("--property=RuntimeMaxSec=50s", argv)
+            self.assertEqual(argv[-3:], [sys.executable, str(script), "prepare-rollback"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
     def test_qbzd_qconnect_recovery_converges_inactive_unit(self):
         with tempfile.TemporaryDirectory() as directory:
             release = pathlib.Path(directory)
@@ -1288,8 +1316,21 @@ class AudioControlDeployTests(unittest.TestCase):
                 events.append("stop-qbzd-recovery")
                 return []
 
+            def prepare_qbzd_state(candidate_release):
+                self.assertEqual(candidate_release, release)
+                events.append("prepare-qbzd-state")
+                return {"returncode": 0}
+
             def restore(_backups):
                 events.append("restore-runtime")
+
+            prepare_patch = mock.patch.object(
+                MODULE,
+                "prepare_qbzd_qconnect_recovery_state_for_rollback",
+                side_effect=prepare_qbzd_state,
+            )
+            prepare = prepare_patch.start()
+            self.addCleanup(prepare_patch.stop)
 
             with (
                 mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
@@ -1352,9 +1393,14 @@ class AudioControlDeployTests(unittest.TestCase):
             ):
                 MODULE.sync(args)
             stop.assert_called_once_with()
+            prepare.assert_called_once_with(release)
             self.assertIn("restore-runtime", events)
             self.assertLess(
                 events.index("stop-qbzd-recovery"),
+                events.index("prepare-qbzd-state"),
+            )
+            self.assertLess(
+                events.index("prepare-qbzd-state"),
                 events.index("restore-runtime"),
             )
 

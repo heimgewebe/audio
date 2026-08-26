@@ -746,6 +746,16 @@ def _default_state(boot_id: str | None = None) -> dict[str, Any]:
     }
 
 
+def _state_file_from_environment() -> pathlib.Path:
+    raw = os.environ.get("STATE_DIRECTORY", "")
+    if not raw or ":" in raw:
+        raise RecoveryError("state-directory-unavailable")
+    directory = pathlib.Path(raw)
+    if not directory.is_absolute():
+        raise RecoveryError("state-directory-invalid")
+    return directory / "state.json"
+
+
 def _optional_absolute_executable(value: Any) -> str | None:
     if value is None:
         return None
@@ -1146,6 +1156,67 @@ def _clear_qconnect_effect_obligation(state: dict[str, Any]) -> dict[str, Any]:
         "qconnect_reenable_required": False,
     }
 
+
+def _legacy_v2_state_projection(state: dict[str, Any]) -> dict[str, Any]:
+    """Project validated current state onto the exact schema-v2 field set."""
+    return {
+        "schema_version": LEGACY_STATE_SCHEMA_VERSION,
+        "boot_id": state["boot_id"],
+        "candidate_pid": state["candidate_pid"],
+        "candidate_start_ticks": state["candidate_start_ticks"],
+        "retry_since_monotonic": state["retry_since_monotonic"],
+        "failures": state["failures"],
+        "next_attempt_monotonic": state["next_attempt_monotonic"],
+        "last_recovered_at_unix": state["last_recovered_at_unix"],
+        "restart_armed_monotonic": state["restart_armed_monotonic"],
+        "restart_armed_pid": state["restart_armed_pid"],
+        "restart_armed_start_ticks": state["restart_armed_start_ticks"],
+    }
+
+
+def prepare_rollback_state(
+    *,
+    state_path: pathlib.Path,
+    status_reader: StatusReader = read_status,
+    service_reader: ServiceReader | None = None,
+    qconnect_action_runner: QconnectActionRunner | None = None,
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+    sleeper: Sleeper = time.sleep,
+) -> str:
+    """Resolve a pending enable obligation, then persist schema v2 for rollback."""
+    try:
+        state = _load_state(state_path)
+        if state["qconnect_reenable_required"]:
+            observed = status_reader()
+            if not _qconnect_control_enabled(observed):
+                service_probe = service_reader or (
+                    lambda: read_qbzd_service(runner=run_command, proc_root=proc_root)
+                )
+                qconnect_effect = qconnect_action_runner or (
+                    lambda service, action: run_qconnect_action(
+                        service, action, proc_root=proc_root
+                    )
+                )
+                service = service_probe()
+                qconnect_effect(service, "enable")
+                restored = False
+                for attempt in range(QCONNECT_READBACK_ATTEMPTS):
+                    try:
+                        if _qconnect_control_enabled(status_reader()):
+                            restored = True
+                            break
+                    except RecoveryError:
+                        pass
+                    if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
+                        sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
+                if not restored:
+                    return "blocked:qconnect-reenable-readback"
+            state = _clear_qconnect_effect_obligation(state)
+
+        _store_state(state_path, _legacy_v2_state_projection(state))
+        return "rollback-state:v2-ready"
+    except RecoveryError as exc:
+        return f"blocked:{exc}"
 
 
 def reconcile_once(
@@ -1745,10 +1816,21 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("check")
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--state-file", type=pathlib.Path, required=True)
+    rollback_parser = subparsers.add_parser("prepare-rollback")
+    rollback_parser.add_argument("--state-file", type=pathlib.Path)
     args = parser.parse_args(argv)
     if args.command == "check":
         check_contract()
         return 0
+    if args.command == "prepare-rollback":
+        try:
+            state_file = args.state_file or _state_file_from_environment()
+        except RecoveryError as exc:
+            result = f"blocked:{exc}"
+        else:
+            result = prepare_rollback_state(state_path=state_file)
+        print(json.dumps({"qbzd_qconnect_recovery": result}), flush=True)
+        return 0 if result == "rollback-state:v2-ready" else 1
     run_loop(args.state_file)
     return 0
 
