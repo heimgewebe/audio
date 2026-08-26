@@ -80,7 +80,10 @@ class QbzdQconnectSafetyRegressionTests(unittest.TestCase):
             result = MODULE.reconcile_once(
                 state_path=state_path,
                 status_reader=SequenceReader(
-                    [status(qconnect="exhausted", enabled=False), status(qconnect="retrying", enabled=True)]
+                    [
+                        status(qconnect="exhausted", enabled=False),
+                        status(qconnect="retrying", enabled=True),
+                    ]
                 ),
                 service_reader=lambda: SERVICE,
                 qconnect_action_runner=qconnect,
