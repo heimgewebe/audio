@@ -975,15 +975,25 @@ def _is_healthy(status: QbzdStatus) -> bool:
 def _is_recovery_candidate(
     status: QbzdStatus, *, allow_network_offline: bool = False
 ) -> bool:
+    # The normal reconnect path should still require the coarse QBZD device-open
+    # signal to be false.  The observed terminal exhausted state can instead
+    # report device_open=true while playback is paused.  Recognising that state
+    # does not grant effect authority; every
+    # QConnect cycle and daemon restart still passes require_qbzd_pcm_idle(),
+    # which binds the real /proc/asound owner to the exact QBZD process/cgroup.
+    retrying_candidate = (
+        status.qconnect_state in {"retrying", "reconnecting"}
+        and status.device_open is False
+    )
+    exhausted_candidate = status.qconnect_state == "exhausted"
     return (
         status.auth_state == "logged_in"
         and (status.network_online is True or allow_network_offline)
-        and status.qconnect_state in {"retrying", "reconnecting"}
+        and (retrying_candidate or exhausted_candidate)
         and status.session_active is False
         and status.audio_backend.casefold() == "alsa"
         and status.configured_device == EXPECTED_DEVICE
         and status.device_present is True
-        and status.device_open is False
     )
 
 
@@ -1345,7 +1355,16 @@ def reconcile_once(
             return "armed"
 
         stuck_age = now_monotonic - float(retry_since)
-        if stuck_age < QCONNECT_CYCLE_STUCK_SECONDS:
+        # A terminal exhausted session has already completed QBZD's bounded
+        # reconnect sequence, so it need not spend another 90 seconds proving
+        # the same session is stuck.  It still must survive one prior arm/read
+        # cycle, and every effect remains gated by fresh network evidence, exact
+        # process identity and require_qbzd_pcm_idle().  Retrying/reconnecting
+        # keep the original stabilization window unchanged.
+        if (
+            first.qconnect_state != "exhausted"
+            and stuck_age < QCONNECT_CYCLE_STUCK_SECONDS
+        ):
             return "noop:stabilizing"
 
         # First repair only the QConnect session. This is materially narrower

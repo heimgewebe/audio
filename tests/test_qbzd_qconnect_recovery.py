@@ -435,6 +435,120 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(result, "noop:not-candidate")
             self.assertEqual(runner.commands, [])
 
+    def test_exhausted_state_requires_network_truth_but_not_coarse_device_closed(self):
+        observed = status(qconnect="exhausted", online=False, opened=True)
+        self.assertFalse(MODULE._is_recovery_candidate(observed))
+        self.assertTrue(
+            MODULE._is_recovery_candidate(observed, allow_network_offline=True)
+        )
+        self.assertFalse(
+            MODULE._is_recovery_candidate(status(qconnect="retrying", opened=True))
+        )
+
+    def test_exhausted_open_pcm_is_explicitly_blocked_before_qconnect_effect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            qconnect = FakeQconnectRunner()
+
+            def blocked_pcm(_service):
+                raise MODULE.RecoveryError("qbzd-pcm-open")
+
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(qconnect="exhausted", online=False, opened=True)],
+                services=[SERVICE_A],
+                monotonic=[200.0],
+                wall=[1000.0],
+                qconnect_runner=qconnect,
+                pcm=blocked_pcm,
+                network_evidence_realtime=1000.0,
+            )
+            self.assertEqual(result, "blocked:qbzd-pcm-open")
+            self.assertEqual(qconnect.commands, [])
+
+    def test_exhausted_state_recovers_via_narrow_qconnect_cycle_when_pcm_idle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            qconnect = FakeQconnectRunner()
+            checked = []
+            exhausted = status(qconnect="exhausted", online=False, opened=False)
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[exhausted, exhausted, exhausted, healthy()],
+                services=[SERVICE_A] * 5,
+                monotonic=[200.0, 202.0, 203.0, 203.5, 204.0],
+                wall=[1000.0, 1002.0, 1003.0, 1004.0, 1005.0],
+                qconnect_runner=qconnect,
+                pcm=lambda service: checked.append(service),
+                network_evidence_realtime=1000.0,
+            )
+            self.assertEqual(result, "recovered:qconnect")
+            self.assertEqual(
+                [action for _service, action in qconnect.commands],
+                ["disable", "enable"],
+            )
+            self.assertEqual(checked, [SERVICE_A, SERVICE_A, SERVICE_A])
+
+    def test_freshly_armed_exhausted_state_uses_fresh_attestation_before_ninety_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            exhausted = status(qconnect="exhausted", online=False, opened=False)
+            first = self.reconcile(
+                state_path=state_path,
+                statuses=[exhausted],
+                services=[SERVICE_A],
+                monotonic=[100.0],
+                wall=[1000.0],
+                network_evidence_realtime=1000.0,
+            )
+            self.assertEqual(first, "armed")
+
+            qconnect = FakeQconnectRunner()
+            checked = []
+            second = self.reconcile(
+                state_path=state_path,
+                statuses=[exhausted, exhausted, exhausted, healthy()],
+                services=[SERVICE_A] * 5,
+                monotonic=[130.0, 132.0, 133.0, 133.5, 134.0],
+                wall=[1030.0, 1032.0, 1033.0, 1034.0, 1035.0],
+                qconnect_runner=qconnect,
+                pcm=lambda service: checked.append(service),
+                network_evidence_realtime=1000.0,
+            )
+            self.assertEqual(second, "recovered:qconnect")
+            self.assertEqual(
+                [action for _service, action in qconnect.commands],
+                ["disable", "enable"],
+            )
+            self.assertEqual(checked, [SERVICE_A, SERVICE_A, SERVICE_A])
+
+    def test_retrying_still_requires_ninety_second_stabilization_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path,
+                self.candidate_state(
+                    retry_since=100.0,
+                    qconnect_next_attempt=0.0,
+                ),
+            )
+            qconnect = FakeQconnectRunner()
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(qconnect="retrying")],
+                services=[SERVICE_A],
+                monotonic=[130.0],
+                qconnect_runner=qconnect,
+            )
+            self.assertEqual(result, "noop:stabilizing")
+            self.assertEqual(qconnect.commands, [])
+
     def test_offline_or_logged_out_state_blocks_restart(self):
         for observed in (status(online=False), status(auth="logged_out")):
             with self.subTest(observed=observed):
