@@ -26,7 +26,12 @@ QBZD_UNIT = "qbzd.service"
 EXPECTED_DEVICE = "front:CARD=M2,DEV=0"
 POLL_SECONDS = 30.0
 HEALTHY_STATUS_FALLBACK_SECONDS = 300.0
+QCONNECT_CYCLE_STUCK_SECONDS = 90.0
 STUCK_SECONDS = 300.0
+QCONNECT_READBACK_ATTEMPTS = 10
+QCONNECT_READBACK_INTERVAL_SECONDS = 2.0
+QCONNECT_FAILURE_BACKOFF_BASE_SECONDS = 120.0
+QCONNECT_FAILURE_BACKOFF_MAX_SECONDS = 900.0
 STABILIZATION_SECONDS = 2.0
 READBACK_ATTEMPTS = 30
 READBACK_INTERVAL_SECONDS = 2.0
@@ -57,7 +62,8 @@ QCONNECT_NETWORK_REACHABILITY_MARKERS = (
 NETWORK_REACHABILITY_EVIDENCE_SECONDS = 90.0
 QCONNECT_NETWORK_SEQUENCE_SECONDS = 30.0
 NETWORK_REACHABILITY_FUTURE_SKEW_SECONDS = 5.0
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
+LEGACY_STATE_SCHEMA_VERSION = 2
 
 
 class RecoveryError(RuntimeError):
@@ -84,6 +90,7 @@ class QbzdService:
     pid: int
     start_ticks: int
     cgroup: str
+    executable: pathlib.Path = pathlib.Path("/usr/bin/qbzd")
 
 
 @dataclass(frozen=True)
@@ -107,6 +114,7 @@ PcmIdleChecker = Callable[[QbzdService], None]
 Clock = Callable[[], float]
 BootIdReader = Callable[[], str]
 JournalReader = Callable[[str | None], JournalDelta]
+QconnectActionRunner = Callable[[QbzdService, str], str]
 Reconciler = Callable[[pathlib.Path], str]
 
 
@@ -231,6 +239,83 @@ def run_command(argv: tuple[str, ...]) -> str:
         return completed.stdout.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
         raise RecoveryError(f"command-output-invalid:{argv[0]}") from exc
+
+
+def run_qconnect_action(
+    service: QbzdService,
+    action: str,
+    *,
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+) -> str:
+    """Run one supported QConnect verb through a pinned, reverified QBZD image."""
+    if action not in {"disable", "enable"}:
+        raise RecoveryError("qconnect-action-not-allowed")
+    if service.pid <= 0 or service.start_ticks <= 0 or service.executable.name != "qbzd":
+        raise RecoveryError("qbzd-process-unverified")
+
+    # Open the executable path observed for the bound service before consulting
+    # the mutable /proc PID link. The descriptor pins that exact filesystem
+    # object, so PID reuse cannot redirect exec to an unrelated process image.
+    try:
+        executable_fd = os.open(service.executable, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError as exc:
+        raise RecoveryError("qbzd-process-unverified") from exc
+    try:
+        try:
+            pinned_metadata = os.fstat(executable_fd)
+        except OSError as exc:
+            raise RecoveryError("qbzd-process-unverified") from exc
+        if not stat.S_ISREG(pinned_metadata.st_mode):
+            raise RecoveryError("qbzd-process-unverified")
+
+        process_root = proc_root / str(service.pid)
+        if _read_bounded_text(process_root / "comm", "qbzd-process-unverified") != "qbzd":
+            raise RecoveryError("qbzd-process-unverified")
+        current_start_ticks = _parse_start_ticks(
+            _read_bounded_text(process_root / "stat", "qbzd-process-unverified")
+        )
+        current_cgroup = _parse_unified_cgroup(
+            _read_bounded_text(process_root / "cgroup", "qbzd-process-unverified"),
+            "qbzd-process-unverified",
+        )
+        if current_start_ticks != service.start_ticks or current_cgroup != service.cgroup:
+            raise RecoveryError("qbzd-process-unverified")
+        try:
+            proc_executable_metadata = (process_root / "exe").stat(follow_symlinks=True)
+        except OSError as exc:
+            raise RecoveryError("qbzd-process-unverified") from exc
+        if (
+            not stat.S_ISREG(proc_executable_metadata.st_mode)
+            or proc_executable_metadata.st_dev != pinned_metadata.st_dev
+            or proc_executable_metadata.st_ino != pinned_metadata.st_ino
+        ):
+            raise RecoveryError("qbzd-process-unverified")
+
+        pinned_executable = f"/proc/self/fd/{executable_fd}"
+        try:
+            completed = subprocess.run(  # noqa: S603 - executable is the verified pinned fd
+                (pinned_executable, "qconnect", action),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=COMMAND_TIMEOUT_SECONDS,
+                check=False,
+                env={**os.environ, "LC_ALL": "C.UTF-8"},
+                pass_fds=(executable_fd,),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RecoveryError(f"qconnect-command-unavailable:{action}") from exc
+    finally:
+        os.close(executable_fd)
+
+    if len(completed.stdout) > MAX_COMMAND_OUTPUT_BYTES or len(completed.stderr) > MAX_COMMAND_OUTPUT_BYTES:
+        raise RecoveryError(f"qconnect-command-output-limit:{action}")
+    if completed.returncode != 0:
+        raise RecoveryError(f"qconnect-command-failed:{action}")
+    try:
+        return completed.stdout.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise RecoveryError(f"qconnect-command-output-invalid:{action}") from exc
 
 
 def _validate_journal_cursor(value: str) -> str:
@@ -510,7 +595,28 @@ def read_qbzd_service(
         _read_bounded_text(process_root / "cgroup", "qbzd-process-unverified"),
         "qbzd-process-unverified",
     )
-    return QbzdService(pid=pid, start_ticks=start_ticks, cgroup=cgroup)
+    try:
+        executable_text = os.readlink(process_root / "exe")
+    except OSError as exc:
+        raise RecoveryError("qbzd-process-unverified") from exc
+    if (
+        not executable_text
+        or len(executable_text.encode("utf-8", errors="strict")) > 4096
+        or executable_text.endswith(" (deleted)")
+    ):
+        raise RecoveryError("qbzd-process-unverified")
+    executable = pathlib.Path(executable_text)
+    if not executable.is_absolute() or executable.name != "qbzd":
+        raise RecoveryError("qbzd-process-unverified")
+    try:
+        executable_metadata = executable.stat(follow_symlinks=True)
+    except OSError as exc:
+        raise RecoveryError("qbzd-process-unverified") from exc
+    if not stat.S_ISREG(executable_metadata.st_mode):
+        raise RecoveryError("qbzd-process-unverified")
+    return QbzdService(
+        pid=pid, start_ticks=start_ticks, cgroup=cgroup, executable=executable
+    )
 
 
 def _owner_process_identity(owner_tid: int, proc_root: pathlib.Path) -> tuple[int, str]:
@@ -624,6 +730,13 @@ def _default_state(boot_id: str | None = None) -> dict[str, Any]:
         "candidate_pid": None,
         "candidate_start_ticks": None,
         "retry_since_monotonic": None,
+        "qconnect_armed_monotonic": None,
+        "qconnect_armed_pid": None,
+        "qconnect_armed_start_ticks": None,
+        "qconnect_armed_executable": None,
+        "qconnect_reenable_required": False,
+        "qconnect_failures": 0,
+        "qconnect_next_attempt_monotonic": 0.0,
         "failures": 0,
         "next_attempt_monotonic": 0.0,
         "last_recovered_at_unix": None,
@@ -631,6 +744,27 @@ def _default_state(boot_id: str | None = None) -> dict[str, Any]:
         "restart_armed_pid": None,
         "restart_armed_start_ticks": None,
     }
+
+
+def _state_file_from_environment() -> pathlib.Path:
+    raw = os.environ.get("STATE_DIRECTORY", "")
+    if not raw or ":" in raw:
+        raise RecoveryError("state-directory-unavailable")
+    directory = pathlib.Path(raw)
+    if not directory.is_absolute():
+        raise RecoveryError("state-directory-invalid")
+    return directory / "state.json"
+
+
+def _optional_absolute_executable(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 4096:
+        raise RecoveryError("state-invalid:qconnect-armed-executable")
+    path = pathlib.Path(value)
+    if not path.is_absolute() or path.name != "qbzd" or value.endswith(" (deleted)"):
+        raise RecoveryError("state-invalid:qconnect-armed-executable")
+    return value
 
 
 def _load_state(path: pathlib.Path) -> dict[str, Any]:
@@ -655,11 +789,9 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
     if not isinstance(state, dict):
         raise RecoveryError("state-invalid")
     schema_version = state.get("schema_version")
-    if (
-        isinstance(schema_version, bool)
-        or not isinstance(schema_version, int)
-        or schema_version != STATE_SCHEMA_VERSION
-    ):
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise RecoveryError("state-invalid")
+    if schema_version not in {LEGACY_STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION}:
         raise RecoveryError("state-invalid")
 
     boot_id = _optional_boot_id(state.get("boot_id"))
@@ -687,6 +819,44 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
         state.get("restart_armed_start_ticks"), "restart-armed-start-ticks"
     )
 
+    if schema_version == LEGACY_STATE_SCHEMA_VERSION:
+        qconnect_armed = None
+        qconnect_pid = None
+        qconnect_start = None
+        qconnect_executable = None
+        qconnect_reenable_required = False
+        qconnect_failures = 0
+        qconnect_next_attempt = 0.0
+    else:
+        qconnect_armed = _finite_nonnegative(
+            state.get("qconnect_armed_monotonic"),
+            "qconnect-armed-monotonic",
+            allow_none=True,
+        )
+        qconnect_pid = _optional_positive_int(
+            state.get("qconnect_armed_pid"), "qconnect-armed-pid"
+        )
+        qconnect_start = _optional_positive_int(
+            state.get("qconnect_armed_start_ticks"), "qconnect-armed-start-ticks"
+        )
+        qconnect_executable = _optional_absolute_executable(
+            state.get("qconnect_armed_executable")
+        )
+        qconnect_reenable_required = state.get("qconnect_reenable_required")
+        if not isinstance(qconnect_reenable_required, bool):
+            raise RecoveryError("state-invalid:qconnect-reenable-required")
+        qconnect_failures = state.get("qconnect_failures")
+        if (
+            isinstance(qconnect_failures, bool)
+            or not isinstance(qconnect_failures, int)
+            or qconnect_failures < 0
+        ):
+            raise RecoveryError("state-invalid:qconnect-failures")
+        qconnect_next_attempt = _finite_nonnegative(
+            state.get("qconnect_next_attempt_monotonic"),
+            "qconnect-next-attempt-monotonic",
+        )
+
     candidate_values = (candidate_pid, candidate_start, retry_since)
     if any(value is None for value in candidate_values) != all(
         value is None for value in candidate_values
@@ -697,7 +867,21 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
         value is None for value in restart_values
     ):
         raise RecoveryError("state-invalid:restart-binding")
-    if (retry_since is not None or restart_armed is not None) and boot_id is None:
+    qconnect_values = (
+        qconnect_armed,
+        qconnect_pid,
+        qconnect_start,
+        qconnect_executable,
+    )
+    if any(value is None for value in qconnect_values) != all(
+        value is None for value in qconnect_values
+    ):
+        raise RecoveryError("state-invalid:qconnect-binding")
+    if (
+        retry_since is not None
+        or restart_armed is not None
+        or qconnect_armed is not None
+    ) and boot_id is None:
         raise RecoveryError("state-invalid:boot-binding")
 
     return {
@@ -706,6 +890,13 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
         "candidate_pid": candidate_pid,
         "candidate_start_ticks": candidate_start,
         "retry_since_monotonic": retry_since,
+        "qconnect_armed_monotonic": qconnect_armed,
+        "qconnect_armed_pid": qconnect_pid,
+        "qconnect_armed_start_ticks": qconnect_start,
+        "qconnect_armed_executable": qconnect_executable,
+        "qconnect_reenable_required": qconnect_reenable_required,
+        "qconnect_failures": qconnect_failures,
+        "qconnect_next_attempt_monotonic": qconnect_next_attempt,
         "failures": failures,
         "next_attempt_monotonic": next_attempt,
         "last_recovered_at_unix": last_recovered,
@@ -713,7 +904,6 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
         "restart_armed_pid": restart_pid,
         "restart_armed_start_ticks": restart_start,
     }
-
 
 def _store_state(path: pathlib.Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -757,6 +947,25 @@ def _clock_value(clock: Clock, label: str) -> float:
     if not math.isfinite(normalized) or normalized < 0:
         raise RecoveryError(f"clock-invalid:{label}")
     return normalized
+
+
+def _network_reachability_evidence_active(
+    evidence_realtime: float | None, *, now_wall: float
+) -> bool:
+    if evidence_realtime is None:
+        return False
+    if isinstance(evidence_realtime, bool) or not isinstance(
+        evidence_realtime, (int, float)
+    ):
+        raise RecoveryError("network-attestation-time-invalid")
+    observed = float(evidence_realtime)
+    if not math.isfinite(observed) or observed < 0:
+        raise RecoveryError("network-attestation-time-invalid")
+    age = now_wall - observed
+    return (
+        age >= -NETWORK_REACHABILITY_FUTURE_SKEW_SECONDS
+        and age <= NETWORK_REACHABILITY_EVIDENCE_SECONDS
+    )
 
 
 def _is_healthy(status: QbzdStatus) -> bool:
@@ -817,6 +1026,20 @@ def _clear_candidate(
         "candidate_pid": None,
         "candidate_start_ticks": None,
         "retry_since_monotonic": None,
+        "qconnect_armed_monotonic": None,
+        "qconnect_armed_pid": None,
+        "qconnect_armed_start_ticks": None,
+        "qconnect_armed_executable": None,
+        "qconnect_reenable_required": False,
+        "qconnect_failures": 0 if healthy else state["qconnect_failures"],
+        "qconnect_next_attempt_monotonic": (
+            max(
+                float(state["qconnect_next_attempt_monotonic"]),
+                now_monotonic + SUCCESS_COOLDOWN_SECONDS,
+            )
+            if healthy and state["qconnect_armed_monotonic"] is not None
+            else (0.0 if healthy else state["qconnect_next_attempt_monotonic"])
+        ),
     }
     if healthy:
         updated["failures"] = 0
@@ -829,6 +1052,41 @@ def _clear_candidate(
         ):
             updated["next_attempt_monotonic"] = 0.0
     return updated
+
+
+def _qconnect_effect_armed_state(
+    state: dict[str, Any], service: QbzdService, now_monotonic: float
+) -> dict[str, Any]:
+    return {
+        **state,
+        "qconnect_armed_monotonic": now_monotonic,
+        "qconnect_armed_pid": service.pid,
+        "qconnect_armed_start_ticks": service.start_ticks,
+        "qconnect_armed_executable": str(service.executable),
+        "qconnect_reenable_required": True,
+        "qconnect_next_attempt_monotonic": max(
+            float(state["qconnect_next_attempt_monotonic"]),
+            now_monotonic + QCONNECT_FAILURE_BACKOFF_BASE_SECONDS,
+        ),
+    }
+
+
+def _qconnect_failure_state(
+    state: dict[str, Any], now_monotonic: float
+) -> dict[str, Any]:
+    failures = int(state["qconnect_failures"]) + 1
+    exponent = min(failures - 1, 6)
+    delay = min(
+        QCONNECT_FAILURE_BACKOFF_BASE_SECONDS * (2**exponent),
+        QCONNECT_FAILURE_BACKOFF_MAX_SECONDS,
+    )
+    return {
+        **state,
+        "qconnect_failures": failures,
+        "qconnect_next_attempt_monotonic": max(
+            float(state["qconnect_next_attempt_monotonic"]), now_monotonic + delay
+        ),
+    }
 
 
 def _effect_armed_state(
@@ -868,6 +1126,13 @@ def _success_state(
         "candidate_pid": None,
         "candidate_start_ticks": None,
         "retry_since_monotonic": None,
+        "qconnect_armed_monotonic": None,
+        "qconnect_armed_pid": None,
+        "qconnect_armed_start_ticks": None,
+        "qconnect_armed_executable": None,
+        "qconnect_reenable_required": False,
+        "qconnect_failures": 0,
+        "qconnect_next_attempt_monotonic": now_monotonic + SUCCESS_COOLDOWN_SECONDS,
         "failures": 0,
         "next_attempt_monotonic": now_monotonic + SUCCESS_COOLDOWN_SECONDS,
         "last_recovered_at_unix": now_unix,
@@ -877,19 +1142,97 @@ def _success_state(
     }
 
 
+def _qconnect_control_enabled(status: QbzdStatus) -> bool:
+    return status.qconnect_state in {"connected", "retrying", "reconnecting"}
+
+
+def _clear_qconnect_effect_obligation(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **state,
+        "qconnect_armed_monotonic": None,
+        "qconnect_armed_pid": None,
+        "qconnect_armed_start_ticks": None,
+        "qconnect_armed_executable": None,
+        "qconnect_reenable_required": False,
+    }
+
+
+def _legacy_v2_state_projection(state: dict[str, Any]) -> dict[str, Any]:
+    """Project validated current state onto the exact schema-v2 field set."""
+    return {
+        "schema_version": LEGACY_STATE_SCHEMA_VERSION,
+        "boot_id": state["boot_id"],
+        "candidate_pid": state["candidate_pid"],
+        "candidate_start_ticks": state["candidate_start_ticks"],
+        "retry_since_monotonic": state["retry_since_monotonic"],
+        "failures": state["failures"],
+        "next_attempt_monotonic": state["next_attempt_monotonic"],
+        "last_recovered_at_unix": state["last_recovered_at_unix"],
+        "restart_armed_monotonic": state["restart_armed_monotonic"],
+        "restart_armed_pid": state["restart_armed_pid"],
+        "restart_armed_start_ticks": state["restart_armed_start_ticks"],
+    }
+
+
+def prepare_rollback_state(
+    *,
+    state_path: pathlib.Path,
+    status_reader: StatusReader = read_status,
+    service_reader: ServiceReader | None = None,
+    qconnect_action_runner: QconnectActionRunner | None = None,
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+    sleeper: Sleeper = time.sleep,
+) -> str:
+    """Resolve a pending enable obligation, then persist schema v2 for rollback."""
+    try:
+        state = _load_state(state_path)
+        if state["qconnect_reenable_required"]:
+            observed = status_reader()
+            if not _qconnect_control_enabled(observed):
+                service_probe = service_reader or (
+                    lambda: read_qbzd_service(runner=run_command, proc_root=proc_root)
+                )
+                qconnect_effect = qconnect_action_runner or (
+                    lambda service, action: run_qconnect_action(
+                        service, action, proc_root=proc_root
+                    )
+                )
+                service = service_probe()
+                qconnect_effect(service, "enable")
+                restored = False
+                for attempt in range(QCONNECT_READBACK_ATTEMPTS):
+                    try:
+                        if _qconnect_control_enabled(status_reader()):
+                            restored = True
+                            break
+                    except RecoveryError:
+                        pass
+                    if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
+                        sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
+                if not restored:
+                    return "blocked:qconnect-reenable-readback"
+            state = _clear_qconnect_effect_obligation(state)
+
+        _store_state(state_path, _legacy_v2_state_projection(state))
+        return "rollback-state:v2-ready"
+    except RecoveryError as exc:
+        return f"blocked:{exc}"
+
+
 def reconcile_once(
     *,
     state_path: pathlib.Path,
     status_reader: StatusReader = read_status,
     service_reader: ServiceReader | None = None,
     runner: Runner = run_command,
+    qconnect_action_runner: QconnectActionRunner | None = None,
     proc_root: pathlib.Path = pathlib.Path("/proc"),
     pcm_idle_checker: PcmIdleChecker | None = None,
     sleeper: Sleeper = time.sleep,
     monotonic_clock: Clock = time.monotonic,
     wall_clock: Clock = time.time,
     boot_id_reader: BootIdReader | None = None,
-    allow_network_offline: bool = False,
+    network_reachability_evidence_realtime: float | None = None,
 ) -> str:
     try:
         state = _load_state(state_path)
@@ -899,10 +1242,63 @@ def reconcile_once(
         now_monotonic = _clock_value(monotonic_clock, "monotonic")
         now_unix = _clock_value(wall_clock, "wall")
         if state["boot_id"] not in {None, boot_id}:
+            reenable_required = bool(state["qconnect_reenable_required"])
             state = _default_state(boot_id)
+            if reenable_required:
+                state["qconnect_reenable_required"] = True
             _store_state(state_path, state)
         elif state["boot_id"] is None:
             state = {**state, "boot_id": boot_id}
+
+        service_probe = service_reader or (
+            lambda: read_qbzd_service(runner=runner, proc_root=proc_root)
+        )
+        qconnect_effect = qconnect_action_runner or (
+            lambda service, action: run_qconnect_action(
+                service, action, proc_root=proc_root
+            )
+        )
+
+        # A successful or outcome-unknown disable creates a durable obligation
+        # to restore QConnect. Resolve it before any further recovery effect,
+        # including a daemon restart. The obligation intentionally survives a
+        # host or QBZD restart because the disable setting may persist.
+        if state["qconnect_reenable_required"] and not _is_healthy(first):
+            if _qconnect_control_enabled(first):
+                state = _clear_qconnect_effect_obligation(state)
+                _store_state(state_path, state)
+            else:
+                restore_service = service_probe()
+                try:
+                    qconnect_effect(restore_service, "enable")
+                except RecoveryError as exc:
+                    failed_at = _clock_value(monotonic_clock, "monotonic")
+                    state = _qconnect_failure_state(state, failed_at)
+                    _store_state(state_path, state)
+                    return f"blocked:qconnect-reenable:{exc}"
+
+                restored_status: QbzdStatus | None = None
+                for attempt in range(QCONNECT_READBACK_ATTEMPTS):
+                    observed = status_reader()
+                    if _qconnect_control_enabled(observed):
+                        restored_status = observed
+                        break
+                    if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
+                        sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
+                restored_at = _clock_value(monotonic_clock, "monotonic")
+                restored_unix = _clock_value(wall_clock, "wall")
+                if restored_status is None:
+                    state = _qconnect_failure_state(state, restored_at)
+                    _store_state(state_path, state)
+                    return "blocked:qconnect-reenable-readback"
+                if _is_healthy(restored_status):
+                    _store_state(
+                        state_path, _success_state(boot_id, restored_at, restored_unix)
+                    )
+                    return "recovered:qconnect-reenabled"
+                state = _clear_qconnect_effect_obligation(state)
+                _store_state(state_path, state)
+                return "restored:qconnect-enabled"
 
         if _is_healthy(first):
             cleared = _clear_candidate(
@@ -915,7 +1311,12 @@ def reconcile_once(
             if cleared != state:
                 _store_state(state_path, cleared)
             return "noop:connected"
-        if not _is_recovery_candidate(first, allow_network_offline=allow_network_offline):
+        if not _is_recovery_candidate(
+            first,
+            allow_network_offline=_network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=now_unix
+            ),
+        ):
             if state["retry_since_monotonic"] is not None:
                 updated = _clear_candidate(
                     state,
@@ -929,13 +1330,8 @@ def reconcile_once(
                 _store_state(state_path, {**state, "boot_id": boot_id})
             return "noop:not-candidate"
 
-        service_probe = service_reader or (
-            lambda: read_qbzd_service(runner=runner, proc_root=proc_root)
-        )
         pcm_idle = pcm_idle_checker or (
-            lambda service: require_qbzd_pcm_idle(
-                service, proc_root=proc_root
-            )
+            lambda service: require_qbzd_pcm_idle(service, proc_root=proc_root)
         )
         service = service_probe()
         retry_since = state["retry_since_monotonic"]
@@ -947,9 +1343,180 @@ def reconcile_once(
             armed = _arm_candidate(state, boot_id, service, now_monotonic)
             _store_state(state_path, armed)
             return "armed"
-        if now_monotonic - float(retry_since) < STUCK_SECONDS:
+
+        stuck_age = now_monotonic - float(retry_since)
+        if stuck_age < QCONNECT_CYCLE_STUCK_SECONDS:
             return "noop:stabilizing"
-        if now_monotonic < float(state["next_attempt_monotonic"]):
+
+        # First repair only the QConnect session. This is materially narrower
+        # than restarting QBZD and is the operation proven to recover the live
+        # Cloud-auth/reconnect loop. The effect is bound to the exact running
+        # binary and process identity, and is durably armed before disable.
+        qconnect_due = now_monotonic >= float(state["qconnect_next_attempt_monotonic"])
+        restart_now = now_monotonic
+        if qconnect_due:
+            pcm_idle(service)
+            sleeper(STABILIZATION_SECONDS)
+            second = status_reader()
+            second_monotonic = _clock_value(monotonic_clock, "monotonic")
+            second_unix = _clock_value(wall_clock, "wall")
+            if _is_healthy(second):
+                _store_state(
+                    state_path,
+                    _clear_candidate(
+                        state,
+                        healthy=True,
+                        boot_id=boot_id,
+                        now_monotonic=second_monotonic,
+                        now_unix=second_unix,
+                    ),
+                )
+                return "noop:recovered-naturally"
+            if not _is_recovery_candidate(
+                second,
+                allow_network_offline=_network_reachability_evidence_active(
+                    network_reachability_evidence_realtime, now_wall=second_unix
+                ),
+            ):
+                _store_state(
+                    state_path,
+                    _clear_candidate(
+                        state,
+                        healthy=False,
+                        boot_id=boot_id,
+                        now_monotonic=second_monotonic,
+                        now_unix=second_unix,
+                    ),
+                )
+                return "noop:changed"
+            if boot_probe() != boot_id:
+                _store_state(state_path, _default_state(boot_probe()))
+                return "noop:boot-changed"
+            second_service = service_probe()
+            if second_service != service:
+                _store_state(
+                    state_path,
+                    _arm_candidate(state, boot_id, second_service, second_monotonic),
+                )
+                return "noop:qbzd-restarted"
+            pcm_idle(second_service)
+
+            final_status = status_reader()
+            final_monotonic = _clock_value(monotonic_clock, "monotonic")
+            final_unix = _clock_value(wall_clock, "wall")
+            if _is_healthy(final_status):
+                _store_state(
+                    state_path,
+                    _clear_candidate(
+                        state,
+                        healthy=True,
+                        boot_id=boot_id,
+                        now_monotonic=final_monotonic,
+                        now_unix=final_unix,
+                    ),
+                )
+                return "noop:recovered-naturally"
+            if not _is_recovery_candidate(
+                final_status,
+                allow_network_offline=_network_reachability_evidence_active(
+                    network_reachability_evidence_realtime, now_wall=final_unix
+                ),
+            ):
+                _store_state(
+                    state_path,
+                    _clear_candidate(
+                        state,
+                        healthy=False,
+                        boot_id=boot_id,
+                        now_monotonic=final_monotonic,
+                        now_unix=final_unix,
+                    ),
+                )
+                return "noop:changed"
+            if boot_probe() != boot_id:
+                _store_state(state_path, _default_state(boot_probe()))
+                return "noop:boot-changed"
+            final_service = service_probe()
+            if final_service != service:
+                _store_state(
+                    state_path,
+                    _arm_candidate(state, boot_id, final_service, final_monotonic),
+                )
+                return "noop:qbzd-restarted"
+            pcm_idle(final_service)
+
+            effect_monotonic = _clock_value(monotonic_clock, "monotonic")
+            if final_status.network_online is False:
+                effect_unix = _clock_value(wall_clock, "wall")
+                if not _network_reachability_evidence_active(
+                    network_reachability_evidence_realtime, now_wall=effect_unix
+                ):
+                    return "blocked:network-attestation-expired"
+            qconnect_armed = _qconnect_effect_armed_state(
+                state, final_service, effect_monotonic
+            )
+            _store_state(state_path, qconnect_armed)
+            qconnect_error: RecoveryError | None = None
+            try:
+                qconnect_effect(final_service, "disable")
+                # disable and enable are separate processes; prove that the
+                # daemon has not exec/restarted between them.
+                mid_service = service_probe()
+                if mid_service != final_service:
+                    raise RecoveryError("qbzd-process-changed-during-qconnect-cycle")
+                qconnect_effect(mid_service, "enable")
+            except RecoveryError as exc:
+                qconnect_error = exc
+
+            qconnect_recovered = False
+            qconnect_enabled_observed = False
+            if qconnect_error is None:
+                for attempt in range(QCONNECT_READBACK_ATTEMPTS):
+                    try:
+                        after = status_reader()
+                        if _qconnect_control_enabled(after):
+                            qconnect_enabled_observed = True
+                        if _is_healthy(after):
+                            if service_probe() != final_service:
+                                raise RecoveryError("qbzd-process-changed-after-qconnect-cycle")
+                            qconnect_recovered = True
+                            break
+                    except RecoveryError:
+                        pass
+                    if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
+                        sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
+            if qconnect_enabled_observed:
+                qconnect_armed = _clear_qconnect_effect_obligation(qconnect_armed)
+            completion_monotonic = _clock_value(monotonic_clock, "monotonic")
+            completion_unix = _clock_value(wall_clock, "wall")
+            restart_now = completion_monotonic
+            if qconnect_recovered:
+                _store_state(
+                    state_path,
+                    _success_state(boot_id, completion_monotonic, completion_unix),
+                )
+                return "recovered:qconnect"
+
+            state = _qconnect_failure_state(qconnect_armed, completion_monotonic)
+            _store_state(state_path, state)
+            if state["qconnect_reenable_required"]:
+                if qconnect_error is not None:
+                    return f"blocked:{qconnect_error}"
+                return "blocked:qconnect-reenable-required"
+            if stuck_age < STUCK_SECONDS:
+                if qconnect_error is not None:
+                    return f"blocked:{qconnect_error}"
+                return "blocked:qconnect-readback"
+        elif stuck_age < STUCK_SECONDS:
+            return "noop:qconnect-backoff"
+
+        # Only after the original five-minute safety window may the broader
+        # daemon restart fallback run. Keep the original three-gate restart
+        # sequence intact so the narrower QConnect repair cannot weaken its
+        # process, PCM-idle, boot or readback guarantees.
+        if stuck_age < STUCK_SECONDS:
+            return "noop:stabilizing"
+        if restart_now < float(state["next_attempt_monotonic"]):
             return "noop:backoff"
 
         pcm_idle(service)
@@ -969,7 +1536,12 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(second, allow_network_offline=allow_network_offline):
+        if not _is_recovery_candidate(
+            second,
+            allow_network_offline=_network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=second_unix
+            ),
+        ):
             _store_state(
                 state_path,
                 _clear_candidate(
@@ -1011,7 +1583,12 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(final_status, allow_network_offline=allow_network_offline):
+        if not _is_recovery_candidate(
+            final_status,
+            allow_network_offline=_network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=final_unix
+            ),
+        ):
             _store_state(
                 state_path,
                 _clear_candidate(
@@ -1036,10 +1613,16 @@ def reconcile_once(
         pcm_idle(final_service)
 
         effect_monotonic = _clock_value(monotonic_clock, "monotonic")
+        if final_status.network_online is False:
+            effect_unix = _clock_value(wall_clock, "wall")
+            if not _network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=effect_unix
+            ):
+                return "blocked:network-attestation-expired"
         armed_effect = _effect_armed_state(state, final_service, effect_monotonic)
-        # Persist the attempt and minimum backoff before the only mutation. If
-        # systemctl loses its reply or the process dies after this fsync, the
-        # next observer run cannot immediately repeat the restart.
+        # Persist the attempt and minimum backoff before the only broad
+        # mutation. If systemctl loses its reply or the process dies after this
+        # fsync, the next observer run cannot immediately repeat the restart.
         _store_state(state_path, armed_effect)
         runner(("systemctl", "--user", "try-restart", QBZD_UNIT))
 
@@ -1070,7 +1653,6 @@ def reconcile_once(
     except RecoveryError as exc:
         return f"blocked:{exc}"
 
-
 def _fast_followup_required(result: str) -> bool:
     # Only a positively healthy QConnect read may enter the quiet journal-led
     # mode. Any disconnected, offline, logged-out, changed, blocked or otherwise
@@ -1080,6 +1662,7 @@ def _fast_followup_required(result: str) -> bool:
         "noop:connected",
         "noop:recovered-naturally",
         "recovered",
+        "recovered:qconnect",
     }
 
 
@@ -1199,8 +1782,6 @@ def run_loop(
                 or evidence_age > NETWORK_REACHABILITY_EVIDENCE_SECONDS
             ):
                 network_evidence_realtime = None
-        allow_network_offline = network_evidence_realtime is not None
-
         reason = adaptive_poll_reason(
             fast_followup=fast_followup,
             journal_available=journal_available,
@@ -1212,7 +1793,7 @@ def run_loop(
             if reconciler is None:
                 result = reconcile_once(
                     state_path=state_path,
-                    allow_network_offline=allow_network_offline,
+                    network_reachability_evidence_realtime=network_evidence_realtime,
                 )
             else:
                 result = reconciler(state_path)
@@ -1235,10 +1816,21 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("check")
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--state-file", type=pathlib.Path, required=True)
+    rollback_parser = subparsers.add_parser("prepare-rollback")
+    rollback_parser.add_argument("--state-file", type=pathlib.Path)
     args = parser.parse_args(argv)
     if args.command == "check":
         check_contract()
         return 0
+    if args.command == "prepare-rollback":
+        try:
+            state_file = args.state_file or _state_file_from_environment()
+        except RecoveryError as exc:
+            result = f"blocked:{exc}"
+        else:
+            result = prepare_rollback_state(state_path=state_file)
+        print(json.dumps({"qbzd_qconnect_recovery": result}), flush=True)
+        return 0 if result == "rollback-state:v2-ready" else 1
     run_loop(args.state_file)
     return 0
 
