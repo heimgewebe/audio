@@ -1123,6 +1123,17 @@ def _is_recovery_candidate(
     )
 
 
+def _is_daemon_restart_candidate(
+    status: QbzdStatus, *, allow_network_offline: bool = False
+) -> bool:
+    # The paused-open exception is deliberately QConnect-only.  A full QBZD
+    # restart must retain the original status-level closed-device requirement
+    # in addition to the independent /proc/asound PCM-idle proof.
+    return status.device_open is False and _is_recovery_candidate(
+        status, allow_network_offline=allow_network_offline
+    )
+
+
 def _candidate_binding_matches(
     state: dict[str, Any], boot_id: str, service: QbzdService
 ) -> bool:
@@ -1705,6 +1716,13 @@ def reconcile_once(
         if restart_now < float(state["next_attempt_monotonic"]):
             return "noop:backoff"
 
+        if not _is_daemon_restart_candidate(
+            first,
+            allow_network_offline=_network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=now_unix
+            ),
+        ):
+            return "blocked:audio-open-for-daemon-restart"
         pcm_idle(service)
         sleeper(STABILIZATION_SECONDS)
         second = status_reader()
@@ -1722,7 +1740,7 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(
+        if not _is_daemon_restart_candidate(
             second,
             allow_network_offline=_network_reachability_evidence_active(
                 network_reachability_evidence_realtime, now_wall=second_unix
@@ -1769,7 +1787,7 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(
+        if not _is_daemon_restart_candidate(
             final_status,
             allow_network_offline=_network_reachability_evidence_active(
                 network_reachability_evidence_realtime, now_wall=final_unix

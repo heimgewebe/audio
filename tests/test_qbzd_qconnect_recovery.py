@@ -448,6 +448,60 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(result, "noop:not-candidate")
             self.assertEqual(runner.commands, [])
 
+    def test_paused_open_candidate_never_enters_daemon_restart_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(state_path, self.candidate_state())
+            runner = FakeRunner()
+            checked = []
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(opened=True)],
+                services=[SERVICE_A],
+                monotonic=[500.0],
+                runner=runner,
+                pcm=lambda service: checked.append(service),
+            )
+            self.assertEqual(result, "blocked:audio-open-for-daemon-restart")
+            self.assertEqual(runner.commands, [])
+            self.assertEqual(checked, [])
+
+    def test_daemon_restart_rechecks_closed_device_after_stabilization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(state_path, self.candidate_state())
+            runner = FakeRunner()
+            checked = []
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(), status(opened=True)],
+                services=[SERVICE_A],
+                monotonic=[500.0, 502.0],
+                runner=runner,
+                pcm=lambda service: checked.append(service),
+            )
+            self.assertEqual(result, "noop:changed")
+            self.assertEqual(runner.commands, [])
+            self.assertEqual(checked, [SERVICE_A])
+
+    def test_daemon_restart_rechecks_closed_device_at_effect_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(state_path, self.candidate_state())
+            runner = FakeRunner()
+            checked = []
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(), status(), status(opened=True)],
+                services=[SERVICE_A, SERVICE_A],
+                monotonic=[500.0, 502.0, 503.0],
+                runner=runner,
+                pcm=lambda service: checked.append(service),
+            )
+            self.assertEqual(result, "noop:changed")
+            self.assertEqual(runner.commands, [])
+            self.assertEqual(checked, [SERVICE_A, SERVICE_A])
+
     def test_paused_open_state_requires_network_truth_and_never_allows_playing(self):
         exhausted = status(qconnect="exhausted", online=False, opened=True)
         self.assertFalse(MODULE._is_recovery_candidate(exhausted))
@@ -618,8 +672,8 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 pcm=block_open_pcm,
                 pcm_owned=lambda _service: None,
             )
-            self.assertEqual(result, "blocked:qbzd-pcm-open")
-            self.assertEqual(idle_checks, [SERVICE_A])
+            self.assertEqual(result, "blocked:audio-open-for-daemon-restart")
+            self.assertEqual(idle_checks, [])
             self.assertEqual(qconnect.commands, [])
             self.assertEqual(runner.commands, [])
 
