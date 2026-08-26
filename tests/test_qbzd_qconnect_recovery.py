@@ -1488,6 +1488,34 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             )
             self.assertEqual(runner.commands, [])
 
+    def test_reenable_obligation_accepts_exhausted_as_enabled_control_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            state = self.candidate_state(qconnect_next_attempt=0.0)
+            state = MODULE._qconnect_effect_armed_state(state, SERVICE_A, 203.5)
+            MODULE._store_state(state_path, state)
+
+            qconnect = FakeQconnectRunner()
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[
+                    status(qconnect="disabled"),
+                    status(qconnect="exhausted", online=False, opened=False),
+                ],
+                services=[SERVICE_A],
+                monotonic=[300.0, 301.0],
+                wall=[1000.0, 1001.0],
+                qconnect_runner=qconnect,
+                network_evidence_realtime=1000.0,
+            )
+            self.assertEqual(result, "restored:qconnect-enabled")
+            self.assertEqual(
+                [action for _service, action in qconnect.commands], ["enable"]
+            )
+            self.assertFalse(
+                MODULE._load_state(state_path)["qconnect_reenable_required"]
+            )
+
     def test_qconnect_enable_failure_from_disabled_state_retries_only_enable(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = self.state_path(tmp)

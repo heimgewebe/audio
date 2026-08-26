@@ -1153,7 +1153,7 @@ def _success_state(
 
 
 def _qconnect_control_enabled(status: QbzdStatus) -> bool:
-    return status.qconnect_state in {"connected", "retrying", "reconnecting"}
+    return status.qconnect_state in {"connected", "retrying", "reconnecting", "exhausted"}
 
 
 def _clear_qconnect_effect_obligation(state: dict[str, Any]) -> dict[str, Any]:
