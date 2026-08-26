@@ -1479,9 +1479,11 @@ def reconcile_once(
 
         if state["qconnect_reenable_required"] and not _is_healthy(first):
             # The obligation itself is stronger than any lifecycle snapshot.
-            # Always retry the idempotent enable. In particular, a stale
-            # `exhausted` status after an outcome-unknown enable must never be
-            # allowed to clear this durable safety state without a new command.
+            # It must never be cleared by stale `exhausted`/retry lifecycle
+            # metadata, but repeated idempotent enable attempts still honor the
+            # durable QConnect failure backoff.
+            if now_monotonic < float(state["qconnect_next_attempt_monotonic"]):
+                return "noop:qconnect-backoff"
             restore_service = service_probe()
             try:
                 qconnect_effect(restore_service, "enable")
