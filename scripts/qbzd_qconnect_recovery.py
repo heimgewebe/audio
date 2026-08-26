@@ -82,6 +82,9 @@ class QbzdStatus:
     configured_device: str
     device_present: bool
     device_open: bool
+    playback_state: str
+    playback_track_id: int | None
+    playback_position: float | None
     uptime_secs: int
 
 
@@ -111,6 +114,7 @@ Runner = Callable[[tuple[str, ...]], str]
 Sleeper = Callable[[float], None]
 ServiceReader = Callable[[], QbzdService]
 PcmIdleChecker = Callable[[QbzdService], None]
+PcmOwnedChecker = Callable[[QbzdService], None]
 Clock = Callable[[], float]
 BootIdReader = Callable[[], str]
 JournalReader = Callable[[str | None], JournalDelta]
@@ -152,6 +156,7 @@ def classify_status_payload(payload: Any) -> QbzdStatus:
     network = _require_dict(root.get("network"), "network")
     qconnect = _require_dict(root.get("qconnect"), "qconnect")
     audio = _require_dict(root.get("audio"), "audio")
+    playback = _require_dict(root.get("playback"), "playback")
     fields: tuple[tuple[str, Any, type], ...] = (
         ("auth.state", auth.get("state"), str),
         ("network.online", network.get("online"), bool),
@@ -161,10 +166,35 @@ def classify_status_payload(payload: Any) -> QbzdStatus:
         ("audio.configured_device", audio.get("configured_device"), str),
         ("audio.device_present", audio.get("device_present"), bool),
         ("audio.device_open", audio.get("device_open"), bool),
+        ("playback.state", playback.get("state"), str),
     )
     for label, value, expected in fields:
         if not isinstance(value, expected):
             raise RecoveryError(f"status-invalid:{label}")
+
+    playback_state = playback["state"]
+    if not playback_state or len(playback_state.encode("utf-8")) > 64:
+        raise RecoveryError("status-invalid:playback.state")
+    playback_track_id = playback.get("track_id")
+    if playback_track_id is not None and (
+        isinstance(playback_track_id, bool)
+        or not isinstance(playback_track_id, int)
+        or playback_track_id <= 0
+    ):
+        raise RecoveryError("status-invalid:playback.track_id")
+    raw_position = playback.get("position")
+    if raw_position is None:
+        playback_position = None
+    elif isinstance(raw_position, bool) or not isinstance(raw_position, (int, float)):
+        raise RecoveryError("status-invalid:playback.position")
+    else:
+        try:
+            playback_position = float(raw_position)
+        except (OverflowError, ValueError) as exc:
+            raise RecoveryError("status-invalid:playback.position") from exc
+        if not math.isfinite(playback_position) or playback_position < 0:
+            raise RecoveryError("status-invalid:playback.position")
+
     return QbzdStatus(
         api_version=1,
         version=version,
@@ -176,6 +206,9 @@ def classify_status_payload(payload: Any) -> QbzdStatus:
         configured_device=audio["configured_device"],
         device_present=audio["device_present"],
         device_open=audio["device_open"],
+        playback_state=playback_state,
+        playback_track_id=playback_track_id,
+        playback_position=playback_position,
         uptime_secs=uptime,
     )
 
@@ -676,6 +709,93 @@ def require_qbzd_pcm_idle(
             raise RecoveryError("qbzd-pcm-open")
 
 
+def require_qbzd_pcm_owned(
+    service: QbzdService,
+    *,
+    asound_root: pathlib.Path = pathlib.Path("/proc/asound"),
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+) -> None:
+    """Require the target MOTU playback PCM to be owned by exact live QBZD.
+
+    The paused-open QConnect exception is intentionally bound to the configured
+    ``front:CARD=M2,DEV=0`` playback endpoint. An unrelated QBZD-owned PCM must
+    never satisfy this gate, and any open target substream with foreign or
+    merely same-cgroup-helper ownership fails closed. Daemon restart continues
+    to use :func:`require_qbzd_pcm_idle` instead.
+    """
+    if service.pid <= 0 or service.start_ticks <= 0 or not service.cgroup.startswith("/"):
+        raise RecoveryError("qbzd-pcm-owner-invalid")
+    process_root = proc_root / str(service.pid)
+    current_start = _parse_start_ticks(
+        _read_bounded_text(process_root / "stat", "qbzd-process-unverified")
+    )
+    current_cgroup = _parse_unified_cgroup(
+        _read_bounded_text(process_root / "cgroup", "qbzd-process-unverified"),
+        "qbzd-process-unverified",
+    )
+    if current_start != service.start_ticks or current_cgroup != service.cgroup:
+        raise RecoveryError("qbzd-process-unverified")
+
+    try:
+        card_id_paths = sorted(asound_root.glob("card*/id"))
+    except OSError as exc:
+        raise RecoveryError("alsa-card-id-unavailable") from exc
+    if not card_id_paths or len(card_id_paths) > MAX_PCM_STATUS_FILES:
+        raise RecoveryError("alsa-card-id-unavailable")
+    target_cards: list[pathlib.Path] = []
+    for card_id_path in card_id_paths:
+        if _read_bounded_text(card_id_path, "alsa-card-id-unavailable") == "M2":
+            target_cards.append(card_id_path.parent)
+    if len(target_cards) != 1:
+        raise RecoveryError("alsa-target-card-ambiguous")
+
+    try:
+        status_paths = sorted(target_cards[0].glob("pcm0p/sub*/status"))
+    except OSError as exc:
+        raise RecoveryError("alsa-target-status-unavailable") from exc
+    if not status_paths or len(status_paths) > MAX_PCM_STATUS_FILES:
+        raise RecoveryError("alsa-target-status-unavailable")
+
+    exact_owner_found = False
+    for status_path in status_paths:
+        text = _read_bounded_text(status_path, "alsa-target-status-unavailable")
+        if text == "closed":
+            continue
+        owner_tid: int | None = None
+        for line in text.splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key.strip() == "owner_pid":
+                candidate = value.strip()
+                if not candidate.isdigit() or int(candidate) <= 0:
+                    raise RecoveryError("alsa-owner-unreadable")
+                owner_tid = int(candidate)
+                break
+        if owner_tid is None:
+            raise RecoveryError("alsa-owner-unreadable")
+        tgid, owner_cgroup = _owner_process_identity(owner_tid, proc_root)
+        if tgid != service.pid or owner_cgroup != service.cgroup:
+            raise RecoveryError("qbzd-target-pcm-owner-mismatch")
+        exact_owner_found = True
+    if not exact_owner_found:
+        raise RecoveryError("qbzd-target-pcm-owner-not-found")
+
+
+def _paused_playback_fingerprint(status: QbzdStatus) -> tuple[int, float] | None:
+    if (
+        status.device_open is not True
+        or status.playback_state != "paused"
+        or status.playback_track_id is None
+        or status.playback_position is None
+    ):
+        return None
+    return status.playback_track_id, status.playback_position
+
+
+def _same_paused_playback(first: QbzdStatus, later: QbzdStatus) -> bool:
+    first_fingerprint = _paused_playback_fingerprint(first)
+    return first_fingerprint is not None and first_fingerprint == _paused_playback_fingerprint(later)
+
+
 def read_boot_id(*, proc_root: pathlib.Path = pathlib.Path("/proc")) -> str:
     raw = _read_bounded_text(
         proc_root / "sys" / "kernel" / "random" / "boot_id",
@@ -975,25 +1095,24 @@ def _is_healthy(status: QbzdStatus) -> bool:
 def _is_recovery_candidate(
     status: QbzdStatus, *, allow_network_offline: bool = False
 ) -> bool:
-    # The normal reconnect path should still require the coarse QBZD device-open
-    # signal to be false.  The observed terminal exhausted state can instead
-    # report device_open=true while playback is paused.  Recognising that state
-    # does not grant effect authority; every
-    # QConnect cycle and daemon restart still passes require_qbzd_pcm_idle(),
-    # which binds the real /proc/asound owner to the exact QBZD process/cgroup.
-    retrying_candidate = (
-        status.qconnect_state in {"retrying", "reconnecting"}
-        and status.device_open is False
+    qconnect_stuck = status.qconnect_state in {
+        "retrying",
+        "reconnecting",
+        "exhausted",
+    }
+    audio_effect_candidate = (
+        status.device_open is False
+        or _paused_playback_fingerprint(status) is not None
     )
-    exhausted_candidate = status.qconnect_state == "exhausted"
     return (
         status.auth_state == "logged_in"
         and (status.network_online is True or allow_network_offline)
-        and (retrying_candidate or exhausted_candidate)
+        and qconnect_stuck
         and status.session_active is False
         and status.audio_backend.casefold() == "alsa"
         and status.configured_device == EXPECTED_DEVICE
         and status.device_present is True
+        and audio_effect_candidate
     )
 
 
@@ -1238,6 +1357,7 @@ def reconcile_once(
     qconnect_action_runner: QconnectActionRunner | None = None,
     proc_root: pathlib.Path = pathlib.Path("/proc"),
     pcm_idle_checker: PcmIdleChecker | None = None,
+    pcm_owned_checker: PcmOwnedChecker | None = None,
     sleeper: Sleeper = time.sleep,
     monotonic_clock: Clock = time.monotonic,
     wall_clock: Clock = time.time,
@@ -1343,6 +1463,9 @@ def reconcile_once(
         pcm_idle = pcm_idle_checker or (
             lambda service: require_qbzd_pcm_idle(service, proc_root=proc_root)
         )
+        pcm_owned = pcm_owned_checker or (
+            lambda service: require_qbzd_pcm_owned(service, proc_root=proc_root)
+        )
         service = service_probe()
         retry_since = state["retry_since_monotonic"]
         if (
@@ -1374,7 +1497,11 @@ def reconcile_once(
         qconnect_due = now_monotonic >= float(state["qconnect_next_attempt_monotonic"])
         restart_now = now_monotonic
         if qconnect_due:
-            pcm_idle(service)
+            paused_open_cycle = _paused_playback_fingerprint(first) is not None
+            if paused_open_cycle:
+                pcm_owned(service)
+            else:
+                pcm_idle(service)
             sleeper(STABILIZATION_SECONDS)
             second = status_reader()
             second_monotonic = _clock_value(monotonic_clock, "monotonic")
@@ -1418,7 +1545,14 @@ def reconcile_once(
                     _arm_candidate(state, boot_id, second_service, second_monotonic),
                 )
                 return "noop:qbzd-restarted"
-            pcm_idle(second_service)
+            if paused_open_cycle:
+                if not _same_paused_playback(first, second):
+                    return "blocked:playback-not-stably-paused"
+                pcm_owned(second_service)
+            else:
+                if second.device_open is not False:
+                    return "blocked:audio-open-state-changed"
+                pcm_idle(second_service)
 
             final_status = status_reader()
             final_monotonic = _clock_value(monotonic_clock, "monotonic")
@@ -1462,7 +1596,33 @@ def reconcile_once(
                     _arm_candidate(state, boot_id, final_service, final_monotonic),
                 )
                 return "noop:qbzd-restarted"
-            pcm_idle(final_service)
+            if paused_open_cycle:
+                if not _same_paused_playback(first, final_status):
+                    return "blocked:playback-not-stably-paused"
+                pcm_owned(final_service)
+                # The owner scan can take longer than a status read. Re-read
+                # playback *after* that final scan so a resume cannot hide
+                # behind a still-valid QBZD-owned PCM handle. This deliberately
+                # leaves only the unavoidable sub-call gap to the durable arm
+                # and pinned QConnect control execution.
+                edge_status = status_reader()
+                edge_unix = _clock_value(wall_clock, "wall")
+                if not _is_recovery_candidate(
+                    edge_status,
+                    allow_network_offline=_network_reachability_evidence_active(
+                        network_reachability_evidence_realtime, now_wall=edge_unix
+                    ),
+                ):
+                    return "blocked:playback-changed-at-effect-edge"
+                if not _same_paused_playback(first, edge_status):
+                    return "blocked:playback-changed-at-effect-edge"
+                if service_probe() != final_service:
+                    return "blocked:qbzd-process-changed-at-effect-edge"
+                final_status = edge_status
+            else:
+                if final_status.device_open is not False:
+                    return "blocked:audio-open-state-changed"
+                pcm_idle(final_service)
 
             effect_monotonic = _clock_value(monotonic_clock, "monotonic")
             if final_status.network_online is False:

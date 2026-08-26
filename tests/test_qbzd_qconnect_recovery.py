@@ -38,6 +38,9 @@ def status(
     device="front:CARD=M2,DEV=0",
     present=True,
     opened=False,
+    playback_state="paused",
+    track_id=123456,
+    position=0.0,
     uptime=100,
 ):
     return MODULE.QbzdStatus(
@@ -51,12 +54,15 @@ def status(
         configured_device=device,
         device_present=present,
         device_open=opened,
+        playback_state=playback_state,
+        playback_track_id=track_id,
+        playback_position=position,
         uptime_secs=uptime,
     )
 
 
-def healthy(*, uptime=200):
-    return status(qconnect="connected", session=True, uptime=uptime)
+def healthy(*, uptime=200, **kwargs):
+    return status(qconnect="connected", session=True, uptime=uptime, **kwargs)
 
 
 class SequenceReader:
@@ -171,6 +177,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
         runner=None,
         qconnect_runner=None,
         pcm=None,
+        pcm_owned=None,
         boot=BOOT,
         network_evidence_realtime=None,
     ):
@@ -181,6 +188,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             runner=runner or FakeRunner(),
             qconnect_action_runner=qconnect_runner or FakeQconnectRunner(),
             pcm_idle_checker=pcm or (lambda _service: None),
+            pcm_owned_checker=pcm_owned or (lambda _service: None),
             sleeper=lambda _seconds: None,
             monotonic_clock=SequenceClock(monotonic),
             wall_clock=SequenceClock(wall or [1000.0] * 20),
@@ -203,7 +211,12 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                     "device_present": True,
                     "device_open": False,
                 },
-                "playback": {"title": "private metadata is ignored"},
+                "playback": {
+                    "state": "paused",
+                    "track_id": 99457447,
+                    "position": 0,
+                    "title": "private metadata is ignored",
+                },
             }
         )
         self.assertTrue(MODULE._is_recovery_candidate(parsed))
@@ -427,7 +440,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             runner = FakeRunner()
             result = self.reconcile(
                 state_path=state_path,
-                statuses=[status(opened=True)],
+                statuses=[status(opened=True, playback_state="playing")],
                 services=[],
                 monotonic=[500.0],
                 runner=runner,
@@ -435,14 +448,24 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(result, "noop:not-candidate")
             self.assertEqual(runner.commands, [])
 
-    def test_exhausted_state_requires_network_truth_but_not_coarse_device_closed(self):
-        observed = status(qconnect="exhausted", online=False, opened=True)
-        self.assertFalse(MODULE._is_recovery_candidate(observed))
+    def test_paused_open_state_requires_network_truth_and_never_allows_playing(self):
+        exhausted = status(qconnect="exhausted", online=False, opened=True)
+        self.assertFalse(MODULE._is_recovery_candidate(exhausted))
         self.assertTrue(
-            MODULE._is_recovery_candidate(observed, allow_network_offline=True)
+            MODULE._is_recovery_candidate(exhausted, allow_network_offline=True)
+        )
+        self.assertTrue(
+            MODULE._is_recovery_candidate(status(qconnect="retrying", opened=True))
         )
         self.assertFalse(
-            MODULE._is_recovery_candidate(status(qconnect="retrying", opened=True))
+            MODULE._is_recovery_candidate(
+                status(qconnect="retrying", opened=True, playback_state="playing")
+            )
+        )
+        self.assertFalse(
+            MODULE._is_recovery_candidate(
+                status(qconnect="retrying", opened=True, track_id=None)
+            )
         )
 
     def test_exhausted_open_pcm_is_explicitly_blocked_before_qconnect_effect(self):
@@ -463,11 +486,166 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 monotonic=[200.0],
                 wall=[1000.0],
                 qconnect_runner=qconnect,
-                pcm=blocked_pcm,
+                pcm_owned=blocked_pcm,
                 network_evidence_realtime=1000.0,
             )
             self.assertEqual(result, "blocked:qbzd-pcm-open")
             self.assertEqual(qconnect.commands, [])
+
+    def test_retrying_paused_open_pcm_recovers_via_narrow_qconnect_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            qconnect = FakeQconnectRunner()
+            owned = []
+
+            def idle_must_not_run(_service):
+                raise AssertionError("daemon PCM-idle gate entered during paused-open QConnect repair")
+
+            stuck = status(
+                qconnect="retrying",
+                online=False,
+                opened=True,
+                playback_state="paused",
+                track_id=99457447,
+                position=0,
+            )
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[
+                    stuck,
+                    stuck,
+                    stuck,
+                    stuck,
+                    healthy(
+                        opened=True,
+                        playback_state="paused",
+                        track_id=293371503,
+                        position=0,
+                    ),
+                ],
+                services=[SERVICE_A] * 6,
+                monotonic=[200.0, 202.0, 203.0, 203.5, 204.0],
+                wall=[1000.0] * 10,
+                qconnect_runner=qconnect,
+                pcm=idle_must_not_run,
+                pcm_owned=lambda service: owned.append(service),
+                network_evidence_realtime=1000.0,
+            )
+            self.assertEqual(result, "recovered:qconnect")
+            self.assertEqual(owned, [SERVICE_A, SERVICE_A, SERVICE_A])
+            self.assertEqual(
+                [action for _service, action in qconnect.commands],
+                ["disable", "enable"],
+            )
+
+    def test_paused_open_resume_after_final_owner_scan_blocks_before_effect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            stuck = status(opened=True, track_id=123456, position=0)
+            resumed = False
+            owner_checks = []
+            status_reads = 0
+
+            def read_dynamic_status():
+                nonlocal status_reads
+                status_reads += 1
+                if resumed:
+                    return status(
+                        opened=True,
+                        playback_state="playing",
+                        track_id=123456,
+                        position=1,
+                    )
+                return stuck
+
+            def prove_owner(service):
+                nonlocal resumed
+                owner_checks.append(service)
+                if len(owner_checks) == 3:
+                    resumed = True
+
+            qconnect = FakeQconnectRunner()
+            result = MODULE.reconcile_once(
+                state_path=state_path,
+                status_reader=read_dynamic_status,
+                service_reader=SequenceReader([SERVICE_A] * 4),
+                runner=FakeRunner(),
+                qconnect_action_runner=qconnect,
+                pcm_idle_checker=lambda _service: None,
+                pcm_owned_checker=prove_owner,
+                sleeper=lambda _seconds: None,
+                monotonic_clock=SequenceClock([200.0, 202.0, 203.0]),
+                wall_clock=SequenceClock([1000.0] * 10),
+                boot_id_reader=lambda: BOOT,
+            )
+            self.assertEqual(result, "blocked:playback-changed-at-effect-edge")
+            self.assertEqual(owner_checks, [SERVICE_A, SERVICE_A, SERVICE_A])
+            self.assertEqual(qconnect.commands, [])
+            self.assertEqual(status_reads, 4)
+
+    def test_paused_open_candidate_never_relaxes_daemon_restart_pcm_idle_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path,
+                self.candidate_state(
+                    retry_since=100.0,
+                    qconnect_next_attempt=9999.0,
+                    next_attempt=0.0,
+                ),
+            )
+            runner = FakeRunner()
+            qconnect = FakeQconnectRunner()
+            idle_checks = []
+
+            def block_open_pcm(service):
+                idle_checks.append(service)
+                raise MODULE.RecoveryError("qbzd-pcm-open")
+
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[status(opened=True, playback_state="paused")],
+                services=[SERVICE_A],
+                monotonic=[400.0],
+                runner=runner,
+                qconnect_runner=qconnect,
+                pcm=block_open_pcm,
+                pcm_owned=lambda _service: None,
+            )
+            self.assertEqual(result, "blocked:qbzd-pcm-open")
+            self.assertEqual(idle_checks, [SERVICE_A])
+            self.assertEqual(qconnect.commands, [])
+            self.assertEqual(runner.commands, [])
+
+    def test_paused_open_track_or_position_drift_blocks_before_qconnect_effect(self):
+        cases = (
+            (status(opened=True, track_id=222, position=0), "track-change"),
+            (status(opened=True, track_id=123456, position=1), "position-progress"),
+        )
+        for second, label in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                state_path = self.state_path(tmp)
+                MODULE._store_state(
+                    state_path, self.candidate_state(qconnect_next_attempt=0.0)
+                )
+                qconnect = FakeQconnectRunner()
+                first = status(opened=True, track_id=123456, position=0)
+                result = self.reconcile(
+                    state_path=state_path,
+                    statuses=[first, second],
+                    services=[SERVICE_A, SERVICE_A],
+                    monotonic=[200.0, 202.0],
+                    qconnect_runner=qconnect,
+                    pcm_owned=lambda _service: None,
+                )
+                self.assertEqual(result, "blocked:playback-not-stably-paused")
+                self.assertEqual(qconnect.commands, [])
 
     def test_exhausted_state_recovers_via_narrow_qconnect_cycle_when_pcm_idle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -647,6 +825,117 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(state_data["candidate_pid"], SERVICE_B.pid)
             self.assertEqual(state_data["retry_since_monotonic"], 402.0)
 
+    def test_paused_open_pcm_gate_requires_exact_qbzd_owner_and_live_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            asound = root / "asound"
+            proc = root / "proc"
+            status_path = asound / "card1" / "pcm0p" / "sub0" / "status"
+            status_path.parent.mkdir(parents=True)
+            (asound / "card1" / "id").write_text("M2\n", encoding="utf-8")
+            status_path.write_text("state: RUNNING\nowner_pid   : 222\n", encoding="utf-8")
+
+            service_root = proc / str(SERVICE_A.pid)
+            service_root.mkdir(parents=True)
+            fields = ["S", *(["1"] * 18), str(SERVICE_A.start_ticks)]
+            (service_root / "stat").write_text(
+                f"{SERVICE_A.pid} (qbzd) " + " ".join(fields) + "\n",
+                encoding="utf-8",
+            )
+            (service_root / "cgroup").write_text(
+                f"0::{SERVICE_A.cgroup}\n", encoding="utf-8"
+            )
+
+            owner = proc / "222"
+            owner.mkdir(parents=True)
+            (owner / "status").write_text("Name:\tqbzd\nTgid:\t111\n", encoding="utf-8")
+            (owner / "cgroup").write_text(
+                f"0::{SERVICE_A.cgroup}\n", encoding="utf-8"
+            )
+            MODULE.require_qbzd_pcm_owned(
+                SERVICE_A, asound_root=asound, proc_root=proc
+            )
+
+            (owner / "cgroup").write_text(
+                "0::/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                MODULE.RecoveryError, "qbzd-target-pcm-owner-mismatch"
+            ):
+                MODULE.require_qbzd_pcm_owned(
+                    SERVICE_A, asound_root=asound, proc_root=proc
+                )
+
+    def test_paused_open_pcm_gate_cannot_be_satisfied_by_wrong_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            asound = root / "asound"
+            proc = root / "proc"
+
+            service_root = proc / str(SERVICE_A.pid)
+            service_root.mkdir(parents=True)
+            fields = ["S", *(["1"] * 18), str(SERVICE_A.start_ticks)]
+            (service_root / "stat").write_text(
+                f"{SERVICE_A.pid} (qbzd) " + " ".join(fields) + "\n",
+                encoding="utf-8",
+            )
+            (service_root / "cgroup").write_text(
+                f"0::{SERVICE_A.cgroup}\n", encoding="utf-8"
+            )
+
+            motu_status = asound / "card2" / "pcm0p" / "sub0" / "status"
+            motu_status.parent.mkdir(parents=True)
+            (asound / "card2" / "id").write_text("M2\n", encoding="utf-8")
+            motu_status.write_text("state: RUNNING\nowner_pid   : 333\n", encoding="utf-8")
+            helper = proc / "333"
+            helper.mkdir(parents=True)
+            (helper / "status").write_text("Name:\thelper\nTgid:\t333\n", encoding="utf-8")
+            (helper / "cgroup").write_text(
+                f"0::{SERVICE_A.cgroup}\n", encoding="utf-8"
+            )
+
+            other_status = asound / "card3" / "pcm0p" / "sub0" / "status"
+            other_status.parent.mkdir(parents=True)
+            (asound / "card3" / "id").write_text("Other\n", encoding="utf-8")
+            other_status.write_text("state: RUNNING\nowner_pid   : 222\n", encoding="utf-8")
+            exact = proc / "222"
+            exact.mkdir(parents=True)
+            (exact / "status").write_text("Name:\tqbzd\nTgid:\t111\n", encoding="utf-8")
+            (exact / "cgroup").write_text(
+                f"0::{SERVICE_A.cgroup}\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                MODULE.RecoveryError, "qbzd-target-pcm-owner-mismatch"
+            ):
+                MODULE.require_qbzd_pcm_owned(
+                    SERVICE_A, asound_root=asound, proc_root=proc
+                )
+
+    def test_paused_open_pcm_gate_rejects_service_start_tick_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            asound = root / "asound"
+            proc = root / "proc"
+            status_path = asound / "card1" / "pcm0p" / "sub0" / "status"
+            status_path.parent.mkdir(parents=True)
+            status_path.write_text("closed\n", encoding="utf-8")
+            service_root = proc / str(SERVICE_A.pid)
+            service_root.mkdir(parents=True)
+            fields = ["S", *(["1"] * 18), str(SERVICE_A.start_ticks + 1)]
+            (service_root / "stat").write_text(
+                f"{SERVICE_A.pid} (qbzd) " + " ".join(fields) + "\n",
+                encoding="utf-8",
+            )
+            (service_root / "cgroup").write_text(
+                f"0::{SERVICE_A.cgroup}\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(MODULE.RecoveryError, "qbzd-process-unverified"):
+                MODULE.require_qbzd_pcm_owned(
+                    SERVICE_A, asound_root=asound, proc_root=proc
+                )
+
     def test_pcm_gate_blocks_when_alsa_owner_is_qbzd_worker_thread(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -727,6 +1016,33 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(result, "blocked:qbzd-pcm-open")
             self.assertEqual(runner.commands, [])
 
+    def test_playback_status_fields_fail_closed_on_invalid_effect_evidence(self):
+        base = {
+            "api_version": 1,
+            "version": "2.0.2",
+            "uptime_secs": 1,
+            "auth": {"state": "logged_in"},
+            "network": {"online": True},
+            "qconnect": {"state": "retrying", "session_active": False},
+            "audio": {
+                "backend": "alsa",
+                "configured_device": MODULE.EXPECTED_DEVICE,
+                "device_present": True,
+                "device_open": True,
+            },
+        }
+        invalid = (
+            ({"state": "", "track_id": 1, "position": 0}, "playback.state"),
+            ({"state": "paused", "track_id": True, "position": 0}, "playback.track_id"),
+            ({"state": "paused", "track_id": 1, "position": True}, "playback.position"),
+            ({"state": "paused", "track_id": 1, "position": -1}, "playback.position"),
+            ({"state": "paused", "track_id": 1, "position": 10**999}, "playback.position"),
+        )
+        for playback, code in invalid:
+            with self.subTest(code=code):
+                with self.assertRaisesRegex(MODULE.RecoveryError, f"status-invalid:{code}"):
+                    MODULE.classify_status_payload({**base, "playback": playback})
+
     def test_api_version_rejects_bool_and_float_discriminators(self):
         base = {
             "version": "2.0.2",
@@ -740,6 +1056,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 "device_present": True,
                 "device_open": False,
             },
+            "playback": {"state": "paused", "track_id": 123456, "position": 0},
         }
         for value in (True, 1.0):
             with self.subTest(value=value):
