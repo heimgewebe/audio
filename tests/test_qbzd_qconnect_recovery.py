@@ -1016,6 +1016,50 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(result, "blocked:qbzd-pcm-open")
             self.assertEqual(runner.commands, [])
 
+    def test_closed_device_recovery_does_not_require_playback_metadata(self):
+        payload = {
+            "api_version": 1,
+            "version": "2.0.2",
+            "uptime_secs": 1,
+            "auth": {"state": "logged_in"},
+            "network": {"online": True},
+            "qconnect": {"state": "retrying", "session_active": False},
+            "audio": {
+                "backend": "alsa",
+                "configured_device": MODULE.EXPECTED_DEVICE,
+                "device_present": True,
+                "device_open": False,
+            },
+        }
+        parsed = MODULE.classify_status_payload(payload)
+        self.assertIsNone(parsed.playback_state)
+        self.assertIsNone(parsed.playback_track_id)
+        self.assertIsNone(parsed.playback_position)
+        self.assertTrue(MODULE._is_recovery_candidate(parsed))
+
+    def test_paused_open_recovery_requires_track_and_position_evidence(self):
+        base = {
+            "api_version": 1,
+            "version": "2.0.2",
+            "uptime_secs": 1,
+            "auth": {"state": "logged_in"},
+            "network": {"online": True},
+            "qconnect": {"state": "exhausted", "session_active": False},
+            "audio": {
+                "backend": "alsa",
+                "configured_device": MODULE.EXPECTED_DEVICE,
+                "device_present": True,
+                "device_open": True,
+            },
+        }
+        for playback in (None, {"state": "paused"}, {"state": "paused", "track_id": 123456}):
+            with self.subTest(playback=playback):
+                payload = dict(base)
+                if playback is not None:
+                    payload["playback"] = playback
+                parsed = MODULE.classify_status_payload(payload)
+                self.assertFalse(MODULE._is_recovery_candidate(parsed))
+
     def test_playback_status_fields_fail_closed_on_invalid_effect_evidence(self):
         base = {
             "api_version": 1,

@@ -100,7 +100,10 @@ original stricter restart-edge observations:
   PCM-idle path. An open device is eligible **only for the QConnect-only cycle**
   when playback is strictly `paused`, track ID and position are valid, and a
   second status read after the stabilization delay reports the identical track
-  and non-progressing position; the final effect-edge read must still match;
+  and non-progressing position; the final effect-edge read must still match.
+  These playback fields are required only for this paused-open exception: if a
+  QBZD status omits them, the exception fails closed while the original
+  closed-device/PCM-idle recovery path remains available;
 - `qbzd.service` is active, has one positive `MainPID`, `/proc/<pid>/comm` is
   exactly `qbzd`, and the process start tick plus systemd cgroup remain stable;
 - both the 90-second QConnect threshold and the five-minute daemon threshold

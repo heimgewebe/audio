@@ -82,7 +82,7 @@ class QbzdStatus:
     configured_device: str
     device_present: bool
     device_open: bool
-    playback_state: str
+    playback_state: str | None
     playback_track_id: int | None
     playback_position: float | None
     uptime_secs: int
@@ -156,7 +156,8 @@ def classify_status_payload(payload: Any) -> QbzdStatus:
     network = _require_dict(root.get("network"), "network")
     qconnect = _require_dict(root.get("qconnect"), "qconnect")
     audio = _require_dict(root.get("audio"), "audio")
-    playback = _require_dict(root.get("playback"), "playback")
+    raw_playback = root.get("playback")
+    playback = None if raw_playback is None else _require_dict(raw_playback, "playback")
     fields: tuple[tuple[str, Any, type], ...] = (
         ("auth.state", auth.get("state"), str),
         ("network.online", network.get("online"), bool),
@@ -166,34 +167,40 @@ def classify_status_payload(payload: Any) -> QbzdStatus:
         ("audio.configured_device", audio.get("configured_device"), str),
         ("audio.device_present", audio.get("device_present"), bool),
         ("audio.device_open", audio.get("device_open"), bool),
-        ("playback.state", playback.get("state"), str),
     )
     for label, value, expected in fields:
         if not isinstance(value, expected):
             raise RecoveryError(f"status-invalid:{label}")
 
-    playback_state = playback["state"]
-    if not playback_state or len(playback_state.encode("utf-8")) > 64:
-        raise RecoveryError("status-invalid:playback.state")
-    playback_track_id = playback.get("track_id")
-    if playback_track_id is not None and (
-        isinstance(playback_track_id, bool)
-        or not isinstance(playback_track_id, int)
-        or playback_track_id <= 0
-    ):
-        raise RecoveryError("status-invalid:playback.track_id")
-    raw_position = playback.get("position")
-    if raw_position is None:
-        playback_position = None
-    elif isinstance(raw_position, bool) or not isinstance(raw_position, (int, float)):
-        raise RecoveryError("status-invalid:playback.position")
-    else:
-        try:
-            playback_position = float(raw_position)
-        except (OverflowError, ValueError) as exc:
-            raise RecoveryError("status-invalid:playback.position") from exc
-        if not math.isfinite(playback_position) or playback_position < 0:
-            raise RecoveryError("status-invalid:playback.position")
+    playback_state: str | None = None
+    playback_track_id: int | None = None
+    playback_position: float | None = None
+    if playback is not None:
+        raw_playback_state = playback.get("state")
+        if raw_playback_state is not None:
+            if not isinstance(raw_playback_state, str):
+                raise RecoveryError("status-invalid:playback.state")
+            if not raw_playback_state or len(raw_playback_state.encode("utf-8")) > 64:
+                raise RecoveryError("status-invalid:playback.state")
+            playback_state = raw_playback_state
+
+        playback_track_id = playback.get("track_id")
+        if playback_track_id is not None and (
+            isinstance(playback_track_id, bool)
+            or not isinstance(playback_track_id, int)
+            or playback_track_id <= 0
+        ):
+            raise RecoveryError("status-invalid:playback.track_id")
+        raw_position = playback.get("position")
+        if raw_position is not None:
+            if isinstance(raw_position, bool) or not isinstance(raw_position, (int, float)):
+                raise RecoveryError("status-invalid:playback.position")
+            try:
+                playback_position = float(raw_position)
+            except (OverflowError, ValueError) as exc:
+                raise RecoveryError("status-invalid:playback.position") from exc
+            if not math.isfinite(playback_position) or playback_position < 0:
+                raise RecoveryError("status-invalid:playback.position")
 
     return QbzdStatus(
         api_version=1,
