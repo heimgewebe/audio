@@ -87,7 +87,7 @@ class QbzdQconnectSafetyRegressionTests(unittest.TestCase):
                 ),
                 service_reader=lambda: SERVICE,
                 qconnect_action_runner=qconnect,
-                monotonic_clock=lambda: 300.0,
+                monotonic_clock=lambda: 400.0,
                 wall_clock=lambda: 1000.0,
                 boot_id_reader=lambda: BOOT,
                 sleeper=lambda _seconds: None,
