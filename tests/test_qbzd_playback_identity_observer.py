@@ -196,6 +196,11 @@ class PlaybackIdentityObserverTests(unittest.TestCase):
                 "total_tracks": 1,
             },
         ]
+        for invalid_repeat in ([], {}):
+            malformed_repeat = queue_payload()
+            malformed_repeat["repeat"] = invalid_repeat
+            bad_queues.append(malformed_repeat)
+
         for payload in bad_queues:
             with self.subTest(payload=payload):
                 with self.assertRaises(MODULE.ObservationError):

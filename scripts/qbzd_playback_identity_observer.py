@@ -94,7 +94,7 @@ def classify_queue_payload(payload: object) -> QueueSnapshot:
 
     if not isinstance(shuffle, bool):
         raise ObservationError("shuffle is invalid")
-    if repeat not in {"off", "all", "one"}:
+    if not isinstance(repeat, str) or repeat not in {"off", "all", "one"}:
         raise ObservationError("repeat is invalid")
     if not isinstance(upcoming, list):
         raise ObservationError("upcoming is invalid")
