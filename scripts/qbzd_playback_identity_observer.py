@@ -268,7 +268,7 @@ def observe(
             "persistence_contract": "no-track-metadata-or-track-ids",
             "status": "unavailable",
             "reason": str(error),
-            "queue_samples_equal": False,
+            "queue_samples_equal": None,
             "sampled_identity_match": None,
             "authoritative_identity_proof": False,
             "playing": None,
