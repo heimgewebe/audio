@@ -36,8 +36,10 @@ ergeben. Positive Ergebnisse heißen aus diesem Grund bewusst nur
 Der Netzpfad ist auf die beiden festen Loopback-URLs beschränkt. Pro Antwort
 gelten ein 128-KiB-Limit, striktes UTF-8/JSON, ein kurzer Timeout, keine
 Proxy-Nutzung und keine Redirects. Nicht-JSON-Konstanten wie `NaN` oder
-`Infinity`, übergroße JSON-Integer und sonstige Decoderfehler werden fail-closed
-als `unavailable` behandelt.
+`Infinity`, übergroße JSON-Integer, überschrittene JSON-Verschachtelungsgrenzen
+und sonstige Decoderfehler werden fail-closed als `unavailable` behandelt. Auch
+HTTP-Framingfehler wie unvollständige oder ungültige Chunked-Antworten werden
+auf denselben kontrollierten Zustand normalisiert.
 
 ## Zustände
 

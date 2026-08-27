@@ -1,8 +1,10 @@
+import http.client
 import importlib.util
 import json
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "qbzd_playback_identity_observer.py"
@@ -256,6 +258,33 @@ class PlaybackIdentityObserverTests(unittest.TestCase):
             MODULE.decode_json_object(b'{"x":"\xff"}')
         with self.assertRaises(MODULE.ObservationError):
             MODULE.decode_json_object(b"[]")
+
+    def test_strict_json_normalizes_recursion_limit_failure(self):
+        deep = (b"[" * 2000) + b"0" + (b"]" * 2000)
+        with self.assertRaises(MODULE.ObservationError):
+            MODULE.decode_json_object(deep)
+
+    def test_http_framing_failure_is_normalized_to_observation_error(self):
+        class BrokenResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def geturl(self):
+                return MODULE.QUEUE_URL
+
+            def read(self, _limit):
+                raise http.client.IncompleteRead(b"partial", 10)
+
+        opener = mock.Mock()
+        opener.open.return_value = BrokenResponse()
+        with mock.patch.object(MODULE.urllib.request, "build_opener", return_value=opener):
+            with self.assertRaises(MODULE.ObservationError):
+                MODULE.fetch_json(MODULE.QUEUE_URL)
 
     def test_fetch_json_rejects_any_url_outside_fixed_loopback_contract(self):
         with self.assertRaises(MODULE.ObservationError):

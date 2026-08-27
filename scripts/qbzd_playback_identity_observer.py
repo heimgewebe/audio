@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -221,7 +222,12 @@ def fetch_json(url: str) -> dict[str, object]:
             body = response.read(MAX_RESPONSE_BYTES + 1)
             status = getattr(response, "status", 200)
             final_url = response.geturl()
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as error:
+    except (
+        OSError,
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        http.client.HTTPException,
+    ) as error:
         raise ObservationError("QBZD identity endpoint is unavailable") from error
 
     if status != 200 or final_url != url:
@@ -239,7 +245,7 @@ def decode_json_object(body: bytes) -> dict[str, object]:
     try:
         text = body.decode("utf-8", errors="strict")
         payload = json.loads(text, parse_constant=_reject_non_json_constant)
-    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+    except (UnicodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
         raise ObservationError("QBZD identity endpoint JSON is invalid") from error
     if not isinstance(payload, dict):
         raise ObservationError("QBZD identity endpoint payload is invalid")
