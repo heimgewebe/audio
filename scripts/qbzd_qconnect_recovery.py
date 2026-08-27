@@ -1499,10 +1499,13 @@ def reconcile_once(
 
                 restored_status: QbzdStatus | None = None
                 for attempt in range(QCONNECT_READBACK_ATTEMPTS):
-                    observed = status_reader()
-                    if _qconnect_control_enabled(observed):
-                        restored_status = observed
-                        break
+                    try:
+                        observed = status_reader()
+                        if _qconnect_control_enabled(observed):
+                            restored_status = observed
+                            break
+                    except RecoveryError:
+                        pass
                     if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
                         sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
                 restored_at = _clock_value(monotonic_clock, "monotonic")
@@ -1732,9 +1735,10 @@ def reconcile_once(
                 for attempt in range(QCONNECT_READBACK_ATTEMPTS):
                     try:
                         after = status_reader()
-                        if _qconnect_control_enabled(after):
+                        after_enabled = _qconnect_control_enabled(after)
+                        if after_enabled:
                             qconnect_enabled_observed = True
-                        if _is_healthy(after):
+                        if after_enabled and _is_healthy(after):
                             if service_probe() != final_service:
                                 raise RecoveryError("qbzd-process-changed-after-qconnect-cycle")
                             qconnect_recovered = True
