@@ -1477,44 +1477,48 @@ def reconcile_once(
             )
         )
 
-        if state["qconnect_reenable_required"] and not _is_healthy(first):
-            # The obligation itself is stronger than any lifecycle snapshot.
-            # It must never be cleared by stale `exhausted`/retry lifecycle
-            # metadata, but repeated idempotent enable attempts still honor the
-            # durable QConnect failure backoff.
-            if now_monotonic < float(state["qconnect_next_attempt_monotonic"]):
-                return "noop:qconnect-backoff"
-            restore_service = service_probe()
-            try:
-                qconnect_effect(restore_service, "enable")
-            except RecoveryError as exc:
-                failed_at = _clock_value(monotonic_clock, "monotonic")
-                state = _qconnect_failure_state(state, failed_at)
+        if state["qconnect_reenable_required"]:
+            # A durable re-enable obligation outranks lifecycle/session fields,
+            # because those fields may be stale independently. Only the
+            # explicit parsed control bit may prove that the obligation is
+            # already satisfied without another command.
+            if first.qconnect_enabled is True:
+                state = _clear_qconnect_effect_obligation(state)
                 _store_state(state_path, state)
-                return f"blocked:qconnect-reenable:{exc}"
+            else:
+                if now_monotonic < float(state["qconnect_next_attempt_monotonic"]):
+                    return "noop:qconnect-backoff"
+                restore_service = service_probe()
+                try:
+                    qconnect_effect(restore_service, "enable")
+                except RecoveryError as exc:
+                    failed_at = _clock_value(monotonic_clock, "monotonic")
+                    state = _qconnect_failure_state(state, failed_at)
+                    _store_state(state_path, state)
+                    return f"blocked:qconnect-reenable:{exc}"
 
-            restored_status: QbzdStatus | None = None
-            for attempt in range(QCONNECT_READBACK_ATTEMPTS):
-                observed = status_reader()
-                if _qconnect_control_enabled(observed):
-                    restored_status = observed
-                    break
-                if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
-                    sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
-            restored_at = _clock_value(monotonic_clock, "monotonic")
-            restored_unix = _clock_value(wall_clock, "wall")
-            if restored_status is None:
-                state = _qconnect_failure_state(state, restored_at)
+                restored_status: QbzdStatus | None = None
+                for attempt in range(QCONNECT_READBACK_ATTEMPTS):
+                    observed = status_reader()
+                    if _qconnect_control_enabled(observed):
+                        restored_status = observed
+                        break
+                    if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
+                        sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
+                restored_at = _clock_value(monotonic_clock, "monotonic")
+                restored_unix = _clock_value(wall_clock, "wall")
+                if restored_status is None:
+                    state = _qconnect_failure_state(state, restored_at)
+                    _store_state(state_path, state)
+                    return "blocked:qconnect-reenable-readback"
+                if _is_healthy(restored_status):
+                    _store_state(
+                        state_path, _success_state(boot_id, restored_at, restored_unix)
+                    )
+                    return "recovered:qconnect-reenabled"
+                state = _clear_qconnect_effect_obligation(state)
                 _store_state(state_path, state)
-                return "blocked:qconnect-reenable-readback"
-            if _is_healthy(restored_status):
-                _store_state(
-                    state_path, _success_state(boot_id, restored_at, restored_unix)
-                )
-                return "recovered:qconnect-reenabled"
-            state = _clear_qconnect_effect_obligation(state)
-            _store_state(state_path, state)
-            return "restored:qconnect-enabled"
+                return "restored:qconnect-enabled"
 
         if _is_healthy(first):
             cleared = _clear_candidate(

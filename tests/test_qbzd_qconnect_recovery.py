@@ -42,6 +42,7 @@ def status(
     track_id=123456,
     position=0.0,
     uptime=100,
+    qconnect_enabled=None,
 ):
     return MODULE.QbzdStatus(
         api_version=1,
@@ -58,6 +59,7 @@ def status(
         playback_track_id=track_id,
         playback_position=position,
         uptime_secs=uptime,
+        qconnect_enabled=qconnect_enabled,
     )
 
 
@@ -1880,8 +1882,23 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             )
             persisted = MODULE._load_state(state_path)
             self.assertTrue(persisted["qconnect_reenable_required"])
+            deadline = float(persisted["qconnect_next_attempt_monotonic"])
 
             restore = FakeQconnectRunner()
+            backed_off = self.reconcile(
+                state_path=state_path,
+                statuses=[status(qconnect="disabled")],
+                services=[],
+                monotonic=[deadline - 1.0],
+                runner=runner,
+                qconnect_runner=restore,
+            )
+            self.assertEqual(backed_off, "noop:qconnect-backoff")
+            self.assertEqual(restore.commands, [])
+            self.assertTrue(
+                MODULE._load_state(state_path)["qconnect_reenable_required"]
+            )
+
             restored = self.reconcile(
                 state_path=state_path,
                 statuses=[
@@ -1889,7 +1906,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                     status(qconnect="retrying"),
                 ],
                 services=[SERVICE_A],
-                monotonic=[430.0, 431.0],
+                monotonic=[deadline, deadline + 1.0],
                 wall=[1100.0, 1101.0],
                 runner=runner,
                 qconnect_runner=restore,
@@ -1903,14 +1920,27 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             )
             self.assertEqual(runner.commands, [])
 
-    def test_reenable_obligation_accepts_exhausted_as_enabled_control_state(self):
+    def test_reenable_obligation_retries_after_deadline_and_accepts_exhausted_readback(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = self.state_path(tmp)
             state = self.candidate_state(qconnect_next_attempt=0.0)
             state = MODULE._qconnect_effect_armed_state(state, SERVICE_A, 203.5)
             MODULE._store_state(state_path, state)
+            deadline = float(
+                MODULE._load_state(state_path)["qconnect_next_attempt_monotonic"]
+            )
 
             qconnect = FakeQconnectRunner()
+            backed_off = self.reconcile(
+                state_path=state_path,
+                statuses=[status(qconnect="disabled")],
+                services=[],
+                monotonic=[deadline - 1.0],
+                qconnect_runner=qconnect,
+            )
+            self.assertEqual(backed_off, "noop:qconnect-backoff")
+            self.assertEqual(qconnect.commands, [])
+
             result = self.reconcile(
                 state_path=state_path,
                 statuses=[
@@ -1918,7 +1948,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                     status(qconnect="exhausted", online=False, opened=False),
                 ],
                 services=[SERVICE_A],
-                monotonic=[300.0, 301.0],
+                monotonic=[deadline, deadline + 1.0],
                 wall=[1000.0, 1001.0],
                 qconnect_runner=qconnect,
                 network_evidence_realtime=1000.0,
@@ -1937,12 +1967,26 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             state = self.candidate_state(qconnect_next_attempt=0.0)
             state = MODULE._qconnect_effect_armed_state(state, SERVICE_A, 203.5)
             MODULE._store_state(state_path, state)
+            first_deadline = float(
+                MODULE._load_state(state_path)["qconnect_next_attempt_monotonic"]
+            )
             failing = FakeQconnectRunner(fail_action="enable")
+
+            backed_off = self.reconcile(
+                state_path=state_path,
+                statuses=[status(qconnect="disabled")],
+                services=[],
+                monotonic=[first_deadline - 1.0],
+                qconnect_runner=failing,
+            )
+            self.assertEqual(backed_off, "noop:qconnect-backoff")
+            self.assertEqual(failing.commands, [])
+
             first = self.reconcile(
                 state_path=state_path,
                 statuses=[status(qconnect="disabled")],
                 services=[SERVICE_A],
-                monotonic=[250.0, 251.0],
+                monotonic=[first_deadline, first_deadline + 1.0],
                 qconnect_runner=failing,
             )
             self.assertEqual(
@@ -1951,11 +1995,21 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             self.assertEqual(
                 [action for _service, action in failing.commands], ["enable"]
             )
-            self.assertTrue(
-                MODULE._load_state(state_path)["qconnect_reenable_required"]
-            )
+            after_failure = MODULE._load_state(state_path)
+            self.assertTrue(after_failure["qconnect_reenable_required"])
+            retry_deadline = float(after_failure["qconnect_next_attempt_monotonic"])
 
             succeeding = FakeQconnectRunner()
+            second_backoff = self.reconcile(
+                state_path=state_path,
+                statuses=[status(qconnect="disabled")],
+                services=[],
+                monotonic=[retry_deadline - 1.0],
+                qconnect_runner=succeeding,
+            )
+            self.assertEqual(second_backoff, "noop:qconnect-backoff")
+            self.assertEqual(succeeding.commands, [])
+
             second = self.reconcile(
                 state_path=state_path,
                 statuses=[
@@ -1963,12 +2017,54 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                     status(qconnect="retrying"),
                 ],
                 services=[SERVICE_A],
-                monotonic=[300.0, 301.0],
+                monotonic=[retry_deadline, retry_deadline + 1.0],
                 qconnect_runner=succeeding,
             )
             self.assertEqual(second, "restored:qconnect-enabled")
             self.assertEqual(
                 [action for _service, action in succeeding.commands], ["enable"]
+            )
+            self.assertFalse(
+                MODULE._load_state(state_path)["qconnect_reenable_required"]
+            )
+
+    def test_healthy_snapshot_with_enabled_false_cannot_clear_reenable_obligation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            state = self.candidate_state(qconnect_next_attempt=0.0)
+            state = MODULE._qconnect_effect_armed_state(state, SERVICE_A, 203.5)
+            MODULE._store_state(state_path, state)
+            deadline = float(
+                MODULE._load_state(state_path)["qconnect_next_attempt_monotonic"]
+            )
+            qconnect = FakeQconnectRunner()
+
+            backed_off = self.reconcile(
+                state_path=state_path,
+                statuses=[healthy(qconnect_enabled=False)],
+                services=[],
+                monotonic=[deadline - 1.0],
+                qconnect_runner=qconnect,
+            )
+            self.assertEqual(backed_off, "noop:qconnect-backoff")
+            self.assertEqual(qconnect.commands, [])
+            self.assertTrue(
+                MODULE._load_state(state_path)["qconnect_reenable_required"]
+            )
+
+            restored = self.reconcile(
+                state_path=state_path,
+                statuses=[
+                    healthy(qconnect_enabled=False),
+                    healthy(qconnect_enabled=True),
+                ],
+                services=[SERVICE_A],
+                monotonic=[deadline, deadline + 1.0],
+                qconnect_runner=qconnect,
+            )
+            self.assertEqual(restored, "recovered:qconnect-reenabled")
+            self.assertEqual(
+                [action for _service, action in qconnect.commands], ["enable"]
             )
             self.assertFalse(
                 MODULE._load_state(state_path)["qconnect_reenable_required"]
