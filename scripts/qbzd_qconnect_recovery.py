@@ -82,7 +82,11 @@ class QbzdStatus:
     configured_device: str
     device_present: bool
     device_open: bool
+    playback_state: str | None
+    playback_track_id: int | None
+    playback_position: float | None
     uptime_secs: int
+    qconnect_enabled: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,7 @@ Runner = Callable[[tuple[str, ...]], str]
 Sleeper = Callable[[float], None]
 ServiceReader = Callable[[], QbzdService]
 PcmIdleChecker = Callable[[QbzdService], None]
+PcmOwnedChecker = Callable[[QbzdService], None]
 Clock = Callable[[], float]
 BootIdReader = Callable[[], str]
 JournalReader = Callable[[str | None], JournalDelta]
@@ -152,6 +157,8 @@ def classify_status_payload(payload: Any) -> QbzdStatus:
     network = _require_dict(root.get("network"), "network")
     qconnect = _require_dict(root.get("qconnect"), "qconnect")
     audio = _require_dict(root.get("audio"), "audio")
+    raw_playback = root.get("playback")
+    playback = None if raw_playback is None else _require_dict(raw_playback, "playback")
     fields: tuple[tuple[str, Any, type], ...] = (
         ("auth.state", auth.get("state"), str),
         ("network.online", network.get("online"), bool),
@@ -165,6 +172,41 @@ def classify_status_payload(payload: Any) -> QbzdStatus:
     for label, value, expected in fields:
         if not isinstance(value, expected):
             raise RecoveryError(f"status-invalid:{label}")
+
+    raw_qconnect_enabled = qconnect.get("enabled")
+    if raw_qconnect_enabled is not None and not isinstance(raw_qconnect_enabled, bool):
+        raise RecoveryError("status-invalid:qconnect.enabled")
+
+    playback_state: str | None = None
+    playback_track_id: int | None = None
+    playback_position: float | None = None
+    if playback is not None:
+        raw_playback_state = playback.get("state")
+        if raw_playback_state is not None:
+            if not isinstance(raw_playback_state, str):
+                raise RecoveryError("status-invalid:playback.state")
+            if not raw_playback_state or len(raw_playback_state.encode("utf-8")) > 64:
+                raise RecoveryError("status-invalid:playback.state")
+            playback_state = raw_playback_state
+
+        playback_track_id = playback.get("track_id")
+        if playback_track_id is not None and (
+            isinstance(playback_track_id, bool)
+            or not isinstance(playback_track_id, int)
+            or playback_track_id <= 0
+        ):
+            raise RecoveryError("status-invalid:playback.track_id")
+        raw_position = playback.get("position")
+        if raw_position is not None:
+            if isinstance(raw_position, bool) or not isinstance(raw_position, (int, float)):
+                raise RecoveryError("status-invalid:playback.position")
+            try:
+                playback_position = float(raw_position)
+            except (OverflowError, ValueError) as exc:
+                raise RecoveryError("status-invalid:playback.position") from exc
+            if not math.isfinite(playback_position) or playback_position < 0:
+                raise RecoveryError("status-invalid:playback.position")
+
     return QbzdStatus(
         api_version=1,
         version=version,
@@ -176,7 +218,11 @@ def classify_status_payload(payload: Any) -> QbzdStatus:
         configured_device=audio["configured_device"],
         device_present=audio["device_present"],
         device_open=audio["device_open"],
+        playback_state=playback_state,
+        playback_track_id=playback_track_id,
+        playback_position=playback_position,
         uptime_secs=uptime,
+        qconnect_enabled=raw_qconnect_enabled,
     )
 
 
@@ -253,9 +299,6 @@ def run_qconnect_action(
     if service.pid <= 0 or service.start_ticks <= 0 or service.executable.name != "qbzd":
         raise RecoveryError("qbzd-process-unverified")
 
-    # Open the executable path observed for the bound service before consulting
-    # the mutable /proc PID link. The descriptor pins that exact filesystem
-    # object, so PID reuse cannot redirect exec to an unrelated process image.
     try:
         executable_fd = os.open(service.executable, os.O_RDONLY | os.O_CLOEXEC)
     except OSError as exc:
@@ -676,6 +719,153 @@ def require_qbzd_pcm_idle(
             raise RecoveryError("qbzd-pcm-open")
 
 
+def require_qbzd_pcm_owned(
+    service: QbzdService,
+    *,
+    asound_root: pathlib.Path = pathlib.Path("/proc/asound"),
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+) -> None:
+    """Require the target MOTU playback PCM to be owned by exact live QBZD.
+
+    The paused-open QConnect exception is intentionally bound to the configured
+    ``front:CARD=M2,DEV=0`` playback endpoint. An unrelated QBZD-owned PCM must
+    never satisfy this gate, and any open target substream with foreign or
+    merely same-cgroup-helper ownership fails closed. Daemon restart continues
+    to use :func:`require_qbzd_pcm_idle` instead.
+    """
+    if service.pid <= 0 or service.start_ticks <= 0 or not service.cgroup.startswith("/"):
+        raise RecoveryError("qbzd-pcm-owner-invalid")
+    process_root = proc_root / str(service.pid)
+    current_start = _parse_start_ticks(
+        _read_bounded_text(process_root / "stat", "qbzd-process-unverified")
+    )
+    current_cgroup = _parse_unified_cgroup(
+        _read_bounded_text(process_root / "cgroup", "qbzd-process-unverified"),
+        "qbzd-process-unverified",
+    )
+    if current_start != service.start_ticks or current_cgroup != service.cgroup:
+        raise RecoveryError("qbzd-process-unverified")
+
+    try:
+        card_id_paths = sorted(asound_root.glob("card*/id"))
+    except OSError as exc:
+        raise RecoveryError("alsa-card-id-unavailable") from exc
+    if not card_id_paths or len(card_id_paths) > MAX_PCM_STATUS_FILES:
+        raise RecoveryError("alsa-card-id-unavailable")
+    target_cards: list[pathlib.Path] = []
+    for card_id_path in card_id_paths:
+        if _read_bounded_text(card_id_path, "alsa-card-id-unavailable") == "M2":
+            target_cards.append(card_id_path.parent)
+    if len(target_cards) != 1:
+        raise RecoveryError("alsa-target-card-ambiguous")
+
+    try:
+        status_paths = sorted(target_cards[0].glob("pcm0p/sub*/status"))
+    except OSError as exc:
+        raise RecoveryError("alsa-target-status-unavailable") from exc
+    if not status_paths or len(status_paths) > MAX_PCM_STATUS_FILES:
+        raise RecoveryError("alsa-target-status-unavailable")
+
+    exact_owner_found = False
+    for status_path in status_paths:
+        text = _read_bounded_text(status_path, "alsa-target-status-unavailable")
+        if text == "closed":
+            continue
+        owner_tid: int | None = None
+        for line in text.splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key.strip() == "owner_pid":
+                candidate = value.strip()
+                if not candidate.isdigit() or int(candidate) <= 0:
+                    raise RecoveryError("alsa-owner-unreadable")
+                owner_tid = int(candidate)
+                break
+        if owner_tid is None:
+            raise RecoveryError("alsa-owner-unreadable")
+        tgid, owner_cgroup = _owner_process_identity(owner_tid, proc_root)
+        if tgid != service.pid or owner_cgroup != service.cgroup:
+            raise RecoveryError("qbzd-target-pcm-owner-mismatch")
+        exact_owner_found = True
+    if not exact_owner_found:
+        raise RecoveryError("qbzd-target-pcm-owner-not-found")
+
+
+def require_qbzd_pcm_paused(
+    service: QbzdService,
+    *,
+    asound_root: pathlib.Path = pathlib.Path("/proc/asound"),
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+) -> None:
+    """Require independent kernel proof that QBZD's exact MOTU PCM is paused.
+
+    QBZD's playback snapshot is diagnostic and can remain ``paused`` while the
+    ALSA stream is already RUNNING. The paused-open recovery exception may
+    therefore reach an effect only when the kernel reports ``state: PAUSED``
+    for every open target playback substream and the exact QBZD owner binding
+    remains valid. RUNNING, missing state, closed-only or ambiguous input fails
+    closed.
+    """
+    require_qbzd_pcm_owned(service, asound_root=asound_root, proc_root=proc_root)
+
+    try:
+        card_id_paths = sorted(asound_root.glob("card*/id"))
+    except OSError as exc:
+        raise RecoveryError("alsa-card-id-unavailable") from exc
+    if not card_id_paths or len(card_id_paths) > MAX_PCM_STATUS_FILES:
+        raise RecoveryError("alsa-card-id-unavailable")
+    target_cards = [
+        card_id_path.parent
+        for card_id_path in card_id_paths
+        if _read_bounded_text(card_id_path, "alsa-card-id-unavailable") == "M2"
+    ]
+    if len(target_cards) != 1:
+        raise RecoveryError("alsa-target-card-ambiguous")
+    try:
+        status_paths = sorted(target_cards[0].glob("pcm0p/sub*/status"))
+    except OSError as exc:
+        raise RecoveryError("alsa-target-status-unavailable") from exc
+    if not status_paths or len(status_paths) > MAX_PCM_STATUS_FILES:
+        raise RecoveryError("alsa-target-status-unavailable")
+
+    paused_open_found = False
+    for status_path in status_paths:
+        text = _read_bounded_text(status_path, "alsa-target-status-unavailable")
+        if text == "closed":
+            continue
+        pcm_state: str | None = None
+        for line in text.splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key.strip() == "state":
+                pcm_state = value.strip()
+                break
+        if pcm_state != "PAUSED":
+            raise RecoveryError("qbzd-target-pcm-not-paused")
+        paused_open_found = True
+    if not paused_open_found:
+        raise RecoveryError("qbzd-target-pcm-owner-not-found")
+
+    # Re-prove exact ownership after the kernel-state scan. The later effect-
+    # edge call in reconcile_once repeats this whole gate once more after the
+    # final QBZD status/process observation.
+    require_qbzd_pcm_owned(service, asound_root=asound_root, proc_root=proc_root)
+
+
+def _paused_playback_fingerprint(status: QbzdStatus) -> tuple[int, float] | None:
+    if (
+        status.device_open is not True
+        or status.playback_state != "paused"
+        or status.playback_track_id is None
+        or status.playback_position is None
+    ):
+        return None
+    return status.playback_track_id, status.playback_position
+
+
+def _same_paused_playback(first: QbzdStatus, later: QbzdStatus) -> bool:
+    first_fingerprint = _paused_playback_fingerprint(first)
+    return first_fingerprint is not None and first_fingerprint == _paused_playback_fingerprint(later)
+
+
 def read_boot_id(*, proc_root: pathlib.Path = pathlib.Path("/proc")) -> str:
     raw = _read_bounded_text(
         proc_root / "sys" / "kernel" / "random" / "boot_id",
@@ -905,6 +1095,7 @@ def _load_state(path: pathlib.Path) -> dict[str, Any]:
         "restart_armed_start_ticks": restart_start,
     }
 
+
 def _store_state(path: pathlib.Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     parent_metadata = path.parent.stat(follow_symlinks=False)
@@ -975,15 +1166,32 @@ def _is_healthy(status: QbzdStatus) -> bool:
 def _is_recovery_candidate(
     status: QbzdStatus, *, allow_network_offline: bool = False
 ) -> bool:
+    qconnect_stuck = status.qconnect_state in {
+        "retrying",
+        "reconnecting",
+        "exhausted",
+    }
+    audio_effect_candidate = (
+        status.device_open is False
+        or _paused_playback_fingerprint(status) is not None
+    )
     return (
         status.auth_state == "logged_in"
         and (status.network_online is True or allow_network_offline)
-        and status.qconnect_state in {"retrying", "reconnecting"}
+        and qconnect_stuck
         and status.session_active is False
         and status.audio_backend.casefold() == "alsa"
         and status.configured_device == EXPECTED_DEVICE
         and status.device_present is True
-        and status.device_open is False
+        and audio_effect_candidate
+    )
+
+
+def _is_daemon_restart_candidate(
+    status: QbzdStatus, *, allow_network_offline: bool = False
+) -> bool:
+    return status.device_open is False and _is_recovery_candidate(
+        status, allow_network_offline=allow_network_offline
     )
 
 
@@ -1143,7 +1351,14 @@ def _success_state(
 
 
 def _qconnect_control_enabled(status: QbzdStatus) -> bool:
-    return status.qconnect_state in {"connected", "retrying", "reconnecting"}
+    # QBZD 2.0.2 exposes the control setting independently from its lifecycle.
+    # Prefer that explicit bit whenever present. Legacy/synthetic snapshots may
+    # omit it; their lifecycle fallback is only consumed after a successful,
+    # idempotent `qconnect enable` command and never clears a pre-existing
+    # durable re-enable obligation by itself.
+    if status.qconnect_enabled is not None:
+        return status.qconnect_enabled
+    return status.qconnect_state in {"connected", "retrying", "reconnecting", "exhausted"}
 
 
 def _clear_qconnect_effect_obligation(state: dict[str, Any]) -> dict[str, Any]:
@@ -1158,7 +1373,6 @@ def _clear_qconnect_effect_obligation(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _legacy_v2_state_projection(state: dict[str, Any]) -> dict[str, Any]:
-    """Project validated current state onto the exact schema-v2 field set."""
     return {
         "schema_version": LEGACY_STATE_SCHEMA_VERSION,
         "boot_id": state["boot_id"],
@@ -1187,30 +1401,33 @@ def prepare_rollback_state(
     try:
         state = _load_state(state_path)
         if state["qconnect_reenable_required"]:
-            observed = status_reader()
-            if not _qconnect_control_enabled(observed):
-                service_probe = service_reader or (
-                    lambda: read_qbzd_service(runner=run_command, proc_root=proc_root)
+            # Never clear this durable obligation from a lifecycle snapshot.
+            # A prior enable may have returned an unknown outcome while status
+            # still reports a stale exhausted/retrying state. Re-issuing enable
+            # is intentionally idempotent and is the narrowest safe repair.
+            status_reader()
+            service_probe = service_reader or (
+                lambda: read_qbzd_service(runner=run_command, proc_root=proc_root)
+            )
+            qconnect_effect = qconnect_action_runner or (
+                lambda service, action: run_qconnect_action(
+                    service, action, proc_root=proc_root
                 )
-                qconnect_effect = qconnect_action_runner or (
-                    lambda service, action: run_qconnect_action(
-                        service, action, proc_root=proc_root
-                    )
-                )
-                service = service_probe()
-                qconnect_effect(service, "enable")
-                restored = False
-                for attempt in range(QCONNECT_READBACK_ATTEMPTS):
-                    try:
-                        if _qconnect_control_enabled(status_reader()):
-                            restored = True
-                            break
-                    except RecoveryError:
-                        pass
-                    if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
-                        sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
-                if not restored:
-                    return "blocked:qconnect-reenable-readback"
+            )
+            service = service_probe()
+            qconnect_effect(service, "enable")
+            restored = False
+            for attempt in range(QCONNECT_READBACK_ATTEMPTS):
+                try:
+                    if _qconnect_control_enabled(status_reader()):
+                        restored = True
+                        break
+                except RecoveryError:
+                    pass
+                if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
+                    sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
+            if not restored:
+                return "blocked:qconnect-reenable-readback"
             state = _clear_qconnect_effect_obligation(state)
 
         _store_state(state_path, _legacy_v2_state_projection(state))
@@ -1228,6 +1445,7 @@ def reconcile_once(
     qconnect_action_runner: QconnectActionRunner | None = None,
     proc_root: pathlib.Path = pathlib.Path("/proc"),
     pcm_idle_checker: PcmIdleChecker | None = None,
+    pcm_owned_checker: PcmOwnedChecker | None = None,
     sleeper: Sleeper = time.sleep,
     monotonic_clock: Clock = time.monotonic,
     wall_clock: Clock = time.time,
@@ -1259,15 +1477,17 @@ def reconcile_once(
             )
         )
 
-        # A successful or outcome-unknown disable creates a durable obligation
-        # to restore QConnect. Resolve it before any further recovery effect,
-        # including a daemon restart. The obligation intentionally survives a
-        # host or QBZD restart because the disable setting may persist.
-        if state["qconnect_reenable_required"] and not _is_healthy(first):
-            if _qconnect_control_enabled(first):
+        if state["qconnect_reenable_required"]:
+            # A durable re-enable obligation outranks lifecycle/session fields,
+            # because those fields may be stale independently. Only the
+            # explicit parsed control bit may prove that the obligation is
+            # already satisfied without another command.
+            if first.qconnect_enabled is True:
                 state = _clear_qconnect_effect_obligation(state)
                 _store_state(state_path, state)
             else:
+                if now_monotonic < float(state["qconnect_next_attempt_monotonic"]):
+                    return "noop:qconnect-backoff"
                 restore_service = service_probe()
                 try:
                     qconnect_effect(restore_service, "enable")
@@ -1279,10 +1499,13 @@ def reconcile_once(
 
                 restored_status: QbzdStatus | None = None
                 for attempt in range(QCONNECT_READBACK_ATTEMPTS):
-                    observed = status_reader()
-                    if _qconnect_control_enabled(observed):
-                        restored_status = observed
-                        break
+                    try:
+                        observed = status_reader()
+                        if _qconnect_control_enabled(observed):
+                            restored_status = observed
+                            break
+                    except RecoveryError:
+                        pass
                     if attempt + 1 < QCONNECT_READBACK_ATTEMPTS:
                         sleeper(QCONNECT_READBACK_INTERVAL_SECONDS)
                 restored_at = _clock_value(monotonic_clock, "monotonic")
@@ -1333,6 +1556,9 @@ def reconcile_once(
         pcm_idle = pcm_idle_checker or (
             lambda service: require_qbzd_pcm_idle(service, proc_root=proc_root)
         )
+        pcm_owned = pcm_owned_checker or (
+            lambda service: require_qbzd_pcm_paused(service, proc_root=proc_root)
+        )
         service = service_probe()
         retry_since = state["retry_since_monotonic"]
         if (
@@ -1345,17 +1571,20 @@ def reconcile_once(
             return "armed"
 
         stuck_age = now_monotonic - float(retry_since)
-        if stuck_age < QCONNECT_CYCLE_STUCK_SECONDS:
+        if (
+            first.qconnect_state != "exhausted"
+            and stuck_age < QCONNECT_CYCLE_STUCK_SECONDS
+        ):
             return "noop:stabilizing"
 
-        # First repair only the QConnect session. This is materially narrower
-        # than restarting QBZD and is the operation proven to recover the live
-        # Cloud-auth/reconnect loop. The effect is bound to the exact running
-        # binary and process identity, and is durably armed before disable.
         qconnect_due = now_monotonic >= float(state["qconnect_next_attempt_monotonic"])
         restart_now = now_monotonic
         if qconnect_due:
-            pcm_idle(service)
+            paused_open_cycle = _paused_playback_fingerprint(first) is not None
+            if paused_open_cycle:
+                pcm_owned(service)
+            else:
+                pcm_idle(service)
             sleeper(STABILIZATION_SECONDS)
             second = status_reader()
             second_monotonic = _clock_value(monotonic_clock, "monotonic")
@@ -1399,7 +1628,14 @@ def reconcile_once(
                     _arm_candidate(state, boot_id, second_service, second_monotonic),
                 )
                 return "noop:qbzd-restarted"
-            pcm_idle(second_service)
+            if paused_open_cycle:
+                if not _same_paused_playback(first, second):
+                    return "blocked:playback-not-stably-paused"
+                pcm_owned(second_service)
+            else:
+                if second.device_open is not False:
+                    return "blocked:audio-open-state-changed"
+                pcm_idle(second_service)
 
             final_status = status_reader()
             final_monotonic = _clock_value(monotonic_clock, "monotonic")
@@ -1443,7 +1679,34 @@ def reconcile_once(
                     _arm_candidate(state, boot_id, final_service, final_monotonic),
                 )
                 return "noop:qbzd-restarted"
-            pcm_idle(final_service)
+            if paused_open_cycle:
+                if not _same_paused_playback(first, final_status):
+                    return "blocked:playback-not-stably-paused"
+                pcm_owned(final_service)
+                edge_status = status_reader()
+                edge_unix = _clock_value(wall_clock, "wall")
+                if not _is_recovery_candidate(
+                    edge_status,
+                    allow_network_offline=_network_reachability_evidence_active(
+                        network_reachability_evidence_realtime, now_wall=edge_unix
+                    ),
+                ):
+                    return "blocked:playback-changed-at-effect-edge"
+                if not _same_paused_playback(first, edge_status):
+                    return "blocked:playback-changed-at-effect-edge"
+                if service_probe() != final_service:
+                    return "blocked:qbzd-process-changed-at-effect-edge"
+                # QBZD playback metadata is not authoritative here. Production
+                # therefore takes one final independent kernel PAUSED/owner
+                # observation after the last QBZD status and process read. Test
+                # seams may inject their own equivalent checker.
+                if pcm_owned_checker is None:
+                    pcm_owned(final_service)
+                final_status = edge_status
+            else:
+                if final_status.device_open is not False:
+                    return "blocked:audio-open-state-changed"
+                pcm_idle(final_service)
 
             effect_monotonic = _clock_value(monotonic_clock, "monotonic")
             if final_status.network_online is False:
@@ -1459,8 +1722,6 @@ def reconcile_once(
             qconnect_error: RecoveryError | None = None
             try:
                 qconnect_effect(final_service, "disable")
-                # disable and enable are separate processes; prove that the
-                # daemon has not exec/restarted between them.
                 mid_service = service_probe()
                 if mid_service != final_service:
                     raise RecoveryError("qbzd-process-changed-during-qconnect-cycle")
@@ -1474,9 +1735,10 @@ def reconcile_once(
                 for attempt in range(QCONNECT_READBACK_ATTEMPTS):
                     try:
                         after = status_reader()
-                        if _qconnect_control_enabled(after):
+                        after_enabled = _qconnect_control_enabled(after)
+                        if after_enabled:
                             qconnect_enabled_observed = True
-                        if _is_healthy(after):
+                        if after_enabled and _is_healthy(after):
                             if service_probe() != final_service:
                                 raise RecoveryError("qbzd-process-changed-after-qconnect-cycle")
                             qconnect_recovered = True
@@ -1510,15 +1772,18 @@ def reconcile_once(
         elif stuck_age < STUCK_SECONDS:
             return "noop:qconnect-backoff"
 
-        # Only after the original five-minute safety window may the broader
-        # daemon restart fallback run. Keep the original three-gate restart
-        # sequence intact so the narrower QConnect repair cannot weaken its
-        # process, PCM-idle, boot or readback guarantees.
         if stuck_age < STUCK_SECONDS:
             return "noop:stabilizing"
         if restart_now < float(state["next_attempt_monotonic"]):
             return "noop:backoff"
 
+        if not _is_daemon_restart_candidate(
+            first,
+            allow_network_offline=_network_reachability_evidence_active(
+                network_reachability_evidence_realtime, now_wall=now_unix
+            ),
+        ):
+            return "blocked:audio-open-for-daemon-restart"
         pcm_idle(service)
         sleeper(STABILIZATION_SECONDS)
         second = status_reader()
@@ -1536,7 +1801,7 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(
+        if not _is_daemon_restart_candidate(
             second,
             allow_network_offline=_network_reachability_evidence_active(
                 network_reachability_evidence_realtime, now_wall=second_unix
@@ -1565,9 +1830,6 @@ def reconcile_once(
             return "noop:qbzd-restarted"
         pcm_idle(second_service)
 
-        # Re-read both QConnect and service identity at the restart edge. This
-        # narrows, but cannot atomically eliminate, the interval in which an
-        # uncooperating client could open ALSA after the final observation.
         final_status = status_reader()
         final_monotonic = _clock_value(monotonic_clock, "monotonic")
         final_unix = _clock_value(wall_clock, "wall")
@@ -1583,7 +1845,7 @@ def reconcile_once(
                 ),
             )
             return "noop:recovered-naturally"
-        if not _is_recovery_candidate(
+        if not _is_daemon_restart_candidate(
             final_status,
             allow_network_offline=_network_reachability_evidence_active(
                 network_reachability_evidence_realtime, now_wall=final_unix
@@ -1620,9 +1882,6 @@ def reconcile_once(
             ):
                 return "blocked:network-attestation-expired"
         armed_effect = _effect_armed_state(state, final_service, effect_monotonic)
-        # Persist the attempt and minimum backoff before the only broad
-        # mutation. If systemctl loses its reply or the process dies after this
-        # fsync, the next observer run cannot immediately repeat the restart.
         _store_state(state_path, armed_effect)
         runner(("systemctl", "--user", "try-restart", QBZD_UNIT))
 
@@ -1653,11 +1912,8 @@ def reconcile_once(
     except RecoveryError as exc:
         return f"blocked:{exc}"
 
+
 def _fast_followup_required(result: str) -> bool:
-    # Only a positively healthy QConnect read may enter the quiet journal-led
-    # mode. Any disconnected, offline, logged-out, changed, blocked or otherwise
-    # non-healthy observation keeps the original 30-second status cadence until
-    # connected health is observed again.
     return result not in {
         "noop:connected",
         "noop:recovered-naturally",
@@ -1730,9 +1986,6 @@ def run_loop(
     fast_followup = True
     network_evidence_realtime: float | None = None
 
-    # Capture the journal edge before the startup status read. A QConnect change
-    # that races with startup is therefore seen either by that status read or by
-    # the first delta after this cursor.
     try:
         cursor = journal_reader(None).cursor
     except RecoveryError:
@@ -1752,12 +2005,6 @@ def run_loop(
                 cursor = None
                 journal_available = False
 
-        # If a cursor is missing or became unusable, capture its replacement
-        # *before* the authoritative status reconciliation. Keep this cycle in
-        # journal-fallback mode even when the replacement succeeds: the full
-        # status read is still required. A reconnect transition racing after
-        # this baseline is then visible either to that status read or to the
-        # next journal delta, instead of being skipped by a post-status baseline.
         if cursor is None:
             try:
                 cursor = journal_reader(None).cursor

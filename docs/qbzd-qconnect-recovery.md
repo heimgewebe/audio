@@ -8,9 +8,11 @@ backend state observed alongside stale or contradictory remote-control behavior.
 
 The recovery is deliberately narrower than a generic watchdog. It never
 restarts PipeWire, PipeWire-Pulse, WirePlumber, the host, or the Audiozentrale.
-After 90 seconds of one continuously bound stuck QConnect candidate it first
-cycles only QConnect with the verified live QBZD image: `qbzd qconnect disable`
-followed by `qbzd qconnect enable`. A broader
+A continuously bound `retrying`/`reconnecting` candidate waits 90 seconds before
+it may first cycle only QConnect with the verified live QBZD image: `qbzd qconnect
+disable` followed by `qbzd qconnect enable`. A terminal `exhausted` candidate
+must still survive a prior bound observation, but does not repeat QBZD's already
+consumed reconnect window. A broader
 `systemctl --user try-restart qbzd.service` remains the fallback only after the
 original five-minute stuck window. `try-restart` is used so an intentionally
 inactive QBZD is not started by the watchdog. The watcher has only an ordering
@@ -46,13 +48,18 @@ closed.
 
 Once the status path arms a recovery candidate, the watchdog returns to the
 full 30-second reconciliation cadence. The candidate remains bound to the same
-boot, PID and process start tick. Before 90 seconds there is no effect. From 90
-seconds onward a due candidate may receive the narrow QConnect-only cycle, but
-only after the same status, process and ALSA-idle gates are rechecked at the
-effect edge. QConnect recovery has its own durable pre-effect arm, bounded
-readback and exponential backoff. The broader daemon restart still requires the
-original five-minute stuck window and retains its original repeated restart-edge
-gates, durable arm and post-effect cooldown.
+boot, PID and process start tick. `retrying`/`reconnecting` cannot cause an
+effect before 90 seconds; a previously armed terminal `exhausted` state may use
+the narrow QConnect-only path earlier. Every QConnect effect rechecks status,
+process identity and the appropriate ALSA ownership gate at the effect edge:
+PCM-idle for the original closed-device path, or exact target-MOTU ownership plus
+kernel-reported ALSA `PAUSED` for the paused-open path. QBZD's own playback
+`state=paused` remains a diagnostic consistency check, not effect authority: it
+has been observed stale while the same PCM was already kernel-visible as
+`RUNNING`. QConnect recovery has its own durable pre-effect arm, bounded readback
+and exponential backoff. The broader daemon restart still requires the original
+five-minute stuck window and always retains the stricter PCM-idle and repeated
+restart-edge gates, durable arm and post-effect cooldown.
 
 Two fail-safe fallbacks prevent the journal optimization from becoming a new
 single point of failure:
@@ -74,11 +81,12 @@ transition is proven and keeps the previous worst-case wake-up latency while
 reducing healthy watchdog status calls from 120 to at most 12 per hour, apart
 from service startup and explicit diagnostics.
 
-A QConnect-only repair is allowed only after all of these conditions remain true
-for at least 90 seconds on the same boot and the same QBZD process identity and
-survive additional effect-edge observations. A daemon restart requires the same
-conditions to remain true for at least five minutes and then survive the
-original restart-edge observations:
+A QConnect-only repair is allowed only after the candidate is bound to the same
+boot and QBZD process identity and survives additional effect-edge observations.
+`retrying`/`reconnecting` retain the 90-second stuck window; terminal `exhausted`
+still requires a prior bound observation but does not repeat that already-consumed
+reconnect window. A daemon restart requires five minutes and then survives the
+original stricter restart-edge observations:
 
 - the fixed loopback status endpoint `127.0.0.1:8182/api/status` returns bounded,
   strict API-v1 JSON;
@@ -87,9 +95,19 @@ original restart-edge observations:
   JWT authentication succeeded, and the cloud then rejected the session within
   the last 90 seconds; the age is derived from the journal event time, never the
   watchdog read time;
-- QConnect is `retrying` or `reconnecting` with no active session;
+- QConnect is `retrying`, `reconnecting`, or terminal `exhausted` with no active
+  session;
 - QBZD is configured for ALSA and exactly `front:CARD=M2,DEV=0`;
-- the configured MOTU device is present and QBZD reports its device closed;
+- the configured MOTU device is present. A closed device follows the original
+  PCM-idle path. An open device is eligible **only for the QConnect-only cycle**
+  when QBZD's snapshot is strictly `paused`, track ID and position are valid, a
+  second status read after the stabilization delay reports the identical track
+  and non-progressing position, the final effect-edge read still matches, **and**
+  the independent kernel PCM state is `PAUSED`. Any kernel `RUNNING`, missing or
+  ambiguous state blocks the effect even if QBZD still reports `paused`. These
+  playback fields are required only for this paused-open exception: if a QBZD
+  status omits them, the exception fails closed while the original
+  closed-device/PCM-idle recovery path remains available;
 - `qbzd.service` is active, has one positive `MainPID`, `/proc/<pid>/comm` is
   exactly `qbzd`, and the process start tick plus systemd cgroup remain stable;
 - both the 90-second QConnect threshold and the five-minute daemon threshold
@@ -97,31 +115,42 @@ original restart-edge observations:
   start tick. A QBZD restart or host reboot therefore starts a fresh observation
   window; wall-clock jumps cannot satisfy either threshold;
 - every `/proc/asound/card*/pcm*/sub*/status` entry is bounded and readable.
-  For each open PCM, the kernel-reported owner task is resolved through
-  `/proc/<tid>/status` to its TGID and through `/proc/<tid>/cgroup` to its
-  service cgroup. An owner thread in the QBZD process, or any helper in the
-  same `qbzd.service` cgroup, blocks recovery even if QBZD's own
-  `device_open` field is stale;
-- QConnect state, service identity, boot identity and the ALSA-owner gate are
-  repeated immediately before either effect. The QConnect-only path additionally
-  opens the previously observed absolute `qbzd` image first, verifies that pinned
-  file descriptor against the current `/proc/<pid>/exe`, PID start tick and
-  service cgroup, and executes through `/proc/self/fd/<fd>`. PID reuse therefore
-  cannot redirect the action to a different process image. The complete service
-  identity is rechecked again between `disable` and `enable`.
+  For the daemon restart, an owner thread in the QBZD process or any helper in
+  the same `qbzd.service` cgroup still blocks the effect exactly as before. For
+  the paused-open **QConnect-only** cycle, the inverse proof is required instead:
+  an open PCM must resolve to the exact QBZD TGID and exact bound service cgroup,
+  every open target playback substream must report `state: PAUSED`, and the
+  service PID/start tick is revalidated before and after the kernel-state scan.
+  Unknown ownership, a same-cgroup helper without the exact QBZD TGID, `RUNNING`
+  or another non-`PAUSED` state, or identity drift blocks the cycle;
+- QConnect state, playback fingerprint, service identity, boot identity and the
+  appropriate ALSA gate are repeated immediately before the effect. The
+  QConnect-only path additionally opens the previously observed absolute `qbzd`
+  image first, verifies that pinned file descriptor against the current
+  `/proc/<pid>/exe`, PID start tick and service cgroup, and executes through
+  `/proc/self/fd/<fd>`. PID reuse therefore cannot redirect the action to a
+  different process image. The complete service identity is rechecked again
+  between `disable` and `enable`. For the production paused-open path the kernel
+  `PAUSED`/owner gate is repeated once more after the final QBZD status and
+  process read, immediately before the durable effect arm.
 
 The QConnect-only effect is durably armed **before** `qconnect disable`: exact
 PID, process start tick and executable identity plus a minimum retry deadline are
 fsynced first. That arm also persists a separate **re-enable obligation** before
-disable. It is cleared only after QConnect is observed enabled again. If disable
-or enable has an error, the next reconcile restores `qconnect enable` first; this
+disable. A pre-existing obligation is never cleared merely because the lifecycle
+still says `retrying`, `reconnecting`, or `exhausted`; the watchdog first issues
+an idempotent `qconnect enable` again. QBZD 2.0.2's explicit `qconnect.enabled`
+field is preferred as the post-command control readback whenever present. If an
+older or synthetic status omits that field, lifecycle fallback is accepted only
+after the enable command itself returned success; it can never clear an
+outcome-unknown obligation on its own. If disable or enable has an error, the
 obligation survives a QBZD or host restart and blocks the broader daemon restart
-until the control plane is enabled again. This prevents a partial disable/enable
-cycle from silently leaving QConnect off. A successful cycle is accepted only
-when bounded readback reaches `connected` with an active session on the same
-service identity. Failure receives QConnect-specific exponential backoff from
-120 seconds up to 15 minutes, so a partial or ambiguous control-session cycle is
-not hammered.
+until the control plane has been positively restored. This prevents a partial
+disable/enable cycle from silently leaving QConnect off. A successful cycle is
+accepted only when bounded readback reaches `connected` with an active session
+on the same service identity. Failure receives QConnect-specific exponential
+backoff from 120 seconds up to 15 minutes, so a partial or ambiguous
+control-session cycle is not hammered.
 
 The broader restart attempt remains durably armed **before** `try-restart`: the
 exact process identity and a minimum 15-minute retry deadline are fsynced first.
@@ -146,15 +175,19 @@ client/playback-identity observer rather than guessing from UI state.
 State JSON rejects non-finite numbers, negative control timestamps, incomplete
 process bindings and stale state from another boot. Malformed state, unreadable
 status, logged-out state, offline state without the short-lived QConnect network
-attestation above, active-device state, service-identity ambiguity, unreadable
-ALSA ownership, or any changed observation fails closed.
+attestation above, active/buffering/unknown playback, a changed track or advancing
+position during a paused-open proof, kernel `RUNNING` or another non-`PAUSED`
+open target PCM state, service-identity ambiguity, unreadable ALSA ownership, or
+any changed observation fails closed.
 
 There is no atomic exclusion primitive shared with arbitrary non-cooperating
 ALSA/QBZD activity. Playback could theoretically begin in the very small
-sub-call interval after the final status/PCM observation and before
-`try-restart`. The repeated status, process, TGID/cgroup and PCM gates minimize
-that interval but do not claim to eliminate it. `try-restart` additionally
-prevents a service that becomes inactive in that interval from being resurrected.
+sub-call interval after the final status/kernel-PCM observation and before either
+the QConnect-only control call or `try-restart`. Repeated status/playback,
+process, TGID/cgroup and kernel PCM gates minimize that interval but do not claim
+to eliminate it. The paused-open exception therefore never authorizes a daemon
+restart, and `try-restart` additionally prevents a service that becomes inactive
+in that interval from being resurrected.
 
 The versioned state is stored at `${STATE_DIRECTORY}/state.json` with a
 systemd-managed `StateDirectory` and mode `0700`; the file itself is written
