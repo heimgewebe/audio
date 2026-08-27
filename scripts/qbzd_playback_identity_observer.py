@@ -162,8 +162,9 @@ def classify_consistency(
         "kind": "qbzd_playback_identity_observation",
         "read_only": True,
         "persistence_contract": "no-track-metadata-or-track-ids",
-        "snapshot_consistent": queue_stable,
-        "identity_match": None,
+        "queue_samples_equal": queue_stable,
+        "sampled_identity_match": None,
+        "authoritative_identity_proof": False,
         "playing": now_playing.is_playing,
         "queue_index": queue_after.current_index if queue_stable else None,
         "queue_total_tracks": queue_after.total_tracks if queue_stable else None,
@@ -172,39 +173,39 @@ def classify_consistency(
     if not queue_stable:
         return {
             **base,
-            "status": "snapshot-raced",
-            "reason": "queue-changed-around-now-playing-read",
+            "status": "sample-window-changed",
+            "reason": "queue-samples-differ-around-now-playing-read",
         }
 
     if now_playing.queue_track_id != now_playing.playback_track_id:
         return {
             **base,
-            "status": "mismatch",
+            "status": "sampled-mismatch",
             "reason": "now-playing-internal-mismatch",
-            "identity_match": False,
+            "sampled_identity_match": False,
         }
 
     if queue_after.current_track_id != now_playing.queue_track_id:
         return {
             **base,
-            "status": "mismatch",
+            "status": "sampled-mismatch",
             "reason": "queue-playback-mismatch",
-            "identity_match": False,
+            "sampled_identity_match": False,
         }
 
     if queue_after.current_track_id is None:
         return {
             **base,
-            "status": "idle",
-            "reason": None,
-            "identity_match": True,
+            "status": "sampled-idle",
+            "reason": "unversioned-api-aba-not-excluded",
+            "sampled_identity_match": True,
         }
 
     return {
         **base,
-        "status": "consistent",
-        "reason": None,
-        "identity_match": True,
+        "status": "sampled-match",
+        "reason": "unversioned-api-aba-not-excluded",
+        "sampled_identity_match": True,
     }
 
 
@@ -227,9 +228,18 @@ def fetch_json(url: str) -> dict[str, object]:
         raise ObservationError("QBZD identity endpoint response is invalid")
     if len(body) > MAX_RESPONSE_BYTES:
         raise ObservationError("QBZD identity endpoint response is too large")
+    return decode_json_object(body)
+
+
+def _reject_non_json_constant(value: str) -> None:
+    raise ValueError(f"non-JSON constant {value}")
+
+
+def decode_json_object(body: bytes) -> dict[str, object]:
     try:
-        payload = json.loads(body.decode("utf-8", errors="strict"))
-    except (UnicodeError, json.JSONDecodeError) as error:
+        text = body.decode("utf-8", errors="strict")
+        payload = json.loads(text, parse_constant=_reject_non_json_constant)
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
         raise ObservationError("QBZD identity endpoint JSON is invalid") from error
     if not isinstance(payload, dict):
         raise ObservationError("QBZD identity endpoint payload is invalid")
@@ -252,8 +262,9 @@ def observe(
             "persistence_contract": "no-track-metadata-or-track-ids",
             "status": "unavailable",
             "reason": str(error),
-            "snapshot_consistent": False,
-            "identity_match": None,
+            "queue_samples_equal": False,
+            "sampled_identity_match": None,
+            "authoritative_identity_proof": False,
             "playing": None,
             "queue_index": None,
             "queue_total_tracks": None,

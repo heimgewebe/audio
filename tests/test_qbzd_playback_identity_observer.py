@@ -66,13 +66,15 @@ def now_payload(
 
 
 class PlaybackIdentityObserverTests(unittest.TestCase):
-    def test_consistent_snapshot_proves_only_local_identity_match(self):
+    def test_equal_samples_report_only_diagnostic_match(self):
         queue = MODULE.classify_queue_payload(queue_payload())
         now = MODULE.classify_now_playing_payload(now_payload())
         report = MODULE.classify_consistency(queue, now, queue)
-        self.assertEqual(report["status"], "consistent")
-        self.assertTrue(report["identity_match"])
-        self.assertTrue(report["snapshot_consistent"])
+        self.assertEqual(report["status"], "sampled-match")
+        self.assertTrue(report["sampled_identity_match"])
+        self.assertTrue(report["queue_samples_equal"])
+        self.assertFalse(report["authoritative_identity_proof"])
+        self.assertEqual(report["reason"], "unversioned-api-aba-not-excluded")
         self.assertTrue(report["read_only"])
 
     def test_queue_playback_mismatch_is_detected_without_emitting_ids_or_metadata(self):
@@ -80,9 +82,10 @@ class PlaybackIdentityObserverTests(unittest.TestCase):
         now = MODULE.classify_now_playing_payload(now_payload(12345678))
         after = MODULE.classify_queue_payload(queue_payload())
         report = MODULE.classify_consistency(before, now, after)
-        self.assertEqual(report["status"], "mismatch")
+        self.assertEqual(report["status"], "sampled-mismatch")
         self.assertEqual(report["reason"], "queue-playback-mismatch")
-        self.assertFalse(report["identity_match"])
+        self.assertFalse(report["sampled_identity_match"])
+        self.assertFalse(report["authoritative_identity_proof"])
         encoded = json.dumps(report)
         for forbidden in (
             "87654321",
@@ -99,10 +102,12 @@ class PlaybackIdentityObserverTests(unittest.TestCase):
             now_payload(87654321, playback_id=12345678)
         )
         report = MODULE.classify_consistency(queue, now, queue)
-        self.assertEqual(report["status"], "mismatch")
+        self.assertEqual(report["status"], "sampled-mismatch")
         self.assertEqual(report["reason"], "now-playing-internal-mismatch")
+        self.assertFalse(report["sampled_identity_match"])
+        self.assertFalse(report["authoritative_identity_proof"])
 
-    def test_queue_change_around_now_playing_read_fails_closed(self):
+    def test_queue_change_around_now_playing_read_reports_changed_window(self):
         before = MODULE.classify_queue_payload(queue_payload())
         after = MODULE.classify_queue_payload(
             queue_payload(
@@ -114,12 +119,16 @@ class PlaybackIdentityObserverTests(unittest.TestCase):
         )
         now = MODULE.classify_now_playing_payload(now_payload())
         report = MODULE.classify_consistency(before, now, after)
-        self.assertEqual(report["status"], "snapshot-raced")
-        self.assertIsNone(report["identity_match"])
-        self.assertFalse(report["snapshot_consistent"])
+        self.assertEqual(report["status"], "sample-window-changed")
+        self.assertEqual(
+            report["reason"], "queue-samples-differ-around-now-playing-read"
+        )
+        self.assertIsNone(report["sampled_identity_match"])
+        self.assertFalse(report["queue_samples_equal"])
+        self.assertFalse(report["authoritative_identity_proof"])
         self.assertIsNone(report["queue_index"])
 
-    def test_idle_queue_and_player_are_consistent(self):
+    def test_idle_queue_and_player_are_only_sampled_idle(self):
         queue = MODULE.classify_queue_payload(
             queue_payload(
                 None,
@@ -133,8 +142,10 @@ class PlaybackIdentityObserverTests(unittest.TestCase):
             now_payload(None, playback_id=0, playing=False)
         )
         report = MODULE.classify_consistency(queue, now, queue)
-        self.assertEqual(report["status"], "idle")
-        self.assertTrue(report["identity_match"])
+        self.assertEqual(report["status"], "sampled-idle")
+        self.assertTrue(report["sampled_identity_match"])
+        self.assertFalse(report["authoritative_identity_proof"])
+        self.assertEqual(report["reason"], "unversioned-api-aba-not-excluded")
 
     def test_observe_reads_queue_now_queue_in_that_order(self):
         calls = []
@@ -146,7 +157,8 @@ class PlaybackIdentityObserverTests(unittest.TestCase):
             return queue if url == MODULE.QUEUE_URL else now
 
         report = MODULE.observe(reader)
-        self.assertEqual(report["status"], "consistent")
+        self.assertEqual(report["status"], "sampled-match")
+        self.assertFalse(report["authoritative_identity_proof"])
         self.assertEqual(
             calls,
             [MODULE.QUEUE_URL, MODULE.NOW_PLAYING_URL, MODULE.QUEUE_URL],
@@ -201,16 +213,55 @@ class PlaybackIdentityObserverTests(unittest.TestCase):
 
         report = MODULE.observe(reader)
         self.assertEqual(report["status"], "unavailable")
+        self.assertFalse(report["authoritative_identity_proof"])
         self.assertNotIn("very secret", json.dumps(report))
 
     def test_same_track_snapshot_does_not_claim_expected_queue_advance(self):
-        # This is intentionally consistent. Detecting qbzd #699 requires temporal
-        # transition evidence; a single snapshot must not invent an expected next track.
+        # Detecting qbzd #699 requires temporal transition evidence. Equal
+        # unversioned samples can only be a diagnostic match, never a proof.
         queue = MODULE.classify_queue_payload(queue_payload())
         now = MODULE.classify_now_playing_payload(now_payload())
         report = MODULE.classify_consistency(queue, now, queue)
-        self.assertEqual(report["status"], "consistent")
+        self.assertEqual(report["status"], "sampled-match")
+        self.assertFalse(report["authoritative_identity_proof"])
+        self.assertEqual(report["reason"], "unversioned-api-aba-not-excluded")
         self.assertNotIn("expected_next", report)
+
+    def test_aba_return_to_same_sample_is_never_called_authoritative(self):
+        # A -> B -> A between the two queue reads is indistinguishable from no
+        # transition because QBZD exposes no monotonic queue generation here.
+        # The report must advertise that limitation even when both samples match.
+        before = MODULE.classify_queue_payload(queue_payload())
+        now = MODULE.classify_now_playing_payload(now_payload())
+        after = MODULE.classify_queue_payload(queue_payload())
+        report = MODULE.classify_consistency(before, now, after)
+        self.assertTrue(report["queue_samples_equal"])
+        self.assertTrue(report["sampled_identity_match"])
+        self.assertFalse(report["authoritative_identity_proof"])
+        self.assertEqual(report["status"], "sampled-match")
+        self.assertEqual(report["reason"], "unversioned-api-aba-not-excluded")
+
+    def test_strict_json_rejects_nonfinite_constants_and_huge_integer(self):
+        for raw in (b'{"value":NaN}', b'{"value":Infinity}', b'{"value":-Infinity}'):
+            with self.subTest(raw=raw):
+                with self.assertRaises(MODULE.ObservationError):
+                    MODULE.decode_json_object(raw)
+
+        huge = b'{"value":' + (b"9" * 5000) + b"}"
+        with self.assertRaises(MODULE.ObservationError):
+            MODULE.decode_json_object(huge)
+
+    def test_strict_json_rejects_invalid_utf8_and_non_object(self):
+        with self.assertRaises(MODULE.ObservationError):
+            MODULE.decode_json_object(b'{"x":"\xff"}')
+        with self.assertRaises(MODULE.ObservationError):
+            MODULE.decode_json_object(b"[]")
+
+    def test_fetch_json_rejects_any_url_outside_fixed_loopback_contract(self):
+        with self.assertRaises(MODULE.ObservationError):
+            MODULE.fetch_json("http://127.0.0.1:8182/api/status")
+        with self.assertRaises(MODULE.ObservationError):
+            MODULE.fetch_json("https://example.invalid/api/queue")
 
 
 if __name__ == "__main__":
