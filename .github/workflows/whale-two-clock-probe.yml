@@ -1,0 +1,28 @@
+name: Whale Two Clock Probe
+on:
+  pull_request:
+    paths:
+      - scripts/whale_two_clock_probe.py
+      - tests/test_whale_two_clock_probe.py
+      - .github/workflows/whale-two-clock-probe.yml
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run focused two-clock tests
+        run: python3 -m unittest tests.test_whale_two_clock_probe -v
+      - name: Render low-register A/B evidence
+        run: >-
+          python3 scripts/whale_two_clock_probe.py
+          --output-dir /tmp/whale-two-clock-probe
+          --duration-seconds 4
+      - name: Upload A/B evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: whale-two-clock-probe
+          path: /tmp/whale-two-clock-probe
+          if-no-files-found: error
+          retention-days: 7
