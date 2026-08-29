@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -27,6 +28,13 @@ class WhaleMorphBankTests(unittest.TestCase):
         self.assertEqual(bank.anchors[-1].note, 108)
         self.assertGreaterEqual(len(bank.anchors), 3)
         self.assertTrue(all(anchor.periodicity >= 0.58 for anchor in bank.anchors))
+
+    def test_source_clocks_are_bound_to_manifest_anchors(self):
+        bank = morph.WhaleMorphBank()
+        self.assertAlmostEqual(bank.source_clock_hz(21.0), 28.38557066824364, places=9)
+        self.assertAlmostEqual(bank.source_clock_hz(36.0), 33.264033264033266, places=9)
+        self.assertAlmostEqual(bank.source_clock_hz(48.0), 105.49450549450549, places=9)
+        self.assertTrue(all(anchor.source_frequency_hz > 0.0 for anchor in bank.anchors))
 
     def test_every_embedded_table_has_bounded_samples(self):
         bank = morph.WhaleMorphBank()
@@ -105,6 +113,55 @@ class WhaleMorphVoiceTests(unittest.TestCase):
                 for left, right in zip(frequencies, frequencies[1:])
             )
         )
+
+    def test_low_register_separates_pitch_and_source_texture_clocks(self):
+        voice = morph.WhaleMorphVoice(self.config)
+        voice.note_on(36, 80)
+        self.assertAlmostEqual(voice.target_frequency, morph.midi_note_frequency(36), places=10)
+        self.assertAlmostEqual(voice.target_source_clock_hz, 33.264033264033266, places=9)
+        self.assertGreater(voice.target_frequency / voice.target_source_clock_hz, 1.96)
+        self.assertGreater(
+            morph.source_clock_decoupling_amount(
+                voice.target_frequency, voice.target_source_clock_hz, 36.0
+            ),
+            0.95,
+        )
+        self.assertEqual(
+            morph.source_clock_decoupling_amount(
+                morph.midi_note_frequency(21), voice.bank.source_clock_hz(21.0), 21.0
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            morph.source_clock_decoupling_amount(
+                morph.midi_note_frequency(48), voice.bank.source_clock_hz(48.0), 48.0
+            ),
+            0.0,
+        )
+
+    def test_c2_two_clock_path_removes_most_legacy_fast_edge_energy(self):
+        with mock.patch.object(
+            morph, "source_clock_decoupling_amount", return_value=0.0
+        ):
+            legacy_voice = morph.WhaleMorphVoice(self.config)
+            legacy_voice.note_on(36, 80)
+            legacy = legacy_voice.render(self.config.sample_rate)
+        candidate_voice = morph.WhaleMorphVoice(self.config)
+        candidate_voice.note_on(36, 80)
+        candidate = candidate_voice.render(self.config.sample_rate)
+
+        def difference_energy_ratio(values):
+            energy = sum(value * value for value in values) or 1.0
+            derivative = sum(
+                (right - left) ** 2 for left, right in zip(values, values[1:])
+            )
+            return derivative / energy
+
+        legacy_edge = difference_energy_ratio(legacy)
+        candidate_edge = difference_energy_ratio(candidate)
+        self.assertGreater(legacy_edge, 0.0)
+        self.assertLess(candidate_edge / legacy_edge, 0.10)
+        self.assertLessEqual(max(abs(value) for value in candidate), morph.MAX_MASTER_GAIN)
 
     def test_idle_is_exact_silence_and_does_not_advance(self):
         voice = morph.WhaleMorphVoice(self.config)

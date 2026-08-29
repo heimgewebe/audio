@@ -26,6 +26,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "assets" / "whale-sources" / "morph" / "manifest.json"
 SILENCE_THRESHOLD = 1e-7
 MAX_MASTER_GAIN = 0.25
+SOURCE_TEXTURE_MIX = 0.55
+OVERCLOCK_START_RATIO = 1.10
+OVERCLOCK_FULL_RATIO = 2.00
+LOW_REGISTER_FULL_NOTE = 36.0
+LOW_REGISTER_TAPER_END_NOTE = 48.0
 
 
 def absolute_path(path: pathlib.Path) -> pathlib.Path:
@@ -80,6 +85,7 @@ class MorphAnchor:
     clip_id: str
     periodicity: float
     levels: tuple[MorphLevel, ...]
+    source_frequency_hz: float = 0.0
 
 
 class WhaleMorphBank:
@@ -161,6 +167,7 @@ class WhaleMorphBank:
             source_filename = raw_anchor.get("source_filename")
             source_anchor_sha = raw_anchor.get("source_sha256")
             periodicity = raw_anchor.get("periodicity")
+            source_frequency_hz = raw_anchor.get("estimated_source_frequency_hz")
             raw_levels = raw_anchor.get("levels")
             if (
                 not isinstance(note, int)
@@ -170,6 +177,9 @@ class WhaleMorphBank:
                 or not isinstance(source_anchor_sha, str)
                 or not isinstance(periodicity, (int, float))
                 or not 0.0 <= float(periodicity) <= 1.0
+                or not isinstance(source_frequency_hz, (int, float))
+                or not math.isfinite(float(source_frequency_hz))
+                or not 1.0 <= float(source_frequency_hz) < self.sample_rate / 2
                 or not isinstance(raw_levels, list)
             ):
                 raise RuntimeError("whale morph anchor metadata is invalid")
@@ -216,7 +226,15 @@ class WhaleMorphBank:
                 previous_harmonic = maximum
             if not levels or levels[-1].maximum_harmonic != 1:
                 raise RuntimeError("whale morph anchor lacks a fundamental-only level")
-            anchors.append(MorphAnchor(note, clip_id, float(periodicity), tuple(levels)))
+            anchors.append(
+                MorphAnchor(
+                    note,
+                    clip_id,
+                    float(periodicity),
+                    tuple(levels),
+                    float(source_frequency_hz),
+                )
+            )
         anchors.sort(key=lambda anchor: anchor.note)
         if [anchor.note for anchor in anchors] != sorted({anchor.note for anchor in anchors}):
             raise RuntimeError("whale morph anchor notes must be unique")
@@ -242,6 +260,10 @@ class WhaleMorphBank:
             "tuning": "twelve-tone-equal-temperament-a4-440",
             "permanent_noise_layer": False,
             "sample_zones": 0,
+            "source_clock_hz_range": [
+                min(anchor.source_frequency_hz for anchor in self.anchors),
+                max(anchor.source_frequency_hz for anchor in self.anchors),
+            ],
         }
 
     @staticmethod
@@ -257,6 +279,9 @@ class WhaleMorphBank:
         # sample-rate guard. Blending an unsafe upper table would reintroduce
         # exactly the aliased harmonics the mip levels are meant to remove.
         desired = max(1.0, self.sample_rate * 0.45 / max(frequency_hz, 1.0))
+        richest = anchor.levels[0]
+        if desired >= richest.maximum_harmonic * 2:
+            return self._table_sample(richest.table, phase)
         ascending = tuple(reversed(anchor.levels))
         current_index = 0
         for index, level in enumerate(ascending):
@@ -281,6 +306,24 @@ class WhaleMorphBank:
         safe_sample = self._table_sample(current.table, phase)
         return low_sample + (safe_sample - low_sample) * clamp(amount, 0.0, 1.0)
 
+    def source_clock_hz(self, timbre_note: float) -> float:
+        """Return the source-derived cycle clock without binding it to MIDI pitch."""
+
+        note = clamp(
+            timbre_note, float(self.anchors[0].note), float(self.anchors[-1].note)
+        )
+        if note <= self.anchors[0].note:
+            return self.anchors[0].source_frequency_hz
+        if note >= self.anchors[-1].note:
+            return self.anchors[-1].source_frequency_hz
+        for left, right in zip(self.anchors, self.anchors[1:]):
+            if left.note <= note <= right.note:
+                amount = (note - left.note) / (right.note - left.note)
+                left_log = math.log(left.source_frequency_hz)
+                right_log = math.log(right.source_frequency_hz)
+                return math.exp(left_log + (right_log - left_log) * amount)
+        raise AssertionError("source-clock anchor selection is incomplete")
+
     def sample(self, phase: float, timbre_note: float, frequency_hz: float) -> float:
         note = clamp(timbre_note, float(self.anchors[0].note), float(self.anchors[-1].note))
         if note <= self.anchors[0].note:
@@ -298,6 +341,28 @@ class WhaleMorphBank:
                     + right_sample * math.sin(amount * math.pi / 2.0)
                 )
         raise AssertionError("timbre anchor selection is incomplete")
+
+
+def source_clock_decoupling_amount(
+    pitch_hz: float, source_clock_hz: float, timbre_note: float
+) -> float:
+    """Blend only overclocked low-register texture onto its source clock."""
+
+    ratio = pitch_hz / max(source_clock_hz, 1.0e-9)
+    clock_span = OVERCLOCK_FULL_RATIO - OVERCLOCK_START_RATIO
+    clock_amount = clamp(
+        (ratio - OVERCLOCK_START_RATIO) / clock_span, 0.0, 1.0
+    )
+    if timbre_note <= LOW_REGISTER_FULL_NOTE:
+        register_amount = 1.0
+    else:
+        register_amount = clamp(
+            (LOW_REGISTER_TAPER_END_NOTE - timbre_note)
+            / (LOW_REGISTER_TAPER_END_NOTE - LOW_REGISTER_FULL_NOTE),
+            0.0,
+            1.0,
+        )
+    return clock_amount * register_amount
 
 
 def morph_bank_status(manifest_path: pathlib.Path = DEFAULT_MANIFEST) -> dict[str, object]:
@@ -338,10 +403,13 @@ class WhaleMorphVoice:
         self.target_velocity = 0.5
         self.current_frequency = midi_note_frequency(60)
         self.target_frequency = self.current_frequency
+        self.current_source_clock_hz = self.bank.source_clock_hz(60.0)
+        self.target_source_clock_hz = self.current_source_clock_hz
         self.glide_seconds = 0.12
         self.attack_seconds = 0.055
         self.release_seconds = 0.8
         self.phase = 0.0
+        self.source_phase = 0.0
         self.motion_phase = 0.31
         self.second_motion_phase = 1.7
         self.vibrato_phase = 0.0
@@ -383,6 +451,7 @@ class WhaleMorphVoice:
         self.held_notes[note] = (velocity, self._order)
         self.active_note = note
         self.target_frequency = self._target_for_note(note)
+        self.target_source_clock_hz = self.bank.source_clock_hz(float(note))
         self.target_velocity = velocity / 127.0
         interval_octaves = abs(math.log2(self.target_frequency / old_frequency))
         self.glide_seconds = clamp(
@@ -394,9 +463,11 @@ class WhaleMorphVoice:
         self.gate = True
         if detached:
             self.current_frequency = self.target_frequency
+            self.current_source_clock_hz = self.target_source_clock_hz
             self.velocity = self.target_velocity
             self.envelope = 0.0
             self.phase = 0.0
+            self.source_phase = 0.0
             self.note_age_frames = 0
             self.hold_frames = 0
             self.retrigger_strength = 0.0
@@ -415,6 +486,7 @@ class WhaleMorphVoice:
             )
             self.active_note = next_note
             self.target_frequency = self._target_for_note(next_note)
+            self.target_source_clock_hz = self.bank.source_clock_hz(float(next_note))
             self.target_velocity = velocity / 127.0
             self.glide_seconds = 0.11
             self.gate = True
@@ -467,6 +539,9 @@ class WhaleMorphVoice:
         self.hold_frames = 0
         self.retrigger_strength = 0.0
         self.depth_state = 0.0
+        self.source_phase = 0.0
+        self.current_source_clock_hz = self.bank.source_clock_hz(60.0)
+        self.target_source_clock_hz = self.current_source_clock_hz
 
     def render(self, frames: int) -> list[float]:
         if frames < 0 or frames > self.config.sample_rate * 30:
@@ -480,7 +555,9 @@ class WhaleMorphVoice:
         envelope = self.envelope
         velocity = self.velocity
         current_frequency = self.current_frequency
+        current_source_clock_hz = self.current_source_clock_hz
         phase = self.phase
+        source_phase = self.source_phase
         motion_phase = self.motion_phase
         second_motion_phase = self.second_motion_phase
         vibrato_phase = self.vibrato_phase
@@ -500,6 +577,9 @@ class WhaleMorphVoice:
 
         for index in range(frames):
             current_frequency += (self.target_frequency - current_frequency) * glide_alpha
+            current_source_clock_hz += (
+                self.target_source_clock_hz - current_source_clock_hz
+            ) * glide_alpha
             velocity += (self.target_velocity - velocity) * velocity_alpha
             if self.gate:
                 envelope += (1.0 - envelope) * attack_alpha
@@ -546,6 +626,20 @@ class WhaleMorphVoice:
             timbre_note = base_note + timbre_motion + velocity_brightness
             voice_sample = self.bank.sample(phase, timbre_note, frequency)
 
+            source_phase = (
+                source_phase + current_source_clock_hz / sample_rate
+            ) % 1.0
+            decoupling = source_clock_decoupling_amount(
+                frequency, current_source_clock_hz, base_note
+            )
+            if decoupling > 0.0:
+                carrier = math.sin(2.0 * math.pi * phase)
+                source_texture = self.bank.sample(
+                    source_phase, timbre_note, current_source_clock_hz
+                )
+                separated = carrier + SOURCE_TEXTURE_MIX * source_texture
+                voice_sample += (separated - voice_sample) * decoupling
+
             retrigger_strength += (0.0 - retrigger_strength) * retrigger_alpha
             articulation_gain = 1.0 + 0.14 * retrigger_strength
             phrase_gain = 0.88 + 0.08 * slow_arc * hold_development + 0.04 * second_arc
@@ -570,7 +664,9 @@ class WhaleMorphVoice:
         self.envelope = envelope
         self.velocity = velocity
         self.current_frequency = current_frequency
+        self.current_source_clock_hz = current_source_clock_hz
         self.phase = phase
+        self.source_phase = source_phase
         self.motion_phase = motion_phase
         self.second_motion_phase = second_motion_phase
         self.vibrato_phase = vibrato_phase
