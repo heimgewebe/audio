@@ -28,8 +28,7 @@
      ):
 --- a/scripts/compare_whale_organic.py
 +++ b/scripts/compare_whale_organic.py
-@@ -25,7 +25,10 @@ from whale_live_engine import MidiEvent, WhaleVoiceConfig, write_stereo_wav  # n
- from whale_morph_engine import (  # noqa: E402
+@@ -29,7 +29,10 @@ from whale_morph_engine import (  # noqa: E402
      WhaleMorphVoice,
      regular_file_path,
  )
