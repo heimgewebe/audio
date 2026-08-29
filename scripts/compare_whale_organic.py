@@ -29,7 +29,10 @@ from whale_morph_engine import (  # noqa: E402
     WhaleMorphVoice,
     regular_file_path,
 )
-from whale_organic_engine import OrganicWhaleMorphVoice  # noqa: E402
+from whale_organic_engine import (  # noqa: E402
+    OrganicComponentConfig,
+    OrganicWhaleMorphVoice,
+)
 
 SAMPLE_RATE = 48_000
 ANALYSIS_RATE = 4_000
@@ -129,7 +132,10 @@ def organic_phrase_events() -> list[tuple[float, MidiEvent]]:
 
 
 def render_phrase(
-    engine: str = "morph", duration_seconds: float = 17.0, gain: float = 0.16
+    engine: str = "morph",
+    duration_seconds: float = 17.0,
+    gain: float = 0.16,
+    organic_component_config: OrganicComponentConfig | None = None,
 ) -> list[float]:
     config = WhaleVoiceConfig(
         sample_rate=SAMPLE_RATE, block_frames=128, master_gain=gain
@@ -137,7 +143,9 @@ def render_phrase(
     if engine == "morph":
         voice = WhaleMorphVoice(config)
     elif engine == "organic":
-        voice = OrganicWhaleMorphVoice(config)
+        voice = OrganicWhaleMorphVoice(
+            config, component_config=organic_component_config
+        )
     else:
         raise ValueError(f"unknown comparison engine: {engine}")
     output: list[float] = []

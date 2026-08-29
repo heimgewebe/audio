@@ -55,8 +55,17 @@ class WhaleOrganicComparisonTests(unittest.TestCase):
     def test_temporal_features_measure_acoustic_state_diversity(self):
         morph_samples = comparison.render_phrase("morph")
         organic_samples = comparison.render_phrase("organic")
+        organic_without_states_samples = comparison.render_phrase(
+            "organic",
+            organic_component_config=comparison.OrganicComponentConfig(
+                articulation_states=False
+            ),
+        )
         morph_features = comparison.temporal_state_features(morph_samples)
         organic_features = comparison.temporal_state_features(organic_samples)
+        organic_without_states_features = comparison.temporal_state_features(
+            organic_without_states_samples
+        )
 
         self.assertEqual(
             organic_features,
@@ -77,7 +86,7 @@ class WhaleOrganicComparisonTests(unittest.TestCase):
         self.assertLess(organic_features["rough_fraction"], 0.12)
         self.assertGreater(
             organic_features["state_entropy"],
-            morph_features["state_entropy"] + 0.05,
+            organic_without_states_features["state_entropy"] + 0.05,
         )
         self.assertGreater(
             organic_features["highband_q90"],

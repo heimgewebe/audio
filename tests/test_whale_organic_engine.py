@@ -120,21 +120,27 @@ class OrganicWhaleMorphVoiceTests(unittest.TestCase):
         self.assertGreater(self.rms(organic_samples), 1e-4)
 
     def test_low_register_has_material_deep_bass_body(self):
+        # Morph now carries source-clock-correct low texture itself, so comparing
+        # Organic against Morph no longer isolates the register_bass component.
+        # Compare the same Organic path with only that component ablated.
         ratios = []
         for note in (21, 33):
-            plain = morph.WhaleMorphVoice(self.config)
             shaped = organic.OrganicWhaleMorphVoice(self.config)
-            for voice in (plain, shaped):
+            without_bass = organic.OrganicWhaleMorphVoice(
+                self.config,
+                component_config=organic.OrganicComponentConfig(register_bass=False),
+            )
+            for voice in (shaped, without_bass):
                 voice.note_on(note, 80)
-            plain_samples = plain.render(self.config.sample_rate)
             organic_samples = shaped.render(self.config.sample_rate)
+            ablated_samples = without_bass.render(self.config.sample_rate)
             ratios.append(
                 self.lowpass_rms(organic_samples)
-                / self.lowpass_rms(plain_samples)
+                / self.lowpass_rms(ablated_samples)
             )
             self.assertLessEqual(max(abs(value) for value in organic_samples), 0.25)
         self.assertGreater(ratios[0], 1.55)
-        self.assertGreater(ratios[1], 1.80)
+        self.assertGreater(ratios[1], 1.55)
 
     def test_extra_pitch_layer_avoids_theremin_sweeps(self):
         voice = organic.OrganicWhaleMorphVoice(self.config)
