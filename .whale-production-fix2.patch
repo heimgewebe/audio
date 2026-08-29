@@ -1,0 +1,91 @@
+--- a/scripts/audio_control.py
++++ b/scripts/audio_control.py
+@@ -2811,6 +2811,17 @@ def read_whale_contract() -> dict[str, Any]:
+         "detached_retrigger": "new-call-envelope-with-source-derived-cycle-reset",
+         "repeated_note": "phase-preserving-rearticulation",
+         "pitch_bend_range_semitones": 2,
++        "low_register_source_clock": {
++            "policy": "separate-rich-source-texture-clock-with-midi-bound-primary-carrier",
++            "source_clock": "log-interpolated-estimated-source-frequency-from-morph-anchors",
++            "full_strength_through_note": 36,
++            "taper_end_note": 48,
++            "overclock_start_ratio": 1.1,
++            "overclock_full_ratio": 2.0,
++            "source_texture_mix": 0.55,
++            "primary_pitch_contract": "played-midi-frequency-remains-primary-carrier",
++            "underclock_policy": "no-decoupling",
++        },
+     }
+     if any(morph.get(key) != value for key, value in morph_contract.items()):
+         raise ControlError("Buckelwalprofil verletzt den 88-Tasten-Morph-Vertrag.")
+@@ -2881,6 +2892,9 @@ def read_whale_contract() -> dict[str, Any]:
+         truth_boundary.get("current_backend") != morph_contract["backend"]
+         or truth_boundary.get("biological_voice_model_claim") is not False
++        or truth_boundary.get("realism_claim")
++        != "source-derived-periodic-timbre-resynthesis-with-low-register-source-clock-separation-not-biological-model-and-not-recorded-phrase-playback"
+         or truth_boundary.get("keyboard_contract")
+         != "all-88-keys-are-standard-chromatic-notes-with-no-presets-zones-or-control-keys"
+     ):
+--- a/scripts/compare_whale_organic.py
++++ b/scripts/compare_whale_organic.py
+@@ -25,7 +25,10 @@ from whale_live_engine import MidiEvent, WhaleVoiceConfig, write_stereo_wav  # n
+ from whale_morph_engine import (  # noqa: E402
+     WhaleMorphVoice,
+     regular_file_path,
+ )
+-from whale_organic_engine import OrganicWhaleMorphVoice  # noqa: E402
++from whale_organic_engine import (  # noqa: E402
++    OrganicComponentConfig,
++    OrganicWhaleMorphVoice,
++)
+@@ -129,7 +132,10 @@ def organic_phrase_events() -> list[tuple[float, MidiEvent]]:
+ 
+ 
+ def render_phrase(
+-    engine: str = "morph", duration_seconds: float = 17.0, gain: float = 0.16
++    engine: str = "morph",
++    duration_seconds: float = 17.0,
++    gain: float = 0.16,
++    organic_component_config: OrganicComponentConfig | None = None,
+ ) -> list[float]:
+     config = WhaleVoiceConfig(
+         sample_rate=SAMPLE_RATE, block_frames=128, master_gain=gain
+@@ -137,7 +143,9 @@ def render_phrase(
+     if engine == "morph":
+         voice = WhaleMorphVoice(config)
+     elif engine == "organic":
+-        voice = OrganicWhaleMorphVoice(config)
++        voice = OrganicWhaleMorphVoice(
++            config, component_config=organic_component_config
++        )
+     else:
+         raise ValueError(f"unknown comparison engine: {engine}")
+--- a/tests/test_whale_organic_compare.py
++++ b/tests/test_whale_organic_compare.py
+@@ -54,8 +54,15 @@ class WhaleOrganicComparisonTests(unittest.TestCase):
+     def test_temporal_features_measure_acoustic_state_diversity(self):
+         morph_samples = comparison.render_phrase("morph")
+         organic_samples = comparison.render_phrase("organic")
++        organic_without_states_samples = comparison.render_phrase(
++            "organic",
++            organic_component_config=comparison.OrganicComponentConfig(
++                articulation_states=False
++            ),
++        )
+         morph_features = comparison.temporal_state_features(morph_samples)
+         organic_features = comparison.temporal_state_features(organic_samples)
++        organic_without_states_features = comparison.temporal_state_features(
++            organic_without_states_samples
++        )
+ 
+         self.assertEqual(
+             organic_features,
+@@ -74,7 +81,7 @@ class WhaleOrganicComparisonTests(unittest.TestCase):
+         self.assertLess(organic_features["rough_fraction"], 0.12)
+         self.assertGreater(
+             organic_features["state_entropy"],
+-            morph_features["state_entropy"] + 0.05,
++            organic_without_states_features["state_entropy"] + 0.05,
+         )
+         self.assertGreater(
+             organic_features["highband_q90"],
