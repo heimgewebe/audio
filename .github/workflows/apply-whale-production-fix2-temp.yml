@@ -1,0 +1,27 @@
+name: Apply Whale Production Fix2 Temp
+on:
+  push:
+    branches:
+      - fix/whale-low-register-source-clock-20260829
+    paths:
+      - .whale-production-fix2.patch
+      - .github/workflows/apply-whale-production-fix2-temp.yml
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/whale-low-register-source-clock-20260829
+      - name: Apply exact integration fixes
+        run: |
+          git apply --check .whale-production-fix2.patch
+          git apply .whale-production-fix2.patch
+          git rm .whale-production-fix2.patch .github/workflows/apply-whale-production-fix2-temp.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/audio_control.py scripts/compare_whale_organic.py tests/test_whale_organic_compare.py
+          git commit -m "fix(whale): bind source-clock integration contracts"
+          git push origin HEAD:fix/whale-low-register-source-clock-20260829
