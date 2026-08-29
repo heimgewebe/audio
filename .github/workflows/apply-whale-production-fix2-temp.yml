@@ -94,34 +94,29 @@ jobs:
           )
           replace_once(
               "tests/test_whale_organic_compare.py",
-              '''        morph_samples = comparison.render_phrase("morph")
-                  organic_samples = comparison.render_phrase("organic")
-                  morph_features = comparison.temporal_state_features(morph_samples)
-                  organic_features = comparison.temporal_state_features(organic_samples)''',
-              '''        morph_samples = comparison.render_phrase("morph")
-                  organic_samples = comparison.render_phrase("organic")
+              '        organic_samples = comparison.render_phrase("organic")\n',
+              '''        organic_samples = comparison.render_phrase("organic")
                   organic_without_states_samples = comparison.render_phrase(
                       "organic",
                       organic_component_config=comparison.OrganicComponentConfig(
                           articulation_states=False
                       ),
                   )
-                  morph_features = comparison.temporal_state_features(morph_samples)
-                  organic_features = comparison.temporal_state_features(organic_samples)
-                  organic_without_states_features = comparison.temporal_state_features(
-                      organic_without_states_samples
-                  )''',
+          ''',
           )
           replace_once(
               "tests/test_whale_organic_compare.py",
-              '''        self.assertGreater(
-                  organic_features["state_entropy"],
-                  morph_features["state_entropy"] + 0.05,
-              )''',
-              '''        self.assertGreater(
-                  organic_features["state_entropy"],
-                  organic_without_states_features["state_entropy"] + 0.05,
-              )''',
+              '        organic_features = comparison.temporal_state_features(organic_samples)\n',
+              '''        organic_features = comparison.temporal_state_features(organic_samples)
+                  organic_without_states_features = comparison.temporal_state_features(
+                      organic_without_states_samples
+                  )
+          ''',
+          )
+          replace_once(
+              "tests/test_whale_organic_compare.py",
+              '            morph_features["state_entropy"] + 0.05,',
+              '            organic_without_states_features["state_entropy"] + 0.05,',
           )
           PY
           git diff --check
