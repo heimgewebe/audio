@@ -15,10 +15,116 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: fix/whale-low-register-source-clock-20260829
-      - name: Apply exact integration fixes
+      - name: Apply exact preimage-bound integration fixes
         run: |
-          git apply --check .whale-production-fix2.patch
-          git apply .whale-production-fix2.patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one exact preimage, found {count}")
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "scripts/audio_control.py",
+              '''        "detached_retrigger": "new-call-envelope-with-source-derived-cycle-reset",
+                  "repeated_note": "phase-preserving-rearticulation",
+                  "pitch_bend_range_semitones": 2,
+              }
+              if any(morph.get(key) != value for key, value in morph_contract.items()):''',
+              '''        "detached_retrigger": "new-call-envelope-with-source-derived-cycle-reset",
+                  "repeated_note": "phase-preserving-rearticulation",
+                  "pitch_bend_range_semitones": 2,
+                  "low_register_source_clock": {
+                      "policy": "separate-rich-source-texture-clock-with-midi-bound-primary-carrier",
+                      "source_clock": "log-interpolated-estimated-source-frequency-from-morph-anchors",
+                      "full_strength_through_note": 36,
+                      "taper_end_note": 48,
+                      "overclock_start_ratio": 1.1,
+                      "overclock_full_ratio": 2.0,
+                      "source_texture_mix": 0.55,
+                      "primary_pitch_contract": "played-midi-frequency-remains-primary-carrier",
+                      "underclock_policy": "no-decoupling",
+                  },
+              }
+              if any(morph.get(key) != value for key, value in morph_contract.items()):''',
+          )
+          replace_once(
+              "scripts/audio_control.py",
+              '''        truth_boundary.get("current_backend") != morph_contract["backend"]
+                  or truth_boundary.get("biological_voice_model_claim") is not False
+                  or truth_boundary.get("keyboard_contract")''',
+              '''        truth_boundary.get("current_backend") != morph_contract["backend"]
+                  or truth_boundary.get("biological_voice_model_claim") is not False
+                  or truth_boundary.get("realism_claim")
+                  != "source-derived-periodic-timbre-resynthesis-with-low-register-source-clock-separation-not-biological-model-and-not-recorded-phrase-playback"
+                  or truth_boundary.get("keyboard_contract")''',
+          )
+          replace_once(
+              "scripts/compare_whale_organic.py",
+              'from whale_organic_engine import OrganicWhaleMorphVoice  # noqa: E402',
+              '''from whale_organic_engine import (  # noqa: E402
+              OrganicComponentConfig,
+              OrganicWhaleMorphVoice,
+          )''',
+          )
+          replace_once(
+              "scripts/compare_whale_organic.py",
+              '''def render_phrase(
+              engine: str = "morph", duration_seconds: float = 17.0, gain: float = 0.16
+          ) -> list[float]:''',
+              '''def render_phrase(
+              engine: str = "morph",
+              duration_seconds: float = 17.0,
+              gain: float = 0.16,
+              organic_component_config: OrganicComponentConfig | None = None,
+          ) -> list[float]:''',
+          )
+          replace_once(
+              "scripts/compare_whale_organic.py",
+              '''    elif engine == "organic":
+                  voice = OrganicWhaleMorphVoice(config)''',
+              '''    elif engine == "organic":
+                  voice = OrganicWhaleMorphVoice(
+                      config, component_config=organic_component_config
+                  )''',
+          )
+          replace_once(
+              "tests/test_whale_organic_compare.py",
+              '''        morph_samples = comparison.render_phrase("morph")
+                  organic_samples = comparison.render_phrase("organic")
+                  morph_features = comparison.temporal_state_features(morph_samples)
+                  organic_features = comparison.temporal_state_features(organic_samples)''',
+              '''        morph_samples = comparison.render_phrase("morph")
+                  organic_samples = comparison.render_phrase("organic")
+                  organic_without_states_samples = comparison.render_phrase(
+                      "organic",
+                      organic_component_config=comparison.OrganicComponentConfig(
+                          articulation_states=False
+                      ),
+                  )
+                  morph_features = comparison.temporal_state_features(morph_samples)
+                  organic_features = comparison.temporal_state_features(organic_samples)
+                  organic_without_states_features = comparison.temporal_state_features(
+                      organic_without_states_samples
+                  )''',
+          )
+          replace_once(
+              "tests/test_whale_organic_compare.py",
+              '''        self.assertGreater(
+                  organic_features["state_entropy"],
+                  morph_features["state_entropy"] + 0.05,
+              )''',
+              '''        self.assertGreater(
+                  organic_features["state_entropy"],
+                  organic_without_states_features["state_entropy"] + 0.05,
+              )''',
+          )
+          PY
+          git diff --check
           git rm .whale-production-fix2.patch .github/workflows/apply-whale-production-fix2-temp.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
