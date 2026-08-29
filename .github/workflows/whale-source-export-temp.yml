@@ -1,0 +1,36 @@
+name: Whale Source Export Temp
+on:
+  pull_request:
+    paths:
+      - .github/workflows/whale-source-export-temp.yml
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Collect exact integration sources
+        run: |
+          mkdir -p /tmp/whale-source-export/scripts /tmp/whale-source-export/tests /tmp/whale-source-export/profiles
+          mkdir -p /tmp/whale-source-export/assets/whale-sources/morph
+          mkdir -p /tmp/whale-source-export/assets/whale-sources/processed
+          mkdir -p /tmp/whale-source-export/assets/whale-sources/voice-model
+          cp scripts/whale_live_engine.py /tmp/whale-source-export/scripts/
+          cp scripts/build_whale_morph_bank.py /tmp/whale-source-export/scripts/
+          cp scripts/whale_morph_engine.py /tmp/whale-source-export/scripts/
+          cp scripts/whale_source_filter_engine.py /tmp/whale-source-export/scripts/
+          cp scripts/whale_organic_engine.py /tmp/whale-source-export/scripts/
+          cp tests/test_whale_morph_engine.py /tmp/whale-source-export/tests/
+          cp tests/test_whale_organic_engine.py /tmp/whale-source-export/tests/
+          cp profiles/buckelwal-live-voice-v1.json /tmp/whale-source-export/profiles/
+          cp assets/whale-sources/morph/manifest.json /tmp/whale-source-export/assets/whale-sources/morph/
+          cp assets/whale-sources/processed/manifest.json /tmp/whale-source-export/assets/whale-sources/processed/
+          cp assets/whale-sources/voice-model/manifest.json /tmp/whale-source-export/assets/whale-sources/voice-model/
+      - name: Upload exact source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: whale-source-export-temp
+          path: /tmp/whale-source-export
+          if-no-files-found: error
+          retention-days: 1
