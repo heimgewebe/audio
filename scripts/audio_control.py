@@ -2801,6 +2801,17 @@ def read_whale_contract() -> dict[str, Any]:
         "detached_retrigger": "new-call-envelope-with-source-derived-cycle-reset",
         "repeated_note": "phase-preserving-rearticulation",
         "pitch_bend_range_semitones": 2,
+        "low_register_source_clock": {
+            "policy": "separate-rich-source-texture-clock-with-midi-bound-primary-carrier",
+            "source_clock": "log-interpolated-estimated-source-frequency-from-morph-anchors",
+            "full_strength_through_note": 36,
+            "taper_end_note": 48,
+            "overclock_start_ratio": 1.1,
+            "overclock_full_ratio": 2.0,
+            "source_texture_mix": 0.55,
+            "primary_pitch_contract": "played-midi-frequency-remains-primary-carrier",
+            "underclock_policy": "no-decoupling",
+        },
     }
     if any(morph.get(key) != value for key, value in morph_contract.items()):
         raise ControlError("Buckelwalprofil verletzt den 88-Tasten-Morph-Vertrag.")
@@ -2880,6 +2891,8 @@ def read_whale_contract() -> dict[str, Any]:
     if (
         truth_boundary.get("current_backend") != morph_contract["backend"]
         or truth_boundary.get("biological_voice_model_claim") is not False
+        or truth_boundary.get("realism_claim")
+        != "source-derived-periodic-timbre-resynthesis-with-low-register-source-clock-separation-not-biological-model-and-not-recorded-phrase-playback"
         or truth_boundary.get("keyboard_contract")
         != "all-88-keys-are-standard-chromatic-notes-with-no-presets-zones-or-control-keys"
     ):
