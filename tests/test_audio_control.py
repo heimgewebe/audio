@@ -663,6 +663,31 @@ class AudioControlTests(unittest.TestCase):
             {"desktop-listening", "qobuz-reference", "recording", "performance"},
         )
 
+    def test_qobuz_projection_fails_closed_when_motu_is_absent_even_if_qbzd_is_stale_ready(self):
+        doctor = operating_mode_doctor(
+            motu=False, qobuz_ready=True, playing=True, track_native=True
+        )
+        qobuz = MODULE._qobuz_projection(doctor)
+        self.assertFalse(qobuz["reference_ready"])
+        self.assertFalse(qobuz["current_qbzd_playback"])
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=doctor,
+        )
+        qobuz_mode = next(
+            mode for mode in projection["modes"] if mode["id"] == "qobuz-reference"
+        )
+        self.assertEqual(qobuz_mode["state"], "blocked")
+        self.assertEqual(qobuz_mode["reason"], "motu-not-observed")
+        self.assertEqual(qobuz_mode["quality"]["rate_proof_state"], "motu-not-observed")
+        self.assertEqual(qobuz_mode["qconnect"]["state"], "connected")
+        self.assertTrue(qobuz_mode["qconnect"]["session_active"])
+        self.assertFalse(projection["executable"]["qobuz-reference"]["allowed"])
+
     def test_recording_mode_projects_recorder_authority_without_second_mode_action(self):
         projection = MODULE.project_operating_modes(
             MODULE.default_operating_mode_configuration(),

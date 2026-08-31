@@ -832,14 +832,18 @@ def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
     playback = qobuz.get("motu_hardware_playback")
     if not isinstance(playback, dict):
         playback = {}
+    hardware = doctor.get("hardware")
+    motu_present = isinstance(hardware, dict) and hardware.get("motu_m2") is True
     qconnect_state = qconnect.get("state")
     current_qbzd_playback = (
-        playback.get("owner_class") == "qbzd"
+        motu_present
+        and playback.get("owner_class") == "qbzd"
         and playback.get("pcm_state") == "RUNNING"
         and playback.get("open") is True
     )
     reference_ready = (
-        qobuz.get("selected_reference_provider") == "qbzd-qconnect"
+        motu_present
+        and qobuz.get("selected_reference_provider") == "qbzd-qconnect"
         and qobuz.get("reference_provider_ready") is True
         and qbzd.get("status") == "available"
         and qconnect_state == "connected"
@@ -850,6 +854,9 @@ def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
         and current_qbzd_playback
         and qobuz.get("track_native_proven") is True
     )
+    rate_proof_state = qobuz.get("rate_proof_state", "blocked")
+    if not motu_present:
+        rate_proof_state = "motu-not-observed"
     return {
         "provider": qobuz.get("selected_reference_provider"),
         "reference_ready": reference_ready,
@@ -858,7 +865,7 @@ def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
         "qconnect_session_active": qconnect.get("session_active") is True,
         "current_qbzd_playback": current_qbzd_playback,
         "track_native_proven": track_native,
-        "rate_proof_state": qobuz.get("rate_proof_state", "blocked"),
+        "rate_proof_state": rate_proof_state,
         "track_sample_rate_hz": playback.get("rate_hz") if track_native else None,
     }
 

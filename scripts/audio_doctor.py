@@ -1022,8 +1022,14 @@ def build_report(
         and qbzd_reference_proof_snapshot(qbzd_before_observation)
         == qbzd_reference_proof_snapshot(qbzd_observation)
     )
-    qbzd_ready = qbzd_observation.get("reference_provider_ready") is True
-    legacy_mopidy_ready = qobuz_observation.get("backend_registered") is True
+    # QBZD and legacy Mopidy can retain software/session state after the USB
+    # interface disappears. Treat their readiness as software evidence only;
+    # current ALSA enumeration is the independent physical-presence authority.
+    qbzd_software_ready = qbzd_observation.get("reference_provider_ready") is True
+    legacy_mopidy_software_ready = qobuz_observation.get("backend_registered") is True
+    qobuz_software_ready = qbzd_software_ready or legacy_mopidy_software_ready
+    qbzd_ready = motu and qbzd_software_ready
+    legacy_mopidy_ready = motu and legacy_mopidy_software_ready
     selected_qobuz_provider = (
         "qbzd-qconnect" if qbzd_ready else "mopidy-legacy" if legacy_mopidy_ready else None
     )
@@ -1055,7 +1061,17 @@ def build_report(
         qbzd_rate=qbzd_rate,
         motu_rate=motu_rate,
     )
+    if not motu and qobuz_software_ready:
+        qbzd_rate_proof_state = "motu-not-observed"
     track_native_proven = qbzd_rate_proof_state == "verified-current-track"
+    if not motu and qobuz_software_ready:
+        qobuz_rate_proof_state = "motu-not-observed"
+    elif qbzd_software_ready:
+        qobuz_rate_proof_state = qbzd_rate_proof_state
+    elif legacy_mopidy_software_ready:
+        qobuz_rate_proof_state = "legacy-mopidy-ready"
+    else:
+        qobuz_rate_proof_state = "blocked"
     recorder_capture = classify_recorder_capture_source(recorder_sources)
 
     warnings: list[dict[str, str]] = []
@@ -1129,6 +1145,14 @@ def build_report(
                 "detail": "The legacy Mopidy RPC probe returned an invalid or error response; its Qobuz backend state is unknown.",
             }
         )
+    if not motu and qobuz_software_ready:
+        warnings.append(
+            {
+                "code": "qobuz-motu-not-observed",
+                "severity": "high",
+                "detail": "Qobuz software/session state looks ready, but current ALSA observation does not confirm the MOTU M2; reference playback remains fail-closed.",
+            }
+        )
     qbzd_status = qbzd_observation.get("status")
     if qbzd_status == "api-unavailable":
         warnings.append({"code": "qobuz-qbzd-api-unavailable", "severity": "medium", "detail": "The loopback QBZD status API is unavailable; reference-provider readiness is unknown."})
@@ -1188,7 +1212,7 @@ def build_report(
                 "reference_provider_ready": qbzd_ready or legacy_mopidy_ready,
                 "rate_probe_backend_ready": qbzd_ready or legacy_mopidy_ready,
                 "track_native_proven": track_native_proven,
-                "rate_proof_state": (qbzd_rate_proof_state if qbzd_ready else "legacy-mopidy-ready" if legacy_mopidy_ready else "blocked"),
+                "rate_proof_state": qobuz_rate_proof_state,
                 "direct_hardware_reported": direct_hardware_reported,
                 "qbzd_snapshot_observed_twice": qbzd_snapshot_observed_twice,
                 "qbzd_snapshot_consistent": qbzd_snapshot_consistent,
