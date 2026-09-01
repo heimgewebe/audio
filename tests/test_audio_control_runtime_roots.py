@@ -92,11 +92,11 @@ class AudioControlRuntimeRootTests(unittest.TestCase):
             unit=DEPLOY.DEFAULT_UNIT,
         )
         with (
-            mock.patch.object(DEPLOY, "ensure_private_directory") as mkdir,
+            mock.patch.object(DEPLOY, "inspect_private_directory") as inspect,
             self.assertRaises(DEPLOY.DeployError),
         ):
             DEPLOY.status(status_args)
-        mkdir.assert_not_called()
+        inspect.assert_not_called()
 
     def test_deployer_cli_rejects_nondefault_roots_before_dispatch(self):
         cases = (
