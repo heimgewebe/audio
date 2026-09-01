@@ -318,6 +318,42 @@ def ensure_private_directory(path: pathlib.Path) -> pathlib.Path:
     return path
 
 
+def inspect_private_directory(path: pathlib.Path) -> dict[str, Any]:
+    """Project runtime-root trust without mutating or following the root."""
+    path = path.expanduser()
+    if not path.is_absolute():
+        raise DeployError(f"Pfad muss absolut sein: {path}")
+    projection: dict[str, Any] = {
+        "path": str(path),
+        "exists": None,
+        "trusted": False,
+        "mode": None,
+        "error": None,
+    }
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        projection["exists"] = False
+        return projection
+    except OSError as exc:
+        projection["error"] = f"inspect-failed:{type(exc).__name__}"
+        return projection
+    projection["exists"] = True
+    projection["mode"] = f"{stat.S_IMODE(metadata.st_mode):04o}"
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        projection["error"] = "untrusted-type"
+        return projection
+    if metadata.st_uid != os.geteuid():
+        projection["error"] = "foreign-owner"
+        return projection
+    permission_bits = stat.S_IMODE(metadata.st_mode) & 0o777
+    if permission_bits != 0o700:
+        projection["error"] = "non-private-mode"
+        return projection
+    projection["trusted"] = True
+    return projection
+
+
 def ensure_source_repo(path: pathlib.Path) -> pathlib.Path:
     path = path.expanduser()
     if not path.is_absolute():
@@ -2127,9 +2163,11 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
     args.deploy_root, args.state_root = validate_runtime_roots(
         args.deploy_root, args.state_root
     )
-    deploy_root = ensure_private_directory(args.deploy_root)
-    state_root = ensure_private_directory(args.state_root)
-    current = read_current_commit(deploy_root)
+    deploy_root = inspect_private_directory(args.deploy_root)
+    state_root = inspect_private_directory(args.state_root)
+    current = (
+        read_current_commit(args.deploy_root) if deploy_root["trusted"] else None
+    )
     service = run_command(
         [
             "systemctl",
@@ -2145,13 +2183,14 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
         timeout=15,
         check=False,
     )
-    latest_path = state_root / "latest.json"
     latest: dict[str, Any] | None = None
-    if latest_path.is_file() and not latest_path.is_symlink():
-        with latest_path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        if isinstance(payload, dict):
-            latest = payload
+    if state_root["trusted"]:
+        latest_path = args.state_root / "latest.json"
+        if latest_path.is_file() and not latest_path.is_symlink():
+            with latest_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict):
+                latest = payload
     values: dict[str, str] = {}
     for line in service.stdout.splitlines():
         if "=" in line:
@@ -2163,6 +2202,10 @@ def status(args: argparse.Namespace) -> dict[str, Any]:
         "current_commit": current,
         "unit": args.unit,
         "service": values,
+        "runtime_roots": {
+            "deploy": deploy_root,
+            "state": state_root,
+        },
         "latest_receipt": latest,
     }
 

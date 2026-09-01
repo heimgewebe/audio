@@ -100,6 +100,14 @@ just control-deploy-status
 just control-deploy-sync
 ```
 
+`control-deploy-status` ist strikt read-only: der Befehl legt keine Runtime-Roots
+an und repariert keine Rechte. Die Ausgabe projiziert unter `runtime_roots` für
+Deploy- und State-Root, ob der jeweilige Pfad vorhanden und vertrauenswürdig ist.
+Inhalte eines fehlenden, unsicheren oder nicht privaten Roots werden nicht als
+Deploymentwahrheit gelesen; der unabhängige systemd-Servicezustand bleibt dennoch
+sichtbar. `control-deploy-sync` bleibt der mutierende Pfad, der die kanonischen
+Runtime-Roots auf `0700` konvergiert.
+
 Belege liegen unter `~/.local/state/audio-control-deploy/receipts`. Der jüngste
 Beleg ist zusätzlich als `latest.json` verfügbar. Änderungen am Deployskript und
 an den systemd-Units werden nach ihrem Merge ebenfalls aus dem geprüften Release
