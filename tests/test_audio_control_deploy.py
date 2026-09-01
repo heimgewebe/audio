@@ -141,6 +141,159 @@ class AudioControlDeployTests(unittest.TestCase):
             port=8765,
         )
 
+    def test_status_is_read_only_and_tolerates_missing_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            service = MODULE.CommandResult(
+                ("systemctl",),
+                0,
+                "LoadState=loaded\nActiveState=active\nSubState=running\n",
+                "",
+                0.1,
+            )
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(
+                    MODULE,
+                    "ensure_private_directory",
+                    side_effect=AssertionError("status must not mutate runtime roots"),
+                ),
+                mock.patch.object(MODULE, "run_command", return_value=service),
+            ):
+                report = MODULE.status(args)
+
+            self.assertIsNone(report["current_commit"])
+            self.assertIsNone(report["latest_receipt"])
+            self.assertEqual(report["service"]["ActiveState"], "active")
+            self.assertEqual(
+                report["runtime_roots"]["deploy"],
+                {
+                    "path": str(args.deploy_root),
+                    "exists": False,
+                    "trusted": False,
+                    "mode": None,
+                    "error": None,
+                },
+            )
+            self.assertFalse(args.deploy_root.exists())
+            self.assertFalse(args.state_root.exists())
+
+    def test_status_reports_non_private_root_without_repairing_or_trusting_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir(mode=0o700)
+            args.deploy_root.chmod(0o755)
+            args.state_root.mkdir(mode=0o700)
+            service = MODULE.CommandResult(
+                ("systemctl",),
+                0,
+                "LoadState=loaded\nActiveState=active\nSubState=running\n",
+                "",
+                0.1,
+            )
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(
+                    MODULE,
+                    "read_current_commit",
+                    side_effect=AssertionError("untrusted deploy root must not be read"),
+                ),
+                mock.patch.object(MODULE, "run_command", return_value=service),
+            ):
+                report = MODULE.status(args)
+
+            self.assertIsNone(report["current_commit"])
+            self.assertEqual(report["service"]["ActiveState"], "active")
+            self.assertFalse(report["runtime_roots"]["deploy"]["trusted"])
+            self.assertEqual(
+                report["runtime_roots"]["deploy"]["error"], "non-private-mode"
+            )
+            self.assertEqual(args.deploy_root.stat().st_mode & 0o777, 0o755)
+
+    def test_status_reads_only_trusted_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.sync_args(root)
+            args.deploy_root.mkdir(mode=0o700)
+            args.state_root.mkdir(mode=0o700)
+            receipt = {"commit": "a" * 40, "result": "success"}
+            (args.state_root / "latest.json").write_text(json.dumps(receipt))
+            (args.state_root / "latest.json").chmod(0o600)
+            service = MODULE.CommandResult(
+                ("systemctl",),
+                0,
+                "LoadState=loaded\nActiveState=active\nSubState=running\n",
+                "",
+                0.1,
+            )
+            with (
+                mock.patch.object(MODULE, "DEFAULT_DEPLOY_ROOT", args.deploy_root),
+                mock.patch.object(MODULE, "DEFAULT_STATE_ROOT", args.state_root),
+                mock.patch.object(
+                    MODULE, "read_current_commit", return_value="b" * 40
+                ) as current,
+                mock.patch.object(MODULE, "run_command", return_value=service),
+            ):
+                report = MODULE.status(args)
+
+            current.assert_called_once_with(args.deploy_root)
+            self.assertEqual(report["current_commit"], "b" * 40)
+            self.assertEqual(report["latest_receipt"], receipt)
+            self.assertTrue(report["runtime_roots"]["deploy"]["trusted"])
+            self.assertTrue(report["runtime_roots"]["state"]["trusted"])
+
+    def test_runtime_root_inspection_rejects_foreign_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "runtime"
+            root.mkdir(mode=0o700)
+            metadata = root.lstat()
+            foreign = mock.Mock(wraps=metadata)
+            foreign.st_mode = metadata.st_mode
+            foreign.st_uid = MODULE.os.geteuid() + 1
+            with mock.patch.object(pathlib.Path, "lstat", return_value=foreign):
+                report = MODULE.inspect_private_directory(root)
+            self.assertTrue(report["exists"])
+            self.assertFalse(report["trusted"])
+            self.assertEqual(report["error"], "foreign-owner")
+
+    def test_runtime_root_inspection_accepts_private_permission_bits_with_setgid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "runtime"
+            root.mkdir(mode=0o700)
+            root.chmod(0o2700)
+            report = MODULE.inspect_private_directory(root)
+            self.assertTrue(report["trusted"])
+            self.assertEqual(report["mode"], "2700")
+            self.assertIsNone(report["error"])
+
+    def test_runtime_root_inspection_rejects_types_without_following_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            target = root / "target"
+            target.mkdir(mode=0o700)
+            symlink = root / "symlink"
+            symlink.symlink_to(target, target_is_directory=True)
+            regular = root / "regular"
+            regular.write_text("not a directory")
+            for candidate in (symlink, regular):
+                with self.subTest(candidate=candidate.name):
+                    report = MODULE.inspect_private_directory(candidate)
+                    self.assertTrue(report["exists"])
+                    self.assertFalse(report["trusted"])
+                    self.assertEqual(report["error"], "untrusted-type")
+
+    def test_runtime_root_inspection_projects_oserror_without_raising(self):
+        root = pathlib.Path("/tmp/audio-control-unreadable")
+        with mock.patch.object(pathlib.Path, "lstat", side_effect=PermissionError()):
+            report = MODULE.inspect_private_directory(root)
+        self.assertIsNone(report["exists"])
+        self.assertFalse(report["trusted"])
+        self.assertEqual(report["error"], "inspect-failed:PermissionError")
+
     def failed_candidate_rollback(
         self,
         root: pathlib.Path,
