@@ -896,7 +896,7 @@ class AudioDoctorTests(unittest.TestCase):
             self.assertEqual(observation["owner_class"], "qbzd")
             self.assertTrue(observation["snapshot_consistent"])
 
-    def test_inconsistent_motu_snapshot_never_proves_track_native(self):
+    def test_inconsistent_motu_snapshot_never_proves_reference_readiness(self):
         observation = MODULE.classify_qbzd_status_payload(
             {
                 "api_version": 1,
@@ -923,12 +923,23 @@ class AudioDoctorTests(unittest.TestCase):
                 "pcm_state": "RUNNING",
                 "owner_class": "unknown",
                 "snapshot_consistent": False,
-                "reason": "motu-playback-snapshot-changed",
+                "reason": "motu-playback-hw-params-unavailable",
             },
         )
         qobuz = report["streaming_sources"]["qobuz"]
+        self.assertTrue(report["hardware"]["motu_m2"])
+        self.assertTrue(qobuz["motu_hardware_playback"]["observed"])
+        self.assertFalse(qobuz["motu_hardware_playback"]["snapshot_consistent"])
+        self.assertIsNone(qobuz["selected_reference_provider"])
+        self.assertFalse(qobuz["reference_provider_ready"])
+        self.assertFalse(qobuz["rate_probe_backend_ready"])
         self.assertFalse(qobuz["track_native_proven"])
-        self.assertEqual(qobuz["rate_proof_state"], "hardware-snapshot-unstable")
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+        self.assertTrue(qobuz["qbzd"]["reference_provider_ready"])
+        self.assertIn(
+            "qobuz-motu-not-observed",
+            {warning["code"] for warning in report["warnings"]},
+        )
 
     def test_qbzd_snapshot_change_around_running_motu_fails_closed(self):
         before = MODULE.classify_qbzd_status_payload(

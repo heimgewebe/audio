@@ -834,7 +834,11 @@ def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
         playback = {}
     hardware = doctor.get("hardware")
     motu_present = isinstance(hardware, dict) and hardware.get("motu_m2") is True
-    motu_reference_present = motu_present and playback.get("observed") is True
+    motu_reference_present = (
+        motu_present
+        and playback.get("observed") is True
+        and playback.get("snapshot_consistent") is True
+    )
     qconnect_state = qconnect.get("state")
     current_qbzd_playback = (
         motu_reference_present

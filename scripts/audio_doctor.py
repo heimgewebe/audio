@@ -1037,8 +1037,13 @@ def build_report(
     # QBZD and legacy Mopidy can retain software/session state after the USB
     # interface disappears. The early aplay enumeration is necessary but not
     # sufficient: require the adjacent /proc/asound observation taken between
-    # the two QBZD snapshots before declaring the reference path ready.
-    motu_reference_present = motu and motu_playback_observation.get("observed") is True
+    # the two QBZD snapshots to be present and self-consistent before declaring
+    # the reference path ready.
+    motu_reference_present = (
+        motu
+        and motu_playback_observation.get("observed") is True
+        and motu_playback_observation.get("snapshot_consistent") is True
+    )
     qbzd_software_ready = qbzd_observation.get("reference_provider_ready") is True
     legacy_mopidy_software_ready = qobuz_observation.get("backend_registered") is True
     qobuz_software_ready = qbzd_software_ready or legacy_mopidy_software_ready
