@@ -343,6 +343,9 @@ def inspect_private_directory(path: pathlib.Path) -> dict[str, Any]:
     if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
         projection["error"] = "untrusted-type"
         return projection
+    if metadata.st_uid != os.geteuid():
+        projection["error"] = "foreign-owner"
+        return projection
     permission_bits = stat.S_IMODE(metadata.st_mode) & 0o777
     if permission_bits != 0o700:
         projection["error"] = "non-private-mode"

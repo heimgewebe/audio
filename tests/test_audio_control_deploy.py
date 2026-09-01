@@ -246,6 +246,20 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertTrue(report["runtime_roots"]["deploy"]["trusted"])
             self.assertTrue(report["runtime_roots"]["state"]["trusted"])
 
+    def test_runtime_root_inspection_rejects_foreign_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "runtime"
+            root.mkdir(mode=0o700)
+            metadata = root.lstat()
+            foreign = mock.Mock(wraps=metadata)
+            foreign.st_mode = metadata.st_mode
+            foreign.st_uid = MODULE.os.geteuid() + 1
+            with mock.patch.object(pathlib.Path, "lstat", return_value=foreign):
+                report = MODULE.inspect_private_directory(root)
+            self.assertTrue(report["exists"])
+            self.assertFalse(report["trusted"])
+            self.assertEqual(report["error"], "foreign-owner")
+
     def test_runtime_root_inspection_accepts_private_permission_bits_with_setgid(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory) / "runtime"
