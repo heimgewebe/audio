@@ -926,6 +926,7 @@ class RecordingSessionTest(unittest.TestCase):
         spec = self.persisted_spec(
             session_id="c" * 24,
             name="performance.wav",
+            maximum_seconds=2,
             session_type="piano-vocal-performance",
         )
         session_paths = MODULE._session_paths(self.state, spec["session_id"])
@@ -956,10 +957,10 @@ class RecordingSessionTest(unittest.TestCase):
                 output.write_bytes(silent_smf)
                 output.chmod(0o600)
             elif output.suffix == ".s32le":
-                output.write_bytes(b"\0" * 1000 * 2 * 4)
+                output.write_bytes(b"\0" * 96_000 * 2 * 4)
                 output.chmod(0o600)
             else:
-                self.write_wave(output)
+                self.write_wave(output, frames=96_000)
             return FakeProcess()
 
         real_link = MODULE._link_no_replace_keep_partial
@@ -993,6 +994,26 @@ class RecordingSessionTest(unittest.TestCase):
                 "monotonic",
                 side_effect=[0.0, 0.1, 0.2, 0.3, 0.4, 100.0],
             ),
+            mock.patch.object(
+                MODULE.time,
+                "monotonic_ns",
+                side_effect=[
+                    0,
+                    10_000_000,
+                    20_000_000,
+                    30_000_000,
+                    31_000_000,
+                    40_000_000,
+                    40_000_000,
+                    50_000_000,
+                    2_050_000_000,
+                ],
+            ),
+            mock.patch.object(
+                MODULE,
+                "_assert_capture_window_covered",
+                wraps=MODULE._assert_capture_window_covered,
+            ) as coverage,
             mock.patch.object(MODULE.resource, "setrlimit"),
             mock.patch.object(MODULE.os, "umask"),
             mock.patch.object(MODULE.signal, "signal"),
@@ -1007,6 +1028,9 @@ class RecordingSessionTest(unittest.TestCase):
             )
 
         self.assertEqual(returncode, 1)
+        self.assertEqual(coverage.call_count, 2)
+        for call in coverage.call_args_list:
+            self.assertAlmostEqual(call.args[1], 2.0, places=6)
         result = MODULE._safe_json_read(session_paths["result"], require_private=True)
         MODULE._validate_result(result, spec)
         self.assertEqual(result["status"], "failed-preserved")
@@ -1907,6 +1931,20 @@ class RecordingSessionTest(unittest.TestCase):
                 10.0,
             )
 
+    def test_capture_window_coverage_scales_for_long_independent_clocks(self) -> None:
+        four_hours = 14_400.0
+        allowed = MODULE._capture_coverage_tolerance_seconds(four_hours)
+        self.assertEqual(allowed, 7.2)
+        MODULE._assert_capture_window_covered(
+            {"duration_seconds": four_hours - 7.0},
+            four_hours,
+        )
+        with self.assertRaisesRegex(MODULE.RecordingError, "does not cover"):
+            MODULE._assert_capture_window_covered(
+                {"duration_seconds": four_hours - 8.0},
+                four_hours,
+            )
+
     def test_worker_cleanly_stops_fake_recorder_and_publishes_wav(self) -> None:
         fake = self.base / "fake-parecord"
         fake.write_text(
@@ -1922,7 +1960,7 @@ class RecordingSessionTest(unittest.TestCase):
             "    handle.setnchannels(2)\n"
             "    handle.setsampwidth(4)\n"
             "    handle.setframerate(48000)\n"
-            "    handle.writeframes(b'\\0' * 4800 * 2 * 4)\n"
+            "    handle.writeframes(b'\\0' * 48000 * 2 * 4)\n"
             "while not stop:\n"
             "    time.sleep(0.02)\n"
         )

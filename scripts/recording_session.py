@@ -44,6 +44,7 @@ FFMPEG_PATH = pathlib.Path("/usr/bin/ffmpeg")
 MAX_AUDIO_SPAWN_SPREAD_NS = 5_000_000
 MAX_AUDIO_FRAME_DIFFERENCE_FRAMES = 4_800  # 100 ms at 48 kHz
 MAX_CAPTURE_COVERAGE_GAP_SECONDS = 1.0
+MAX_CAPTURE_CLOCK_DIVERGENCE_PPM = 500.0
 MAX_JSON_BYTES = 524_288
 MAX_BINDING_BYTES = 64_000_000
 PARECORD_WAV_FSIZE_FLOOR_BYTES = 64 * 1024 * 1024
@@ -3627,6 +3628,15 @@ def _validate_recorded_wave(
     }
 
 
+def _capture_coverage_tolerance_seconds(capture_window_seconds: float) -> float:
+    """Bound host-clock vs. audio-clock divergence without claiming device specs."""
+
+    return max(
+        MAX_CAPTURE_COVERAGE_GAP_SECONDS,
+        float(capture_window_seconds) * MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000,
+    )
+
+
 def _assert_capture_window_covered(
     artifact: dict[str, Any], capture_window_seconds: float
 ) -> None:
@@ -3646,10 +3656,11 @@ def _assert_capture_window_covered(
     ):
         raise RecordingError("recorded WAV duration is invalid")
     shortfall = float(capture_window_seconds) - float(duration)
-    if shortfall > MAX_CAPTURE_COVERAGE_GAP_SECONDS:
+    allowed = _capture_coverage_tolerance_seconds(capture_window_seconds)
+    if shortfall > allowed:
         raise RecordingError(
             "recorded WAV does not cover the observed capture window "
-            f"(shortfall={shortfall:.3f}s, allowed={MAX_CAPTURE_COVERAGE_GAP_SECONDS:.3f}s)"
+            f"(shortfall={shortfall:.3f}s, allowed={allowed:.3f}s)"
         )
 
 
@@ -4425,7 +4436,6 @@ def worker_run(
     session_type = spec["plan_identity"]["session_type"]
     argv = _parecord_argv(spec, parecord_path, partial)
     started_at = utc_now()
-    started_monotonic = time.monotonic()
     maximum_stderr = int(load_catalog(session_type)["capture"]["maximum_stderr_bytes"])
     with tempfile.TemporaryFile() as stderr_file:
         process = subprocess.Popen(
@@ -4452,7 +4462,7 @@ def worker_run(
         stop_reason = "startup-failed"
         if ready:
             stop_reason = "maximum-duration"
-            deadline = started_monotonic + int(capture["maximum_duration_seconds"])
+            deadline = capture_started_monotonic + int(capture["maximum_duration_seconds"])
             while time.monotonic() < deadline:
                 if stop_requested:
                     stop_reason = "requested-stop"
