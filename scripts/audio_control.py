@@ -881,6 +881,8 @@ def operating_mode_target_ready(
     if not isinstance(hardware, dict) or hardware.get("motu_m2") is not True:
         return False
     qobuz = _qobuz_projection(doctor)
+    if not qobuz["motu_reference_present"]:
+        return False
     if target_mode == "qobuz-reference":
         return qobuz["reference_ready"]
     if target_mode == "desktop-listening":
@@ -934,7 +936,11 @@ def project_operating_modes(
         observed_mode = "qobuz-reference"
         signal_state = "playing"
         signal_path = ["Qobuz Connect", "QBZD / ALSA Direct", "MOTU M2"]
-    elif graph.get("default_sink") == "motu-m2" and doctor_status == "ok":
+    elif (
+        graph.get("default_sink") == "motu-m2"
+        and doctor_status == "ok"
+        and qobuz["motu_reference_present"]
+    ):
         observed_mode = "desktop-listening"
         signal_state = "prepared"
         signal_path = ["Desktop / Spotify / Browser", "PipeWire gemischt", "MOTU M2"]
@@ -952,7 +958,7 @@ def project_operating_modes(
     if doctor_status != "ok":
         desktop_state, desktop_reason = "blocked", "doctor-unavailable"
         qobuz_state, qobuz_reason = "blocked", "doctor-unavailable"
-    elif motu_present is not True:
+    elif motu_present is not True or not qobuz["motu_reference_present"]:
         desktop_state, desktop_reason = "blocked", "motu-not-observed"
         qobuz_state, qobuz_reason = "blocked", "motu-not-observed"
     else:
@@ -1081,6 +1087,7 @@ def project_operating_modes(
             "desktop-listening": {
                 "allowed": doctor_status == "ok"
                 and motu_present is True
+                and qobuz["motu_reference_present"]
                 and not qobuz["current_qbzd_playback"],
                 "authority": "desktop-mixed-transition-v1",
             },
@@ -4267,12 +4274,12 @@ class AudioControl:
                         "operating_mode_authority_unavailable",
                         doctor_error or "Audio-Doctor ist vor der Modustransition nicht lesbar.",
                     )
-                if doctor.get("hardware", {}).get("motu_m2") is not True:
+                qobuz = _qobuz_projection(doctor)
+                if not qobuz["motu_reference_present"]:
                     raise OperatingModeError(
                         "operating_mode_physical_blocked",
-                        "Das MOTU M2 ist aktuell nicht physisch beobachtet; die Modustransition bleibt blockiert.",
+                        "Das MOTU M2 ist aktuell nicht physisch durch die benachbarte ALSA-Beobachtung bestätigt; die Modustransition bleibt blockiert.",
                     )
-                qobuz = _qobuz_projection(doctor)
                 if target_mode == "desktop-listening" and qobuz["current_qbzd_playback"]:
                     raise OperatingModeError(
                         "qobuz_playback_must_stop",

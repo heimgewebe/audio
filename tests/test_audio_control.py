@@ -714,7 +714,17 @@ class AudioControlTests(unittest.TestCase):
         qobuz_mode = next(
             mode for mode in projection["modes"] if mode["id"] == "qobuz-reference"
         )
+        desktop_mode = next(
+            mode for mode in projection["modes"] if mode["id"] == "desktop-listening"
+        )
         self.assertTrue(projection["physical"]["motu_m2"])
+        self.assertIsNone(projection["observed"]["mode"])
+        self.assertEqual(desktop_mode["state"], "blocked")
+        self.assertEqual(desktop_mode["reason"], "motu-not-observed")
+        self.assertFalse(projection["executable"]["desktop-listening"]["allowed"])
+        self.assertFalse(
+            MODULE.operating_mode_target_ready("desktop-listening", "ok", doctor)
+        )
         self.assertEqual(qobuz_mode["state"], "blocked")
         self.assertEqual(qobuz_mode["reason"], "motu-not-observed")
         self.assertEqual(qobuz_mode["quality"]["rate_proof_state"], "motu-not-observed")
@@ -956,6 +966,31 @@ class AudioControlTests(unittest.TestCase):
                     controller.perform_operating_mode_transition(
                         {
                             "request_id": "missing-motu-mode-0001",
+                            "target_mode": "desktop-listening",
+                        }
+                    )
+        self.assertEqual(caught.exception.code, "operating_mode_physical_blocked")
+        apply.assert_not_called()
+        self.assertFalse(path.exists())
+
+    def test_adjacent_motu_loss_blocks_desktop_transition_before_any_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            doctor = operating_mode_doctor(
+                motu=True,
+                sink="motu-m2",
+                playback_observed=False,
+            )
+            with (
+                mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+                mock.patch.object(controller, "_apply_desktop_operating_mode") as apply,
+            ):
+                with self.assertRaises(MODULE.OperatingModeError) as caught:
+                    controller.perform_operating_mode_transition(
+                        {
+                            "request_id": "adjacent-motu-loss-mode-0001",
                             "target_mode": "desktop-listening",
                         }
                     )
