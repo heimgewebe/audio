@@ -834,15 +834,16 @@ def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
         playback = {}
     hardware = doctor.get("hardware")
     motu_present = isinstance(hardware, dict) and hardware.get("motu_m2") is True
+    motu_reference_present = motu_present and playback.get("observed") is True
     qconnect_state = qconnect.get("state")
     current_qbzd_playback = (
-        motu_present
+        motu_reference_present
         and playback.get("owner_class") == "qbzd"
         and playback.get("pcm_state") == "RUNNING"
         and playback.get("open") is True
     )
     reference_ready = (
-        motu_present
+        motu_reference_present
         and qobuz.get("selected_reference_provider") == "qbzd-qconnect"
         and qobuz.get("reference_provider_ready") is True
         and qbzd.get("status") == "available"
@@ -855,10 +856,11 @@ def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
         and qobuz.get("track_native_proven") is True
     )
     rate_proof_state = qobuz.get("rate_proof_state", "blocked")
-    if not motu_present:
+    if not motu_reference_present:
         rate_proof_state = "motu-not-observed"
     return {
         "provider": qobuz.get("selected_reference_provider"),
+        "motu_reference_present": motu_reference_present,
         "reference_ready": reference_ready,
         "qbzd_status": qbzd.get("status"),
         "qconnect_state": qconnect_state,
@@ -962,7 +964,9 @@ def project_operating_modes(
             if qobuz["current_qbzd_playback"]
             else "desktop-transition-required"
         )
-        if qobuz_ready:
+        if not qobuz["motu_reference_present"]:
+            qobuz_state, qobuz_reason = "blocked", "motu-not-observed"
+        elif qobuz_ready:
             qobuz_state, qobuz_reason = "ready", None
         elif qobuz["qconnect_state"] in {"retrying", "reconnecting"}:
             qobuz_state, qobuz_reason = "recovering", "qconnect-retrying"
