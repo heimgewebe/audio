@@ -2,7 +2,7 @@
 Description=Audiozentrale regelmäßig mit origin/main abgleichen
 
 [Timer]
-OnBootSec=20s
+OnActiveSec=20s
 OnUnitActiveSec=60s
 AccuracySec=1s
 RandomizedDelaySec=0
