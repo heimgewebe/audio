@@ -313,38 +313,51 @@ class RecordingSessionTest(unittest.TestCase):
         contract = MODULE.load_catalog()
         capture = contract["capture"]
         self.assertEqual(capture["sample_format"], "s32le")
-        nominal = 48_000 * 2 * 4 * 10
+        bytes_per_second = 48_000 * 2 * 4
+        nominal = bytes_per_second * 10
+        fixed_slack = int(
+            bytes_per_second * MODULE.MAX_RECORDED_WAVE_OVERRUN_SECONDS
+        )
         drift = math.ceil(
             nominal * MODULE.MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
         )
         self.assertEqual(
             MODULE.maximum_file_bytes(capture, 10),
-            nominal + drift + 1_048_576,
+            nominal + fixed_slack + drift + 1_048_576,
         )
 
     def test_long_capture_reserves_fast_clock_duration_and_file_headroom(self) -> None:
         capture = dict(MODULE.load_catalog()["capture"])
         four_hours = 14_400
         capture["maximum_duration_seconds"] = four_hours
-        self.assertEqual(
+        self.assertAlmostEqual(
             MODULE._recorded_wave_duration_ceiling_seconds(capture),
-            14_407.2,
+            14_409.2,
+            places=6,
         )
-        nominal = 48_000 * 2 * 4 * four_hours
+        bytes_per_second = 48_000 * 2 * 4
+        nominal = bytes_per_second * four_hours
+        fixed_slack = int(
+            bytes_per_second * MODULE.MAX_RECORDED_WAVE_OVERRUN_SECONDS
+        )
         drift = math.ceil(
             nominal * MODULE.MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
         )
         self.assertEqual(
             MODULE.maximum_file_bytes(capture, four_hours),
-            nominal + drift + capture["header_and_metadata_allowance_bytes"],
+            nominal
+            + fixed_slack
+            + drift
+            + capture["header_and_metadata_allowance_bytes"],
         )
 
-    def test_short_capture_keeps_existing_two_second_duration_ceiling(self) -> None:
+    def test_short_capture_keeps_fixed_slack_in_addition_to_clock_drift(self) -> None:
         capture = dict(MODULE.load_catalog()["capture"])
         capture["maximum_duration_seconds"] = 10
-        self.assertEqual(
+        self.assertAlmostEqual(
             MODULE._recorded_wave_duration_ceiling_seconds(capture),
-            12.0,
+            12.005,
+            places=6,
         )
 
     def test_plan_exposes_canonical_structured_readiness_checks(self) -> None:

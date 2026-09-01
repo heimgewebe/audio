@@ -46,6 +46,7 @@ MAX_AUDIO_SPAWN_SPREAD_NS = 5_000_000
 MAX_AUDIO_FRAME_DIFFERENCE_FRAMES = 4_800  # 100 ms at 48 kHz
 MAX_CAPTURE_COVERAGE_GAP_SECONDS = 1.0
 MAX_CAPTURE_CLOCK_DIVERGENCE_PPM = 500.0
+MAX_RECORDED_WAVE_OVERRUN_SECONDS = 2.0
 MAX_JSON_BYTES = 524_288
 MAX_BINDING_BYTES = 64_000_000
 PARECORD_WAV_FSIZE_FLOOR_BYTES = 64 * 1024 * 1024
@@ -1492,27 +1493,30 @@ def _capture_clock_divergence_seconds(duration_seconds: float) -> float:
     return float(duration_seconds) * MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
 
 
+def _recorded_wave_upper_slack_seconds(duration_seconds: float) -> float:
+    return MAX_RECORDED_WAVE_OVERRUN_SECONDS + _capture_clock_divergence_seconds(
+        duration_seconds
+    )
+
+
 def _recorded_wave_duration_ceiling_seconds(capture: dict[str, Any]) -> float:
     maximum_duration = float(capture["maximum_duration_seconds"])
-    return maximum_duration + max(
-        2.0,
-        _capture_clock_divergence_seconds(maximum_duration),
-    )
+    return maximum_duration + _recorded_wave_upper_slack_seconds(maximum_duration)
 
 
 def maximum_file_bytes(capture: dict[str, Any], maximum_seconds: int) -> int:
-    nominal_audio_bytes = (
+    bytes_per_second = (
         capture["sample_rate_hz"]
         * capture["channels"]
         * capture["bytes_per_sample"]
-        * maximum_seconds
     )
-    clock_divergence_bytes = math.ceil(
-        nominal_audio_bytes * MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
+    nominal_audio_bytes = bytes_per_second * maximum_seconds
+    upper_slack_bytes = math.ceil(
+        bytes_per_second * _recorded_wave_upper_slack_seconds(maximum_seconds)
     )
     return (
         nominal_audio_bytes
-        + clock_divergence_bytes
+        + upper_slack_bytes
         + capture["header_and_metadata_allowance_bytes"]
     )
 
