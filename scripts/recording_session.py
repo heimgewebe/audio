@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import pathlib
 import re
@@ -1487,12 +1488,31 @@ def _source_projection(
     return result, sorted(set(blockers))
 
 
+def _capture_clock_divergence_seconds(duration_seconds: float) -> float:
+    return float(duration_seconds) * MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
+
+
+def _recorded_wave_duration_ceiling_seconds(capture: dict[str, Any]) -> float:
+    maximum_duration = float(capture["maximum_duration_seconds"])
+    return maximum_duration + max(
+        2.0,
+        _capture_clock_divergence_seconds(maximum_duration),
+    )
+
+
 def maximum_file_bytes(capture: dict[str, Any], maximum_seconds: int) -> int:
-    return (
+    nominal_audio_bytes = (
         capture["sample_rate_hz"]
         * capture["channels"]
         * capture["bytes_per_sample"]
         * maximum_seconds
+    )
+    clock_divergence_bytes = math.ceil(
+        nominal_audio_bytes * MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
+    )
+    return (
+        nominal_audio_bytes
+        + clock_divergence_bytes
         + capture["header_and_metadata_allowance_bytes"]
     )
 
@@ -2406,6 +2426,17 @@ def _validate_persisted_spec(
     maximum_bytes = (
         capture.get("maximum_file_bytes") if isinstance(capture, dict) else None
     )
+    expected_maximum_bytes = (
+        maximum_file_bytes(load_catalog(session_type)["capture"], maximum_duration)
+        if _positive_integer(maximum_duration)
+        else None
+    )
+    legacy_maximum_bytes = (
+        48_000 * 2 * 4 * maximum_duration + 1_048_576
+        if _positive_integer(maximum_duration)
+        else None
+    )
+    accepted_maximum_bytes = {expected_maximum_bytes, legacy_maximum_bytes}
     if (
         not isinstance(capture, dict)
         or set(capture) != expected_capture_fields
@@ -2417,7 +2448,7 @@ def _validate_persisted_spec(
         or not _positive_integer(maximum_duration)
         or maximum_duration > 14_400
         or not _positive_integer(maximum_bytes)
-        or maximum_bytes != 48_000 * 2 * 4 * maximum_duration + 1_048_576
+        or maximum_bytes not in accepted_maximum_bytes
         or not _positive_integer(capture.get("startup_timeout_seconds"))
         or not _positive_integer(capture.get("stop_grace_seconds"))
         or not _non_negative_integer(capture.get("free_space_reserve_bytes"))
@@ -3611,7 +3642,7 @@ def _validate_recorded_wave(
     ):
         raise RecordingError("recorded WAV format does not match the plan")
     duration = frames / rate
-    if duration > capture["maximum_duration_seconds"] + 2:
+    if duration > _recorded_wave_duration_ceiling_seconds(capture):
         raise RecordingError("recorded WAV exceeds the planned duration")
     return {
         "path": str(path),
@@ -3633,7 +3664,7 @@ def _capture_coverage_tolerance_seconds(capture_window_seconds: float) -> float:
 
     return max(
         MAX_CAPTURE_COVERAGE_GAP_SECONDS,
-        float(capture_window_seconds) * MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000,
+        _capture_clock_divergence_seconds(float(capture_window_seconds)),
     )
 
 
