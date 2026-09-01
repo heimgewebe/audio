@@ -306,6 +306,35 @@ class AudioDoctorTests(unittest.TestCase):
 
     def test_qobuz_backend_available_allows_reference_rate_proof(self):
         report = MODULE.build_report(
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
+            mopidy_qobuz={
+                "rpc_reachable": True,
+                "backend_registered": True,
+                "status": "available",
+                "reason": None,
+            },
+            motu_playback={
+                "observed": True,
+                "card_id": "M2",
+                "open": False,
+                "rate_hz": None,
+                "format": None,
+                "channels": None,
+                "pcm_state": "CLOSED",
+                "owner_class": "unknown",
+                "snapshot_consistent": True,
+                "reason": None,
+            },
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertTrue(qobuz["rate_probe_backend_ready"])
+        self.assertNotIn(
+            "qobuz-mopidy-backend-unavailable",
+            {warning["code"] for warning in report["warnings"]},
+        )
+
+    def test_qobuz_backend_ready_without_physical_motu_fails_closed(self):
+        report = MODULE.build_report(
             [],
             mopidy_qobuz={
                 "rpc_reachable": True,
@@ -315,9 +344,14 @@ class AudioDoctorTests(unittest.TestCase):
             },
         )
         qobuz = report["streaming_sources"]["qobuz"]
-        self.assertTrue(qobuz["rate_probe_backend_ready"])
-        self.assertNotIn(
-            "qobuz-mopidy-backend-unavailable",
+        self.assertIsNone(qobuz["selected_reference_provider"])
+        self.assertFalse(qobuz["reference_provider_ready"])
+        self.assertFalse(qobuz["rate_probe_backend_ready"])
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+        self.assertTrue(qobuz["mopidy_legacy"]["backend_registered"])
+        self.assertIn(
+            "qobuz-motu-not-observed",
             {warning["code"] for warning in report["warnings"]},
         )
 
@@ -351,7 +385,22 @@ class AudioDoctorTests(unittest.TestCase):
         self.assertTrue(observation["qconnect"]["session_active"])
         self.assertEqual(observation["playback_state"], "paused")
 
-        report = MODULE.build_report([], qbzd_qobuz=observation)
+        report = MODULE.build_report(
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
+            qbzd_qobuz=observation,
+            motu_playback={
+                "observed": True,
+                "card_id": "M2",
+                "open": False,
+                "rate_hz": None,
+                "format": None,
+                "channels": None,
+                "pcm_state": "CLOSED",
+                "owner_class": "unknown",
+                "snapshot_consistent": True,
+                "reason": None,
+            },
+        )
         qobuz = report["streaming_sources"]["qobuz"]
         self.assertEqual(qobuz["selected_reference_provider"], "qbzd-qconnect")
         self.assertTrue(qobuz["rate_probe_backend_ready"])
@@ -361,6 +410,103 @@ class AudioDoctorTests(unittest.TestCase):
         self.assertNotIn("private title", encoded)
         self.assertNotIn("private artist", encoded)
         self.assertNotIn("999", encoded)
+
+    def test_stale_qbzd_hardware_claim_cannot_override_absent_motu(self):
+        observation = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "version": "2.0.2",
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": True,
+                    "sample_rate": 88200,
+                    "bit_depth": 24,
+                    "bit_perfect": None,
+                },
+                "qconnect": {
+                    "enabled": True,
+                    "state": "connected",
+                    "session_active": True,
+                    "device_name": "Heim-PC · MOTU M2",
+                },
+                "playback": {"state": "paused"},
+            }
+        )
+        self.assertTrue(observation["reference_provider_ready"])
+        report = MODULE.build_report([], qbzd_qobuz=observation)
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertFalse(report["hardware"]["motu_m2"])
+        self.assertIsNone(qobuz["selected_reference_provider"])
+        self.assertFalse(qobuz["reference_provider_ready"])
+        self.assertFalse(qobuz["rate_probe_backend_ready"])
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+        self.assertTrue(qobuz["qbzd"]["reference_provider_ready"])
+        self.assertEqual(qobuz["qbzd"]["qconnect"]["state"], "connected")
+        self.assertTrue(qobuz["qbzd"]["audio"]["device_present"])
+        self.assertIn(
+            "qobuz-motu-not-observed",
+            {warning["code"] for warning in report["warnings"]},
+        )
+
+    def test_qbzd_ready_is_revoked_when_adjacent_motu_observation_disappears(self):
+        observation = MODULE.classify_qbzd_status_payload(
+            {
+                "api_version": 1,
+                "version": "2.0.2",
+                "auth": {"state": "logged_in", "subscription": "Studio"},
+                "audio": {
+                    "backend": "alsa",
+                    "configured_device": "front:CARD=M2,DEV=0",
+                    "device_present": True,
+                    "device_open": True,
+                    "sample_rate": 88200,
+                    "bit_depth": 24,
+                    "bit_perfect": None,
+                },
+                "qconnect": {
+                    "enabled": True,
+                    "state": "connected",
+                    "session_active": True,
+                    "device_name": "Heim-PC · MOTU M2",
+                },
+                "playback": {"state": "playing"},
+            }
+        )
+        self.assertTrue(observation["reference_provider_ready"])
+        report = MODULE.build_report(
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
+            qbzd_qobuz=observation,
+            qbzd_qobuz_before=observation,
+            motu_playback={
+                "observed": False,
+                "card_id": None,
+                "open": False,
+                "rate_hz": None,
+                "format": None,
+                "channels": None,
+                "pcm_state": "CLOSED",
+                "owner_class": "unknown",
+                "snapshot_consistent": True,
+                "reason": "motu-m2-alsa-card-not-observed",
+            },
+        )
+        qobuz = report["streaming_sources"]["qobuz"]
+        self.assertTrue(report["hardware"]["motu_m2"])
+        self.assertFalse(qobuz["motu_hardware_playback"]["observed"])
+        self.assertIsNone(qobuz["selected_reference_provider"])
+        self.assertFalse(qobuz["reference_provider_ready"])
+        self.assertFalse(qobuz["rate_probe_backend_ready"])
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+        self.assertTrue(qobuz["qbzd"]["reference_provider_ready"])
+        self.assertIn(
+            "qobuz-motu-not-observed",
+            {warning["code"] for warning in report["warnings"]},
+        )
 
     def test_oversized_qbzd_response_is_reachable_but_invalid(self):
         class Response:
@@ -463,7 +609,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [],
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
             qbzd_qobuz=observation,
             motu_playback={
                 "observed": True,
@@ -504,7 +650,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [],
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
             qbzd_qobuz=observation,
             motu_playback={
                 "observed": True,
@@ -539,7 +685,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
             motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 48000, "pcm_state": "RUNNING", "owner_class": "pipewire", "snapshot_consistent": True},
         )
         qobuz = report["streaming_sources"]["qobuz"]
@@ -566,7 +712,7 @@ class AudioDoctorTests(unittest.TestCase):
         )
         self.assertIsNone(observation["audio"]["device_open"])
         report = MODULE.build_report(
-            [], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
             motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 48000, "pcm_state": "RUNNING", "owner_class": "pipewire", "snapshot_consistent": True},
         )
         qobuz = report["streaming_sources"]["qobuz"]
@@ -593,7 +739,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")], qbzd_qobuz=observation, qbzd_qobuz_before=observation,
             motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 48000, "pcm_state": "RUNNING", "owner_class": "pipewire", "snapshot_consistent": True},
         )
         qobuz = report["streaming_sources"]["qobuz"]
@@ -620,7 +766,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [],
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
             qbzd_qobuz=observation,
             motu_playback={"observed": True, "card_id": "M2", "open": False, "rate_hz": None, "pcm_state": "CLOSED", "owner_class": "unknown", "snapshot_consistent": True},
         )
@@ -646,7 +792,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [],
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
             qbzd_qobuz=observation,
             motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 48000, "pcm_state": "RUNNING", "owner_class": "qbzd", "snapshot_consistent": True},
             qbzd_qobuz_before=observation,
@@ -674,7 +820,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [], qbzd_qobuz=observation,
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")], qbzd_qobuz=observation,
             motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": 96000, "pcm_state": "RUNNING", "owner_class": "qbzd", "snapshot_consistent": True},
             qbzd_qobuz_before=observation,
         )
@@ -700,7 +846,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [], qbzd_qobuz=observation,
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")], qbzd_qobuz=observation,
             motu_playback={"observed": True, "card_id": "M2", "open": True, "rate_hz": None, "pcm_state": "RUNNING", "owner_class": "qbzd", "snapshot_consistent": True},
             qbzd_qobuz_before=observation,
         )
@@ -750,7 +896,7 @@ class AudioDoctorTests(unittest.TestCase):
             self.assertEqual(observation["owner_class"], "qbzd")
             self.assertTrue(observation["snapshot_consistent"])
 
-    def test_inconsistent_motu_snapshot_never_proves_track_native(self):
+    def test_inconsistent_motu_snapshot_never_proves_reference_readiness(self):
         observation = MODULE.classify_qbzd_status_payload(
             {
                 "api_version": 1,
@@ -767,7 +913,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [],
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
             qbzd_qobuz=observation,
             motu_playback={
                 "observed": True,
@@ -777,12 +923,23 @@ class AudioDoctorTests(unittest.TestCase):
                 "pcm_state": "RUNNING",
                 "owner_class": "unknown",
                 "snapshot_consistent": False,
-                "reason": "motu-playback-snapshot-changed",
+                "reason": "motu-playback-hw-params-unavailable",
             },
         )
         qobuz = report["streaming_sources"]["qobuz"]
+        self.assertTrue(report["hardware"]["motu_m2"])
+        self.assertTrue(qobuz["motu_hardware_playback"]["observed"])
+        self.assertFalse(qobuz["motu_hardware_playback"]["snapshot_consistent"])
+        self.assertIsNone(qobuz["selected_reference_provider"])
+        self.assertFalse(qobuz["reference_provider_ready"])
+        self.assertFalse(qobuz["rate_probe_backend_ready"])
         self.assertFalse(qobuz["track_native_proven"])
-        self.assertEqual(qobuz["rate_proof_state"], "hardware-snapshot-unstable")
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+        self.assertTrue(qobuz["qbzd"]["reference_provider_ready"])
+        self.assertIn(
+            "qobuz-motu-not-observed",
+            {warning["code"] for warning in report["warnings"]},
+        )
 
     def test_qbzd_snapshot_change_around_running_motu_fails_closed(self):
         before = MODULE.classify_qbzd_status_payload(
@@ -820,7 +977,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [],
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
             qbzd_qobuz=after,
             motu_playback={
                 "observed": True, "card_id": "M2", "open": True,
@@ -853,7 +1010,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [],
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
             qbzd_qobuz=observation,
             motu_playback={
                 "observed": True, "card_id": "M2", "open": True,
@@ -898,7 +1055,7 @@ class AudioDoctorTests(unittest.TestCase):
             }
         )
         report = MODULE.build_report(
-            [],
+            [self.result(("aplay", "-l"), "Karte 2: M2 [M2], Gerät 0: USB Audio\n")],
             qbzd_qobuz=observation,
             motu_playback={
                 "observed": True,

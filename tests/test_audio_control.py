@@ -507,6 +507,8 @@ def operating_mode_doctor(
     qobuz_ready=True,
     playing=False,
     track_native=False,
+    playback_observed=True,
+    playback_snapshot_consistent=True,
 ):
     return {
         "warnings": [],
@@ -532,6 +534,8 @@ def operating_mode_doctor(
                     else "blocked"
                 ),
                 "motu_hardware_playback": {
+                    "observed": playback_observed,
+                    "snapshot_consistent": playback_snapshot_consistent,
                     "open": playing,
                     "pcm_state": "RUNNING" if playing else "CLOSED",
                     "owner_class": "qbzd" if playing else "unknown",
@@ -661,6 +665,119 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(
             {mode["id"] for mode in projection["modes"]},
             {"desktop-listening", "qobuz-reference", "recording", "performance"},
+        )
+
+    def test_qobuz_projection_fails_closed_when_motu_is_absent_even_if_qbzd_is_stale_ready(self):
+        doctor = operating_mode_doctor(
+            motu=False, qobuz_ready=True, playing=True, track_native=True
+        )
+        qobuz = MODULE._qobuz_projection(doctor)
+        self.assertFalse(qobuz["reference_ready"])
+        self.assertFalse(qobuz["current_qbzd_playback"])
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=doctor,
+        )
+        qobuz_mode = next(
+            mode for mode in projection["modes"] if mode["id"] == "qobuz-reference"
+        )
+        self.assertEqual(qobuz_mode["state"], "blocked")
+        self.assertEqual(qobuz_mode["reason"], "motu-not-observed")
+        self.assertEqual(qobuz_mode["quality"]["rate_proof_state"], "motu-not-observed")
+        self.assertEqual(qobuz_mode["qconnect"]["state"], "connected")
+        self.assertTrue(qobuz_mode["qconnect"]["session_active"])
+        self.assertFalse(projection["executable"]["qobuz-reference"]["allowed"])
+
+    def test_qobuz_projection_fails_closed_when_adjacent_motu_observation_is_absent(self):
+        doctor = operating_mode_doctor(
+            motu=True,
+            qobuz_ready=True,
+            playing=True,
+            track_native=True,
+            playback_observed=False,
+        )
+        qobuz = MODULE._qobuz_projection(doctor)
+        self.assertTrue(doctor["hardware"]["motu_m2"])
+        self.assertFalse(qobuz["motu_reference_present"])
+        self.assertFalse(qobuz["reference_ready"])
+        self.assertFalse(qobuz["current_qbzd_playback"])
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=doctor,
+        )
+        qobuz_mode = next(
+            mode for mode in projection["modes"] if mode["id"] == "qobuz-reference"
+        )
+        desktop_mode = next(
+            mode for mode in projection["modes"] if mode["id"] == "desktop-listening"
+        )
+        self.assertTrue(projection["physical"]["motu_m2"])
+        self.assertIsNone(projection["observed"]["mode"])
+        self.assertEqual(desktop_mode["state"], "blocked")
+        self.assertEqual(desktop_mode["reason"], "motu-not-observed")
+        self.assertFalse(projection["executable"]["desktop-listening"]["allowed"])
+        self.assertFalse(
+            MODULE.operating_mode_target_ready("desktop-listening", "ok", doctor)
+        )
+        self.assertEqual(qobuz_mode["state"], "blocked")
+        self.assertEqual(qobuz_mode["reason"], "motu-not-observed")
+        self.assertEqual(qobuz_mode["quality"]["rate_proof_state"], "motu-not-observed")
+        self.assertEqual(qobuz_mode["qconnect"]["state"], "connected")
+        self.assertTrue(qobuz_mode["qconnect"]["session_active"])
+        self.assertFalse(projection["executable"]["qobuz-reference"]["allowed"])
+
+    def test_qobuz_and_desktop_fail_closed_when_adjacent_motu_snapshot_is_inconsistent(self):
+        doctor = operating_mode_doctor(
+            motu=True,
+            qobuz_ready=True,
+            playing=True,
+            track_native=True,
+            playback_observed=True,
+            playback_snapshot_consistent=False,
+        )
+        qobuz = MODULE._qobuz_projection(doctor)
+        self.assertTrue(doctor["hardware"]["motu_m2"])
+        self.assertTrue(
+            doctor["streaming_sources"]["qobuz"]["motu_hardware_playback"]["observed"]
+        )
+        self.assertFalse(
+            doctor["streaming_sources"]["qobuz"]["motu_hardware_playback"][
+                "snapshot_consistent"
+            ]
+        )
+        self.assertFalse(qobuz["motu_reference_present"])
+        self.assertFalse(qobuz["reference_ready"])
+        self.assertFalse(qobuz["current_qbzd_playback"])
+        self.assertFalse(qobuz["track_native_proven"])
+        self.assertEqual(qobuz["rate_proof_state"], "motu-not-observed")
+
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=doctor,
+        )
+        modes = {mode["id"]: mode for mode in projection["modes"]}
+        self.assertIsNone(projection["observed"]["mode"])
+        self.assertTrue(projection["physical"]["motu_m2"])
+        self.assertEqual(modes["desktop-listening"]["state"], "blocked")
+        self.assertEqual(modes["desktop-listening"]["reason"], "motu-not-observed")
+        self.assertEqual(modes["qobuz-reference"]["state"], "blocked")
+        self.assertEqual(modes["qobuz-reference"]["reason"], "motu-not-observed")
+        self.assertFalse(projection["executable"]["desktop-listening"]["allowed"])
+        self.assertFalse(projection["executable"]["qobuz-reference"]["allowed"])
+        self.assertFalse(
+            MODULE.operating_mode_target_ready("desktop-listening", "ok", doctor)
+        )
+        self.assertFalse(
+            MODULE.operating_mode_target_ready("qobuz-reference", "ok", doctor)
         )
 
     def test_recording_mode_projects_recorder_authority_without_second_mode_action(self):
@@ -897,6 +1014,57 @@ class AudioControlTests(unittest.TestCase):
                     controller.perform_operating_mode_transition(
                         {
                             "request_id": "missing-motu-mode-0001",
+                            "target_mode": "desktop-listening",
+                        }
+                    )
+        self.assertEqual(caught.exception.code, "operating_mode_physical_blocked")
+        apply.assert_not_called()
+        self.assertFalse(path.exists())
+
+    def test_adjacent_motu_loss_blocks_desktop_transition_before_any_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            doctor = operating_mode_doctor(
+                motu=True,
+                sink="motu-m2",
+                playback_observed=False,
+            )
+            with (
+                mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+                mock.patch.object(controller, "_apply_desktop_operating_mode") as apply,
+            ):
+                with self.assertRaises(MODULE.OperatingModeError) as caught:
+                    controller.perform_operating_mode_transition(
+                        {
+                            "request_id": "adjacent-motu-loss-mode-0001",
+                            "target_mode": "desktop-listening",
+                        }
+                    )
+        self.assertEqual(caught.exception.code, "operating_mode_physical_blocked")
+        apply.assert_not_called()
+        self.assertFalse(path.exists())
+
+    def test_inconsistent_adjacent_motu_snapshot_blocks_desktop_transition_before_any_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mode.json"
+            controller = self.controller()
+            controller.operating_mode_state_path = path
+            doctor = operating_mode_doctor(
+                motu=True,
+                sink="motu-m2",
+                playback_observed=True,
+                playback_snapshot_consistent=False,
+            )
+            with (
+                mock.patch.object(controller, "_doctor", return_value=("ok", doctor, None)),
+                mock.patch.object(controller, "_apply_desktop_operating_mode") as apply,
+            ):
+                with self.assertRaises(MODULE.OperatingModeError) as caught:
+                    controller.perform_operating_mode_transition(
+                        {
+                            "request_id": "inconsistent-adjacent-motu-mode-0001",
                             "target_mode": "desktop-listening",
                         }
                     )
