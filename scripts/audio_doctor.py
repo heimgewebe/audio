@@ -1022,17 +1022,6 @@ def build_report(
         and qbzd_reference_proof_snapshot(qbzd_before_observation)
         == qbzd_reference_proof_snapshot(qbzd_observation)
     )
-    # QBZD and legacy Mopidy can retain software/session state after the USB
-    # interface disappears. Treat their readiness as software evidence only;
-    # current ALSA enumeration is the independent physical-presence authority.
-    qbzd_software_ready = qbzd_observation.get("reference_provider_ready") is True
-    legacy_mopidy_software_ready = qobuz_observation.get("backend_registered") is True
-    qobuz_software_ready = qbzd_software_ready or legacy_mopidy_software_ready
-    qbzd_ready = motu and qbzd_software_ready
-    legacy_mopidy_ready = motu and legacy_mopidy_software_ready
-    selected_qobuz_provider = (
-        "qbzd-qconnect" if qbzd_ready else "mopidy-legacy" if legacy_mopidy_ready else None
-    )
     motu_playback_observation = motu_playback or {
         "observed": False,
         "card_id": None,
@@ -1045,6 +1034,19 @@ def build_report(
         "snapshot_consistent": True,
         "reason": "motu-playback-not-observed",
     }
+    # QBZD and legacy Mopidy can retain software/session state after the USB
+    # interface disappears. The early aplay enumeration is necessary but not
+    # sufficient: require the adjacent /proc/asound observation taken between
+    # the two QBZD snapshots before declaring the reference path ready.
+    motu_reference_present = motu and motu_playback_observation.get("observed") is True
+    qbzd_software_ready = qbzd_observation.get("reference_provider_ready") is True
+    legacy_mopidy_software_ready = qobuz_observation.get("backend_registered") is True
+    qobuz_software_ready = qbzd_software_ready or legacy_mopidy_software_ready
+    qbzd_ready = motu_reference_present and qbzd_software_ready
+    legacy_mopidy_ready = motu_reference_present and legacy_mopidy_software_ready
+    selected_qobuz_provider = (
+        "qbzd-qconnect" if qbzd_ready else "mopidy-legacy" if legacy_mopidy_ready else None
+    )
     qbzd_audio = qbzd_observation.get("audio")
     if not isinstance(qbzd_audio, dict):
         qbzd_audio = {}
@@ -1061,10 +1063,10 @@ def build_report(
         qbzd_rate=qbzd_rate,
         motu_rate=motu_rate,
     )
-    if not motu and qobuz_software_ready:
+    if not motu_reference_present and qobuz_software_ready:
         qbzd_rate_proof_state = "motu-not-observed"
     track_native_proven = qbzd_rate_proof_state == "verified-current-track"
-    if not motu and qobuz_software_ready:
+    if not motu_reference_present and qobuz_software_ready:
         qobuz_rate_proof_state = "motu-not-observed"
     elif qbzd_software_ready:
         qobuz_rate_proof_state = qbzd_rate_proof_state
@@ -1145,7 +1147,7 @@ def build_report(
                 "detail": "The legacy Mopidy RPC probe returned an invalid or error response; its Qobuz backend state is unknown.",
             }
         )
-    if not motu and qobuz_software_ready:
+    if not motu_reference_present and qobuz_software_ready:
         warnings.append(
             {
                 "code": "qobuz-motu-not-observed",
