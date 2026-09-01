@@ -2030,6 +2030,103 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertFalse(partial.exists())
         self.assertEqual(stat.S_IMODE(final.stat().st_mode), 0o600)
 
+    def test_worker_maximum_duration_remains_spawn_anchored_after_ready_delay(self) -> None:
+        fake = self.base / "delayed-ready-parecord"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import signal, sys, time, wave\n"
+            "stop = False\n"
+            "def handler(_signum, _frame):\n"
+            "    global stop\n"
+            "    stop = True\n"
+            "signal.signal(signal.SIGINT, handler)\n"
+            "output = sys.argv[-1]\n"
+            "chunk = b'\\0' * 960 * 2 * 4\n"
+            "with wave.open(output, 'wb') as handle:\n"
+            "    handle.setnchannels(2)\n"
+            "    handle.setsampwidth(4)\n"
+            "    handle.setframerate(48000)\n"
+            "    while not stop:\n"
+            "        handle.writeframesraw(chunk)\n"
+            "        handle._file.flush()\n"
+            "        time.sleep(0.02)\n"
+        )
+        fake.chmod(0o755)
+        partial = self.output / ".delayed-ready.partial.wav"
+        final = self.output / "delayed-ready.wav"
+        capture = {
+            "sample_rate_hz": 48_000,
+            "sample_format": "s32le",
+            "channels": 2,
+            "channel_map": "front-left,front-right",
+            "maximum_duration_seconds": 1,
+            "maximum_file_bytes": 2_000_000,
+            "startup_timeout_seconds": 5,
+            "stop_grace_seconds": 2,
+        }
+        plan_identity = {
+            "session_type": "voice-recording",
+            "capture": capture,
+            "process": MODULE.load_catalog("voice-recording")["process"],
+            "parecord": {"resolved": {"path": str(fake)}},
+        }
+        spec = {
+            "session_id": "d" * 24,
+            "source_name": "fake-source",
+            "plan_sha256": MODULE.canonical_sha256(plan_identity),
+            "plan_identity": plan_identity,
+            "paths": {
+                "partial": str(partial),
+                "final": str(final),
+                "result": str(self.state / "unused-delayed-ready.json"),
+            },
+        }
+        spec_path = self.base / "delayed-ready-spec.json"
+        spec_path.write_text(json.dumps(spec))
+        result_path = self.base / "delayed-ready-result.json"
+        helper = "\n".join(
+            [
+                "import importlib.util, json, pathlib, sys, time",
+                "module_path, spec_path, result_path = sys.argv[1:]",
+                "s = importlib.util.spec_from_file_location('recording_worker_delay', module_path)",
+                "m = importlib.util.module_from_spec(s)",
+                "s.loader.exec_module(m)",
+                "payload = json.loads(pathlib.Path(spec_path).read_text())",
+                "real_popen = m.subprocess.Popen",
+                "def delayed_popen(*args, **kwargs):",
+                "    process = real_popen(*args, **kwargs)",
+                "    time.sleep(2.2)",
+                "    return process",
+                "m.subprocess.Popen = delayed_popen",
+                "result = m.worker_run(payload, validate_spec=False)",
+                "pathlib.Path(result_path).write_text(json.dumps(result))",
+            ]
+        )
+        completed = subprocess.run(
+            [
+                os.sys.executable,
+                "-c",
+                helper,
+                str(ROOT / "scripts/recording_session.py"),
+                str(spec_path),
+                str(result_path),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(result_path.read_text())
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["reason"], "maximum-duration")
+        self.assertTrue(final.is_file())
+        self.assertFalse(partial.exists())
+        with wave.open(str(final), "rb") as handle:
+            duration = handle.getnframes() / handle.getframerate()
+        self.assertLessEqual(duration, capture["maximum_duration_seconds"] + 2)
+
     def test_worker_rejects_stalled_capture_before_publication(self) -> None:
         fake = self.base / "stalled-parecord"
         fake.write_text(

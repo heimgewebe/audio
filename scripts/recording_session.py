@@ -4436,6 +4436,7 @@ def worker_run(
     session_type = spec["plan_identity"]["session_type"]
     argv = _parecord_argv(spec, parecord_path, partial)
     started_at = utc_now()
+    started_monotonic = time.monotonic()
     maximum_stderr = int(load_catalog(session_type)["capture"]["maximum_stderr_bytes"])
     with tempfile.TemporaryFile() as stderr_file:
         process = subprocess.Popen(
@@ -4462,7 +4463,7 @@ def worker_run(
         stop_reason = "startup-failed"
         if ready:
             stop_reason = "maximum-duration"
-            deadline = capture_started_monotonic + int(capture["maximum_duration_seconds"])
+            deadline = started_monotonic + int(capture["maximum_duration_seconds"])
             while time.monotonic() < deadline:
                 if stop_requested:
                     stop_reason = "requested-stop"
