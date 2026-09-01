@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import math
 import os
 import pathlib
 import stat
@@ -312,9 +313,51 @@ class RecordingSessionTest(unittest.TestCase):
         contract = MODULE.load_catalog()
         capture = contract["capture"]
         self.assertEqual(capture["sample_format"], "s32le")
+        bytes_per_second = 48_000 * 2 * 4
+        nominal = bytes_per_second * 10
+        fixed_slack = int(
+            bytes_per_second * MODULE.MAX_RECORDED_WAVE_OVERRUN_SECONDS
+        )
+        drift = math.ceil(
+            nominal * MODULE.MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
+        )
         self.assertEqual(
             MODULE.maximum_file_bytes(capture, 10),
-            48_000 * 2 * 4 * 10 + 1_048_576,
+            nominal + fixed_slack + drift + 1_048_576,
+        )
+
+    def test_long_capture_reserves_fast_clock_duration_and_file_headroom(self) -> None:
+        capture = dict(MODULE.load_catalog()["capture"])
+        four_hours = 14_400
+        capture["maximum_duration_seconds"] = four_hours
+        self.assertAlmostEqual(
+            MODULE._recorded_wave_duration_ceiling_seconds(capture),
+            14_409.2,
+            places=6,
+        )
+        bytes_per_second = 48_000 * 2 * 4
+        nominal = bytes_per_second * four_hours
+        fixed_slack = int(
+            bytes_per_second * MODULE.MAX_RECORDED_WAVE_OVERRUN_SECONDS
+        )
+        drift = math.ceil(
+            nominal * MODULE.MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
+        )
+        self.assertEqual(
+            MODULE.maximum_file_bytes(capture, four_hours),
+            nominal
+            + fixed_slack
+            + drift
+            + capture["header_and_metadata_allowance_bytes"],
+        )
+
+    def test_short_capture_keeps_fixed_slack_in_addition_to_clock_drift(self) -> None:
+        capture = dict(MODULE.load_catalog()["capture"])
+        capture["maximum_duration_seconds"] = 10
+        self.assertAlmostEqual(
+            MODULE._recorded_wave_duration_ceiling_seconds(capture),
+            12.005,
+            places=6,
         )
 
     def test_plan_exposes_canonical_structured_readiness_checks(self) -> None:
@@ -926,6 +969,7 @@ class RecordingSessionTest(unittest.TestCase):
         spec = self.persisted_spec(
             session_id="c" * 24,
             name="performance.wav",
+            maximum_seconds=2,
             session_type="piano-vocal-performance",
         )
         session_paths = MODULE._session_paths(self.state, spec["session_id"])
@@ -956,10 +1000,10 @@ class RecordingSessionTest(unittest.TestCase):
                 output.write_bytes(silent_smf)
                 output.chmod(0o600)
             elif output.suffix == ".s32le":
-                output.write_bytes(b"\0" * 1000 * 2 * 4)
+                output.write_bytes(b"\0" * 96_000 * 2 * 4)
                 output.chmod(0o600)
             else:
-                self.write_wave(output)
+                self.write_wave(output, frames=96_000)
             return FakeProcess()
 
         real_link = MODULE._link_no_replace_keep_partial
@@ -993,6 +1037,26 @@ class RecordingSessionTest(unittest.TestCase):
                 "monotonic",
                 side_effect=[0.0, 0.1, 0.2, 0.3, 0.4, 100.0],
             ),
+            mock.patch.object(
+                MODULE.time,
+                "monotonic_ns",
+                side_effect=[
+                    0,
+                    10_000_000,
+                    20_000_000,
+                    30_000_000,
+                    31_000_000,
+                    40_000_000,
+                    40_000_000,
+                    50_000_000,
+                    2_050_000_000,
+                ],
+            ),
+            mock.patch.object(
+                MODULE,
+                "_assert_capture_window_covered",
+                wraps=MODULE._assert_capture_window_covered,
+            ) as coverage,
             mock.patch.object(MODULE.resource, "setrlimit"),
             mock.patch.object(MODULE.os, "umask"),
             mock.patch.object(MODULE.signal, "signal"),
@@ -1007,6 +1071,9 @@ class RecordingSessionTest(unittest.TestCase):
             )
 
         self.assertEqual(returncode, 1)
+        self.assertEqual(coverage.call_count, 2)
+        for call in coverage.call_args_list:
+            self.assertAlmostEqual(call.args[1], 2.0, places=6)
         result = MODULE._safe_json_read(session_paths["result"], require_private=True)
         MODULE._validate_result(result, spec)
         self.assertEqual(result["status"], "failed-preserved")
@@ -1894,6 +1961,33 @@ class RecordingSessionTest(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.RecordingError, "arecordmidi changed"):
                 MODULE._validate_spec(spec)
 
+    def test_capture_window_coverage_accepts_bounded_shortfall(self) -> None:
+        MODULE._assert_capture_window_covered(
+            {"duration_seconds": 9.0},
+            10.0,
+        )
+
+    def test_capture_window_coverage_rejects_material_shortfall(self) -> None:
+        with self.assertRaisesRegex(MODULE.RecordingError, "does not cover"):
+            MODULE._assert_capture_window_covered(
+                {"duration_seconds": 8.9},
+                10.0,
+            )
+
+    def test_capture_window_coverage_scales_for_long_independent_clocks(self) -> None:
+        four_hours = 14_400.0
+        allowed = MODULE._capture_coverage_tolerance_seconds(four_hours)
+        self.assertEqual(allowed, 7.2)
+        MODULE._assert_capture_window_covered(
+            {"duration_seconds": four_hours - 7.0},
+            four_hours,
+        )
+        with self.assertRaisesRegex(MODULE.RecordingError, "does not cover"):
+            MODULE._assert_capture_window_covered(
+                {"duration_seconds": four_hours - 8.0},
+                four_hours,
+            )
+
     def test_worker_cleanly_stops_fake_recorder_and_publishes_wav(self) -> None:
         fake = self.base / "fake-parecord"
         fake.write_text(
@@ -1909,7 +2003,7 @@ class RecordingSessionTest(unittest.TestCase):
             "    handle.setnchannels(2)\n"
             "    handle.setsampwidth(4)\n"
             "    handle.setframerate(48000)\n"
-            "    handle.writeframes(b'\\0' * 4800 * 2 * 4)\n"
+            "    handle.writeframes(b'\\0' * 48000 * 2 * 4)\n"
             "while not stop:\n"
             "    time.sleep(0.02)\n"
         )
@@ -1978,6 +2072,194 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertTrue(final.is_file())
         self.assertFalse(partial.exists())
         self.assertEqual(stat.S_IMODE(final.stat().st_mode), 0o600)
+
+    def test_worker_maximum_duration_remains_spawn_anchored_after_ready_delay(self) -> None:
+        fake = self.base / "delayed-ready-parecord"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import signal, sys, time, wave\n"
+            "stop = False\n"
+            "def handler(_signum, _frame):\n"
+            "    global stop\n"
+            "    stop = True\n"
+            "signal.signal(signal.SIGINT, handler)\n"
+            "output = sys.argv[-1]\n"
+            "chunk = b'\\0' * 960 * 2 * 4\n"
+            "with wave.open(output, 'wb') as handle:\n"
+            "    handle.setnchannels(2)\n"
+            "    handle.setsampwidth(4)\n"
+            "    handle.setframerate(48000)\n"
+            "    while not stop:\n"
+            "        handle.writeframesraw(chunk)\n"
+            "        handle._file.flush()\n"
+            "        time.sleep(0.02)\n"
+        )
+        fake.chmod(0o755)
+        partial = self.output / ".delayed-ready.partial.wav"
+        final = self.output / "delayed-ready.wav"
+        capture = {
+            "sample_rate_hz": 48_000,
+            "sample_format": "s32le",
+            "channels": 2,
+            "channel_map": "front-left,front-right",
+            "maximum_duration_seconds": 1,
+            "maximum_file_bytes": 2_000_000,
+            "startup_timeout_seconds": 5,
+            "stop_grace_seconds": 2,
+        }
+        plan_identity = {
+            "session_type": "voice-recording",
+            "capture": capture,
+            "process": MODULE.load_catalog("voice-recording")["process"],
+            "parecord": {"resolved": {"path": str(fake)}},
+        }
+        spec = {
+            "session_id": "d" * 24,
+            "source_name": "fake-source",
+            "plan_sha256": MODULE.canonical_sha256(plan_identity),
+            "plan_identity": plan_identity,
+            "paths": {
+                "partial": str(partial),
+                "final": str(final),
+                "result": str(self.state / "unused-delayed-ready.json"),
+            },
+        }
+        spec_path = self.base / "delayed-ready-spec.json"
+        spec_path.write_text(json.dumps(spec))
+        result_path = self.base / "delayed-ready-result.json"
+        helper = "\n".join(
+            [
+                "import importlib.util, json, pathlib, sys, time",
+                "module_path, spec_path, result_path = sys.argv[1:]",
+                "s = importlib.util.spec_from_file_location('recording_worker_delay', module_path)",
+                "m = importlib.util.module_from_spec(s)",
+                "s.loader.exec_module(m)",
+                "payload = json.loads(pathlib.Path(spec_path).read_text())",
+                "real_popen = m.subprocess.Popen",
+                "def delayed_popen(*args, **kwargs):",
+                "    process = real_popen(*args, **kwargs)",
+                "    time.sleep(2.2)",
+                "    return process",
+                "m.subprocess.Popen = delayed_popen",
+                "result = m.worker_run(payload, validate_spec=False)",
+                "pathlib.Path(result_path).write_text(json.dumps(result))",
+            ]
+        )
+        completed = subprocess.run(
+            [
+                os.sys.executable,
+                "-c",
+                helper,
+                str(ROOT / "scripts/recording_session.py"),
+                str(spec_path),
+                str(result_path),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(result_path.read_text())
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["reason"], "maximum-duration")
+        self.assertTrue(final.is_file())
+        self.assertFalse(partial.exists())
+        with wave.open(str(final), "rb") as handle:
+            duration = handle.getnframes() / handle.getframerate()
+        self.assertLessEqual(duration, capture["maximum_duration_seconds"] + 2)
+
+    def test_worker_rejects_stalled_capture_before_publication(self) -> None:
+        fake = self.base / "stalled-parecord"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import signal, sys, time, wave\n"
+            "stop = False\n"
+            "def handler(_signum, _frame):\n"
+            "    global stop\n"
+            "    stop = True\n"
+            "signal.signal(signal.SIGINT, handler)\n"
+            "output = sys.argv[-1]\n"
+            "with wave.open(output, 'wb') as handle:\n"
+            "    handle.setnchannels(2)\n"
+            "    handle.setsampwidth(4)\n"
+            "    handle.setframerate(48000)\n"
+            "    handle.writeframes(b'\\0' * 4800 * 2 * 4)\n"
+            "while not stop:\n"
+            "    time.sleep(0.02)\n"
+        )
+        fake.chmod(0o755)
+        partial = self.output / ".stalled.partial.wav"
+        final = self.output / "stalled.wav"
+        capture = {
+            "sample_rate_hz": 48_000,
+            "sample_format": "s32le",
+            "channels": 2,
+            "channel_map": "front-left,front-right",
+            "maximum_duration_seconds": 2,
+            "maximum_file_bytes": 2_000_000,
+            "startup_timeout_seconds": 2,
+            "stop_grace_seconds": 2,
+        }
+        plan_identity = {
+            "session_type": "voice-recording",
+            "capture": capture,
+            "process": MODULE.load_catalog("voice-recording")["process"],
+            "parecord": {"resolved": {"path": str(fake)}},
+        }
+        spec = {
+            "session_id": "c" * 24,
+            "source_name": "fake-source",
+            "plan_sha256": MODULE.canonical_sha256(plan_identity),
+            "plan_identity": plan_identity,
+            "paths": {
+                "partial": str(partial),
+                "final": str(final),
+                "result": str(self.state / "unused-stalled.json"),
+            },
+        }
+        spec_path = self.base / "stalled-spec.json"
+        spec_path.write_text(json.dumps(spec))
+        result_path = self.base / "stalled-result.json"
+        helper = "\n".join(
+            [
+                "import importlib.util, json, pathlib, sys",
+                "module_path, spec_path, result_path = sys.argv[1:]",
+                "s = importlib.util.spec_from_file_location('recording_worker_stall', module_path)",
+                "m = importlib.util.module_from_spec(s)",
+                "s.loader.exec_module(m)",
+                "payload = json.loads(pathlib.Path(spec_path).read_text())",
+                "out = {}",
+                "try:",
+                "    m.worker_run(payload, validate_spec=False)",
+                "except Exception as exc:",
+                "    out = {'type': type(exc).__name__, 'error': str(exc)}",
+                "pathlib.Path(result_path).write_text(json.dumps(out))",
+            ]
+        )
+        completed = subprocess.run(
+            [
+                os.sys.executable,
+                "-c",
+                helper,
+                str(ROOT / "scripts/recording_session.py"),
+                str(spec_path),
+                str(result_path),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(result_path.read_text())
+        self.assertEqual(result["type"], "RecordingError")
+        self.assertIn("does not cover", result["error"])
+        self.assertTrue(partial.is_file())
+        self.assertFalse(final.exists())
+        self.assertEqual(stat.S_IMODE(partial.stat().st_mode), 0o600)
 
     def test_start_persists_recoverable_state_before_spawn_failure(self) -> None:
         plan = self.ready_plan()

@@ -28,6 +28,7 @@ Der Ablauf trennt **prüfen**, **freigeben**, **aufnehmen**, **stoppen** und **w
 - Der gebundene `arecordmidi`-Vertrag verwendet `-f 25` als SMPTE-25-fps und `-t 40` als 40 Ticks pro Frame. Fehlen Binary oder exakter Vertrag auf einem Host, bleibt der Plan geschlossen; es gibt keinen stillen Rückfall auf Event-Textparsing.
 - Zieldateien werden niemals überschrieben.
 - Eine unvollständige Datei bleibt bei Fehlern als private `.partial.wav` erhalten und wird nicht stillschweigend als fertig veröffentlicht.
+- Vor der Veröffentlichung muss die WAV-Dauer das beobachtete Capturefenster ab `ready` bis unmittelbar vor dem Stop-Signal abdecken. Erlaubt sind mindestens 1,0 s Grundtoleranz oder, bei langen Takes, 500 ppm des Capturefensters als konservative Divergenz zwischen Host- und Audiotakt; dies ist ein Sicherheitsbudget und keine Behauptung über die Gerätespezifikation. Zusätzlich zur festen 2-s-Reserve für Polling/Stop wird dasselbe 500-ppm-Budget auch in der zulässigen WAV-Dauer und im Dateigrößen-/`RLIMIT_FSIZE`-Budget reserviert, damit eine schnellere Audioclock nicht als Überlänge oder Größenfehler verworfen beziehungsweise abgeschnitten wird. Materielle Unterdeckung bleibt fail-closed als private `.partial.wav`.
 - Stop und Recovery prüfen PID, Prozessstartzeit, ausführbare Datei, Kommandozeile und Prozessgruppe.
 - Zustandsdateien sind privat (`0600`), Zustands- und Aufnahmeverzeichnisse privat (`0700`).
 

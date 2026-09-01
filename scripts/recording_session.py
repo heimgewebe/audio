@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import pathlib
 import re
@@ -43,6 +44,9 @@ ARECORDMIDI_PATH = pathlib.Path("/usr/bin/arecordmidi")
 FFMPEG_PATH = pathlib.Path("/usr/bin/ffmpeg")
 MAX_AUDIO_SPAWN_SPREAD_NS = 5_000_000
 MAX_AUDIO_FRAME_DIFFERENCE_FRAMES = 4_800  # 100 ms at 48 kHz
+MAX_CAPTURE_COVERAGE_GAP_SECONDS = 1.0
+MAX_CAPTURE_CLOCK_DIVERGENCE_PPM = 500.0
+MAX_RECORDED_WAVE_OVERRUN_SECONDS = 2.0
 MAX_JSON_BYTES = 524_288
 MAX_BINDING_BYTES = 64_000_000
 PARECORD_WAV_FSIZE_FLOOR_BYTES = 64 * 1024 * 1024
@@ -1485,12 +1489,34 @@ def _source_projection(
     return result, sorted(set(blockers))
 
 
+def _capture_clock_divergence_seconds(duration_seconds: float) -> float:
+    return float(duration_seconds) * MAX_CAPTURE_CLOCK_DIVERGENCE_PPM / 1_000_000
+
+
+def _recorded_wave_upper_slack_seconds(duration_seconds: float) -> float:
+    return MAX_RECORDED_WAVE_OVERRUN_SECONDS + _capture_clock_divergence_seconds(
+        duration_seconds
+    )
+
+
+def _recorded_wave_duration_ceiling_seconds(capture: dict[str, Any]) -> float:
+    maximum_duration = float(capture["maximum_duration_seconds"])
+    return maximum_duration + _recorded_wave_upper_slack_seconds(maximum_duration)
+
+
 def maximum_file_bytes(capture: dict[str, Any], maximum_seconds: int) -> int:
-    return (
+    bytes_per_second = (
         capture["sample_rate_hz"]
         * capture["channels"]
         * capture["bytes_per_sample"]
-        * maximum_seconds
+    )
+    nominal_audio_bytes = bytes_per_second * maximum_seconds
+    upper_slack_bytes = math.ceil(
+        bytes_per_second * _recorded_wave_upper_slack_seconds(maximum_seconds)
+    )
+    return (
+        nominal_audio_bytes
+        + upper_slack_bytes
         + capture["header_and_metadata_allowance_bytes"]
     )
 
@@ -2404,6 +2430,17 @@ def _validate_persisted_spec(
     maximum_bytes = (
         capture.get("maximum_file_bytes") if isinstance(capture, dict) else None
     )
+    expected_maximum_bytes = (
+        maximum_file_bytes(load_catalog(session_type)["capture"], maximum_duration)
+        if _positive_integer(maximum_duration)
+        else None
+    )
+    legacy_maximum_bytes = (
+        48_000 * 2 * 4 * maximum_duration + 1_048_576
+        if _positive_integer(maximum_duration)
+        else None
+    )
+    accepted_maximum_bytes = {expected_maximum_bytes, legacy_maximum_bytes}
     if (
         not isinstance(capture, dict)
         or set(capture) != expected_capture_fields
@@ -2415,7 +2452,7 @@ def _validate_persisted_spec(
         or not _positive_integer(maximum_duration)
         or maximum_duration > 14_400
         or not _positive_integer(maximum_bytes)
-        or maximum_bytes != 48_000 * 2 * 4 * maximum_duration + 1_048_576
+        or maximum_bytes not in accepted_maximum_bytes
         or not _positive_integer(capture.get("startup_timeout_seconds"))
         or not _positive_integer(capture.get("stop_grace_seconds"))
         or not _non_negative_integer(capture.get("free_space_reserve_bytes"))
@@ -3609,7 +3646,7 @@ def _validate_recorded_wave(
     ):
         raise RecordingError("recorded WAV format does not match the plan")
     duration = frames / rate
-    if duration > capture["maximum_duration_seconds"] + 2:
+    if duration > _recorded_wave_duration_ceiling_seconds(capture):
         raise RecordingError("recorded WAV exceeds the planned duration")
     return {
         "path": str(path),
@@ -3624,6 +3661,42 @@ def _validate_recorded_wave(
         "frames": frames,
         "duration_seconds": round(duration, 6),
     }
+
+
+def _capture_coverage_tolerance_seconds(capture_window_seconds: float) -> float:
+    """Bound host-clock vs. audio-clock divergence without claiming device specs."""
+
+    return max(
+        MAX_CAPTURE_COVERAGE_GAP_SECONDS,
+        _capture_clock_divergence_seconds(float(capture_window_seconds)),
+    )
+
+
+def _assert_capture_window_covered(
+    artifact: dict[str, Any], capture_window_seconds: float
+) -> None:
+    """Reject WAVs that materially under-cover the observed capture window."""
+
+    if (
+        isinstance(capture_window_seconds, bool)
+        or not isinstance(capture_window_seconds, (int, float))
+        or capture_window_seconds < 0
+    ):
+        raise RecordingError("capture window duration is invalid")
+    duration = artifact.get("duration_seconds")
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or duration <= 0
+    ):
+        raise RecordingError("recorded WAV duration is invalid")
+    shortfall = float(capture_window_seconds) - float(duration)
+    allowed = _capture_coverage_tolerance_seconds(capture_window_seconds)
+    if shortfall > allowed:
+        raise RecordingError(
+            "recorded WAV does not cover the observed capture window "
+            f"(shortfall={shortfall:.3f}s, allowed={allowed:.3f}s)"
+        )
 
 
 def _publish_no_replace(
@@ -3999,6 +4072,8 @@ def _performance_worker_run(
     roland_process: subprocess.Popen[bytes] | None = None
     timeline: dict[str, int] = {}
     ready = False
+    capture_started_monotonic_ns: int | None = None
+    capture_stopped_monotonic_ns: int | None = None
     stop_reason = "startup-failed"
     returncodes: list[int] = []
     forced_kill = False
@@ -4090,7 +4165,10 @@ def _performance_worker_run(
                         timeline["roland_running_observed_offset_ns"] = time.monotonic_ns() - epoch_ns
                     ready = voice_started and roland_started
                     if ready:
-                        timeline["session_ready_offset_ns"] = time.monotonic_ns() - epoch_ns
+                        capture_started_monotonic_ns = time.monotonic_ns()
+                        timeline["session_ready_offset_ns"] = (
+                            capture_started_monotonic_ns - epoch_ns
+                        )
                         _atomic_private_json(
                             ready_path,
                             {
@@ -4120,6 +4198,8 @@ def _performance_worker_run(
                         break
                     time.sleep(0.02)
         finally:
+            if capture_started_monotonic_ns is not None:
+                capture_stopped_monotonic_ns = time.monotonic_ns()
             if children:
                 returncodes, forced_kill = _stop_capture_children(
                     children, int(capture["stop_grace_seconds"])
@@ -4157,6 +4237,13 @@ def _performance_worker_run(
             os.close(descriptor)
     voice_artifact = _validate_recorded_wave(paths["voice_partial"], capture)
     roland_artifact = _validate_recorded_wave(paths["roland_partial"], capture)
+    if capture_started_monotonic_ns is None or capture_stopped_monotonic_ns is None:
+        raise RecordingError("parallel capture window observation is missing")
+    capture_window_seconds = (
+        capture_stopped_monotonic_ns - capture_started_monotonic_ns
+    ) / 1_000_000_000
+    _assert_capture_window_covered(voice_artifact, capture_window_seconds)
+    _assert_capture_window_covered(roland_artifact, capture_window_seconds)
     mix_frames = _performance_mix_frame_count(
         int(voice_artifact["frames"]), int(roland_artifact["frames"])
     )
@@ -4371,6 +4458,8 @@ def worker_run(
     )
     resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
     stop_requested = False
+    capture_started_monotonic: float | None = None
+    capture_stopped_monotonic: float | None = None
 
     def request_stop(_signum: int, _frame: Any) -> None:
         nonlocal stop_requested
@@ -4401,6 +4490,7 @@ def worker_run(
             try:
                 if partial.stat().st_size > 44:
                     ready = True
+                    capture_started_monotonic = time.monotonic()
                     break
             except FileNotFoundError:
                 pass
@@ -4417,6 +4507,8 @@ def worker_run(
                     stop_reason = "capture-process-exited"
                     break
                 time.sleep(0.05)
+        if capture_started_monotonic is not None:
+            capture_stopped_monotonic = time.monotonic()
         if process.poll() is None:
             process.send_signal(signal.SIGINT)
         forced_kill = False
@@ -4449,6 +4541,11 @@ def worker_run(
     finally:
         os.close(descriptor)
     artifact = _validate_recorded_wave(partial, capture)
+    if capture_started_monotonic is None or capture_stopped_monotonic is None:
+        raise RecordingError("capture window observation is missing")
+    _assert_capture_window_covered(
+        artifact, capture_stopped_monotonic - capture_started_monotonic
+    )
     _publish_no_replace(partial, final, artifact)
     artifact = _safe_regular_binding(
         final,
