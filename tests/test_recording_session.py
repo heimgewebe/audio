@@ -1894,6 +1894,19 @@ class RecordingSessionTest(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.RecordingError, "arecordmidi changed"):
                 MODULE._validate_spec(spec)
 
+    def test_capture_window_coverage_accepts_bounded_shortfall(self) -> None:
+        MODULE._assert_capture_window_covered(
+            {"duration_seconds": 9.0},
+            10.0,
+        )
+
+    def test_capture_window_coverage_rejects_material_shortfall(self) -> None:
+        with self.assertRaisesRegex(MODULE.RecordingError, "does not cover"):
+            MODULE._assert_capture_window_covered(
+                {"duration_seconds": 8.9},
+                10.0,
+            )
+
     def test_worker_cleanly_stops_fake_recorder_and_publishes_wav(self) -> None:
         fake = self.base / "fake-parecord"
         fake.write_text(
@@ -1978,6 +1991,97 @@ class RecordingSessionTest(unittest.TestCase):
         self.assertTrue(final.is_file())
         self.assertFalse(partial.exists())
         self.assertEqual(stat.S_IMODE(final.stat().st_mode), 0o600)
+
+    def test_worker_rejects_stalled_capture_before_publication(self) -> None:
+        fake = self.base / "stalled-parecord"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import signal, sys, time, wave\n"
+            "stop = False\n"
+            "def handler(_signum, _frame):\n"
+            "    global stop\n"
+            "    stop = True\n"
+            "signal.signal(signal.SIGINT, handler)\n"
+            "output = sys.argv[-1]\n"
+            "with wave.open(output, 'wb') as handle:\n"
+            "    handle.setnchannels(2)\n"
+            "    handle.setsampwidth(4)\n"
+            "    handle.setframerate(48000)\n"
+            "    handle.writeframes(b'\\0' * 4800 * 2 * 4)\n"
+            "while not stop:\n"
+            "    time.sleep(0.02)\n"
+        )
+        fake.chmod(0o755)
+        partial = self.output / ".stalled.partial.wav"
+        final = self.output / "stalled.wav"
+        capture = {
+            "sample_rate_hz": 48_000,
+            "sample_format": "s32le",
+            "channels": 2,
+            "channel_map": "front-left,front-right",
+            "maximum_duration_seconds": 2,
+            "maximum_file_bytes": 2_000_000,
+            "startup_timeout_seconds": 2,
+            "stop_grace_seconds": 2,
+        }
+        plan_identity = {
+            "session_type": "voice-recording",
+            "capture": capture,
+            "process": MODULE.load_catalog("voice-recording")["process"],
+            "parecord": {"resolved": {"path": str(fake)}},
+        }
+        spec = {
+            "session_id": "c" * 24,
+            "source_name": "fake-source",
+            "plan_sha256": MODULE.canonical_sha256(plan_identity),
+            "plan_identity": plan_identity,
+            "paths": {
+                "partial": str(partial),
+                "final": str(final),
+                "result": str(self.state / "unused-stalled.json"),
+            },
+        }
+        spec_path = self.base / "stalled-spec.json"
+        spec_path.write_text(json.dumps(spec))
+        result_path = self.base / "stalled-result.json"
+        helper = "\n".join(
+            [
+                "import importlib.util, json, pathlib, sys",
+                "module_path, spec_path, result_path = sys.argv[1:]",
+                "s = importlib.util.spec_from_file_location('recording_worker_stall', module_path)",
+                "m = importlib.util.module_from_spec(s)",
+                "s.loader.exec_module(m)",
+                "payload = json.loads(pathlib.Path(spec_path).read_text())",
+                "out = {}",
+                "try:",
+                "    m.worker_run(payload, validate_spec=False)",
+                "except Exception as exc:",
+                "    out = {'type': type(exc).__name__, 'error': str(exc)}",
+                "pathlib.Path(result_path).write_text(json.dumps(out))",
+            ]
+        )
+        completed = subprocess.run(
+            [
+                os.sys.executable,
+                "-c",
+                helper,
+                str(ROOT / "scripts/recording_session.py"),
+                str(spec_path),
+                str(result_path),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(result_path.read_text())
+        self.assertEqual(result["type"], "RecordingError")
+        self.assertIn("does not cover", result["error"])
+        self.assertTrue(partial.is_file())
+        self.assertFalse(final.exists())
+        self.assertEqual(stat.S_IMODE(partial.stat().st_mode), 0o600)
 
     def test_start_persists_recoverable_state_before_spawn_failure(self) -> None:
         plan = self.ready_plan()
