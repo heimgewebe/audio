@@ -2675,6 +2675,17 @@ function homeAttentionItems({ doctor, presence, operatingMode, deployment }) {
   }
 
   const qobuzConfigured = operatingMode.configured?.mode === "qobuz-reference";
+  const qobuzMode = Array.isArray(operatingMode.modes)
+    ? operatingMode.modes.find((mode) => mode.id === "qobuz-reference") || {}
+    : {};
+  if (qobuzConfigured && qobuzMode.activation?.handoff_required === true) {
+    const deviceName = qobuzMode.activation?.device_name || "Heim-PC · MOTU M2";
+    items.push({
+      title: "Qobuz spielt nicht über MOTU Direct",
+      detail: `In Qobuz Connect „${deviceName}“ wählen. Der laufende MOTU-Stream gehört einem anderen Renderer.`,
+      severity: "high",
+    });
+  }
   const warnings = Array.isArray(doctor.warnings) ? doctor.warnings : [];
   for (const warning of warnings) {
     if (items.length >= 2) break;
@@ -2774,6 +2785,7 @@ function renderHome() {
   const operatingModes = Array.isArray(operatingMode.modes) ? operatingMode.modes : [];
   const configuredModeCard = operatingModes.find((mode) => mode.id === configuredOperatingMode);
   const qobuzModeCard = operatingModes.find((mode) => mode.id === "qobuz-reference") || {};
+  const qobuzActivation = qobuzModeCard.activation || {};
   const recordingModeCard = operatingModes.find((mode) => mode.id === "recording") || {};
   const qobuz = doctor.streaming_sources?.qobuz || {};
   const qobuzVerified = operatingMode.truth_boundary?.track_native_proven === true;
@@ -2805,6 +2817,11 @@ function renderHome() {
   }
   if (qobuzModeCard.state === "recovering" || qobuzModeCard.state === "attention") {
     qobuzSourceDetail = OPERATING_MODE_REASON_LABELS[qobuzModeCard.reason] || "Qobuz-Pfad prüfen";
+    qobuzSourceTone = "attention";
+  }
+  if (qobuzActivation.handoff_required === true) {
+    const deviceName = qobuzActivation.device_name || "Heim-PC · MOTU M2";
+    qobuzSourceDetail = `Browser/PipeWire spielt · in Qobuz Connect „${deviceName}“ wählen`;
     qobuzSourceTone = "attention";
   }
   const presence = snapshot.presence || {};
@@ -3240,11 +3257,15 @@ function operatingModeCard(mode, projection) {
     "aria-hidden",
     "true",
   );
+  const qobuzHandoffRequired =
+    mode.id === "qobuz-reference" && mode.activation?.handoff_required === true;
   appendText(
     top,
     "span",
-    `status-pill ${operatingModeStateTone(mode.state)}`,
-    `${mode.configured ? "aktiv · " : ""}${OPERATING_MODE_STATE_LABELS[mode.state] || mode.state}`,
+    `status-pill ${qobuzHandoffRequired ? "attention" : operatingModeStateTone(mode.state)}`,
+    qobuzHandoffRequired
+      ? `${mode.configured ? "gewählt · " : ""}Übergabe nötig`
+      : `${mode.configured ? "gewählt · " : ""}${OPERATING_MODE_STATE_LABELS[mode.state] || mode.state}`,
   );
   card.append(top);
   appendText(card, "h3", "", mode.label);
@@ -3275,6 +3296,16 @@ function operatingModeCard(mode, projection) {
         : OPERATING_MODE_REASON_LABELS[mode.reason] || "QConnect-Zustand offen",
     );
   }
+  if (mode.id === "qobuz-reference") {
+    if (mode.activation?.state === "direct-playback-confirmed") {
+      appendText(meta, "strong", "track-native-proof", "MOTU Direct aktuell bestätigt");
+    } else if (qobuzHandoffRequired) {
+      const deviceName = mode.activation?.device_name || "Heim-PC · MOTU M2";
+      appendText(meta, "strong", "mode-reason", `In Qobuz Connect „${deviceName}“ wählen`);
+    } else {
+      appendText(meta, "span", "", "Renderer-Auswahl wird erst bei laufender Wiedergabe physisch belegbar");
+    }
+  }
   if (mode.reason) {
     appendText(meta, "span", "mode-reason", OPERATING_MODE_REASON_LABELS[mode.reason] || formatEndpoint(mode.reason));
   }
@@ -3294,7 +3325,9 @@ function operatingModeCard(mode, projection) {
     pendingForMode
       ? "Wird abgeglichen …"
       : mode.configured && mode.state === "ready"
-        ? "Aktiv"
+        ? qobuzHandoffRequired
+          ? "Ziel in Qobuz wählen"
+          : "Gewählt"
         : retryForMode
           ? "Erneut abgleichen"
           : "Diesen Modus wählen",
@@ -3310,6 +3343,9 @@ function operatingModeCard(mode, projection) {
   actions.append(button);
   if (!localOperatingModeActionsAllowed()) {
     appendText(actions, "small", "", "Wirkung nur lokal am Heim-PC freigegeben.");
+  } else if (qobuzHandoffRequired) {
+    const deviceName = mode.activation?.device_name || "Heim-PC · MOTU M2";
+    appendText(actions, "small", "", `Qobuz öffnen → Connect → „${deviceName}“ auswählen.`);
   } else if (retryForOtherMode) {
     appendText(actions, "small", "", "Zuerst den unklaren Wechsel mit derselben Request-ID abgleichen.");
   }
