@@ -509,6 +509,8 @@ def operating_mode_doctor(
     track_native=False,
     playback_observed=True,
     playback_snapshot_consistent=True,
+    playback_owner=None,
+    qconnect_device_name="Heim-PC · MOTU M2",
 ):
     return {
         "warnings": [],
@@ -538,7 +540,13 @@ def operating_mode_doctor(
                     "snapshot_consistent": playback_snapshot_consistent,
                     "open": playing,
                     "pcm_state": "RUNNING" if playing else "CLOSED",
-                    "owner_class": "qbzd" if playing else "unknown",
+                    "owner_class": (
+                        playback_owner
+                        if playback_owner is not None
+                        else "qbzd"
+                        if playing
+                        else "unknown"
+                    ),
                     "rate_hz": 96000 if playing else None,
                 },
                 "qbzd": {
@@ -546,6 +554,7 @@ def operating_mode_doctor(
                     "qconnect": {
                         "state": qconnect,
                         "session_active": qconnect_session,
+                        "device_name": qconnect_device_name,
                     },
                 },
             }
@@ -666,6 +675,54 @@ class AudioControlTests(unittest.TestCase):
             {mode["id"] for mode in projection["modes"]},
             {"desktop-listening", "qobuz-reference", "recording", "performance"},
         )
+
+    def test_qobuz_projection_separates_connect_readiness_from_renderer_handoff(self):
+        doctor = operating_mode_doctor(
+            qobuz_ready=True,
+            playing=True,
+            playback_owner="pipewire",
+            track_native=False,
+        )
+        qobuz = MODULE._qobuz_projection(doctor)
+        self.assertTrue(qobuz["reference_ready"])
+        self.assertFalse(qobuz["current_qbzd_playback"])
+        self.assertEqual(qobuz["motu_playback_owner"], "pipewire")
+        self.assertEqual(qobuz["renderer_handoff_state"], "peer-playback-observed")
+        self.assertTrue(qobuz["renderer_handoff_required"])
+        self.assertEqual(qobuz["qconnect_device_name"], "Heim-PC · MOTU M2")
+
+        configuration = MODULE.default_operating_mode_configuration()
+        configuration["configured_mode"] = "qobuz-reference"
+        projection = MODULE.project_operating_modes(
+            configuration, doctor_status="ok", doctor=doctor
+        )
+        modes = {mode["id"]: mode for mode in projection["modes"]}
+        self.assertEqual(projection["state"], "ready")
+        self.assertEqual(projection["observed"]["mode"], "desktop-listening")
+        self.assertEqual(
+            projection["observed"]["qobuz_renderer_handoff_state"],
+            "peer-playback-observed",
+        )
+        self.assertEqual(modes["qobuz-reference"]["state"], "ready")
+        self.assertTrue(modes["qobuz-reference"]["activation"]["handoff_required"])
+        self.assertEqual(
+            modes["qobuz-reference"]["activation"]["authority"],
+            "motu-hardware-playback-owner-v1",
+        )
+        self.assertTrue(projection["executable"]["qobuz-reference"]["allowed"])
+
+    def test_qobuz_projection_confirms_direct_activation_only_for_qbzd_owned_pcm(self):
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(qobuz_ready=True, playing=True),
+        )
+        qobuz_mode = next(
+            mode for mode in projection["modes"] if mode["id"] == "qobuz-reference"
+        )
+        self.assertEqual(qobuz_mode["activation"]["state"], "direct-playback-confirmed")
+        self.assertFalse(qobuz_mode["activation"]["handoff_required"])
+        self.assertEqual(qobuz_mode["activation"]["motu_playback_owner"], "qbzd")
 
     def test_qobuz_projection_fails_closed_when_motu_is_absent_even_if_qbzd_is_stale_ready(self):
         doctor = operating_mode_doctor(
@@ -2731,6 +2788,12 @@ class AudioControlTests(unittest.TestCase):
         self.assertEqual(javascript.count("/api/v1/actions/"), 4)
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
+
+    def test_qobuz_handoff_ui_preserves_observed_motu_owner_class(self):
+        javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('qobuzActivation.motu_playback_owner === "pipewire"', javascript)
+        self.assertIn('"Browser/PipeWire spielt"', javascript)
+        self.assertIn('"Ein anderer MOTU-Client spielt"', javascript)
 
     def test_operating_mode_ui_keeps_only_uncertain_request_ids(self):
         javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")

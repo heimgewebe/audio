@@ -840,11 +840,24 @@ def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
         and playback.get("snapshot_consistent") is True
     )
     qconnect_state = qconnect.get("state")
-    current_qbzd_playback = (
+    playback_owner = (
+        playback.get("owner_class")
+        if playback.get("owner_class") in {"qbzd", "pipewire", "other", "unknown"}
+        else "unknown"
+    )
+    playback_running = (
         motu_reference_present
-        and playback.get("owner_class") == "qbzd"
         and playback.get("pcm_state") == "RUNNING"
         and playback.get("open") is True
+    )
+    current_qbzd_playback = playback_running and playback_owner == "qbzd"
+    peer_playback_observed = playback_running and playback_owner in {"pipewire", "other"}
+    renderer_handoff_state = (
+        "direct-playback-confirmed"
+        if current_qbzd_playback
+        else "peer-playback-observed"
+        if peer_playback_observed
+        else "unproven"
     )
     reference_ready = (
         motu_reference_present
@@ -869,7 +882,13 @@ def _qobuz_projection(doctor: dict[str, Any]) -> dict[str, Any]:
         "qbzd_status": qbzd.get("status"),
         "qconnect_state": qconnect_state,
         "qconnect_session_active": qconnect.get("session_active") is True,
+        "qconnect_device_name": (
+            qconnect.get("device_name") if isinstance(qconnect.get("device_name"), str) else None
+        ),
         "current_qbzd_playback": current_qbzd_playback,
+        "motu_playback_owner": playback_owner if playback_running else None,
+        "renderer_handoff_state": renderer_handoff_state,
+        "renderer_handoff_required": reference_ready and peer_playback_observed,
         "track_native_proven": track_native,
         "rate_proof_state": rate_proof_state,
         "track_sample_rate_hz": playback.get("rate_hz") if track_native else None,
@@ -1023,6 +1042,13 @@ def project_operating_modes(
                 "state": qobuz["qconnect_state"],
                 "session_active": qobuz["qconnect_session_active"],
             },
+            "activation": {
+                "state": qobuz["renderer_handoff_state"],
+                "handoff_required": qobuz["renderer_handoff_required"],
+                "device_name": qobuz["qconnect_device_name"],
+                "motu_playback_owner": qobuz["motu_playback_owner"],
+                "authority": "motu-hardware-playback-owner-v1",
+            },
         },
     ]
     modes.append(
@@ -1082,6 +1108,7 @@ def project_operating_modes(
             "signal_state": signal_state,
             "signal_path": signal_path,
             "qobuz_current_playback": qobuz["current_qbzd_playback"],
+            "qobuz_renderer_handoff_state": qobuz["renderer_handoff_state"],
         },
         "physical": {
             "motu_m2": motu_present,

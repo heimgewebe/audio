@@ -39,7 +39,13 @@ Der Snapshot projiziert vier orthogonale Ebenen:
 Diese Ebenen werden nicht ineinander umgedeutet. Insbesondere belegt ein
 konfigurierter Qobuz-Modus keine laufende Wiedergabe, eine verbundene
 QConnect-Sitzung kein Track-Native und ein PipeWire-Standardziel keine physische
-MOTU-Anwesenheit.
+MOTU-Anwesenheit. Zusätzlich trennt die Qobuz-Projektion **Verfügbarkeit** von
+**Renderer-Aktivierung**: `ready` bedeutet, dass QBZD als QConnect-/ALSA-Ziel
+bereitsteht. Ein laufender Direct-Pfad ist erst belegt, wenn der benachbarte
+MOTU-PCM aktuell QBZD gehört. Gehört ein laufender MOTU-PCM stattdessen PipeWire
+oder einem anderen Prozess, wird `peer-playback-observed` mit erforderlicher
+Qobuz-Connect-Übergabe projiziert. Im Leerlauf bleibt die Renderer-Aktivierung
+bewusst `unproven`.
 
 Für Recording gilt dieselbe Trennung: eine beobachtete MOTU-Quelle belegt weder
 RØDE-Verkabelung noch 48 V, Gain oder einen freigegebenen Mikrofonkanal. Erst der
@@ -87,7 +93,11 @@ Der Betriebsmodus gilt erst als erfolgreich, wenn ein neuer
 Audio-Doctor-Readback MOTU als anwesend sowie `motu-m2`, 48 kHz und 1024 Frames
 als Desktopzustand bestätigt und kein QBZD-PCM mehr läuft. Für Qobuz ist ein
 aktueller, bereiter `qbzd-qconnect`-Provider die Postcondition; Wiedergabe und
-Track-Native sind dafür ausdrücklich nicht erforderlich.
+Track-Native sind dafür ausdrücklich nicht erforderlich. Die Audiozentrale
+behauptet daraus aber keine aktive Rendererwahl. Wenn bei gewähltem
+`qobuz-reference` ein fremder laufender MOTU-Besitzer beobachtet wird, fordert
+die UI ausdrücklich die Auswahl von `Heim-PC · MOTU M2` im Qobuz-Connect-Picker
+an. Ein automatisches Renderer-Takeover findet nicht statt.
 
 ## Antwortverlust und Wiederholung
 
