@@ -2789,6 +2789,12 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
 
+    def test_qobuz_handoff_ui_preserves_observed_motu_owner_class(self):
+        javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('qobuzActivation.motu_playback_owner === "pipewire"', javascript)
+        self.assertIn('"Browser/PipeWire spielt"', javascript)
+        self.assertIn('"Ein anderer MOTU-Client spielt"', javascript)
+
     def test_operating_mode_ui_keeps_only_uncertain_request_ids(self):
         javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
         self.assertIn(

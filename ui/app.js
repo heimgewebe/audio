@@ -2821,7 +2821,11 @@ function renderHome() {
   }
   if (qobuzActivation.handoff_required === true) {
     const deviceName = qobuzActivation.device_name || "Heim-PC · MOTU M2";
-    qobuzSourceDetail = `Browser/PipeWire spielt · in Qobuz Connect „${deviceName}“ wählen`;
+    const ownerHint =
+      qobuzActivation.motu_playback_owner === "pipewire"
+        ? "Browser/PipeWire spielt"
+        : "Ein anderer MOTU-Client spielt";
+    qobuzSourceDetail = `${ownerHint} · in Qobuz Connect „${deviceName}“ wählen`;
     qobuzSourceTone = "attention";
   }
   const presence = snapshot.presence || {};
