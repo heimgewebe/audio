@@ -3430,7 +3430,11 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
             "const recordingReady = motuObserved && recordingActionsAllowed() && !recordingRecovering;",
             home,
         )
-        self.assertIn("const playingReady = rolandObserved && whaleActionsAllowed();", home)
+        self.assertIn('performanceModeCard.state === "attention"', home)
+        self.assertIn('performanceModeCard.reason === "performance-start-required"', home)
+        self.assertIn("rolandObserved &&", home)
+        self.assertIn("whaleActionsAllowed();", home)
+        self.assertNotIn("const playingReady = rolandObserved && whaleActionsAllowed();", home)
         self.assertIn('performanceModeCard.state === "ready" && performanceModeCard.activity === "playing"', home)
         self.assertIn("status: performancePlaying", home)
         self.assertIn("tone: performancePlaying || playingReady", home)

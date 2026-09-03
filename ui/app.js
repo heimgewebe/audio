@@ -2894,7 +2894,11 @@ function renderHome() {
     recording.status === "recovery-required" ||
     recording.session?.recovery_required === true;
   const recordingReady = motuObserved && recordingActionsAllowed() && !recordingRecovering;
-  const playingReady = rolandObserved && whaleActionsAllowed();
+  const playingReady =
+    performanceModeCard.state === "attention" &&
+    performanceModeCard.reason === "performance-start-required" &&
+    rolandObserved &&
+    whaleActionsAllowed();
   const performancePlaying =
     performanceModeCard.state === "ready" && performanceModeCard.activity === "playing";
   const actions = [
