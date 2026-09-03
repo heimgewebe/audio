@@ -27,12 +27,14 @@ Recovery-Bedarf `recovering`.
 
 `performance` folgt demselben Muster für den bereits vorhandenen Spielweg. Die
 Projektion bindet die aktuelle Roland-Anwesenheit aus dem Audio-Doctor an den
-Buckelwal-Readback. Ein aktiver Wal-Dienst ergibt `ready`/`playing`; ein
-beobachtetes Roland FP-30X bei lesbarer, aber inaktiver Wal-Runtime ergibt
-`attention` mit `performance-start-required`. Fehlt das Roland oder ist die
-Wal-Runtime nicht lesbar, bleibt der Zustand `blocked`. Start, Stop, Moduswahl
-und Recovery bleiben ausschließlich bei der bestehenden Walsteuerung; es gibt
-weiterhin **keine** zweite Operating-Mode-Wirkung für Spielen.
+Buckelwal-Readback. Nur wenn Roland aktuell beobachtet, die Wal-Runtime lesbar
+und aktiv **und** dort eine nichtleere MIDI-Quelle gebunden ist, ergibt sich
+`ready`/`playing`. Ein beobachtetes Roland FP-30X bei lesbarer, aber inaktiver
+Wal-Runtime ergibt `attention` mit `performance-start-required`. Fehlt das
+Roland, ist die Wal-Runtime nicht lesbar oder läuft sie ohne gebundene
+MIDI-Quelle, bleibt der Zustand `blocked`. Start, Stop, Moduswahl und Recovery
+bleiben ausschließlich bei der bestehenden Walsteuerung; es gibt weiterhin
+**keine** zweite Operating-Mode-Wirkung für Spielen.
 
 ## Wahrheitsebenen
 
