@@ -958,7 +958,12 @@ def project_operating_modes(
     )
     whale = whale if isinstance(whale, dict) else {}
     whale_active = whale_status == "ok" and whale.get("active") is True
-    performance_signal_active = whale_active and roland_present is True
+    whale_midi_source_bound = (
+        isinstance(whale.get("midi_port"), str) and bool(whale.get("midi_port"))
+    )
+    performance_signal_active = (
+        whale_active and roland_present is True and whale_midi_source_bound
+    )
     if recording_active:
         observed_mode = "recording"
         signal_state = "recording"
@@ -1031,6 +1036,8 @@ def project_operating_modes(
         performance_state, performance_reason = "blocked", "roland-not-observed"
     elif whale_status != "ok":
         performance_state, performance_reason = "blocked", "whale-unavailable"
+    elif whale_active and not whale_midi_source_bound:
+        performance_state, performance_reason = "blocked", "performance-midi-source-unbound"
     elif whale_active:
         performance_state, performance_reason = "ready", None
     else:
@@ -1111,8 +1118,7 @@ def project_operating_modes(
                 "latency_frames": whale.get("latency_frames")
                 if isinstance(whale.get("latency_frames"), int)
                 else None,
-                "midi_source_bound": isinstance(whale.get("midi_port"), str)
-                and bool(whale.get("midi_port")),
+                "midi_source_bound": whale_midi_source_bound,
             },
             "activity": (
                 "playing"

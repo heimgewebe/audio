@@ -942,6 +942,22 @@ class AudioControlTests(unittest.TestCase):
         self.assertNotEqual(stale_active_whale["observed"]["mode"], "performance")
         self.assertNotEqual(stale_active_whale["observed"]["signal_state"], "playing")
 
+        unbound_active_whale = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            whale_status="ok",
+            whale={"active": True, "voice_mode": "morph", "midi_port": None},
+        )
+        performance = next(
+            mode for mode in unbound_active_whale["modes"] if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "blocked")
+        self.assertEqual(performance["reason"], "performance-midi-source-unbound")
+        self.assertEqual(performance["activity"], "runtime-active-blocked")
+        self.assertFalse(performance["quality"]["midi_source_bound"])
+        self.assertNotEqual(unbound_active_whale["observed"]["mode"], "performance")
+
         unavailable_whale = MODULE.project_operating_modes(
             MODULE.default_operating_mode_configuration(),
             doctor_status="ok",
@@ -972,7 +988,7 @@ class AudioControlTests(unittest.TestCase):
                 },
             },
             whale_status="ok",
-            whale={"active": True, "voice_mode": "morph"},
+            whale={"active": True, "voice_mode": "morph", "midi_port": "24:0"},
         )
         self.assertEqual(projection["observed"]["mode"], "recording")
         self.assertEqual(projection["active_signal_path"]["nodes"], ["RØDE NT1-A", "MOTU M2", "Recorder"])

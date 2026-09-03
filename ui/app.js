@@ -109,6 +109,7 @@ const OPERATING_MODE_REASON_LABELS = {
   "recording-recovery-required": "Recorder-Recovery erforderlich",
   "roland-not-observed": "Roland FP-30X nicht beobachtet",
   "whale-unavailable": "Spielsteuerung nicht lesbar",
+  "performance-midi-source-unbound": "Walstimme läuft ohne gebundene Roland-MIDI-Quelle",
   "performance-start-required": "Spielweg bereit · Walstimme starten",
   "declared-later-mode": "Späterer Modus ohne Wirkung",
 };
