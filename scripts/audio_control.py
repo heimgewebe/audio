@@ -928,6 +928,8 @@ def project_operating_modes(
     doctor: dict[str, Any],
     recording_status: str = "unavailable",
     recording: dict[str, Any] | None = None,
+    whale_status: str = "unavailable",
+    whale: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Project configured, observed, physical and executable truth orthogonally."""
 
@@ -935,6 +937,9 @@ def project_operating_modes(
     if not isinstance(hardware, dict):
         hardware = {}
     motu_present = hardware.get("motu_m2") is True if doctor_status == "ok" else None
+    roland_present = (
+        hardware.get("roland_fp_30x") is True if doctor_status == "ok" else None
+    )
     graph = doctor.get("graph")
     if not isinstance(graph, dict):
         graph = {}
@@ -951,10 +956,17 @@ def project_operating_modes(
         recording_status == "ok"
         and recording_session.get("recovery_required") is True
     )
+    whale = whale if isinstance(whale, dict) else {}
+    whale_active = whale_status == "ok" and whale.get("active") is True
+    performance_signal_active = whale_active and roland_present is True
     if recording_active:
         observed_mode = "recording"
         signal_state = "recording"
         signal_path = ["RØDE NT1-A", "MOTU M2", "Recorder"]
+    elif performance_signal_active:
+        observed_mode = "performance"
+        signal_state = "playing"
+        signal_path = ["Roland FP-30X", "Buckelwal Live"]
     elif qobuz["current_qbzd_playback"]:
         observed_mode = "qobuz-reference"
         signal_state = "playing"
@@ -1012,6 +1024,17 @@ def project_operating_modes(
         recording_state, recording_reason = "ready", None
     else:
         recording_state, recording_reason = "attention", "recording-preflight-required"
+
+    if doctor_status != "ok":
+        performance_state, performance_reason = "blocked", "doctor-unavailable"
+    elif roland_present is not True:
+        performance_state, performance_reason = "blocked", "roland-not-observed"
+    elif whale_status != "ok":
+        performance_state, performance_reason = "blocked", "whale-unavailable"
+    elif whale_active:
+        performance_state, performance_reason = "ready", None
+    else:
+        performance_state, performance_reason = "attention", "performance-start-required"
 
     modes: list[dict[str, Any]] = [
         {
@@ -1077,10 +1100,27 @@ def project_operating_modes(
         {
             "id": "performance",
             **OPERATING_MODES["performance"],
-            "state": "blocked",
-            "reason": "declared-later-mode",
+            "state": performance_state,
+            "reason": performance_reason,
             "configured": configuration["configured_mode"] == "performance",
-            "quality": None,
+            "quality": {
+                "path": "roland-midi-buckelwal-live",
+                "voice_mode": whale.get("voice_mode")
+                if isinstance(whale.get("voice_mode"), str)
+                else None,
+                "latency_frames": whale.get("latency_frames")
+                if isinstance(whale.get("latency_frames"), int)
+                else None,
+                "midi_source_bound": isinstance(whale.get("midi_port"), str)
+                and bool(whale.get("midi_port")),
+            },
+            "activity": (
+                "playing"
+                if performance_signal_active
+                else "runtime-active-blocked"
+                if whale_active
+                else "idle"
+            ),
         }
     )
     mode_states = {mode["id"]: mode for mode in modes}
@@ -1112,6 +1152,7 @@ def project_operating_modes(
         },
         "physical": {
             "motu_m2": motu_present,
+            "roland_fp_30x": roland_present,
             "authority": "doctor-current-hardware-observation",
         },
         "executable": {
@@ -1130,7 +1171,12 @@ def project_operating_modes(
                 "allowed": recording_status == "ok",
                 "authority": "recorder-plan-hash-and-current-readback",
             },
-            "performance": {"allowed": False, "authority": "declared-later-mode"},
+            "performance": {
+                "allowed": doctor_status == "ok"
+                and roland_present is True
+                and whale_status == "ok",
+                "authority": "whale-actions-and-current-readback",
+            },
         },
         "modes": modes,
         "active_signal_path": {
@@ -4518,6 +4564,8 @@ class AudioControl:
             doctor=doctor,
             recording_status=recording_status,
             recording=recording_probe,
+            whale_status=whale_status,
+            whale=whale,
         )
         profile_state_counts: dict[str, int] = {}
         for profile in projected_profiles:

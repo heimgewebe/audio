@@ -107,6 +107,9 @@ const OPERATING_MODE_REASON_LABELS = {
   "recorder-unavailable": "Recorderzustand nicht lesbar",
   "recording-preflight-required": "Startprüfung wird beim Aufnehmen gebunden",
   "recording-recovery-required": "Recorder-Recovery erforderlich",
+  "roland-not-observed": "Roland FP-30X nicht beobachtet",
+  "whale-unavailable": "Spielsteuerung nicht lesbar",
+  "performance-start-required": "Spielweg bereit · Walstimme starten",
   "declared-later-mode": "Späterer Modus ohne Wirkung",
 };
 
@@ -2787,6 +2790,7 @@ function renderHome() {
   const qobuzModeCard = operatingModes.find((mode) => mode.id === "qobuz-reference") || {};
   const qobuzActivation = qobuzModeCard.activation || {};
   const recordingModeCard = operatingModes.find((mode) => mode.id === "recording") || {};
+  const performanceModeCard = operatingModes.find((mode) => mode.id === "performance") || {};
   const qobuz = doctor.streaming_sources?.qobuz || {};
   const qobuzVerified = operatingMode.truth_boundary?.track_native_proven === true;
   const qobuzReady = qobuz.reference_provider_ready === true;
@@ -2928,13 +2932,22 @@ function renderHome() {
       glyph: "♬",
       eyebrow: "Instrumente",
       title: "Spielen",
-      status: activeWhale ? `${whaleMode} aktiv` : !rolandObserved ? "vor Ort" : playingReady ? "bereit" : "prüfen",
-      tone: activeWhale || playingReady ? "ready" : !rolandObserved ? "onsite" : "laboratory",
-      detail: !rolandObserved
+      status: activeWhale
+        ? `${whaleMode} aktiv`
+        : performanceModeCard.reason === "roland-not-observed"
+          ? "vor Ort"
+          : playingReady ? "bereit" : "prüfen",
+      tone: activeWhale || playingReady
+        ? "ready"
+        : performanceModeCard.reason === "roland-not-observed"
+          ? "onsite"
+          : "laboratory",
+      detail: performanceModeCard.reason === "roland-not-observed"
         ? "Roland FP-30X verbinden · dann spielen"
         : playingReady
           ? "Roland FP-30X bereit"
-          : "Roland FP-30X erkannt · Spielsteuerung prüfen",
+          : OPERATING_MODE_REASON_LABELS[performanceModeCard.reason] ||
+            "Roland FP-30X erkannt · Spielsteuerung prüfen",
     },
     {
       href: "#material",

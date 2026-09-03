@@ -1,6 +1,6 @@
 # Audiozentrale operating modes v1
 
-Stand: 23. August 2026
+Stand: 3. September 2026
 
 ## Entscheidung
 
@@ -23,8 +23,16 @@ Recordervertrag projiziert, besitzt aber bewusst **keine** eigene
 Operating-Mode-Wirkung: Plan, Start, Stop und Recovery bleiben ausschließlich
 beim Recorder. Im Leerlauf zeigt der Modus `attention` mit erforderlicher
 Startprüfung, während einer gebundenen Aufnahme `ready`/`recording` und bei
-Recovery-Bedarf `recovering`. `performance` bleibt ein deklarierter späterer
-Modus ohne Wirkung.
+Recovery-Bedarf `recovering`.
+
+`performance` folgt demselben Muster für den bereits vorhandenen Spielweg. Die
+Projektion bindet die aktuelle Roland-Anwesenheit aus dem Audio-Doctor an den
+Buckelwal-Readback. Ein aktiver Wal-Dienst ergibt `ready`/`playing`; ein
+beobachtetes Roland FP-30X bei lesbarer, aber inaktiver Wal-Runtime ergibt
+`attention` mit `performance-start-required`. Fehlt das Roland oder ist die
+Wal-Runtime nicht lesbar, bleibt der Zustand `blocked`. Start, Stop, Moduswahl
+und Recovery bleiben ausschließlich bei der bestehenden Walsteuerung; es gibt
+weiterhin **keine** zweite Operating-Mode-Wirkung für Spielen.
 
 ## Wahrheitsebenen
 
@@ -32,7 +40,7 @@ Der Snapshot projiziert vier orthogonale Ebenen:
 
 - `configured`: expliziter Sollmodus aus einem privaten Zustandsbeleg;
 - `observed`: aktuell beobachteter Signalbesitzer und Signalweg;
-- `physical`: aktuelle MOTU-Anwesenheit aus dem Audio-Doctor;
+- `physical`: aktuelle MOTU- und Roland-Anwesenheit aus dem Audio-Doctor;
 - `executable`: ob der jeweilige bestehende Wirkvertrag jetzt sicher aufgerufen
   werden darf.
 
@@ -51,6 +59,15 @@ Für Recording gilt dieselbe Trennung: eine beobachtete MOTU-Quelle belegt weder
 RØDE-Verkabelung noch 48 V, Gain oder einen freigegebenen Mikrofonkanal. Erst der
 Recorderplan bindet Quellen-Hash, physische Fakten und Labor-Gates. Der
 Betriebsmodus übernimmt nur diese Projektion und erzeugt keinen zweiten Plan.
+
+Für Spielen gilt analog: `roland_fp_30x=true` belegt nur die aktuelle
+Hardwarebeobachtung. `whale.active=true` belegt zusätzlich die laufende
+Buckelwal-Runtime. Daraus wird bewusst **kein** unbeobachteter Ausgangspfad über
+MOTU, Lake People oder Focal hergeleitet. Der angezeigte aktive Signalweg endet
+deshalb bei `Buckelwal Live`, solange keine eigene aktuelle Ausgangsevidenz
+vorliegt. Wenn mehrere Aktivitäten zugleich sichtbar wären, hat eine laufende
+Aufnahme Vorrang vor aktivem Spielen; danach folgen Qobuz-Direct und der
+vorbereitete Desktop-Pfad.
 
 Die Produktzustände sind `ready`, `transitioning`, `attention`, `blocked` und
 `recovering`. QConnect `retrying` oder `reconnecting` wird sichtbar als
