@@ -3415,6 +3415,10 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
             home,
         )
         self.assertIn("const playingReady = rolandObserved && whaleActionsAllowed();", home)
+        self.assertIn('performanceModeCard.state === "ready" && performanceModeCard.activity === "playing"', home)
+        self.assertIn("status: performancePlaying", home)
+        self.assertIn("tone: performancePlaying || playingReady", home)
+        self.assertNotIn("status: activeWhale", home)
         self.assertIn('? "Recovery"', home)
         self.assertIn('? "bereit"', home)
         self.assertIn('playingReady ? "bereit" : "prüfen"', home)

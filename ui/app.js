@@ -2894,6 +2894,8 @@ function renderHome() {
     recording.session?.recovery_required === true;
   const recordingReady = motuObserved && recordingActionsAllowed() && !recordingRecovering;
   const playingReady = rolandObserved && whaleActionsAllowed();
+  const performancePlaying =
+    performanceModeCard.state === "ready" && performanceModeCard.activity === "playing";
   const actions = [
     {
       href: "#hoeren",
@@ -2932,12 +2934,12 @@ function renderHome() {
       glyph: "♬",
       eyebrow: "Instrumente",
       title: "Spielen",
-      status: activeWhale
+      status: performancePlaying
         ? `${whaleMode} aktiv`
         : performanceModeCard.reason === "roland-not-observed"
           ? "vor Ort"
           : playingReady ? "bereit" : "prüfen",
-      tone: activeWhale || playingReady
+      tone: performancePlaying || playingReady
         ? "ready"
         : performanceModeCard.reason === "roland-not-observed"
           ? "onsite"
