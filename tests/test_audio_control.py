@@ -857,6 +857,147 @@ class AudioControlTests(unittest.TestCase):
         self.assertFalse(MODULE.OPERATING_MODES["recording"]["actionable"])
         self.assertEqual(projection["observed"]["mode"], "desktop-listening")
 
+    def test_performance_mode_projects_existing_whale_authority_without_second_mode_action(self):
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            whale_status="ok",
+            whale={
+                "active": True,
+                "voice_mode": "morph",
+                "latency_frames": 128,
+                "midi_port": "Roland FP-30X MIDI 1",
+            },
+        )
+        performance = next(
+            mode for mode in projection["modes"] if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "ready")
+        self.assertIsNone(performance["reason"])
+        self.assertEqual(performance["activity"], "playing")
+        self.assertEqual(performance["quality"]["voice_mode"], "morph")
+        self.assertEqual(performance["quality"]["latency_frames"], 128)
+        self.assertTrue(performance["quality"]["midi_source_bound"])
+        self.assertEqual(projection["observed"]["mode"], "performance")
+        self.assertEqual(projection["observed"]["signal_state"], "playing")
+        self.assertEqual(
+            projection["active_signal_path"]["nodes"],
+            ["Roland FP-30X", "Buckelwal Live"],
+        )
+        self.assertTrue(projection["physical"]["roland_fp_30x"])
+        self.assertTrue(projection["executable"]["performance"]["allowed"])
+        self.assertEqual(
+            projection["executable"]["performance"]["authority"],
+            "whale-actions-and-current-readback",
+        )
+        self.assertFalse(MODULE.OPERATING_MODES["performance"]["actionable"])
+
+    def test_performance_mode_is_attention_when_roland_is_present_but_whale_is_idle(self):
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            whale_status="ok",
+            whale={"active": False, "voice_mode": "morph", "midi_port": None},
+        )
+        performance = next(
+            mode for mode in projection["modes"] if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "attention")
+        self.assertEqual(performance["reason"], "performance-start-required")
+        self.assertEqual(performance["activity"], "idle")
+        self.assertTrue(projection["executable"]["performance"]["allowed"])
+        self.assertEqual(projection["observed"]["mode"], "desktop-listening")
+
+    def test_performance_mode_fails_closed_for_missing_roland_or_whale_readback(self):
+        doctor = operating_mode_doctor()
+        doctor["hardware"]["roland_fp_30x"] = False
+        missing_roland = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=doctor,
+            whale_status="ok",
+            whale={"active": False},
+        )
+        performance = next(
+            mode for mode in missing_roland["modes"] if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "blocked")
+        self.assertEqual(performance["reason"], "roland-not-observed")
+        self.assertFalse(missing_roland["executable"]["performance"]["allowed"])
+
+        stale_active_whale = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=doctor,
+            whale_status="ok",
+            whale={"active": True, "voice_mode": "morph", "midi_port": "24:0"},
+        )
+        performance = next(
+            mode for mode in stale_active_whale["modes"] if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "blocked")
+        self.assertEqual(performance["activity"], "runtime-active-blocked")
+        self.assertNotEqual(stale_active_whale["observed"]["mode"], "performance")
+        self.assertNotEqual(stale_active_whale["observed"]["signal_state"], "playing")
+
+        unbound_active_whale = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            whale_status="ok",
+            whale={"active": True, "voice_mode": "morph", "midi_port": None},
+        )
+        performance = next(
+            mode for mode in unbound_active_whale["modes"] if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "blocked")
+        self.assertEqual(performance["reason"], "performance-midi-source-unbound")
+        self.assertEqual(performance["activity"], "runtime-active-blocked")
+        self.assertFalse(performance["quality"]["midi_source_bound"])
+        self.assertNotEqual(unbound_active_whale["observed"]["mode"], "performance")
+
+        unavailable_whale = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            whale_status="unavailable",
+            whale={},
+        )
+        performance = next(
+            mode for mode in unavailable_whale["modes"] if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "blocked")
+        self.assertEqual(performance["reason"], "whale-unavailable")
+        self.assertFalse(unavailable_whale["executable"]["performance"]["allowed"])
+
+    def test_running_recording_precedes_active_performance_in_observed_mode(self):
+        projection = MODULE.project_operating_modes(
+            MODULE.default_operating_mode_configuration(),
+            doctor_status="ok",
+            doctor=operating_mode_doctor(),
+            recording_status="ok",
+            recording={
+                "status": "running",
+                "session": {
+                    "active": True,
+                    "capture": {"sample_rate_hz": 48_000, "channels": 2},
+                    "source": {"bound": True},
+                    "recovery_required": False,
+                },
+            },
+            whale_status="ok",
+            whale={"active": True, "voice_mode": "morph", "midi_port": "24:0"},
+        )
+        self.assertEqual(projection["observed"]["mode"], "recording")
+        self.assertEqual(projection["active_signal_path"]["nodes"], ["RØDE NT1-A", "MOTU M2", "Recorder"])
+        performance = next(
+            mode for mode in projection["modes"] if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "ready")
+        self.assertEqual(performance["activity"], "playing")
+
     def test_running_recording_becomes_observed_mode_with_bound_capture_truth(self):
         projection = MODULE.project_operating_modes(
             MODULE.default_operating_mode_configuration(),
@@ -2038,6 +2179,14 @@ class AudioControlTests(unittest.TestCase):
         controller = self.controller(runner)
         before = controller.snapshot()
         self.assertTrue(before["whale"]["service"]["active"])
+        self.assertEqual(before["operating_mode"]["observed"]["mode"], "performance")
+        performance = next(
+            mode
+            for mode in before["operating_mode"]["modes"]
+            if mode["id"] == "performance"
+        )
+        self.assertEqual(performance["state"], "ready")
+        self.assertEqual(performance["activity"], "playing")
 
         runner.whale_active = False
         runner.whale_mode = None
@@ -3281,10 +3430,23 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
             "const recordingReady = motuObserved && recordingActionsAllowed() && !recordingRecovering;",
             home,
         )
-        self.assertIn("const playingReady = rolandObserved && whaleActionsAllowed();", home)
+        self.assertIn('performanceModeCard.state === "attention"', home)
+        self.assertIn('performanceModeCard.reason === "performance-start-required"', home)
+        self.assertIn("rolandObserved &&", home)
+        self.assertIn("whaleActionsAllowed();", home)
+        self.assertNotIn("const playingReady = rolandObserved && whaleActionsAllowed();", home)
+        self.assertIn('performanceModeCard.state === "ready" && performanceModeCard.activity === "playing"', home)
+        self.assertIn("status: performancePlaying", home)
+        self.assertIn("tone: performancePlaying || playingReady", home)
+        self.assertNotIn("status: activeWhale", home)
         self.assertIn('? "Recovery"', home)
         self.assertIn('? "bereit"', home)
         self.assertIn('playingReady ? "bereit" : "prüfen"', home)
+        self.assertIn('"qobuz-reference": "Qobuz direkt"', home)
+        self.assertIn('"desktop-listening": "Desktop gemischt"', home)
+        self.assertIn('recording: "Aufnahme"', home)
+        self.assertIn('performance: "Roland / Buckelwal"', home)
+        self.assertIn('["Signalweg", activeSignalLabel, operatingMode.active_signal_path?.state || "unbekannt"]', home)
         self.assertIn('"MOTU M2 erkannt · Recordersteuerung prüfen"', home)
         self.assertIn('"Roland FP-30X erkannt · Spielsteuerung prüfen"', home)
         self.assertNotIn("recordingProfile.label", home)

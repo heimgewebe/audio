@@ -107,6 +107,10 @@ const OPERATING_MODE_REASON_LABELS = {
   "recorder-unavailable": "Recorderzustand nicht lesbar",
   "recording-preflight-required": "Startprüfung wird beim Aufnehmen gebunden",
   "recording-recovery-required": "Recorder-Recovery erforderlich",
+  "roland-not-observed": "Roland FP-30X nicht beobachtet",
+  "whale-unavailable": "Spielsteuerung nicht lesbar",
+  "performance-midi-source-unbound": "Walstimme läuft ohne gebundene Roland-MIDI-Quelle",
+  "performance-start-required": "Spielweg bereit · Walstimme starten",
   "declared-later-mode": "Späterer Modus ohne Wirkung",
 };
 
@@ -2787,6 +2791,7 @@ function renderHome() {
   const qobuzModeCard = operatingModes.find((mode) => mode.id === "qobuz-reference") || {};
   const qobuzActivation = qobuzModeCard.activation || {};
   const recordingModeCard = operatingModes.find((mode) => mode.id === "recording") || {};
+  const performanceModeCard = operatingModes.find((mode) => mode.id === "performance") || {};
   const qobuz = doctor.streaming_sources?.qobuz || {};
   const qobuzVerified = operatingMode.truth_boundary?.track_native_proven === true;
   const qobuzReady = qobuz.reference_provider_ready === true;
@@ -2889,7 +2894,13 @@ function renderHome() {
     recording.status === "recovery-required" ||
     recording.session?.recovery_required === true;
   const recordingReady = motuObserved && recordingActionsAllowed() && !recordingRecovering;
-  const playingReady = rolandObserved && whaleActionsAllowed();
+  const playingReady =
+    performanceModeCard.state === "attention" &&
+    performanceModeCard.reason === "performance-start-required" &&
+    rolandObserved &&
+    whaleActionsAllowed();
+  const performancePlaying =
+    performanceModeCard.state === "ready" && performanceModeCard.activity === "playing";
   const actions = [
     {
       href: "#hoeren",
@@ -2928,13 +2939,22 @@ function renderHome() {
       glyph: "♬",
       eyebrow: "Instrumente",
       title: "Spielen",
-      status: activeWhale ? `${whaleMode} aktiv` : !rolandObserved ? "vor Ort" : playingReady ? "bereit" : "prüfen",
-      tone: activeWhale || playingReady ? "ready" : !rolandObserved ? "onsite" : "laboratory",
-      detail: !rolandObserved
+      status: performancePlaying
+        ? `${whaleMode} aktiv`
+        : performanceModeCard.reason === "roland-not-observed"
+          ? "vor Ort"
+          : playingReady ? "bereit" : "prüfen",
+      tone: performancePlaying || playingReady
+        ? "ready"
+        : performanceModeCard.reason === "roland-not-observed"
+          ? "onsite"
+          : "laboratory",
+      detail: performanceModeCard.reason === "roland-not-observed"
         ? "Roland FP-30X verbinden · dann spielen"
         : playingReady
           ? "Roland FP-30X bereit"
-          : "Roland FP-30X erkannt · Spielsteuerung prüfen",
+          : OPERATING_MODE_REASON_LABELS[performanceModeCard.reason] ||
+            "Roland FP-30X erkannt · Spielsteuerung prüfen",
     },
     {
       href: "#material",
@@ -3007,9 +3027,15 @@ function renderHome() {
     ),
   );
 
+  const activeSignalLabel = ({
+    "qobuz-reference": "Qobuz direkt",
+    "desktop-listening": "Desktop gemischt",
+    recording: "Aufnahme",
+    performance: "Roland / Buckelwal",
+  })[operatingMode.active_signal_path?.mode] || "offen";
   const metrics = [
     ["Modus", configuredModeCard?.label || "offen", OPERATING_MODE_STATE_LABELS[operatingMode.state] || "unbekannt"],
-    ["Signalweg", operatingMode.active_signal_path?.mode === "qobuz-reference" ? "Qobuz direkt" : operatingMode.active_signal_path?.mode === "desktop-listening" ? "Desktop gemischt" : "offen", operatingMode.active_signal_path?.state || "unbekannt"],
+    ["Signalweg", activeSignalLabel, operatingMode.active_signal_path?.state || "unbekannt"],
     ["Qualität", qobuzVerified ? "TRACK-NATIVE ✓" : rate ? `${rate / 1000} kHz` : "offen", qobuzVerified ? "aktuelle Wiedergabe bewiesen" : "kein Track-Native-Beleg"],
     ["MOTU M2", motuObserved ? "beobachtet" : "offen", "zentraler Hörknoten"],
   ];
