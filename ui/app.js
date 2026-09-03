@@ -3022,9 +3022,15 @@ function renderHome() {
     ),
   );
 
+  const activeSignalLabel = ({
+    "qobuz-reference": "Qobuz direkt",
+    "desktop-listening": "Desktop gemischt",
+    recording: "Aufnahme",
+    performance: "Roland / Buckelwal",
+  })[operatingMode.active_signal_path?.mode] || "offen";
   const metrics = [
     ["Modus", configuredModeCard?.label || "offen", OPERATING_MODE_STATE_LABELS[operatingMode.state] || "unbekannt"],
-    ["Signalweg", operatingMode.active_signal_path?.mode === "qobuz-reference" ? "Qobuz direkt" : operatingMode.active_signal_path?.mode === "desktop-listening" ? "Desktop gemischt" : "offen", operatingMode.active_signal_path?.state || "unbekannt"],
+    ["Signalweg", activeSignalLabel, operatingMode.active_signal_path?.state || "unbekannt"],
     ["Qualität", qobuzVerified ? "TRACK-NATIVE ✓" : rate ? `${rate / 1000} kHz` : "offen", qobuzVerified ? "aktuelle Wiedergabe bewiesen" : "kein Track-Native-Beleg"],
     ["MOTU M2", motuObserved ? "beobachtet" : "offen", "zentraler Hörknoten"],
   ];
