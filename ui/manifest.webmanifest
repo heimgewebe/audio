@@ -33,5 +33,46 @@
       "type": "image/png",
       "purpose": "maskable"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "Hören",
+      "short_name": "Hören",
+      "description": "Direkt zu den Hörmodi und Wiedergabewegen",
+      "url": "/#hoeren",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Aufnehmen",
+      "short_name": "Aufnehmen",
+      "description": "Direkt zum Recorder und zu den Takes",
+      "url": "/#aufnehmen",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Spielen",
+      "short_name": "Spielen",
+      "description": "Direkt zu Instrumenten und Klang",
+      "url": "/#spielen",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
   ]
 }
