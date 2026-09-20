@@ -16,10 +16,10 @@ privates atomares Journal und anschließenden Live-Readback. Ohne eine eindeutig
 beobachtete MOTU M2 bleibt bereits der Dry-Run fail-closed; so ist es im
 aktuellen Readback vom 1. August 2026. Weitere Profile bleiben gesperrt.
 
-Der Altbestand `heimgewebe/hausKI-audio` bleibt zunächst unverändert und dient
-nur als geprüfte Ideen- und Verhaltensquelle. Seine Implementierung und Historie
-werden standardmäßig nicht übernommen; nützliche Anforderungen und Testabsichten
-werden gegen die neuen Verträge neu programmiert.
+Das frühere, physisch gelöschte Repository `heimgewebe/hausKI-audio` dient nur
+noch als revisionsgebundene historische Ideen- und Verhaltensquelle. Seine
+Implementierung und Historie werden nicht als aktueller Produktbestand übernommen;
+nützliche Anforderungen und Testabsichten werden gegen die neuen Verträge neu programmiert.
 
 Als erstes ausführbares Klangexperiment enthält das Repository
 **Buckelwal Live Voice**. Standard ist `morph`: eine monophone,
