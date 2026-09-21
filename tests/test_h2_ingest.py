@@ -4,10 +4,12 @@ import json
 import os
 import pathlib
 import stat
+import subprocess
 import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -40,6 +42,8 @@ def write_h2_wav(
     rate: int = 44_100,
     marker: bool = False,
     described_scene: str | None = None,
+    recorded_date: str = "2026-09-17",
+    recorded_time: str = "19:14:01",
 ) -> bytes:
     track = {"FRONT": "1", "REAR": "3", "MIX": "5"}[role]
     description = (
@@ -55,8 +59,8 @@ def write_h2_wav(
             _fixed(description, 256),
             _fixed("ZOOM H2essential", 32),
             _fixed("", 32),
-            _fixed("2026-09-17", 10),
-            _fixed("19:14:01", 8),
+            _fixed(recorded_date, 10),
+            _fixed(recorded_time, 8),
             struct.pack("<Q", 123456),
             struct.pack("<H", 1),
             b"\0" * 64,
@@ -200,6 +204,113 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(repeated["material_id"], material_id)
             for path in (source / scene).glob("*.WAV"):
                 self.assertEqual(path.read_bytes(), source_bytes[path.name])
+
+    def test_repeat_import_preflights_hashes_without_copying_to_staging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            first = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            with mock.patch.object(
+                MODULE,
+                "_copy_master",
+                side_effect=AssertionError("repeat import must not copy"),
+            ):
+                repeated = MODULE.import_scene(
+                    "170926_191401",
+                    source_root=source,
+                    library_root=library,
+                )
+            self.assertEqual(repeated["status"], "already-imported")
+            self.assertEqual(repeated["material_id"], first["material_id"])
+            self.assertFalse(any(path.name.startswith(".h2-staging-") for path in library.iterdir()))
+
+    def test_split_h2_tracks_are_one_contiguous_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT", "REAR"))
+            scene = "170926_191401"
+            for role in ("FRONT", "REAR"):
+                write_h2_wav(
+                    source / scene / f"{scene}_{role}_001.WAV",
+                    scene=scene,
+                    role=role,
+                    frames=220,
+                )
+            report = MODULE.inspect_scene(source, scene)
+
+        self.assertEqual(report["roles"], ["front", "rear"])
+        self.assertEqual(report["segment_count"], 2)
+        self.assertEqual(
+            [(item["role"], item["segment_index"]) for item in report["files"]],
+            [("front", 0), ("front", 1), ("rear", 0), ("rear", 1)],
+        )
+        self.assertAlmostEqual(report["duration_seconds"], 661 / 44_100, places=9)
+
+    def test_split_h2_segments_may_advance_bwf_clock_together(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT", "REAR"))
+            scene = "170926_191401"
+            for role in ("FRONT", "REAR"):
+                write_h2_wav(
+                    source / scene / f"{scene}_{role}_001.WAV",
+                    scene=scene,
+                    role=role,
+                    frames=220,
+                    recorded_date="2026-09-18",
+                    recorded_time="00:02:03",
+                )
+            report = MODULE.inspect_scene(source, scene)
+
+        self.assertEqual(report["recorded_date"], "2026-09-17")
+        self.assertEqual(report["recorded_time"], "19:14:01")
+        self.assertEqual(report["segment_count"], 2)
+
+    def test_explicit_zero_split_suffix_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            scene = "170926_191401"
+            write_h2_wav(
+                source / scene / f"{scene}_FRONT_000.WAV",
+                scene=scene,
+                role="FRONT",
+            )
+            with self.assertRaisesRegex(MODULE.H2IngestError, "Segmentnummer"):
+                MODULE.inspect_scene(source, scene)
+
+    def test_split_h2_tracks_require_matching_segment_sequences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT", "REAR"))
+            scene = "170926_191401"
+            write_h2_wav(
+                source / scene / f"{scene}_FRONT_001.WAV",
+                scene=scene,
+                role="FRONT",
+                frames=220,
+            )
+            with self.assertRaisesRegex(MODULE.H2IngestError, "Spursegmenten"):
+                MODULE.inspect_scene(source, scene)
+
+    def test_cli_wrapper_resolves_module_when_invoked_through_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            link = pathlib.Path(directory) / "audio-h2-ingest"
+            link.symlink_to(ROOT / "scripts" / "audio-h2-ingest")
+            completed = subprocess.run(
+                [str(link), "--help"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Safe, immutable file ingest", completed.stdout)
 
     def test_verify_rehashes_current_master_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

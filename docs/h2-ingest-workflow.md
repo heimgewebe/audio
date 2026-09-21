@@ -36,6 +36,14 @@ Die beobachteten Dateien enthielten keine `cue `-, `LIST`-, `iXML`- oder
 `axml`-Chunks. Das belegt nur den aktuellen Kartenbestand und nicht, dass der
 H2 niemals Marker in anderen Aufnahmen speichert.
 
+Die aktuelle Zoom-Bedienungsanleitung dokumentiert außerdem: Überschreitet eine
+Aufnahmedatei 2 GB, setzt der H2essential die Aufnahme ohne Pause in einer neuen
+Datei fort und ergänzt den ursprünglichen Dateinamen um `_001` (danach weitere
+fortlaufende Segmente). Der Ingest behandelt solche lückenlosen Folgedateien
+einer Spur als Segmente derselben Session. RF64 wird für den nativen
+H2essential-Aufnahmepfad deshalb nicht vorausgesetzt und weiterhin fail-closed
+abgewiesen.
+
 ## Sicherheitsvertrag
 
 `scripts/audio-h2-ingest` besitzt vier Operationen:
@@ -54,12 +62,14 @@ Der Import:
 
 1. akzeptiert nur normale Dateien und Verzeichnisse ohne Symlink;
 2. verlangt die H2-Kennung `ZOOM_H2essential.SYS`;
-3. validiert RIFF/BWF, H2-Originator, Szene, Spurrolle und 32-bit-float Stereo;
-4. kopiert jede Datei in ein privates Staging-Verzeichnis;
-5. berechnet beim Lesen SHA-256 und prüft die Quellidentität vor/nach dem Kopieren;
-6. führt `fsync` auf dem Ziel aus;
-7. hasht das Ziel erneut und vergleicht es mit der Quelle;
-8. veröffentlicht erst danach den vollständigen Materialordner atomar;\n9. meldet einen Wiederholungsimport nur dann als bereits vorhanden, wenn die archivierten Master aktuell erneut vollständig gehasht und gegen das Manifest verifiziert wurden.
+3. validiert RIFF/BWF, H2-Originator, Szene, Spurrolle, Segmentfolge und 32-bit-float Stereo;
+4. hasht alle H2-Master zunächst rein lesend und bindet dabei ihre Dateidentität;
+5. leitet daraus `master_set_sha256` und die content-addressierte `material_id` ab;
+6. verifiziert bei einem bereits vorhandenen Materialobjekt dessen archivierte Master vollständig und beendet den Re-Import **ohne** Staging oder erneute Zielkopie;
+7. erzeugt nur für neues Material ein privates Staging-Verzeichnis und kopiert jeden Master bytegenau, wobei der Copy-Hash exakt dem Vorhash entsprechen muss;
+8. führt `fsync` auf den Zieldateien aus und hasht die Kopien erneut;
+9. schreibt Manifest und getrennte mutable Annotationen erst nach erfolgreicher Kopierprüfung;
+10. veröffentlicht den vollständigen Materialordner atomar und synchronisiert anschließend das Bibliotheksverzeichnis.
 
 Der Ingest schreibt niemals auf die H2-Karte. Ein Bibliotheksziel unterhalb des
 H2-Quellpfads wird ausdrücklich abgewiesen.
@@ -74,6 +84,7 @@ Standardziel:
 ├── annotations.json
 └── master/
     ├── <scene>_FRONT.WAV
+    ├── <scene>_FRONT_001.WAV   # nur bei H2-2-GB-Folgesegmenten
     ├── <scene>_REAR.WAV
     └── <scene>_MIX.WAV
 ```

@@ -29,13 +29,16 @@ SOURCE_SENTINEL = "ZOOM_H2essential.SYS"
 SOURCE_ORIGINATOR = "ZOOM H2essential"
 SCENE_RE = re.compile(r"^[0-9]{6}_[0-9]{6}$")
 MATERIAL_ID_RE = re.compile(r"^[0-9a-f]{24}$")
-ROLE_RE = re.compile(r"^(?P<scene>[0-9]{6}_[0-9]{6})_(?P<role>FRONT|REAR|MIX)\.WAV$")
+ROLE_RE = re.compile(
+    r"^(?P<scene>[0-9]{6}_[0-9]{6})_(?P<role>FRONT|REAR|MIX)"
+    r"(?:_(?P<segment>[0-9]{3}))?\.WAV$"
+)
 ROLE_ORDER = {"FRONT": 0, "REAR": 1, "MIX": 2}
 ROLE_TRACK = {"FRONT": "1", "REAR": "3", "MIX": "5"}
 ALLOWED_SAMPLE_RATES = frozenset({44_100, 48_000, 96_000})
 COPY_CHUNK_BYTES = 1024 * 1024
 MAX_BEXT_BYTES = 128 * 1024
-MAX_SESSION_FILES = 8
+MAX_SESSION_FILES = 192
 DEFAULT_SOURCE_ROOT = pathlib.Path(
     os.environ.get(
         "AUDIO_H2_SOURCE_ROOT",
@@ -284,7 +287,7 @@ def inspect_scene(source_root: pathlib.Path, scene: str) -> dict[str, Any]:
     session_dir = source_root / scene
     _lstat_directory(session_dir, "H2-Session")
     files: list[dict[str, Any]] = []
-    seen_roles: set[str] = set()
+    seen_segments: set[tuple[str, int]] = set()
     with os.scandir(session_dir) as entries:
         for entry in entries:
             if entry.name.startswith("."):
@@ -295,30 +298,89 @@ def inspect_scene(source_root: pathlib.Path, scene: str) -> dict[str, Any]:
             if match is None or match.group("scene") != scene:
                 raise H2IngestError("H2-Session enthält einen unerwarteten Dateinamen.")
             role = match.group("role")
-            if role in seen_roles:
-                raise H2IngestError("H2-Session enthält eine doppelte Spurrolle.")
-            seen_roles.add(role)
-            files.append(inspect_wav(pathlib.Path(entry.path), scene, role))
+            raw_segment = match.group("segment")
+            if raw_segment == "000":
+                raise H2IngestError("H2-Folgesegment besitzt eine ungültige Segmentnummer.")
+            segment_index = int(raw_segment or "0")
+            segment_key = (role, segment_index)
+            if segment_key in seen_segments:
+                raise H2IngestError("H2-Session enthält ein doppeltes Spursegment.")
+            seen_segments.add(segment_key)
+            item = inspect_wav(pathlib.Path(entry.path), scene, role)
+            item["segment_index"] = segment_index
+            files.append(item)
             if len(files) > MAX_SESSION_FILES:
                 raise H2IngestError("H2-Session überschreitet das Dateilimit.")
     if not files:
         raise H2IngestError("H2-Session enthält keine WAV-Master.")
-    files.sort(key=lambda item: ROLE_ORDER[item["role"].upper()])
-    dates = {item["bwf"]["recorded_date"] for item in files}
-    times = {item["bwf"]["recorded_time"] for item in files}
-    takes = {item["bwf"]["description_fields"].get("zTAKE") for item in files}
+
+    files.sort(
+        key=lambda item: (
+            ROLE_ORDER[item["role"].upper()],
+            item["segment_index"],
+        )
+    )
     rates = {item["audio"]["sample_rate_hz"] for item in files}
-    frames = {item["audio"]["frames"] for item in files}
-    if len(dates) != 1 or len(times) != 1 or len(takes) != 1 or len(rates) != 1 or len(frames) != 1:
-        raise H2IngestError("H2-Session ist zwischen ihren Spurdateien nicht konsistent.")
+    if len(rates) != 1:
+        raise H2IngestError("H2-Session wechselt unerwartet die Sample-Rate.")
+
+    roles = sorted(
+        {item["role"] for item in files},
+        key=lambda role: ROLE_ORDER[role.upper()],
+    )
+    role_segments: dict[str, tuple[int, ...]] = {}
+    role_frames: dict[str, int] = {}
+    for role in roles:
+        role_items = [item for item in files if item["role"] == role]
+        indexes = tuple(item["segment_index"] for item in role_items)
+        if indexes != tuple(range(len(indexes))):
+            raise H2IngestError("H2-Session besitzt keine lückenlose Segmentfolge.")
+        role_segments[role] = indexes
+        role_frames[role] = sum(item["audio"]["frames"] for item in role_items)
+
+    if len(set(role_segments.values())) != 1:
+        raise H2IngestError("H2-Session ist zwischen ihren Spursegmenten nicht konsistent.")
+
+    segment_indexes = next(iter(role_segments.values()))
+    for segment_index in segment_indexes:
+        segment_items = [
+            item for item in files if item["segment_index"] == segment_index
+        ]
+        dates = {item["bwf"]["recorded_date"] for item in segment_items}
+        times = {item["bwf"]["recorded_time"] for item in segment_items}
+        takes = {
+            item["bwf"]["description_fields"].get("zTAKE") for item in segment_items
+        }
+        frames = {item["audio"]["frames"] for item in segment_items}
+        if (
+            len(dates) != 1
+            or len(times) != 1
+            or len(takes) != 1
+            or len(frames) != 1
+        ):
+            raise H2IngestError(
+                "H2-Segment ist zwischen seinen Spurrollen nicht konsistent."
+            )
+
+    sample_rate = next(iter(rates))
+    reference_role = roles[0]
+    reference_items = [item for item in files if item["role"] == reference_role]
+    total_frames = sum(item["audio"]["frames"] for item in reference_items)
+    segment_count = len(segment_indexes)
+    base_segment = next(
+        item
+        for item in reference_items
+        if item["segment_index"] == 0
+    )
     return {
         "scene": scene,
-        "take": next(iter(takes)),
-        "recorded_date": next(iter(dates)),
-        "recorded_time": next(iter(times)),
-        "sample_rate_hz": next(iter(rates)),
-        "duration_seconds": files[0]["audio"]["duration_seconds"],
-        "roles": [item["role"] for item in files],
+        "take": base_segment["bwf"]["description_fields"].get("zTAKE"),
+        "recorded_date": base_segment["bwf"]["recorded_date"],
+        "recorded_time": base_segment["bwf"]["recorded_time"],
+        "sample_rate_hz": sample_rate,
+        "duration_seconds": round(total_frames / sample_rate, 9),
+        "roles": roles,
+        "segment_count": segment_count,
         "files": files,
         "marker_chunks_observed": sorted(
             {chunk for item in files for chunk in item["marker_chunks_observed"]}
@@ -357,7 +419,60 @@ def scan(source_root: pathlib.Path = DEFAULT_SOURCE_ROOT) -> dict[str, Any]:
     }
 
 
-def _copy_master(source: pathlib.Path, destination: pathlib.Path) -> dict[str, Any]:
+def _hash_source_master(source: pathlib.Path) -> dict[str, Any]:
+    source_meta = _lstat_regular(source, "H2-Master")
+    digest = hashlib.sha256()
+    hashed = 0
+    with source.open("rb") as src:
+        opened = os.fstat(src.fileno())
+        if (
+            opened.st_dev != source_meta.st_dev
+            or opened.st_ino != source_meta.st_ino
+            or opened.st_size != source_meta.st_size
+        ):
+            raise H2IngestError("H2-Master änderte seine Identität vor dem Vorhash.")
+        while True:
+            chunk = src.read(COPY_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            hashed += len(chunk)
+        finished = os.fstat(src.fileno())
+        if (
+            finished.st_dev != opened.st_dev
+            or finished.st_ino != opened.st_ino
+            or finished.st_size != opened.st_size
+            or finished.st_mtime_ns != opened.st_mtime_ns
+            or hashed != opened.st_size
+        ):
+            raise H2IngestError("H2-Master änderte sich während des Vorhashs.")
+    return {
+        "sha256": digest.hexdigest(),
+        "bytes": hashed,
+        "st_dev": opened.st_dev,
+        "st_ino": opened.st_ino,
+        "st_mtime_ns": opened.st_mtime_ns,
+    }
+
+
+def _assert_source_receipt_current(source: pathlib.Path, receipt: dict[str, Any]) -> None:
+    current = _lstat_regular(source, "H2-Master")
+    if (
+        current.st_dev != receipt["st_dev"]
+        or current.st_ino != receipt["st_ino"]
+        or current.st_size != receipt["bytes"]
+        or current.st_mtime_ns != receipt["st_mtime_ns"]
+    ):
+        raise H2IngestError("H2-Master änderte sich nach dem Vorhash.")
+
+
+def _copy_master(
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    *,
+    expected_sha256: str,
+    expected_bytes: int,
+) -> dict[str, Any]:
     source_meta = _lstat_regular(source, "H2-Master")
     digest = hashlib.sha256()
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -402,6 +517,12 @@ def _copy_master(source: pathlib.Path, destination: pathlib.Path) -> dict[str, A
             pass
         raise
     source_sha = digest.hexdigest()
+    if copied != expected_bytes or source_sha != expected_sha256:
+        try:
+            destination.unlink()
+        except OSError:
+            pass
+        raise H2IngestError("H2-Master änderte sich zwischen Vorhash und Kopieren.")
     destination_sha = _sha256_path(destination)
     if destination_sha != source_sha:
         try:
@@ -492,6 +613,7 @@ def _library_item(
         role = item.get("role")
         size = item.get("bytes")
         audio = item.get("audio")
+        segment_index = item.get("segment_index", 0)
         if (
             not isinstance(name, str)
             or pathlib.Path(name).name != name
@@ -500,6 +622,9 @@ def _library_item(
             or isinstance(size, bool)
             or size < 0
             or not isinstance(audio, dict)
+            or not isinstance(segment_index, int)
+            or isinstance(segment_index, bool)
+            or segment_index < 0
         ):
             raise H2IngestError("Bibliotheksobjekt ist strukturell ungültig.")
         projected_masters.append(
@@ -508,6 +633,7 @@ def _library_item(
                 "role": role,
                 "bytes": size,
                 "audio": audio,
+                "segment_index": segment_index,
             }
         )
 
@@ -531,6 +657,57 @@ def import_scene(
     source = _resolve_source_root(source_root)
     session = inspect_scene(source, scene)
     library = _resolve_library_root(library_root, source)
+
+    source_receipts: dict[str, dict[str, Any]] = {}
+    master_identity: list[dict[str, Any]] = []
+    for item in session["files"]:
+        source_path = source / scene / item["name"]
+        receipt = _hash_source_master(source_path)
+        source_receipts[item["name"]] = receipt
+        master_identity.append(
+            {
+                "name": item["name"],
+                "role": item["role"],
+                "sha256": receipt["sha256"],
+                "bytes": receipt["bytes"],
+            }
+        )
+    for item in session["files"]:
+        _assert_source_receipt_current(
+            source / scene / item["name"],
+            source_receipts[item["name"]],
+        )
+
+    master_set_sha256 = hashlib.sha256(_canonical_bytes(master_identity)).hexdigest()
+    material_id = _material_id_for_master_set(master_set_sha256)
+    final_dir = library / material_id
+    if final_dir.exists() or final_dir.is_symlink():
+        _lstat_directory(final_dir, "Vorhandenes Materialobjekt")
+        existing = _read_json_regular(final_dir / "manifest.json")
+        if (
+            existing.get("material_id") == material_id
+            and existing.get("master_set_sha256") == master_set_sha256
+        ):
+            verification = verify_material(material_id, library_root=library)
+            if verification["master_set_sha256"] != master_set_sha256:
+                raise H2IngestError(
+                    "Vorhandener Import stimmt nicht mit dem aktuellen H2-Masterset überein."
+                )
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "kind": "audio_h2_import_result",
+                "status": "already-imported",
+                "material_id": material_id,
+                "master_set_sha256": master_set_sha256,
+                "master_count": len(master_identity),
+                "verified_current": True,
+                "source_mutated": False,
+            }
+        raise H2IngestError("Material-ID kollidiert mit einem anderen Bibliotheksobjekt.")
+
+    if inspect_scene(source, scene) != session:
+        raise H2IngestError("H2-Session änderte sich zwischen Prüfung und Import.")
+
     staging = pathlib.Path(tempfile.mkdtemp(prefix=".h2-staging-", dir=library))
     os.chmod(staging, 0o700)
     try:
@@ -540,11 +717,18 @@ def import_scene(
         for item in session["files"]:
             source_path = source / scene / item["name"]
             destination = master_dir / item["name"]
-            receipt = _copy_master(source_path, destination)
+            expected = source_receipts[item["name"]]
+            receipt = _copy_master(
+                source_path,
+                destination,
+                expected_sha256=expected["sha256"],
+                expected_bytes=expected["bytes"],
+            )
             manifest_files.append(
                 {
                     "name": item["name"],
                     "role": item["role"],
+                    "segment_index": item["segment_index"],
                     "sha256": receipt["sha256"],
                     "bytes": receipt["bytes"],
                     "audio": item["audio"],
@@ -553,42 +737,7 @@ def import_scene(
                     "marker_chunks_observed": item["marker_chunks_observed"],
                 }
             )
-        master_identity = [
-            {
-                "name": item["name"],
-                "role": item["role"],
-                "sha256": item["sha256"],
-                "bytes": item["bytes"],
-            }
-            for item in manifest_files
-        ]
-        master_set_sha256 = hashlib.sha256(_canonical_bytes(master_identity)).hexdigest()
-        material_id = _material_id_for_master_set(master_set_sha256)
-        final_dir = library / material_id
-        if final_dir.exists() or final_dir.is_symlink():
-            _lstat_directory(final_dir, "Vorhandenes Materialobjekt")
-            existing = _read_json_regular(final_dir / "manifest.json")
-            if (
-                existing.get("material_id") == material_id
-                and existing.get("master_set_sha256") == master_set_sha256
-            ):
-                verification = verify_material(material_id, library_root=library)
-                if verification["master_set_sha256"] != master_set_sha256:
-                    raise H2IngestError(
-                        "Vorhandener Import stimmt nicht mit dem aktuellen H2-Masterset überein."
-                    )
-                shutil.rmtree(staging)
-                return {
-                    "schema_version": SCHEMA_VERSION,
-                    "kind": "audio_h2_import_result",
-                    "status": "already-imported",
-                    "material_id": material_id,
-                    "master_set_sha256": master_set_sha256,
-                    "master_count": len(manifest_files),
-                    "verified_current": True,
-                    "source_mutated": False,
-                }
-            raise H2IngestError("Material-ID kollidiert mit einem anderen Bibliotheksobjekt.")
+
         imported_at = dt.datetime.now(dt.timezone.utc).isoformat()
         manifest = {
             "schema_version": SCHEMA_VERSION,
@@ -601,6 +750,7 @@ def import_scene(
                 "take": session["take"],
                 "recorded_date": session["recorded_date"],
                 "recorded_time": session["recorded_time"],
+                "segment_count": session["segment_count"],
             },
             "imported_at": imported_at,
             "master_set_sha256": master_set_sha256,
@@ -608,7 +758,7 @@ def import_scene(
             "integrity": {
                 "source_mutation": "forbidden",
                 "master_mutation": "forbidden",
-                "copy_verification": "source-and-destination-sha256",
+                "copy_verification": "prehash-source-and-destination-sha256",
             },
         }
         annotations = {
@@ -625,7 +775,10 @@ def import_scene(
         _write_json_new(staging / "annotations.json", annotations, 0o600)
         os.chmod(master_dir, 0o550)
         os.rename(staging, final_dir)
-        parent_fd = os.open(library, os.O_RDONLY)
+        parent_fd = os.open(
+            library,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
         try:
             os.fsync(parent_fd)
         finally:
@@ -640,14 +793,13 @@ def import_scene(
             "recorded_date": session["recorded_date"],
             "recorded_time": session["recorded_time"],
             "roles": session["roles"],
+            "segment_count": session["segment_count"],
             "source_mutated": False,
         }
     except Exception:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
         raise
-
-
 def library(library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT) -> dict[str, Any]:
     root = library_root.expanduser()
     if not root.exists() and not root.is_symlink():
