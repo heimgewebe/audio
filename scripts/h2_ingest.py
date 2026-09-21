@@ -186,58 +186,62 @@ def _iter_wave_chunks(handle: BinaryIO, file_size: int) -> Iterator[tuple[str, i
         raise H2IngestError("WAV-Struktur endet nicht an einer gültigen Chunkgrenze.")
 
 
-def inspect_wav(path: pathlib.Path, expected_scene: str, expected_role: str) -> dict[str, Any]:
-    file_stat = _lstat_regular(path, "H2-WAV")
+def _inspect_wav_handle(
+    handle: BinaryIO,
+    file_size: int,
+    file_name: str,
+    expected_scene: str,
+    expected_role: str,
+) -> dict[str, Any]:
     fmt: dict[str, int] | None = None
     bext: dict[str, Any] | None = None
     data_bytes: int | None = None
     chunk_ids: list[str] = []
-    with path.open("rb") as handle:
-        for chunk_id, size, offset in _iter_wave_chunks(handle, file_stat.st_size):
-            chunk_ids.append(chunk_id)
-            if chunk_id == "fmt ":
-                if size < 16:
-                    raise H2IngestError("WAV-fmt-Chunk ist zu kurz.")
-                handle.seek(offset)
-                payload = handle.read(16)
-                audio_format, channels, rate, byte_rate, block_align, bits = struct.unpack(
-                    "<HHIIHH", payload
-                )
-                fmt = {
-                    "audio_format": audio_format,
-                    "channels": channels,
-                    "sample_rate_hz": rate,
-                    "byte_rate": byte_rate,
-                    "block_align": block_align,
-                    "bits_per_sample": bits,
-                }
-            elif chunk_id == "bext":
-                if size < 602 or size > MAX_BEXT_BYTES:
-                    raise H2IngestError("BWF-bext-Chunk liegt außerhalb des erlaubten Bereichs.")
-                handle.seek(offset)
-                payload = handle.read(size)
-                description = _decode_ascii(payload[:256])
-                originator = _decode_ascii(payload[256:288])
-                originator_reference = _decode_ascii(payload[288:320])
-                recorded_date = payload[320:330].decode("ascii", "replace").strip("\0 ")
-                recorded_time = payload[330:338].decode("ascii", "replace").strip("\0 ")
-                time_reference = struct.unpack("<Q", payload[338:346])[0]
-                version = struct.unpack("<H", payload[346:348])[0]
-                coding_history = _decode_ascii(payload[602:])
-                bext = {
-                    "description": description,
-                    "description_fields": _parse_kv_lines(description),
-                    "originator": originator,
-                    "originator_reference": originator_reference,
-                    "recorded_date": recorded_date,
-                    "recorded_time": recorded_time,
-                    "time_reference_samples": time_reference,
-                    "version": version,
-                    "coding_history": coding_history,
-                    "coding_fields": _parse_coding_history(coding_history),
-                }
-            elif chunk_id == "data":
-                data_bytes = size
+    for chunk_id, size, offset in _iter_wave_chunks(handle, file_size):
+        chunk_ids.append(chunk_id)
+        if chunk_id == "fmt ":
+            if size < 16:
+                raise H2IngestError("WAV-fmt-Chunk ist zu kurz.")
+            handle.seek(offset)
+            payload = handle.read(16)
+            audio_format, channels, rate, byte_rate, block_align, bits = struct.unpack(
+                "<HHIIHH", payload
+            )
+            fmt = {
+                "audio_format": audio_format,
+                "channels": channels,
+                "sample_rate_hz": rate,
+                "byte_rate": byte_rate,
+                "block_align": block_align,
+                "bits_per_sample": bits,
+            }
+        elif chunk_id == "bext":
+            if size < 602 or size > MAX_BEXT_BYTES:
+                raise H2IngestError("BWF-bext-Chunk liegt außerhalb des erlaubten Bereichs.")
+            handle.seek(offset)
+            payload = handle.read(size)
+            description = _decode_ascii(payload[:256])
+            originator = _decode_ascii(payload[256:288])
+            originator_reference = _decode_ascii(payload[288:320])
+            recorded_date = payload[320:330].decode("ascii", "replace").strip("\0 ")
+            recorded_time = payload[330:338].decode("ascii", "replace").strip("\0 ")
+            time_reference = struct.unpack("<Q", payload[338:346])[0]
+            version = struct.unpack("<H", payload[346:348])[0]
+            coding_history = _decode_ascii(payload[602:])
+            bext = {
+                "description": description,
+                "description_fields": _parse_kv_lines(description),
+                "originator": originator,
+                "originator_reference": originator_reference,
+                "recorded_date": recorded_date,
+                "recorded_time": recorded_time,
+                "time_reference_samples": time_reference,
+                "version": version,
+                "coding_history": coding_history,
+                "coding_fields": _parse_coding_history(coding_history),
+            }
+        elif chunk_id == "data":
+            data_bytes = size
 
     if fmt is None or bext is None or data_bytes is None:
         raise H2IngestError("H2-WAV benötigt fmt-, bext- und data-Chunks.")
@@ -264,9 +268,9 @@ def inspect_wav(path: pathlib.Path, expected_scene: str, expected_role: str) -> 
         raise H2IngestError("H2-WAV besitzt keine vollständigen Audioframes.")
     frames = data_bytes // fmt["block_align"]
     return {
-        "name": path.name,
+        "name": file_name,
         "role": expected_role.lower(),
-        "bytes": file_stat.st_size,
+        "bytes": file_size,
         "audio": {
             "codec": "pcm_f32le",
             "sample_rate_hz": fmt["sample_rate_hz"],
@@ -277,8 +281,110 @@ def inspect_wav(path: pathlib.Path, expected_scene: str, expected_role: str) -> 
         },
         "bwf": bext,
         "chunk_ids": chunk_ids,
-        "marker_chunks_observed": [item for item in chunk_ids if item in {"cue ", "LIST", "iXML", "axml"}],
+        "marker_chunks_observed": [
+            item for item in chunk_ids if item in {"cue ", "LIST", "iXML", "axml"}
+        ],
     }
+
+
+def _open_source_generation(path: pathlib.Path) -> tuple[int, os.stat_result]:
+    lexical = _lstat_regular(path, "H2-WAV")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise H2IngestError("H2-WAV kann nicht generationstreu geöffnet werden.") from exc
+    opened = os.fstat(fd)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_dev != lexical.st_dev
+        or opened.st_ino != lexical.st_ino
+        or opened.st_size != lexical.st_size
+        or opened.st_mtime_ns != lexical.st_mtime_ns
+    ):
+        os.close(fd)
+        raise H2IngestError("H2-WAV änderte seine Identität beim Öffnen.")
+    return fd, opened
+
+
+def _inspect_source_generation(
+    path: pathlib.Path,
+    expected_scene: str,
+    expected_role: str,
+    *,
+    hash_content: bool,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    fd, opened = _open_source_generation(path)
+    digest = hashlib.sha256() if hash_content else None
+    hashed = 0
+    try:
+        with os.fdopen(fd, "rb", closefd=True) as handle:
+            inspected = _inspect_wav_handle(
+                handle,
+                opened.st_size,
+                path.name,
+                expected_scene,
+                expected_role,
+            )
+            if digest is not None:
+                handle.seek(0)
+                while True:
+                    chunk = handle.read(COPY_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    hashed += len(chunk)
+            finished = os.fstat(handle.fileno())
+            if (
+                finished.st_dev != opened.st_dev
+                or finished.st_ino != opened.st_ino
+                or finished.st_size != opened.st_size
+                or finished.st_mtime_ns != opened.st_mtime_ns
+            ):
+                raise H2IngestError("H2-WAV änderte sich während Prüfung oder Vorhash.")
+    except Exception:
+        raise
+    if digest is None:
+        return inspected, None
+    if hashed != opened.st_size:
+        raise H2IngestError("H2-WAV wurde beim Vorhash nicht vollständig gelesen.")
+    return inspected, {
+        "sha256": digest.hexdigest(),
+        "bytes": hashed,
+        "st_dev": opened.st_dev,
+        "st_ino": opened.st_ino,
+        "st_mtime_ns": opened.st_mtime_ns,
+    }
+
+
+def inspect_wav(path: pathlib.Path, expected_scene: str, expected_role: str) -> dict[str, Any]:
+    inspected, _receipt = _inspect_source_generation(
+        path,
+        expected_scene,
+        expected_role,
+        hash_content=False,
+    )
+    return inspected
+
+
+def _inspect_and_hash_source_master(
+    path: pathlib.Path,
+    expected_scene: str,
+    expected_role: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    inspected, receipt = _inspect_source_generation(
+        path,
+        expected_scene,
+        expected_role,
+        hash_content=True,
+    )
+    if receipt is None:
+        raise H2IngestError("H2-Vorhash lieferte keinen Generationbeleg.")
+    return inspected, receipt
 
 
 def inspect_scene(source_root: pathlib.Path, scene: str) -> dict[str, Any]:
@@ -416,42 +522,6 @@ def scan(source_root: pathlib.Path = DEFAULT_SOURCE_ROOT) -> dict[str, Any]:
         "skipped_invalid_sessions": skipped,
         "read_only": True,
         "source_mutated": False,
-    }
-
-
-def _hash_source_master(source: pathlib.Path) -> dict[str, Any]:
-    source_meta = _lstat_regular(source, "H2-Master")
-    digest = hashlib.sha256()
-    hashed = 0
-    with source.open("rb") as src:
-        opened = os.fstat(src.fileno())
-        if (
-            opened.st_dev != source_meta.st_dev
-            or opened.st_ino != source_meta.st_ino
-            or opened.st_size != source_meta.st_size
-        ):
-            raise H2IngestError("H2-Master änderte seine Identität vor dem Vorhash.")
-        while True:
-            chunk = src.read(COPY_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
-            hashed += len(chunk)
-        finished = os.fstat(src.fileno())
-        if (
-            finished.st_dev != opened.st_dev
-            or finished.st_ino != opened.st_ino
-            or finished.st_size != opened.st_size
-            or finished.st_mtime_ns != opened.st_mtime_ns
-            or hashed != opened.st_size
-        ):
-            raise H2IngestError("H2-Master änderte sich während des Vorhashs.")
-    return {
-        "sha256": digest.hexdigest(),
-        "bytes": hashed,
-        "st_dev": opened.st_dev,
-        "st_ino": opened.st_ino,
-        "st_mtime_ns": opened.st_mtime_ns,
     }
 
 
@@ -662,7 +732,16 @@ def import_scene(
     master_identity: list[dict[str, Any]] = []
     for item in session["files"]:
         source_path = source / scene / item["name"]
-        receipt = _hash_source_master(source_path)
+        inspected, receipt = _inspect_and_hash_source_master(
+            source_path,
+            scene,
+            item["role"].upper(),
+        )
+        inspected["segment_index"] = item["segment_index"]
+        if inspected != item:
+            raise H2IngestError(
+                "H2-Master änderte sich zwischen Sessionprüfung und Vorhash."
+            )
         source_receipts[item["name"]] = receipt
         master_identity.append(
             {

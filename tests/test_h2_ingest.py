@@ -205,6 +205,44 @@ class H2IngestTests(unittest.TestCase):
             for path in (source / scene).glob("*.WAV"):
                 self.assertEqual(path.read_bytes(), source_bytes[path.name])
 
+    def test_import_rejects_source_replacement_between_scan_and_generation_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            scene = "170926_191401"
+            original_inspect_scene = MODULE.inspect_scene
+            replaced = False
+
+            def inspect_then_replace(source_root, requested_scene):
+                nonlocal replaced
+                report = original_inspect_scene(source_root, requested_scene)
+                if not replaced:
+                    replaced = True
+                    write_h2_wav(
+                        source / scene / f"{scene}_FRONT.WAV",
+                        scene=scene,
+                        role="FRONT",
+                        frames=220,
+                    )
+                return report
+
+            with mock.patch.object(
+                MODULE,
+                "inspect_scene",
+                side_effect=inspect_then_replace,
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "Sessionprüfung und Vorhash",
+                ):
+                    MODULE.import_scene(
+                        scene,
+                        source_root=source,
+                        library_root=library,
+                    )
+            self.assertFalse(library.exists() and any(library.iterdir()))
+
     def test_repeat_import_preflights_hashes_without_copying_to_staging(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

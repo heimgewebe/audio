@@ -63,7 +63,7 @@ Der Import:
 1. akzeptiert nur normale Dateien und Verzeichnisse ohne Symlink;
 2. verlangt die H2-Kennung `ZOOM_H2essential.SYS`;
 3. validiert RIFF/BWF, H2-Originator, Szene, Spurrolle, Segmentfolge und 32-bit-float Stereo;
-4. hasht alle H2-Master zunächst rein lesend und bindet dabei ihre Dateidentität;
+4. validiert BWF/Audioformat und hasht jeden H2-Master auf derselben geöffneten Dateigeneration; Metadaten und Digest können dadurch nicht aus zwei verschiedenen Quellgenerationen stammen;
 5. leitet daraus `master_set_sha256` und die content-addressierte `material_id` ab;
 6. verifiziert bei einem bereits vorhandenen Materialobjekt dessen archivierte Master vollständig und beendet den Re-Import **ohne** Staging oder erneute Zielkopie;
 7. erzeugt nur für neues Material ein privates Staging-Verzeichnis und kopiert jeden Master bytegenau, wobei der Copy-Hash exakt dem Vorhash entsprechen muss;
