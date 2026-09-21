@@ -229,6 +229,114 @@ class H2IngestTests(unittest.TestCase):
                     library_root=library,
                 )
 
+    def test_verify_rejects_coordinated_master_and_manifest_tampering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            target = library / result["material_id"]
+            archived = next((target / "master").glob("*.WAV"))
+            archived.chmod(0o640)
+            with archived.open("ab") as handle:
+                handle.write(b"tampered")
+            archived.chmod(0o440)
+
+            manifest_path = target / "manifest.json"
+            manifest_path.chmod(0o640)
+            manifest = json.loads(manifest_path.read_text())
+            master = manifest["masters"][0]
+            payload = archived.read_bytes()
+            master["bytes"] = len(payload)
+            master["sha256"] = hashlib.sha256(payload).hexdigest()
+            identity = [
+                {
+                    "name": master["name"],
+                    "role": master["role"],
+                    "sha256": master["sha256"],
+                    "bytes": master["bytes"],
+                }
+            ]
+            manifest["master_set_sha256"] = hashlib.sha256(
+                MODULE._canonical_bytes(identity)
+            ).hexdigest()
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            manifest_path.chmod(0o440)
+
+            with self.assertRaisesRegex(MODULE.H2IngestError, "Material-ID"):
+                MODULE.verify_material(result["material_id"], library_root=library)
+
+    def test_verify_rejects_empty_master_set_even_with_matching_material_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            empty_set_sha256 = hashlib.sha256(MODULE._canonical_bytes([])).hexdigest()
+            empty_material_id = hashlib.sha256(
+                b"zoom-h2essential-import-v1\0" + bytes.fromhex(empty_set_sha256)
+            ).hexdigest()[:24]
+            target = library / result["material_id"]
+            empty_target = library / empty_material_id
+            target.rename(empty_target)
+
+            manifest_path = empty_target / "manifest.json"
+            manifest_path.chmod(0o640)
+            manifest = json.loads(manifest_path.read_text())
+            manifest["material_id"] = empty_material_id
+            manifest["master_set_sha256"] = empty_set_sha256
+            manifest["masters"] = []
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            manifest_path.chmod(0o440)
+
+            annotations_path = empty_target / "annotations.json"
+            annotations = json.loads(annotations_path.read_text())
+            annotations["material_id"] = empty_material_id
+            annotations_path.write_text(
+                json.dumps(annotations, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(MODULE.H2IngestError, "keine gültigen Master"):
+                MODULE.verify_material(empty_material_id, library_root=library)
+
+    def test_library_rejects_incomplete_manifest_as_ingest_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            manifest_path = library / result["material_id"] / "manifest.json"
+            manifest_path.chmod(0o640)
+            manifest = json.loads(manifest_path.read_text())
+            del manifest["source"]
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            manifest_path.chmod(0o440)
+
+            with self.assertRaisesRegex(MODULE.H2IngestError, "strukturell"):
+                MODULE.library(library)
+
     def test_library_is_shallow_and_does_not_claim_current_byte_verification(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

@@ -60,6 +60,14 @@ def _canonical_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _material_id_for_master_set(master_set_sha256: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{64}", master_set_sha256) is None:
+        raise H2IngestError("Master-Set-Hash besitzt kein gültiges SHA-256-Format.")
+    return hashlib.sha256(
+        b"zoom-h2essential-import-v1\0" + bytes.fromhex(master_set_sha256)
+    ).hexdigest()[:24]
+
+
 def _sha256_path(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -432,6 +440,88 @@ def _read_json_regular(path: pathlib.Path) -> dict[str, Any]:
     return value
 
 
+def _library_item(
+    manifest: dict[str, Any],
+    annotations: dict[str, Any],
+    material_id: str,
+) -> dict[str, Any]:
+    source = manifest.get("source")
+    imported_at = manifest.get("imported_at")
+    master_set_sha256 = manifest.get("master_set_sha256")
+    masters = manifest.get("masters")
+    if (
+        manifest.get("schema_version") != SCHEMA_VERSION
+        or manifest.get("kind") != "audio_imported_material_manifest"
+        or manifest.get("material_id") != material_id
+        or not isinstance(source, dict)
+        or source.get("kind") != "zoom-h2essential-file-transfer"
+        or not isinstance(source.get("recorder_model"), str)
+        or not isinstance(source.get("scene"), str)
+        or not (source.get("take") is None or isinstance(source.get("take"), str))
+        or not isinstance(source.get("recorded_date"), str)
+        or not isinstance(source.get("recorded_time"), str)
+        or not isinstance(imported_at, str)
+        or not isinstance(master_set_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", master_set_sha256) is None
+        or not isinstance(masters, list)
+        or not masters
+    ):
+        raise H2IngestError("Bibliotheksobjekt ist strukturell ungültig.")
+
+    if (
+        annotations.get("schema_version") != SCHEMA_VERSION
+        or annotations.get("kind") != "audio_material_annotations"
+        or annotations.get("material_id") != material_id
+        or not isinstance(annotations.get("title"), str)
+        or not isinstance(annotations.get("note"), str)
+        or not isinstance(annotations.get("tags"), list)
+        or not all(isinstance(item, str) for item in annotations["tags"])
+        or not isinstance(annotations.get("markers"), list)
+        or not (
+            annotations.get("updated_at") is None
+            or isinstance(annotations.get("updated_at"), str)
+        )
+    ):
+        raise H2IngestError("Materialannotation ist strukturell ungültig.")
+
+    projected_masters: list[dict[str, Any]] = []
+    for item in masters:
+        if not isinstance(item, dict):
+            raise H2IngestError("Bibliotheksobjekt ist strukturell ungültig.")
+        name = item.get("name")
+        role = item.get("role")
+        size = item.get("bytes")
+        audio = item.get("audio")
+        if (
+            not isinstance(name, str)
+            or pathlib.Path(name).name != name
+            or role not in {"front", "rear", "mix"}
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+            or not isinstance(audio, dict)
+        ):
+            raise H2IngestError("Bibliotheksobjekt ist strukturell ungültig.")
+        projected_masters.append(
+            {
+                "name": name,
+                "role": role,
+                "bytes": size,
+                "audio": audio,
+            }
+        )
+
+    return {
+        "material_id": material_id,
+        "source": source,
+        "imported_at": imported_at,
+        "master_set_sha256": master_set_sha256,
+        "masters": projected_masters,
+        "annotations": annotations,
+        "current_bytes_verified": False,
+    }
+
+
 def import_scene(
     scene: str,
     *,
@@ -473,9 +563,7 @@ def import_scene(
             for item in manifest_files
         ]
         master_set_sha256 = hashlib.sha256(_canonical_bytes(master_identity)).hexdigest()
-        material_id = hashlib.sha256(
-            b"zoom-h2essential-import-v1\0" + bytes.fromhex(master_set_sha256)
-        ).hexdigest()[:24]
+        material_id = _material_id_for_master_set(master_set_sha256)
         final_dir = library / material_id
         if final_dir.exists() or final_dir.is_symlink():
             _lstat_directory(final_dir, "Vorhandenes Materialobjekt")
@@ -579,32 +667,7 @@ def library(library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT) -> dict[str, Any]
             directory = pathlib.Path(entry.path)
             manifest = _read_json_regular(directory / "manifest.json")
             annotations = _read_json_regular(directory / "annotations.json")
-            if (
-                manifest.get("kind") != "audio_imported_material_manifest"
-                or manifest.get("material_id") != entry.name
-                or annotations.get("kind") != "audio_material_annotations"
-                or annotations.get("material_id") != entry.name
-            ):
-                raise H2IngestError("Bibliotheksobjekt ist nicht revisionsgebunden lesbar.")
-            items.append(
-                {
-                    "material_id": entry.name,
-                    "source": manifest["source"],
-                    "imported_at": manifest["imported_at"],
-                    "master_set_sha256": manifest["master_set_sha256"],
-                    "masters": [
-                        {
-                            "name": item["name"],
-                            "role": item["role"],
-                            "bytes": item["bytes"],
-                            "audio": item["audio"],
-                        }
-                        for item in manifest["masters"]
-                    ],
-                    "annotations": annotations,
-                    "current_bytes_verified": False,
-                }
-            )
+            items.append(_library_item(manifest, annotations, entry.name))
     items.sort(key=lambda item: item["imported_at"], reverse=True)
     return {
         "schema_version": SCHEMA_VERSION,
@@ -625,9 +688,12 @@ def verify_material(
     manifest = _read_json_regular(directory / "manifest.json")
     if manifest.get("material_id") != material_id:
         raise H2IngestError("Materialmanifest gehört nicht zur angeforderten Material-ID.")
+    masters = manifest.get("masters")
+    if not isinstance(masters, list) or not masters:
+        raise H2IngestError("Materialmanifest enthält keine gültigen Master.")
     verified: list[dict[str, Any]] = []
     identity: list[dict[str, Any]] = []
-    for item in manifest.get("masters", []):
+    for item in masters:
         if not isinstance(item, dict):
             raise H2IngestError("Materialmanifest enthält einen ungültigen Master.")
         name = item.get("name")
@@ -649,6 +715,8 @@ def verify_material(
     expected_set = hashlib.sha256(_canonical_bytes(identity)).hexdigest()
     if expected_set != manifest.get("master_set_sha256"):
         raise H2IngestError("Master-Set stimmt nicht mit dem Importmanifest überein.")
+    if _material_id_for_master_set(expected_set) != material_id:
+        raise H2IngestError("Material-ID stimmt nicht mit dem verifizierten Master-Set überein.")
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "audio_material_verification",
