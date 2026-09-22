@@ -633,6 +633,10 @@ def _validated_h2_text(value: Any, *, maximum: int, field: str) -> str:
         or any(ord(character) == 127 for character in value)
     ):
         raise RequestRejected(f"remote H2 {field} is invalid")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise RequestRejected(f"remote H2 {field} is not valid UTF-8 text") from error
     return value
 
 

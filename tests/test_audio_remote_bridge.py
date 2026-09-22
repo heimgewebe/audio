@@ -390,8 +390,10 @@ class TargetValidationTests(unittest.TestCase):
             {"operation": "delete-source", "scene": "170926_191401"},
             {**annotated, "material_id": "bad"},
             {**annotated, "title": "x" * 161},
+            {**annotated, "title": "\ud800"},
             {**annotated, "note": "x" * 2001},
             {**annotated, "tags": ["x"] * 17},
+            {**annotated, "tags": ["\ud800"]},
         )
         for payload in rejected:
             with self.subTest(payload=payload), self.assertRaises(MODULE.RequestRejected):
@@ -1439,6 +1441,29 @@ class BridgeHTTPTests(unittest.TestCase):
             self.bridge._material_action_lock.release()
         self.assertEqual(h2_status, 409)
         self.assertEqual(len(FakeBackendHandler.records), h2_before)
+
+    def test_remote_h2_rejects_unencodable_annotation_before_backend_dispatch(self):
+        token = self.issue_remote_session()
+        headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        before = len(FakeBackendHandler.records)
+        body = (
+            '{"operation":"annotate","material_id":"'
+            + ("a" * 24)
+            + '","title":"\\ud800","note":"","tags":[]}'
+        ).encode("ascii")
+        status, _response_headers, _payload = self.request(
+            "POST",
+            MODULE.REMOTE_H2_ACTION_ROUTE,
+            headers=headers,
+            body=body,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(len(FakeBackendHandler.records), before)
 
     def test_remote_h2_workspace_media_and_actions_are_scoped_without_delete_authority(self):
         status, headers, payload = self.request("GET", "/api/v1/h2")
