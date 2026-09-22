@@ -7,6 +7,7 @@ import http.client
 import importlib.util
 import json
 import pathlib
+import re
 import sys
 import tempfile
 import threading
@@ -1131,6 +1132,107 @@ class BridgeHTTPTests(unittest.TestCase):
             45 + 30 + 30,
         )
 
+    def test_h2_media_backend_timeout_covers_source_and_archive_verification(self):
+        observed: list[float] = []
+
+        class TimeoutProbeConnection:
+            def __init__(self, _host, _port, *, timeout):
+                observed.append(timeout)
+
+            def putrequest(self, *_args, **_kwargs):
+                raise TimeoutError
+
+            def close(self):
+                return None
+
+        for path in (
+            "/api/v1/h2/source/170926_191401/audio/0",
+            "/api/v1/h2/material/" + "a" * 24 + "/audio/0",
+        ):
+            with self.subTest(path=path):
+                observed.clear()
+                with mock.patch.object(
+                    MODULE.http.client, "HTTPConnection", TimeoutProbeConnection
+                ):
+                    with self.assertRaises(MODULE.BackendFailure):
+                        MODULE.stream_backend_recording_artifact(
+                            mock.Mock(), path, {}, head_only=False
+                        )
+                self.assertEqual(observed, [MODULE.H2_MEDIA_BACKEND_TIMEOUT_SECONDS])
+        self.assertGreater(MODULE.H2_MEDIA_BACKEND_TIMEOUT_SECONDS, 120)
+
+    def test_h2_workspace_and_action_timeouts_cover_backend_contract(self):
+        observed: list[float] = []
+
+        class TimeoutProbeConnection:
+            def __init__(self, _host, _port, *, timeout):
+                observed.append(timeout)
+
+            def putrequest(self, *_args, **_kwargs):
+                raise TimeoutError
+
+            def close(self):
+                return None
+
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2", {})
+        self.assertEqual(observed, [MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS])
+        self.assertGreater(MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS, 30 + 30 + 1)
+
+        observed.clear()
+        with (
+            mock.patch.object(MODULE, "read_backend_action_token", return_value="x" * 32),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.write_backend_h2_action(
+                    {"operation": "import", "scene": "170926_191401"}
+                )
+        self.assertEqual(observed, [MODULE.H2_IMPORT_BACKEND_TIMEOUT_SECONDS])
+        self.assertGreater(MODULE.H2_IMPORT_BACKEND_TIMEOUT_SECONDS, 300 + 30 + 30 + 1)
+
+        observed.clear()
+        with (
+            mock.patch.object(MODULE, "read_backend_action_token", return_value="x" * 32),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.write_backend_h2_action(
+                    {
+                        "operation": "annotate",
+                        "material_id": "a" * 24,
+                        "title": "",
+                        "note": "",
+                        "tags": [],
+                    }
+                )
+        self.assertEqual(observed, [MODULE.H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS])
+        self.assertGreater(MODULE.H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS, 30 + 30 + 30 + 1)
+
+        app = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+
+        def ui_timeout(name: str) -> int:
+            match = re.search(rf"const {name} = ([0-9]+);", app)
+            self.assertIsNotNone(match)
+            assert match is not None
+            return int(match.group(1))
+
+        self.assertGreater(
+            ui_timeout("H2_WORKSPACE_TIMEOUT_MS"),
+            MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS * 1000,
+        )
+        self.assertGreater(
+            ui_timeout("H2_IMPORT_TIMEOUT_MS"),
+            (MODULE.H2_IMPORT_BACKEND_TIMEOUT_SECONDS + MODULE.BACKEND_TIMEOUT_SECONDS)
+            * 1000,
+        )
+        self.assertGreater(
+            ui_timeout("H2_ANNOTATE_TIMEOUT_MS"),
+            (MODULE.H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS + MODULE.BACKEND_TIMEOUT_SECONDS)
+            * 1000,
+        )
+
     def test_recording_prepare_timeout_covers_full_path_convergence_budget(self):
         self.assertEqual(
             MODULE.recording_backend_timeout_seconds("plan"),
@@ -1304,7 +1406,7 @@ class BridgeHTTPTests(unittest.TestCase):
                 "operation": "annotate",
                 "material_id": "a" * 24,
                 "title": "Metallgeländer",
-                "note": "kurzer Impuls",
+                "note": "erste Zeile\nzweite Zeile\tDetail",
                 "tags": ["Metall"],
             },
         ):

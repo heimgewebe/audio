@@ -432,7 +432,17 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('/api/v1/actions/h2', h2_router)
         self.assertIn('/bridge/v1/actions/h2', h2_router)
         self.assertIn('"X-Audio-Bridge-Session"', h2_router)
+        self.assertIn("H2_IMPORT_TIMEOUT_MS", h2_router)
+        self.assertIn("H2_ANNOTATE_TIMEOUT_MS", h2_router)
         self.assertNotIn("delete-source", h2_router)
+
+        h2_load = self.app.split("async function loadH2Workspace", 1)[1].split(
+            "\nasync function postH2Action", 1
+        )[0]
+        self.assertIn("timeoutMs: H2_WORKSPACE_TIMEOUT_MS", h2_load)
+        self.assertIn("const H2_WORKSPACE_TIMEOUT_MS = 90000;", self.app)
+        self.assertIn("const H2_IMPORT_TIMEOUT_MS = 420000;", self.app)
+        self.assertIn("const H2_ANNOTATE_TIMEOUT_MS = 150000;", self.app)
 
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
         controls = self.app.split("function renderRecordingControls(", 1)[1].split(
@@ -605,9 +615,41 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             'html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel)',
             styles,
         )
-        self.assertIn("function stopRemoteActivity()", self.app)
-        self.assertIn("state.snapshot = null;", self.app)
+        stop = self.app.split("function stopRemoteActivity() {", 1)[1].split(
+            "\n}\n\nfunction applyRuntimeMode", 1
+        )[0]
+        self.assertIn("state.snapshot = null;", stop)
+        self.assertIn("state.h2ActivitySequence += 1;", stop)
+        self.assertIn("state.h2Workspace = null;", stop)
+        self.assertIn("state.h2ActionPending = false;", stop)
+        self.assertIn('document.querySelectorAll("audio.h2-audio")', stop)
+        self.assertIn("audio.pause();", stop)
+        self.assertIn('audio.removeAttribute("src");', stop)
+        self.assertIn("audio.load();", stop)
+        self.assertIn("renderH2Workspace();", stop)
         self.assertIn('byId("local-device-boundary").hidden = backendAllowed();', self.app)
+
+    def test_h2_async_results_are_invalidated_when_backend_authority_changes(self):
+        load = self.app.split("async function loadH2Workspace", 1)[1].split(
+            "\nasync function postH2Action", 1
+        )[0]
+        self.assertIn("const activitySequence = ++state.h2ActivitySequence;", load)
+        self.assertGreaterEqual(
+            load.count(
+                "activitySequence !== state.h2ActivitySequence || !backendAllowed()"
+            ),
+            2,
+        )
+        action = self.app.split("async function runH2Action", 1)[1].split(
+            "\nfunction h2DisplayTimestamp", 1
+        )[0]
+        self.assertIn("const activitySequence = ++state.h2ActivitySequence;", action)
+        self.assertGreaterEqual(
+            action.count(
+                "activitySequence !== state.h2ActivitySequence || !backendAllowed()"
+            ),
+            2,
+        )
 
 
 class ServiceWorkerTests(unittest.TestCase):

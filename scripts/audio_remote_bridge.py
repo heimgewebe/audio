@@ -76,6 +76,16 @@ RECORDING_BACKEND_TIMEOUT_SECONDS = 120.0
 # bridge beyond that complete backend bound so successful convergence is not
 # misreported as a remote timeout.
 RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
+# H2 media validation may spend up to 120 s hashing an archived master before
+# response headers are available. Keep the bridge beyond that backend bound.
+H2_MEDIA_BACKEND_TIMEOUT_SECONDS = 130.0
+# H2 workspace may spend 30 s scanning the source plus 30 s reading the
+# library. A timed-out source scan can add the runner's bounded 1 s kill drain.
+H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS = 75.0
+# H2 actions synchronously return a fresh workspace: import is bounded at
+# 300 s and annotation at 30 s before the same ~61 s workspace budget.
+H2_IMPORT_BACKEND_TIMEOUT_SECONDS = 390.0
+H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS = 120.0
 REQUEST_IO_TIMEOUT_SECONDS = 6.0
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
@@ -619,7 +629,7 @@ def _validated_h2_text(value: Any, *, maximum: int, field: str) -> str:
     if (
         not isinstance(value, str)
         or len(value) > maximum
-        or any(ord(character) < 32 and character not in "\\n\\t" for character in value)
+        or any(ord(character) < 32 and character not in "\n\t" for character in value)
         or any(ord(character) == 127 for character in value)
     ):
         raise RequestRejected(f"remote H2 {field} is invalid")
@@ -708,10 +718,15 @@ def backend_request_headers(
 
 
 def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list[tuple[str, str]], bytes, int]:
+    backend_timeout_seconds = (
+        H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS
+        if target == "/api/v1/h2"
+        else BACKEND_TIMEOUT_SECONDS
+    )
     connection = http.client.HTTPConnection(
         BACKEND_HOST,
         BACKEND_PORT,
-        timeout=BACKEND_TIMEOUT_SECONDS,
+        timeout=backend_timeout_seconds,
     )
     try:
         connection.putrequest("GET", target, skip_host=True, skip_accept_encoding=True)
@@ -775,8 +790,13 @@ def stream_backend_recording_artifact(
         expected_content_type = "audio/wav"
     else:
         raise RequestRejected("audio media target is invalid")
+    backend_timeout_seconds = (
+        H2_MEDIA_BACKEND_TIMEOUT_SECONDS
+        if h2_source_media is not None or h2_material_media is not None
+        else BACKEND_TIMEOUT_SECONDS
+    )
     connection = http.client.HTTPConnection(
-        BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT_SECONDS
+        BACKEND_HOST, BACKEND_PORT, timeout=backend_timeout_seconds
     )
     response_started = False
     try:
@@ -1041,7 +1061,11 @@ def write_backend_recording_action(action: dict[str, Any]) -> tuple[int, bytes, 
 def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
     token = read_backend_action_token("h2")
     body = json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    timeout = 330.0 if action.get("operation") == "import" else 60.0
+    timeout = (
+        H2_IMPORT_BACKEND_TIMEOUT_SECONDS
+        if action.get("operation") == "import"
+        else H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS
+    )
     connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=timeout)
     try:
         connection.putrequest(
