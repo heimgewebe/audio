@@ -280,6 +280,7 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('bridgeMarker === "read-only-v1"', self.app)
         self.assertIn('bridgeMarker === "whale-action-v1"', self.app)
         self.assertIn('bridgeMarker === "recording-action-v1"', self.app)
+        self.assertIn('bridgeMarker === "h2-action-v1"', self.app)
         self.assertIn('response.headers.get("X-Audio-Remote-Effects") === "whale-v1"', self.app)
         self.assertIn('fetchJson("/bridge/v1/session"', self.app)
         session_loader = self.app.split('fetchJson("/bridge/v1/session"', 1)[1].split("});", 1)[0]
@@ -287,10 +288,12 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('body: "{}"', session_loader)
         self.assertIn('fetchJson("/bridge/v1/actions/whale"', self.app)
         self.assertIn('fetchJson("/bridge/v1/actions/recording"', self.app)
+        self.assertIn('fetchJson("/bridge/v1/actions/h2"', self.app)
         self.assertIn('fetchJson("/api/v1/recordings"', self.app)
+        self.assertIn('fetchJson("/api/v1/h2"', self.app)
         self.assertIn("audio.src = item.audio_url", self.app)
         self.assertIn('"X-Audio-Bridge-Session": state.remoteWhaleSessionToken', self.app)
-        self.assertIn("Recorderaktionen dürfen wirken", self.app)
+        self.assertIn("H2-Materialaktionen dürfen wirken", self.app)
 
     def test_local_mode_denies_native_hardware_authority_in_the_surface(self):
         for token in ("MOTU", "ALSA", "PipeWire", "Roland"):
@@ -339,6 +342,7 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('bridgeMarker === "read-only-v1"', fetch_block)
         self.assertIn('bridgeMarker === "whale-action-v1"', fetch_block)
         self.assertIn('bridgeMarker === "recording-action-v1"', fetch_block)
+        self.assertIn('bridgeMarker === "h2-action-v1"', fetch_block)
         self.assertIn("state.remoteBridgeProjection = true;", fetch_block)
         self.assertIn('response.headers.get("X-Audio-Remote-Effects") === "whale-v1"', fetch_block)
         self.assertIn("state.remoteWhaleActionObserved = true;", fetch_block)
@@ -407,6 +411,28 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('/api/v1/actions/recording', recorder_router)
         self.assertIn('/bridge/v1/actions/recording', recorder_router)
         self.assertIn('"X-Audio-Bridge-Session"', recorder_router)
+
+        local_h2_gate = self.app.split("function localH2ActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("directLoopbackControlOrigin() &&", local_h2_gate)
+        self.assertIn("h2_material_control === true", local_h2_gate)
+        self.assertIn("action_token.length >= 16", local_h2_gate)
+
+        remote_h2_gate = self.app.split("function remoteH2ActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("remoteWhaleSessionFresh()", remote_h2_gate)
+        self.assertIn('state.remoteActionScopes.includes("h2")', remote_h2_gate)
+        self.assertNotIn("action_token", remote_h2_gate)
+
+        h2_router = self.app.split("async function postH2Action(payload) {", 1)[1].split(
+            "\nasync function runH2Action", 1
+        )[0]
+        self.assertIn('/api/v1/actions/h2', h2_router)
+        self.assertIn('/bridge/v1/actions/h2', h2_router)
+        self.assertIn('"X-Audio-Bridge-Session"', h2_router)
+        self.assertNotIn("delete-source", h2_router)
 
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
         controls = self.app.split("function renderRecordingControls(", 1)[1].split(
@@ -542,6 +568,7 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             "  if (\n"
             "    state.loading ||\n"
             "    state.recordingActionPending ||\n"
+            "    state.h2ActionPending ||\n"
             "    state.dauersongActionPending ||\n"
             "    state.operatingModeActionPending ||\n"
             "    state.whaleActionPending ||\n"

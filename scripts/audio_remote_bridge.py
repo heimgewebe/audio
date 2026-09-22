@@ -32,17 +32,21 @@ CONTRACT_ID = "audiozentrale-remote-bridge-v1"
 BRIDGE_HEADER = "read-only-v1"
 BRIDGE_WHALE_ACTION_HEADER = "whale-action-v1"
 BRIDGE_RECORDING_ACTION_HEADER = "recording-action-v1"
+BRIDGE_H2_ACTION_HEADER = "h2-action-v1"
 REMOTE_EFFECTS_HEADER = "X-Audio-Remote-Effects"
 REMOTE_WHALE_EFFECTS_VALUE = "whale-v1"
 REMOTE_RECORDING_EFFECTS_VALUE = "recording-v1"
+REMOTE_H2_EFFECTS_VALUE = "h2-material-v1"
 REMOTE_SESSION_ROUTE = "/bridge/v1/session"
 REMOTE_WHALE_ACTION_ROUTE = "/bridge/v1/actions/whale"
 REMOTE_RECORDING_ACTION_ROUTE = "/bridge/v1/actions/recording"
+REMOTE_H2_ACTION_ROUTE = "/bridge/v1/actions/h2"
 REMOTE_ACTION_TOKEN_HEADER = "X-Audio-Bridge-Session"
 REMOTE_ACTION_SESSION_TTL_SECONDS = 15 * 60
 REMOTE_ACTION_SESSION_CAPACITY = 8
 MAX_ACTION_BODY_BYTES = 512
 MAX_RECORDING_ACTION_BODY_BYTES = 1024
+MAX_H2_ACTION_BODY_BYTES = 4096
 WHALE_ACTION_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
 WHALE_ACTION_OPERATIONS = frozenset({"start", "mode", "stop"})
 RECORDING_ACTION_MODES = frozenset({"voice", "piano-vocal"})
@@ -52,7 +56,10 @@ RECORDING_ACTION_OPERATIONS = frozenset(
 RECORDING_LIBRARY_CATEGORIES = frozenset(
     {"unsorted", "song", "practice", "idea", "test", "finished"}
 )
+H2_ACTION_OPERATIONS = frozenset({"import", "annotate"})
 RECORDING_SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
+H2_SCENE_RE = re.compile(r"^[0-9]{6}_[0-9]{6}$")
+H2_MATERIAL_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 REMOTE_TAILNET_HOST = "heim-pc.tail6dbb90.ts.net:9443"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8766
@@ -130,10 +137,17 @@ FIXED_API_ROUTES = frozenset(
         "/api/v1/replay",
         "/api/v1/whale/lesson",
         "/api/v1/recordings",
+        "/api/v1/h2",
     }
 )
 PROFILE_PLAN_RE = re.compile(r"^/api/v1/profiles/([^/]+)/plan$")
 RECORDING_MEDIA_RE = re.compile(r"^/api/v1/recordings/([0-9a-f]{24})/(audio|midi)$")
+H2_SOURCE_MEDIA_RE = re.compile(
+    r"^/api/v1/h2/source/([0-9]{6}_[0-9]{6})/audio/([0-9]{1,3})$"
+)
+H2_MATERIAL_MEDIA_RE = re.compile(
+    r"^/api/v1/h2/material/([0-9a-f]{24})/audio/([0-9]{1,3})$"
+)
 PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 FORBIDDEN_ENCODED_PATH_RE = re.compile(r"%(?:2f|5c)", re.IGNORECASE)
 SENSITIVE_KEY_TERMS = (
@@ -434,6 +448,22 @@ def validate_request_target(raw_target: str) -> tuple[str, bool]:
             f"/api/v1/recordings/{recording_media.group(1)}/{recording_media.group(2)}",
             True,
         )
+    h2_source_media = H2_SOURCE_MEDIA_RE.fullmatch(path)
+    if h2_source_media:
+        if query:
+            raise RouteDenied("H2 source media accepts no query")
+        return (
+            f"/api/v1/h2/source/{h2_source_media.group(1)}/audio/{h2_source_media.group(2)}",
+            True,
+        )
+    h2_material_media = H2_MATERIAL_MEDIA_RE.fullmatch(path)
+    if h2_material_media:
+        if query:
+            raise RouteDenied("H2 material media accepts no query")
+        return (
+            f"/api/v1/h2/material/{h2_material_media.group(1)}/audio/{h2_material_media.group(2)}",
+            True,
+        )
     match = PROFILE_PLAN_RE.fullmatch(path)
     if match:
         if query:
@@ -585,6 +615,61 @@ def validate_recording_action_payload(payload: bytes) -> dict[str, Any]:
     return result
 
 
+def _validated_h2_text(value: Any, *, maximum: int, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) > maximum
+        or any(ord(character) < 32 and character not in "\\n\\t" for character in value)
+        or any(ord(character) == 127 for character in value)
+    ):
+        raise RequestRejected(f"remote H2 {field} is invalid")
+    return value
+
+
+def validate_h2_action_payload(payload: bytes) -> dict[str, Any]:
+    if not payload or len(payload) > MAX_H2_ACTION_BODY_BYTES:
+        raise RequestRejected("remote H2 action body is outside the size contract")
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RequestRejected("remote H2 action body is invalid JSON") from error
+    if not isinstance(decoded, dict):
+        raise RequestRejected("remote H2 action body must be an object")
+    operation = decoded.get("operation")
+    if operation not in H2_ACTION_OPERATIONS:
+        raise RequestRejected("remote H2 operation is not allowlisted")
+    if operation == "import":
+        if set(decoded) != {"operation", "scene"}:
+            raise RequestRejected("remote H2 import fields do not match the contract")
+        scene = decoded.get("scene")
+        if not isinstance(scene, str) or H2_SCENE_RE.fullmatch(scene) is None:
+            raise RequestRejected("remote H2 scene is invalid")
+        return {"operation": "import", "scene": scene}
+
+    if set(decoded) != {"operation", "material_id", "title", "note", "tags"}:
+        raise RequestRejected("remote H2 annotation fields do not match the contract")
+    material_id = decoded.get("material_id")
+    if not isinstance(material_id, str) or H2_MATERIAL_ID_RE.fullmatch(material_id) is None:
+        raise RequestRejected("remote H2 material id is invalid")
+    tags = decoded.get("tags")
+    if (
+        not isinstance(tags, list)
+        or len(tags) > 16
+        or any(not isinstance(tag, str) or len(tag) > 48 for tag in tags)
+    ):
+        raise RequestRejected("remote H2 tags are invalid")
+    normalized_tags = [
+        _validated_h2_text(tag, maximum=48, field="tag") for tag in tags
+    ]
+    return {
+        "operation": "annotate",
+        "material_id": material_id,
+        "title": _validated_h2_text(decoded.get("title"), maximum=160, field="title"),
+        "note": _validated_h2_text(decoded.get("note"), maximum=2000, field="note"),
+        "tags": normalized_tags,
+    }
+
+
 def backend_request_headers(
     headers: Any,
     *,
@@ -682,9 +767,14 @@ def stream_backend_recording_artifact(
     head_only: bool,
 ) -> None:
     media = RECORDING_MEDIA_RE.fullmatch(target)
-    if media is None:
-        raise RequestRejected("recording media target is invalid")
-    expected_content_type = "audio/wav" if media.group(2) == "audio" else "audio/midi"
+    h2_source_media = H2_SOURCE_MEDIA_RE.fullmatch(target)
+    h2_material_media = H2_MATERIAL_MEDIA_RE.fullmatch(target)
+    if media is not None:
+        expected_content_type = "audio/wav" if media.group(2) == "audio" else "audio/midi"
+    elif h2_source_media is not None or h2_material_media is not None:
+        expected_content_type = "audio/wav"
+    else:
+        raise RequestRejected("audio media target is invalid")
     connection = http.client.HTTPConnection(
         BACKEND_HOST, BACKEND_PORT, timeout=BACKEND_TIMEOUT_SECONDS
     )
@@ -831,6 +921,9 @@ def read_backend_action_token(effect: str) -> str:
                 raise BackendFailure("backend recording control is not actionable")
             if not isinstance(recording, dict) or recording.get("actionable") is not True:
                 raise BackendFailure("backend recorder is not actionable")
+        elif effect == "h2":
+            if capabilities.get("h2_material_control") is not True:
+                raise BackendFailure("backend H2 material control is not actionable")
         else:
             raise BackendFailure("backend effect is not allowlisted")
         token = service.get("action_token") if isinstance(service, dict) else None
@@ -945,6 +1038,49 @@ def write_backend_recording_action(action: dict[str, Any]) -> tuple[int, bytes, 
         connection.close()
 
 
+def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
+    token = read_backend_action_token("h2")
+    body = json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    timeout = 330.0 if action.get("operation") == "import" else 60.0
+    connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=timeout)
+    try:
+        connection.putrequest(
+            "POST", "/api/v1/actions/h2", skip_host=True, skip_accept_encoding=True
+        )
+        connection.putheader("Host", f"{BACKEND_HOST}:{BACKEND_PORT}")
+        connection.putheader("Connection", "close")
+        connection.putheader("Origin", f"http://{BACKEND_HOST}:{BACKEND_PORT}")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", str(len(body)))
+        connection.putheader("X-Audio-Control-Token", token)
+        connection.endheaders(body)
+        response = connection.getresponse()
+        headers, payload = _bounded_backend_payload(response)
+        content_type = next(
+            (value for name, value in headers if name.lower() == "content-type"), ""
+        )
+        if content_type.lower().split(";", 1)[0].strip() != "application/json":
+            raise BackendFailure("backend H2 action response is not JSON")
+        scrubbed, redactions = encode_scrubbed_json(payload)
+        if response.status == HTTPStatus.OK:
+            decoded = json.loads(scrubbed.decode("utf-8"))
+            if (
+                not isinstance(decoded, dict)
+                or decoded.get("kind") != "audio_control_h2_action_result"
+                or decoded.get("operation") != action["operation"]
+                or not isinstance(decoded.get("workspace"), dict)
+                or decoded["workspace"].get("kind") != "audio_h2_workspace"
+            ):
+                raise BackendFailure("backend H2 action lacks bound workspace readback")
+        return response.status, scrubbed, redactions
+    except BackendFailure:
+        raise
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        raise BackendFailure("backend H2 action is unavailable") from error
+    finally:
+        connection.close()
+
+
 class AudioRemoteBridgeHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
@@ -1049,6 +1185,14 @@ class AudioRemoteBridgeHTTPServer(ThreadingHTTPServer):
             raise ActionBusy("another remote audio action is already in progress")
         try:
             return write_backend_recording_action(action)
+        finally:
+            self._action_lock.release()
+
+    def execute_h2_action(self, action: dict[str, Any]) -> tuple[int, bytes, int]:
+        if not self._action_lock.acquire(blocking=False):
+            raise ActionBusy("another remote audio action is already in progress")
+        try:
+            return write_backend_h2_action(action)
         finally:
             self._action_lock.release()
 
@@ -1190,19 +1334,23 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
                         "whale:mode",
                         "whale:stop",
                         "recording:plan",
+                        "recording:prepare",
                         "recording:start",
                         "recording:stop",
                         "recording:recover",
                         "recording:categorize",
                         "recording:trash",
                         "recording:restore",
+                        "h2:import",
+                        "h2:annotate",
                     ],
-                    "effect_exclusions": ["profiles", "routing", "devices", "system"],
+                    "effect_exclusions": ["profiles", "routing", "devices", "system", "h2:delete-source"],
                     "allowed_methods": ["GET", "HEAD", "POST"],
                     "remote_action": {
                         "session_route": REMOTE_SESSION_ROUTE,
                         "action_route": REMOTE_WHALE_ACTION_ROUTE,
                         "recording_action_route": REMOTE_RECORDING_ACTION_ROUTE,
+                        "h2_action_route": REMOTE_H2_ACTION_ROUTE,
                         "session_ttl_seconds": REMOTE_ACTION_SESSION_TTL_SECONDS,
                         "token_header": REMOTE_ACTION_TOKEN_HEADER,
                         "backend_token_exposed": False,
@@ -1274,10 +1422,11 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
                 {
                     "schema_version": 1,
                     "kind": "audio_remote_bridge_session",
-                    "effect_scope": ["whale", "recording"],
+                    "effect_scope": ["whale", "recording", "h2"],
                     "allowed_operations": {
                         "whale": sorted(WHALE_ACTION_OPERATIONS),
                         "recording": sorted(RECORDING_ACTION_OPERATIONS),
+                        "h2": sorted(H2_ACTION_OPERATIONS),
                     },
                     "session_token": token,
                     "expires_at_unix": expires,
@@ -1410,6 +1559,72 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
         )
         self.wfile.write(response_payload)
 
+    def _serve_h2_action(self) -> None:
+        try:
+            validate_remote_tailnet_origin(self.headers)
+            identity_sha256 = validated_tailscale_identity(self.headers)
+        except ActionDenied as error:
+            self._send_error(HTTPStatus.FORBIDDEN, str(error))
+            return
+        token_values = self.headers.get_all(REMOTE_ACTION_TOKEN_HEADER, [])
+        if (
+            len(token_values) != 1
+            or not self.server.action_session_valid(token_values[0], identity_sha256)
+        ):
+            self._send_error(
+                HTTPStatus.FORBIDDEN, "remote H2 action session is invalid or expired"
+            )
+            return
+        if self.headers.get_all("Transfer-Encoding", []):
+            self._send_error(HTTPStatus.BAD_REQUEST, "chunked remote H2 bodies are forbidden")
+            return
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote H2 action requires one Content-Length")
+            return
+        try:
+            length = int(lengths[0], 10)
+        except ValueError:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote H2 Content-Length is invalid")
+            return
+        if not 1 <= length <= MAX_H2_ACTION_BODY_BYTES:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote H2 body is outside the size contract")
+            return
+        content_types = self.headers.get_all("Content-Type", [])
+        if (
+            len(content_types) != 1
+            or content_types[0].split(";", 1)[0].strip().lower() != "application/json"
+        ):
+            self._send_error(
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                "remote H2 action requires application/json",
+            )
+            return
+        payload = self.rfile.read(length)
+        if len(payload) != length:
+            self._send_error(HTTPStatus.BAD_REQUEST, "remote H2 action body is incomplete")
+            return
+        try:
+            action = validate_h2_action_payload(payload)
+            status, response_payload, redactions = self.server.execute_h2_action(action)
+        except RequestRejected as error:
+            self._send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        except ActionBusy as error:
+            self._send_error(HTTPStatus.CONFLICT, str(error))
+            return
+        except BackendFailure as error:
+            self._send_error(HTTPStatus.BAD_GATEWAY, str(error))
+            return
+        self._send_headers(
+            status,
+            content_length=len(response_payload),
+            redactions=redactions,
+            bridge_marker=BRIDGE_H2_ACTION_HEADER,
+            remote_effect=REMOTE_H2_EFFECTS_VALUE,
+        )
+        self.wfile.write(response_payload)
+
     def _serve(self, *, head_only: bool) -> None:
         if self.headers.get_all("Transfer-Encoding", []):
             self._send_error(
@@ -1431,7 +1646,11 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
             return
         try:
             target, _is_api = validate_request_target(self.path)
-            if RECORDING_MEDIA_RE.fullmatch(target):
+            if (
+                RECORDING_MEDIA_RE.fullmatch(target)
+                or H2_SOURCE_MEDIA_RE.fullmatch(target)
+                or H2_MATERIAL_MEDIA_RE.fullmatch(target)
+            ):
                 stream_backend_recording_artifact(
                     self, target, self.headers, head_only=head_only
                 )
@@ -1470,6 +1689,9 @@ class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):
             return
         if self.path == REMOTE_RECORDING_ACTION_ROUTE:
             self._serve_recording_action()
+            return
+        if self.path == REMOTE_H2_ACTION_ROUTE:
+            self._serve_h2_action()
             return
         self._method_not_allowed()
 
@@ -1519,9 +1741,12 @@ def main(argv: list[str] | None = None) -> int:
                         "whale:mode",
                         "whale:stop",
                         "recording:plan",
+                        "recording:prepare",
                         "recording:start",
                         "recording:stop",
                         "recording:recover",
+                        "h2:import",
+                        "h2:annotate",
                     ],
                 },
                 sort_keys=True,

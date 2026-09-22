@@ -44,6 +44,7 @@ WHALE_LESSON_SCRIPT = ROOT / "scripts" / "whale_learning_lesson.py"
 LIVE_TELEMETRY_SCRIPT = ROOT / "scripts" / "audio_live_telemetry.py"
 RECORDING_SCRIPT = ROOT / "scripts" / "audio-record"
 RECORDING_PRODUCT_SCRIPT = ROOT / "scripts" / "recording_product.py"
+H2_INGEST_SCRIPT = ROOT / "scripts" / "h2_ingest.py"
 VOICE_CAPTURE_OBSERVER_SCRIPT = ROOT / "scripts" / "voice_capture_observer.py"
 RATE_POLICY_OBSERVER_SCRIPT = ROOT / "scripts" / "rate_policy_observer.py"
 LABORATORY_GATE_SCRIPT = ROOT / "scripts" / "laboratory_gate.py"
@@ -303,6 +304,8 @@ _STATE_HOME = pathlib.Path(
 ).expanduser()
 PROFILE_TRANSITION_STATE_ROOT = _STATE_HOME / "audio" / "profile-transitions-v1"
 STATIC_RECORDING_OUTPUT_ROOT = pathlib.Path.home() / "Music" / "Audio-Aufnahmen"
+STATIC_H2_LIBRARY_ROOT = STATIC_RECORDING_OUTPUT_ROOT / "H2-Material"
+STATIC_H2_SOURCE_ROOT = pathlib.Path("/media") / pathlib.Path.home().name / "ZOOM_H2E"
 STATIC_RECORDING_STATE_ROOT = (
     pathlib.Path.home() / ".local" / "state" / "audio" / "recordings-v1"
 )
@@ -331,6 +334,12 @@ RECORDING_STATE_ROOT = (
 RECORDING_SESSION_ID_RE = re.compile(r"[0-9a-f]{24}")
 RECORDING_MEDIA_PATH_RE = re.compile(
     rf"^/api/{API_VERSION}/recordings/([0-9a-f]{{24}})/(audio|midi)$"
+)
+H2_SOURCE_MEDIA_PATH_RE = re.compile(
+    rf"^/api/{API_VERSION}/h2/source/([0-9]{{6}}_[0-9]{{6}})/audio/([0-9]{{1,3}})$"
+)
+H2_MATERIAL_MEDIA_PATH_RE = re.compile(
+    rf"^/api/{API_VERSION}/h2/material/([0-9a-f]{{24}})/audio/([0-9]{{1,3}})$"
 )
 MAX_DEPLOY_RECEIPT_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 4096
@@ -3049,6 +3058,7 @@ class AudioControl:
         self._snapshot_lock = threading.Lock()
         self._action_lock = threading.Lock()
         self._plan_lock = threading.Lock()
+        self._material_action_lock = threading.Lock()
         self._cached_at = 0.0
         self._cached_snapshot: dict[str, Any] | None = None
         self.telemetry = (
@@ -3502,6 +3512,333 @@ class AudioControl:
             return projected
         finally:
             self._plan_lock.release()
+
+    def _run_h2_command(
+        self,
+        arguments: list[str],
+        *,
+        timeout: int,
+        label: str,
+        fallback: str,
+    ) -> dict[str, Any]:
+        result = self.runner.run(
+            [sys.executable, str(H2_INGEST_SCRIPT), *arguments],
+            timeout=timeout,
+        )
+        report = parse_json_output(result, label=label)
+        if result.returncode != 0:
+            raise ControlError(safe_error_message(report, fallback))
+        return report
+
+    @staticmethod
+    def _validate_h2_scan(report: dict[str, Any]) -> None:
+        if (
+            report.get("schema_version") != 1
+            or report.get("kind") != "audio_h2_source_scan"
+            or report.get("read_only") is not True
+            or report.get("source_mutated") is not False
+            or not isinstance(report.get("sessions"), list)
+            or report.get("count") != len(report["sessions"])
+        ):
+            raise ControlError("H2-Scanner lieferte keinen gültigen Quellzustand.")
+        for item in report["sessions"]:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("scene"), str)
+                or re.fullmatch(r"[0-9]{6}_[0-9]{6}", item["scene"]) is None
+                or not isinstance(item.get("recorded_date"), str)
+                or not isinstance(item.get("recorded_time"), str)
+                or isinstance(item.get("duration_seconds"), bool)
+                or not isinstance(item.get("duration_seconds"), (int, float))
+                or item["duration_seconds"] <= 0
+                or not isinstance(item.get("roles"), list)
+                or not item["roles"]
+                or not isinstance(item.get("segment_count"), int)
+                or isinstance(item.get("segment_count"), bool)
+                or item["segment_count"] < 1
+            ):
+                raise ControlError("H2-Scanner lieferte eine ungültige Session.")
+
+    @staticmethod
+    def _validate_h2_library(report: dict[str, Any]) -> None:
+        if (
+            report.get("schema_version") != 1
+            or report.get("kind") != "audio_material_library"
+            or report.get("read_only") is not True
+            or not isinstance(report.get("items"), list)
+            or report.get("count") != len(report["items"])
+        ):
+            raise ControlError("H2-Materialbibliothek ist nicht sicher lesbar.")
+        for item in report["items"]:
+            annotations = item.get("annotations") if isinstance(item, dict) else None
+            source = item.get("source") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("material_id"), str)
+                or re.fullmatch(r"[0-9a-f]{24}", item["material_id"]) is None
+                or not isinstance(source, dict)
+                or not isinstance(source.get("scene"), str)
+                or not isinstance(annotations, dict)
+                or not isinstance(annotations.get("title"), str)
+                or not isinstance(annotations.get("note"), str)
+                or not isinstance(annotations.get("tags"), list)
+                or not all(isinstance(tag, str) for tag in annotations["tags"])
+                or not isinstance(item.get("masters"), list)
+                or not item["masters"]
+            ):
+                raise ControlError("H2-Materialbibliothek enthält ein ungültiges Objekt.")
+
+    def h2_workspace(self) -> dict[str, Any]:
+        try:
+            source_report = self._run_h2_command(
+                ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
+                timeout=30,
+                label="H2-Scanner",
+                fallback="H2 ist nicht als Datei-Quelle verfügbar.",
+            )
+            self._validate_h2_scan(source_report)
+        except ControlError as error:
+            source_projection: dict[str, Any] = {
+                "status": "unavailable",
+                "count": 0,
+                "sessions": [],
+                "error": str(error),
+            }
+        else:
+            source_projection = {
+                "status": "ready",
+                "count": source_report["count"],
+                "device": source_report.get("device"),
+                "sessions": [
+                    {
+                        "scene": item["scene"],
+                        "recorded_date": item["recorded_date"],
+                        "recorded_time": item["recorded_time"],
+                        "duration_seconds": item["duration_seconds"],
+                        "sample_rate_hz": item.get("sample_rate_hz"),
+                        "roles": item["roles"],
+                        "segment_count": item["segment_count"],
+                        "audio_url": (
+                            f"/api/{API_VERSION}/h2/source/{item['scene']}/audio/0"
+                        ),
+                    }
+                    for item in reversed(source_report["sessions"])
+                ],
+            }
+
+        library_report = self._run_h2_command(
+            ["library", "--library-root", str(STATIC_H2_LIBRARY_ROOT)],
+            timeout=30,
+            label="H2-Materialbibliothek",
+            fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
+        )
+        self._validate_h2_library(library_report)
+        imported_scenes = {
+            item["source"]["scene"]
+            for item in library_report["items"]
+            if isinstance(item.get("source"), dict)
+            and isinstance(item["source"].get("scene"), str)
+        }
+        for session in source_projection["sessions"]:
+            session["already_imported"] = session["scene"] in imported_scenes
+
+        items: list[dict[str, Any]] = []
+        for item in library_report["items"]:
+            source = item["source"]
+            segment_count = max(
+                (
+                    master.get("segment_index", 0)
+                    for master in item["masters"]
+                    if isinstance(master, dict)
+                ),
+                default=0,
+            ) + 1
+            items.append(
+                {
+                    "material_id": item["material_id"],
+                    "source": source,
+                    "imported_at": item.get("imported_at"),
+                    "annotations": item["annotations"],
+                    "roles": sorted(
+                        {
+                            master.get("role")
+                            for master in item["masters"]
+                            if isinstance(master, dict)
+                            and master.get("role") in {"front", "rear", "mix"}
+                        }
+                    ),
+                    "segment_count": segment_count,
+                    "audio_url": (
+                        f"/api/{API_VERSION}/h2/material/{item['material_id']}/audio/0"
+                    ),
+                }
+            )
+        return {
+            "schema_version": 1,
+            "kind": "audio_h2_workspace",
+            "source": source_projection,
+            "library": {"count": len(items), "items": items},
+            "source_delete_authorized": False,
+            "creative_handoff_authorized": False,
+        }
+
+    @staticmethod
+    def _validate_h2_media_binding(
+        report: dict[str, Any],
+        *,
+        expected_kind: str,
+        root: pathlib.Path,
+    ) -> None:
+        path_value = report.get("path")
+        if (
+            report.get("schema_version") != 1
+            or report.get("kind") != expected_kind
+            or report.get("verified_current") is not True
+            or not isinstance(path_value, str)
+            or not pathlib.Path(path_value).is_absolute()
+            or not isinstance(report.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", report["sha256"]) is None
+            or not isinstance(report.get("bytes"), int)
+            or isinstance(report.get("bytes"), bool)
+            or report["bytes"] <= 0
+            or not isinstance(report.get("device"), int)
+            or not isinstance(report.get("inode"), int)
+            or not isinstance(report.get("mtime_ns"), int)
+        ):
+            raise ControlError("H2-Medienbindung ist strukturell ungültig.")
+        try:
+            resolved = pathlib.Path(path_value).resolve(strict=True)
+            root_resolved = root.resolve(strict=True)
+        except OSError as error:
+            raise ControlError("H2-Medienbindung ist nicht aktuell lesbar.") from error
+        if not resolved.is_relative_to(root_resolved):
+            raise ControlError("H2-Medienbindung liegt außerhalb des erlaubten Roots.")
+
+    def verified_h2_source_media(self, scene: str, segment_index: int) -> dict[str, Any]:
+        report = self._run_h2_command(
+            [
+                "source-media",
+                scene,
+                str(segment_index),
+                "--source-root",
+                str(STATIC_H2_SOURCE_ROOT),
+            ],
+            timeout=60,
+            label="H2-Vorschau",
+            fallback="H2-Aufnahme ist nicht sicher abspielbar.",
+        )
+        self._validate_h2_media_binding(
+            report,
+            expected_kind="audio_h2_source_media_binding",
+            root=STATIC_H2_SOURCE_ROOT,
+        )
+        return report
+
+    def verified_h2_material_media(
+        self, material_id: str, segment_index: int
+    ) -> dict[str, Any]:
+        report = self._run_h2_command(
+            [
+                "material-media",
+                material_id,
+                str(segment_index),
+                "--library-root",
+                str(STATIC_H2_LIBRARY_ROOT),
+            ],
+            timeout=120,
+            label="H2-Material",
+            fallback="H2-Material ist nicht sicher abspielbar.",
+        )
+        self._validate_h2_media_binding(
+            report,
+            expected_kind="audio_h2_material_media_binding",
+            root=STATIC_H2_LIBRARY_ROOT,
+        )
+        return report
+
+    def perform_h2_action(self, payload: dict[str, Any]) -> dict[str, Any]:
+        operation = payload.get("operation")
+        if operation == "import":
+            if set(payload) != {"operation", "scene"}:
+                raise ControlError("H2-Import enthält unbekannte oder fehlende Felder.")
+            scene = payload.get("scene")
+            if (
+                not isinstance(scene, str)
+                or re.fullmatch(r"[0-9]{6}_[0-9]{6}", scene) is None
+            ):
+                raise ControlError("Ungültige H2-Szene.")
+            command = [
+                "import",
+                scene,
+                "--source-root",
+                str(STATIC_H2_SOURCE_ROOT),
+                "--library-root",
+                str(STATIC_H2_LIBRARY_ROOT),
+            ]
+            timeout = 300
+            label = "H2-Import"
+            fallback = "H2-Aufnahme konnte nicht sicher archiviert werden."
+        elif operation == "annotate":
+            if set(payload) != {"operation", "material_id", "title", "note", "tags"}:
+                raise ControlError(
+                    "H2-Metadatenaktion enthält unbekannte oder fehlende Felder."
+                )
+            material_id = payload.get("material_id")
+            title = payload.get("title")
+            note = payload.get("note")
+            tags = payload.get("tags")
+            if (
+                not isinstance(material_id, str)
+                or re.fullmatch(r"[0-9a-f]{24}", material_id) is None
+                or not isinstance(title, str)
+                or not isinstance(note, str)
+                or not isinstance(tags, list)
+                or not all(isinstance(tag, str) for tag in tags)
+            ):
+                raise ControlError("H2-Metadaten sind ungültig.")
+            command = [
+                "annotate",
+                material_id,
+                "--title",
+                title,
+                "--note",
+                note,
+                "--tags-json",
+                json.dumps(tags, ensure_ascii=False, separators=(",", ":")),
+                "--library-root",
+                str(STATIC_H2_LIBRARY_ROOT),
+            ]
+            timeout = 30
+            label = "H2-Metadaten"
+            fallback = "H2-Metadaten konnten nicht sicher gespeichert werden."
+        else:
+            raise ControlError("Unbekannte H2-Aktion.")
+
+        if not self._material_action_lock.acquire(blocking=False):
+            raise ActionBusy("Eine andere H2-Materialaktion läuft bereits.")
+        try:
+            report = self._run_h2_command(
+                command,
+                timeout=timeout,
+                label=label,
+                fallback=fallback,
+            )
+            expected_kind = (
+                "audio_h2_import_result"
+                if operation == "import"
+                else "audio_material_annotation_result"
+            )
+            if report.get("schema_version") != 1 or report.get("kind") != expected_kind:
+                raise ControlError("H2-Aktion lieferte keinen gültigen Ergebnisbeleg.")
+            return {
+                "schema_version": 1,
+                "kind": "audio_control_h2_action_result",
+                "operation": operation,
+                "result": report,
+                "workspace": self.h2_workspace(),
+            }
+        finally:
+            self._material_action_lock.release()
 
     def verified_recording_media(self, session_id: Any) -> dict[str, Any]:
         safe_id = _validate_recording_session_id(session_id)
@@ -4709,6 +5046,7 @@ class AudioControl:
                 "profile_apply": False,
                 "operating_mode_transition": True,
                 "recording_control": recording_status == "ok",
+                "h2_material_control": True,
                 "dauersong_control": dauersong_status == "ok",
             },
         }
@@ -5469,6 +5807,123 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             if descriptor is not None:
                 os.close(descriptor)
 
+    def _serve_h2_artifact(
+        self,
+        binding: dict[str, Any],
+        *,
+        imported: bool,
+        head_only: bool,
+    ) -> None:
+        descriptor: int | None = None
+        response_started = False
+        try:
+            descriptor = os.open(
+                binding["path"],
+                os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+            )
+            metadata = os.fstat(descriptor)
+            mode = stat.S_IMODE(metadata.st_mode)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or metadata.st_dev != binding["device"]
+                or metadata.st_ino != binding["inode"]
+                or metadata.st_size != binding["bytes"]
+                or metadata.st_mtime_ns != binding["mtime_ns"]
+                or (imported and mode != 0o440)
+            ):
+                raise ControlError(
+                    "H2-Audio änderte sich zwischen Verifikation und Öffnen."
+                )
+            digest = hashlib.sha256()
+            observed_bytes = 0
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                observed_bytes += len(chunk)
+                digest.update(chunk)
+            if (
+                observed_bytes != binding["bytes"]
+                or digest.hexdigest() != binding["sha256"]
+            ):
+                raise ControlError("H2-Audio änderte seinen Inhalt vor der Ausgabe.")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            etag = f'"{binding["sha256"]}"'
+            if self.headers.get("If-None-Match") == etag:
+                self._send_headers(
+                    HTTPStatus.NOT_MODIFIED,
+                    content_type="audio/wav",
+                    content_length=0,
+                    cache_control="no-cache",
+                    etag=etag,
+                    accept_ranges="bytes",
+                )
+                return
+            start = 0
+            end = binding["bytes"] - 1
+            status = HTTPStatus.OK
+            range_values = self.headers.get_all("Range", [])
+            if range_values:
+                try:
+                    if len(range_values) != 1:
+                        raise ValueError("duplicate byte range")
+                    start, end = parse_single_byte_range(
+                        range_values[0], binding["bytes"]
+                    )
+                except ValueError:
+                    self._send_headers(
+                        HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+                        content_type="audio/wav",
+                        content_length=0,
+                        cache_control="no-cache",
+                        etag=etag,
+                        accept_ranges="bytes",
+                        content_range=f"bytes */{binding['bytes']}",
+                    )
+                    return
+                status = HTTPStatus.PARTIAL_CONTENT
+            length = end - start + 1
+            response_started = True
+            self._send_headers(
+                status,
+                content_type="audio/wav",
+                content_length=length,
+                cache_control="no-cache",
+                etag=etag,
+                accept_ranges="bytes",
+                content_range=(
+                    f"bytes {start}-{end}/{binding['bytes']}"
+                    if status == HTTPStatus.PARTIAL_CONTENT
+                    else None
+                ),
+            )
+            if head_only:
+                return
+            os.lseek(descriptor, start, os.SEEK_SET)
+            remaining = length
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    raise ConnectionError(
+                        "H2-Audio endete während der Ausgabe unerwartet."
+                    )
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+        except (ControlError, OSError) as error:
+            if not response_started and not self.wfile.closed:
+                self._send_error_json(
+                    HTTPStatus.CONFLICT,
+                    "h2_media_changed",
+                    str(error),
+                    head_only=head_only,
+                )
+            else:
+                self.close_connection = True
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
     def _get(self, *, head_only: bool = False) -> None:
         if self._reject_nonlocal_host():
             return
@@ -5579,6 +6034,77 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, lesson, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/h2":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Der H2-Arbeitsbereich akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                workspace = self.server.controller.h2_workspace()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_workspace_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, workspace, head_only=head_only)
+            return
+        source_media = H2_SOURCE_MEDIA_PATH_RE.fullmatch(parsed.path)
+        if source_media is not None:
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "H2-Vorschau akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            scene, segment_raw = source_media.groups()
+            try:
+                binding = self.server.controller.verified_h2_source_media(
+                    scene, int(segment_raw, 10)
+                )
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.CONFLICT,
+                    "h2_source_media_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._serve_h2_artifact(binding, imported=False, head_only=head_only)
+            return
+        material_media = H2_MATERIAL_MEDIA_PATH_RE.fullmatch(parsed.path)
+        if material_media is not None:
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "H2-Materialwiedergabe akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            material_id, segment_raw = material_media.groups()
+            try:
+                binding = self.server.controller.verified_h2_material_media(
+                    material_id, int(segment_raw, 10)
+                )
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.CONFLICT,
+                    "h2_material_media_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._serve_h2_artifact(binding, imported=True, head_only=head_only)
             return
         if parsed.path == f"/api/{API_VERSION}/recordings":
             if parsed.query:
@@ -5730,6 +6256,7 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 f"/api/{API_VERSION}/actions/dauersong",
                 f"/api/{API_VERSION}/actions/recording",
                 f"/api/{API_VERSION}/actions/operating-mode",
+                f"/api/{API_VERSION}/actions/h2",
             }
             or parsed.query
         ):
@@ -5828,6 +6355,8 @@ class AudioControlHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == f"/api/{API_VERSION}/actions/recording":
                 result = self.server.controller.perform_recording_action(payload)
+            elif parsed.path == f"/api/{API_VERSION}/actions/h2":
+                result = self.server.controller.perform_h2_action(payload)
             elif parsed.path == f"/api/{API_VERSION}/actions/dauersong":
                 result = self.server.controller.perform_dauersong_action(payload)
             elif parsed.path == f"/api/{API_VERSION}/actions/operating-mode":
@@ -6131,6 +6660,7 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
         "/api/v1/actions/dauersong",
         "/api/v1/actions/operating-mode",
         "/api/v1/actions/recording",
+        "/api/v1/actions/h2",
         "/api/v1/actions/whale",
     }
     missing_action_endpoints = required_action_endpoints - action_endpoints
@@ -6146,6 +6676,10 @@ def validate_repository_contract(*, require_live_telemetry: bool = True) -> dict
         )
     if "/api/v1/recordings" not in javascript:
         raise ControlError("UI ist nicht an die Recorderbibliothek gebunden.")
+    if "/api/v1/h2" not in javascript or "/api/v1/actions/h2" not in javascript:
+        raise ControlError("UI ist nicht an den H2-Materialvertrag gebunden.")
+    if 'id=\"h2-material-workspace\"' not in index:
+        raise ControlError("UI enthält keinen H2-Materialarbeitsbereich.")
     try:
         replay = TELEMETRY_REPLAY.load_replay_contract()
     except TELEMETRY_REPLAY.ReplayError as error:

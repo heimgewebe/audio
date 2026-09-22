@@ -56,17 +56,20 @@ class ContractTests(unittest.TestCase):
                 "whale:mode",
                 "whale:stop",
                 "recording:plan",
+                "recording:prepare",
                 "recording:start",
                 "recording:stop",
                 "recording:recover",
                 "recording:categorize",
                 "recording:trash",
                 "recording:restore",
+                "h2:import",
+                "h2:annotate",
             ],
         )
         self.assertEqual(
             contract["bridge"]["effect_exclusions"],
-            ["profiles", "routing", "devices", "system"],
+            ["profiles", "routing", "devices", "system", "h2:delete-source"],
         )
         self.assertIs(contract["bridge"]["backend_remote_exposure"], False)
         for name, value in contract["runtime_acceptance"].items():
@@ -122,6 +125,17 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(remote_action["action_route"], MODULE.REMOTE_WHALE_ACTION_ROUTE)
         self.assertEqual(
             remote_action["recording_action_route"], MODULE.REMOTE_RECORDING_ACTION_ROUTE
+        )
+        self.assertEqual(remote_action["h2_action_route"], MODULE.REMOTE_H2_ACTION_ROUTE)
+        self.assertEqual(remote_action["h2_max_body_bytes"], MODULE.MAX_H2_ACTION_BODY_BYTES)
+        self.assertEqual(set(remote_action["h2_operations"]), MODULE.H2_ACTION_OPERATIONS)
+        self.assertEqual(
+            contract["bridge"]["h2_source_media_pattern"],
+            "/api/v1/h2/source/{scene}/audio/{segment_index}",
+        )
+        self.assertEqual(
+            contract["bridge"]["h2_material_media_pattern"],
+            "/api/v1/h2/material/{material_id}/audio/{segment_index}",
         )
         self.assertEqual(remote_action["tailnet_host"], MODULE.REMOTE_TAILNET_HOST)
         self.assertEqual(remote_action["session_header"], MODULE.REMOTE_ACTION_TOKEN_HEADER)
@@ -234,6 +248,17 @@ class TargetValidationTests(unittest.TestCase):
             ),
             ("/api/v1/recordings/0123456789abcdef01234567/midi", True),
         )
+        self.assertEqual(MODULE.validate_request_target("/api/v1/h2"), ("/api/v1/h2", True))
+        self.assertEqual(
+            MODULE.validate_request_target("/api/v1/h2/source/170926_191401/audio/0"),
+            ("/api/v1/h2/source/170926_191401/audio/0", True),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target(
+                "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/12"
+            ),
+            ("/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/12", True),
+        )
 
     def test_unknown_queries_and_separator_bypasses_fail_closed(self):
         rejected = (
@@ -247,6 +272,10 @@ class TargetValidationTests(unittest.TestCase):
             "/api/v1/recordings/0123456789abcdef01234567/audio?x=1",
             "/api/v1/recordings/0123456789abcdef0123456g/audio",
             "/api/v1/recordings/%2e%2e/audio",
+            "/api/v1/h2/source/bad/audio/0",
+            "/api/v1/h2/source/170926_191401/audio/1000",
+            "/api/v1/h2/material/nothex/audio/0",
+            "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0?download=1",
             "http://example.invalid/app.js",
         )
         for target in rejected:
@@ -323,6 +352,36 @@ class TargetValidationTests(unittest.TestCase):
         for payload in rejected:
             with self.subTest(payload=payload), self.assertRaises(MODULE.RequestRejected):
                 MODULE.validate_recording_action_payload(json.dumps(payload).encode())
+
+    def test_h2_payload_validation_is_exact_and_fail_closed(self):
+        imported = {"operation": "import", "scene": "170926_191401"}
+        self.assertEqual(
+            MODULE.validate_h2_action_payload(json.dumps(imported).encode()),
+            imported,
+        )
+        annotated = {
+            "operation": "annotate",
+            "material_id": "a" * 24,
+            "title": "Metallgeländer",
+            "note": "kurzer Impuls",
+            "tags": ["Metall", "perkussiv"],
+        }
+        self.assertEqual(
+            MODULE.validate_h2_action_payload(json.dumps(annotated).encode()),
+            annotated,
+        )
+        rejected = (
+            {"operation": "import", "scene": "../x"},
+            {"operation": "import", "scene": "170926_191401", "delete": True},
+            {"operation": "delete-source", "scene": "170926_191401"},
+            {**annotated, "material_id": "bad"},
+            {**annotated, "title": "x" * 161},
+            {**annotated, "note": "x" * 2001},
+            {**annotated, "tags": ["x"] * 17},
+        )
+        for payload in rejected:
+            with self.subTest(payload=payload), self.assertRaises(MODULE.RequestRejected):
+                MODULE.validate_h2_action_payload(json.dumps(payload).encode())
 
     def test_configuration_is_fixed_loopback_only(self):
         MODULE.validate_configuration("127.0.0.1", 8766, "127.0.0.1", 8765)
@@ -404,7 +463,11 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                     "snapshot": {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "capabilities": {
+                            "whale_control": True,
+                            "recording_control": True,
+                            "h2_material_control": True,
+                        },
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -444,7 +507,11 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                     "snapshot": {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "capabilities": {
+                            "whale_control": True,
+                            "recording_control": True,
+                            "h2_material_control": True,
+                        },
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -457,6 +524,24 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                     },
                 }
             response = json.dumps(result, sort_keys=True).encode("utf-8")
+        elif self.path == "/api/v1/actions/h2":
+            action = json.loads(body.decode("utf-8"))
+            status = 200
+            response = json.dumps(
+                {
+                    "kind": "audio_control_h2_action_result",
+                    "operation": action["operation"],
+                    "workspace": {
+                        "schema_version": 1,
+                        "kind": "audio_h2_workspace",
+                        "source": {"status": "ready", "count": 1, "sessions": []},
+                        "library": {"count": 1, "items": []},
+                        "source_delete_authorized": False,
+                        "creative_handoff_authorized": False,
+                    },
+                },
+                sort_keys=True,
+            ).encode("utf-8")
         else:
             status = 404
             response = b"{}\n"
@@ -493,7 +578,11 @@ class BridgeHTTPTests(unittest.TestCase):
                     {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "capabilities": {
+                            "whale_control": True,
+                            "recording_control": True,
+                            "h2_material_control": True,
+                        },
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -511,7 +600,11 @@ class BridgeHTTPTests(unittest.TestCase):
                     {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "capabilities": {
+                            "whale_control": True,
+                            "recording_control": True,
+                            "h2_material_control": True,
+                        },
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -574,6 +667,58 @@ class BridgeHTTPTests(unittest.TestCase):
                     ("Content-Range", "bytes 0-3/16"),
                 ],
                 b"MThd",
+            ),
+            "/api/v1/h2": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_workspace",
+                        "source": {
+                            "status": "ready",
+                            "count": 1,
+                            "sessions": [
+                                {
+                                    "scene": "170926_191401",
+                                    "audio_url": "/api/v1/h2/source/170926_191401/audio/0",
+                                }
+                            ],
+                        },
+                        "library": {
+                            "count": 1,
+                            "items": [
+                                {
+                                    "material_id": "a" * 24,
+                                    "audio_url": "/api/v1/h2/material/" + "a" * 24 + "/audio/0",
+                                }
+                            ],
+                        },
+                        "source_delete_authorized": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/source/170926_191401/audio/0": (
+                206,
+                [
+                    ("Content-Type", "audio/wav"),
+                    ("Cache-Control", "no-cache"),
+                    ("ETag", '"h2-source"'),
+                    ("Accept-Ranges", "bytes"),
+                    ("Content-Range", "bytes 0-3/16"),
+                ],
+                b"RIFF",
+            ),
+            "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0": (
+                206,
+                [
+                    ("Content-Type", "audio/wav"),
+                    ("Cache-Control", "no-cache"),
+                    ("ETag", '"h2-material"'),
+                    ("Accept-Ranges", "bytes"),
+                    ("Content-Range", "bytes 0-3/16"),
+                ],
+                b"RIFF",
             ),
             "/app.js": (
                 200,
@@ -819,7 +964,7 @@ class BridgeHTTPTests(unittest.TestCase):
         )
         session = json.loads(payload)
         self.assertEqual(session["kind"], "audio_remote_bridge_session")
-        self.assertEqual(session["effect_scope"], ["whale", "recording"])
+        self.assertEqual(session["effect_scope"], ["whale", "recording", "h2"])
         self.assertEqual(
             set(session["allowed_operations"]["whale"]), {"start", "mode", "stop"}
         )
@@ -827,6 +972,7 @@ class BridgeHTTPTests(unittest.TestCase):
             set(session["allowed_operations"]["recording"]),
             {"plan", "prepare", "start", "stop", "recover", "categorize", "trash", "restore"},
         )
+        self.assertEqual(set(session["allowed_operations"]["h2"]), {"import", "annotate"})
         self.assertNotIn("action_token", session)
         self.assertGreaterEqual(len(session["session_token"]), 32)
         return session["session_token"]
@@ -1124,6 +1270,81 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(len(FakeBackendHandler.records), before)
 
+    def test_remote_h2_workspace_media_and_actions_are_scoped_without_delete_authority(self):
+        status, headers, payload = self.request("GET", "/api/v1/h2")
+        self.assertEqual(status, 200)
+        workspace = json.loads(payload)
+        self.assertEqual(workspace["kind"], "audio_h2_workspace")
+        self.assertIs(workspace["source_delete_authorized"], False)
+        self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
+
+        for path in (
+            "/api/v1/h2/source/170926_191401/audio/0",
+            "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0",
+        ):
+            with self.subTest(path=path):
+                status, media_headers, media = self.request(
+                    "GET", path, headers={"Range": "bytes=0-3"}
+                )
+                self.assertEqual(status, 206)
+                self.assertEqual(media, b"RIFF")
+                self.assertEqual(media_headers["Content-Type"], "audio/wav")
+                self.assertEqual(media_headers["Content-Range"], "bytes 0-3/16")
+
+        token = self.issue_remote_session()
+        action_headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        for action in (
+            {"operation": "import", "scene": "170926_191401"},
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "Metallgeländer",
+                "note": "kurzer Impuls",
+                "tags": ["Metall"],
+            },
+        ):
+            with self.subTest(action=action):
+                before = len(FakeBackendHandler.records)
+                status, response_headers, response_payload = self.request(
+                    "POST",
+                    MODULE.REMOTE_H2_ACTION_ROUTE,
+                    headers=action_headers,
+                    body=json.dumps(action).encode(),
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    response_headers["X-Audio-Remote-Bridge"],
+                    MODULE.BRIDGE_H2_ACTION_HEADER,
+                )
+                self.assertEqual(
+                    response_headers[MODULE.REMOTE_EFFECTS_HEADER],
+                    MODULE.REMOTE_H2_EFFECTS_VALUE,
+                )
+                decoded = json.loads(response_payload)
+                self.assertEqual(decoded["kind"], "audio_control_h2_action_result")
+                self.assertEqual(decoded["operation"], action["operation"])
+                records = FakeBackendHandler.records[before:]
+                self.assertEqual([record["method"] for record in records], ["GET", "POST"])
+                self.assertEqual(records[1]["path"], "/api/v1/actions/h2")
+                self.assertEqual(json.loads(records[1]["body"]), action)
+
+        before = len(FakeBackendHandler.records)
+        status, _headers, _payload = self.request(
+            "POST",
+            MODULE.REMOTE_H2_ACTION_ROUTE,
+            headers=action_headers,
+            body=json.dumps(
+                {"operation": "delete-source", "scene": "170926_191401"}
+            ).encode(),
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(len(FakeBackendHandler.records), before)
+
     def test_bridge_health_is_local_contract_truth_only(self):
         status, headers, payload = self.request("GET", "/bridge/v1/health")
         self.assertEqual(status, 200)
@@ -1139,18 +1360,26 @@ class BridgeHTTPTests(unittest.TestCase):
                 "whale:mode",
                 "whale:stop",
                 "recording:plan",
+                "recording:prepare",
                 "recording:start",
                 "recording:stop",
                 "recording:recover",
                 "recording:categorize",
                 "recording:trash",
                 "recording:restore",
+                "h2:import",
+                "h2:annotate",
             ],
         )
         self.assertNotIn("recording", health["effect_exclusions"])
+        self.assertIn("h2:delete-source", health["effect_exclusions"])
         self.assertEqual(
             health["remote_action"]["recording_action_route"],
             MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+        )
+        self.assertEqual(
+            health["remote_action"]["h2_action_route"],
+            MODULE.REMOTE_H2_ACTION_ROUTE,
         )
         self.assertIs(health["remote_action"]["backend_token_exposed"], False)
         self.assertIs(health["remote_action"]["tailscale_identity_required"], True)

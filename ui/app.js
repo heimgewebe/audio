@@ -182,8 +182,8 @@ const RUNTIME_MODES = {
     label: "Fern-Audiozentrale",
     authority:
       "Das Heim-PC-Backend ist autoritativ. Fernzugriff ist ausschließlich über " +
-      "eine separat verifizierte private Bridge zulässig; nur eng typisierte Wal- und " +
-      "Recorderaktionen dürfen wirken. Der lokale Control-Dienst bleibt Loopback-only.",
+      "eine separat verifizierte private Bridge zulässig; nur eng typisierte Wal-, Recorder- " +
+      "und H2-Materialaktionen dürfen wirken. Der lokale Control-Dienst bleibt Loopback-only.",
     backend: true,
   },
   [LOCAL_MODE]: {
@@ -426,6 +426,9 @@ const state = {
   remoteWhaleSessionError: null,
   recordingLibrary: null,
   recordingLibraryError: null,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+  h2ActionPending: false,
   recordingPlayerSessionId: null,
   recordingPlayerAudioUrl: null,
   recordingPlayerReturnFocus: null,
@@ -921,7 +924,8 @@ async function fetchJson(url, options = {}) {
   if (
     bridgeMarker === "read-only-v1" ||
     bridgeMarker === "whale-action-v1" ||
-    bridgeMarker === "recording-action-v1"
+    bridgeMarker === "recording-action-v1" ||
+    bridgeMarker === "h2-action-v1"
   ) {
     // Fail closed for the page lifetime: once a remote projection was observed,
     // later responses may not silently turn the page into local authority.
@@ -996,6 +1000,7 @@ async function refreshSnapshot(force = false) {
   if (
     state.loading ||
     state.recordingActionPending ||
+    state.h2ActionPending ||
     state.dauersongActionPending ||
     state.operatingModeActionPending ||
     state.whaleActionPending ||
@@ -1013,6 +1018,7 @@ async function refreshSnapshot(force = false) {
       await ensureRemoteWhaleSession();
     }
     await loadRecordingLibrary({ render: false });
+    await loadH2Workspace({ render: false });
     renderAll();
   } catch (error) {
     showNotice(error instanceof Error ? error.message : "Zustand konnte nicht gelesen werden.");
@@ -1056,6 +1062,7 @@ function renderAll({ preserveRecorderDraft = true } = {}) {
   renderWhale();
   renderWhaleLessonSummary();
   renderProfiles();
+  renderH2Workspace();
   renderLibrary();
   renderSounds();
   renderConnections();
@@ -1335,11 +1342,12 @@ async function ensureRemoteWhaleSession({ force = false } = {}) {
       !Array.isArray(session.effect_scope) ||
       !session.effect_scope.includes("whale") ||
       !session.effect_scope.includes("recording") ||
+      !session.effect_scope.includes("h2") ||
       typeof session.session_token !== "string" ||
       session.session_token.length < 32 ||
       !Number.isInteger(session.expires_at_unix)
     ) {
-      throw new Error("Die Wal-Fernsession ist unvollständig.");
+      throw new Error("Die private Audio-Fernsession ist unvollständig.");
     }
     state.remoteWhaleSessionToken = session.session_token;
     state.remoteWhaleSessionExpiresAt = session.expires_at_unix;
@@ -1351,7 +1359,7 @@ async function ensureRemoteWhaleSession({ force = false } = {}) {
     state.remoteWhaleSessionExpiresAt = 0;
     state.remoteActionScopes = [];
     state.remoteWhaleSessionError =
-      error instanceof Error ? error.message : "Wal-Fernsession ist nicht verfügbar.";
+      error instanceof Error ? error.message : "Private Audio-Fernsession ist nicht verfügbar.";
     return false;
   }
 }
@@ -3617,6 +3625,294 @@ function closeDialog() {
   state.lastDialogTrigger = null;
 }
 
+function localH2ActionsAllowed() {
+  return Boolean(
+    directLoopbackControlOrigin() &&
+      backendAllowed() &&
+      state.remoteBridgeProjection !== true &&
+      state.snapshot?.capabilities?.h2_material_control === true &&
+      typeof state.snapshot?.service?.action_token === "string" &&
+      state.snapshot.service.action_token.length >= 16
+  );
+}
+
+function remoteH2ActionsAllowed() {
+  return Boolean(
+    backendAllowed() &&
+      state.snapshot?.capabilities?.h2_material_control === true &&
+      remoteWhaleSessionFresh() &&
+      state.remoteActionScopes.includes("h2")
+  );
+}
+
+function h2ActionsAllowed() {
+  return localH2ActionsAllowed() || remoteH2ActionsAllowed();
+}
+
+async function loadH2Workspace({ render = true } = {}) {
+  if (!backendAllowed()) return;
+  try {
+    const workspace = await fetchJson("/api/v1/h2", { timeoutMs: 45000 });
+    if (workspace?.kind !== "audio_h2_workspace") {
+      throw new Error("H2-Arbeitsbereich besitzt keinen gültigen Vertrag.");
+    }
+    state.h2Workspace = workspace;
+    state.h2WorkspaceError = null;
+  } catch (error) {
+    state.h2Workspace = null;
+    state.h2WorkspaceError =
+      error instanceof Error ? error.message : "H2-Arbeitsbereich ist nicht lesbar.";
+  }
+  if (render) renderH2Workspace();
+}
+
+async function postH2Action(payload) {
+  const timeoutMs = payload?.operation === "import" ? 340000 : 60000;
+  if (localH2ActionsAllowed()) {
+    return fetchJson("/api/v1/actions/h2", {
+      method: "POST",
+      timeoutMs,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Audio-Control-Token": state.snapshot.service.action_token,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+  if (remoteH2ActionsAllowed()) {
+    return fetchJson("/bridge/v1/actions/h2", {
+      method: "POST",
+      timeoutMs,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Audio-Bridge-Session": state.remoteWhaleSessionToken,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+  throw new Error(
+    state.remoteBridgeProjection === true
+      ? state.remoteWhaleSessionError ||
+          "H2-Materialaktionen sind auf dieser privaten Fernverbindung nicht autorisiert."
+      : "H2-Materialaktionen sind aktuell nicht sicher verfügbar.",
+  );
+}
+
+async function runH2Action(payload) {
+  if (state.h2ActionPending) return;
+  state.h2ActionPending = true;
+  renderH2Workspace();
+  try {
+    const result = await postH2Action(payload);
+    if (result?.kind !== "audio_control_h2_action_result" || !result.workspace) {
+      throw new Error("H2-Aktion lieferte keinen aktuellen Materialzustand.");
+    }
+    state.h2Workspace = result.workspace;
+    state.h2WorkspaceError = null;
+    showNotice(
+      payload.operation === "import"
+        ? "Aufnahme sicher archiviert. Das Original bleibt auf dem H2."
+        : "Titel, Notiz und Tags gespeichert.",
+      "success",
+    );
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : "H2-Aktion wurde abgewiesen.");
+  } finally {
+    state.h2ActionPending = false;
+    renderH2Workspace();
+  }
+}
+
+function h2DisplayTimestamp(item) {
+  const date = String(item?.recorded_date || "").split("-");
+  const shownDate =
+    date.length === 3
+      ? date[2] + "." + date[1] + "." + date[0]
+      : item?.recorded_date || "Datum offen";
+  return shownDate + " · " + (item?.recorded_time || "Zeit offen");
+}
+
+function appendH2Audio(card, audioUrl, segmentCount) {
+  if (typeof audioUrl !== "string" || !audioUrl) return;
+  const audio = element("audio", "h2-audio");
+  audio.controls = true;
+  audio.preload = "metadata";
+  const total = Math.max(1, Number(segmentCount) || 1);
+  const urlForSegment = (index) =>
+    audioUrl.replace(/\/audio\/[0-9]+$/, "/audio/" + index);
+  audio.src = urlForSegment(0);
+  if (total > 1) {
+    const segmentLabel = element("label", "h2-segment-select");
+    appendText(segmentLabel, "span", "", "Teil");
+    const segmentSelect = element("select", "");
+    for (let index = 0; index < total; index += 1) {
+      const option = element("option", "", String(index + 1) + " / " + String(total));
+      option.value = String(index);
+      segmentSelect.append(option);
+    }
+    segmentSelect.addEventListener("change", () => {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.src = urlForSegment(Number(segmentSelect.value) || 0);
+      audio.load();
+    });
+    segmentLabel.append(segmentSelect);
+    card.append(segmentLabel);
+  }
+  card.append(audio);
+}
+
+function renderH2Workspace() {
+  const inbox = byId("h2-inbox");
+  const archive = byId("h2-library");
+  const status = byId("h2-status");
+  const refresh = byId("h2-refresh");
+  if (!inbox || !archive || !status || !refresh) return;
+
+  refresh.disabled = state.h2ActionPending;
+  const workspace = state.h2Workspace;
+  if (!workspace) {
+    status.textContent = state.h2WorkspaceError || "H2 wird gelesen.";
+    const empty = element("article", "h2-card h2-empty");
+    empty.textContent = state.h2WorkspaceError || "Noch kein H2-Zustand.";
+    inbox.replaceChildren(empty);
+    archive.replaceChildren();
+    return;
+  }
+
+  const source = workspace.source || {};
+  const sessions = Array.isArray(source.sessions) ? source.sessions : [];
+  const items = Array.isArray(workspace.library?.items) ? workspace.library.items : [];
+  status.textContent =
+    source.status === "ready"
+      ? String(source.count) + " Aufnahmen auf dem H2 · " + String(items.length) + " im Klangarchiv"
+      : "H2 nicht verbunden · " + String(items.length) + " archivierte Aufnahmen bleiben verfügbar";
+
+  const sourceCards = [];
+  for (const session of sessions) {
+    const card = element("article", "h2-card");
+    const top = element("div", "card-topline");
+    appendText(top, "span", "card-glyph", "◉").setAttribute("aria-hidden", "true");
+    appendText(
+      top,
+      "span",
+      "status-pill " + (session.already_imported ? "ready" : ""),
+      session.already_imported ? "behalten" : "neu",
+    );
+    card.append(top);
+    appendText(card, "h3", "", h2DisplayTimestamp(session));
+    const rate = Number(session.sample_rate_hz || 0);
+    appendText(
+      card,
+      "p",
+      "h2-meta",
+      Number(session.duration_seconds).toFixed(1) +
+        " s · " +
+        (rate ? (rate / 1000).toFixed(1) + " kHz" : "Rate offen") +
+        " · " +
+        (session.roles || []).join(" + ").toUpperCase(),
+    );
+    appendH2Audio(card, session.audio_url, session.segment_count);
+    const keep = element(
+      "button",
+      session.already_imported ? "secondary-button" : "primary-button",
+      session.already_imported ? "BEHALTEN ✓" : "BEHALTEN",
+    );
+    keep.type = "button";
+    keep.disabled =
+      session.already_imported || state.h2ActionPending || !h2ActionsAllowed();
+    keep.addEventListener("click", () =>
+      runH2Action({ operation: "import", scene: session.scene }),
+    );
+    card.append(keep);
+    appendText(
+      card,
+      "small",
+      "h2-safety-note",
+      "Das Original auf dem H2 wird weder verändert noch gelöscht.",
+    );
+    sourceCards.push(card);
+  }
+  if (!sourceCards.length) {
+    const empty = element("article", "h2-card h2-empty");
+    empty.textContent =
+      source.status === "ready"
+        ? "Keine Aufnahmen auf dem H2 gefunden."
+        : source.error || "H2 ist nicht im Datei-Transfer-Modus verbunden.";
+    sourceCards.push(empty);
+  }
+  inbox.replaceChildren(...sourceCards);
+
+  const archiveCards = [];
+  for (const item of items) {
+    const card = element("article", "h2-card h2-material-card");
+    const annotations = item.annotations || {};
+    const sourceItem = item.source || {};
+    appendText(card, "p", "eyebrow", "Archiviert · unverändertes Master");
+    appendText(card, "h3", "", annotations.title || h2DisplayTimestamp(sourceItem));
+    appendH2Audio(card, item.audio_url, item.segment_count);
+
+    const form = element("div", "h2-annotation-form");
+    const titleLabel = element("label", "");
+    appendText(titleLabel, "span", "", "Titel");
+    const title = element("input", "h2-title");
+    title.type = "text";
+    title.maxLength = 160;
+    title.value = annotations.title || "";
+    title.placeholder = "z. B. Metallgeländer unter Brücke";
+    titleLabel.append(title);
+
+    const noteLabel = element("label", "");
+    appendText(noteLabel, "span", "", "Notiz");
+    const note = element("textarea", "h2-note");
+    note.maxLength = 2000;
+    note.rows = 2;
+    note.value = annotations.note || "";
+    note.placeholder = "Was ist zu hören?";
+    noteLabel.append(note);
+
+    const tagsLabel = element("label", "");
+    appendText(tagsLabel, "span", "", "Tags");
+    const tags = element("input", "h2-tags");
+    tags.type = "text";
+    tags.value = Array.isArray(annotations.tags) ? annotations.tags.join(", ") : "";
+    tags.placeholder = "Metall, perkussiv, draußen";
+    tagsLabel.append(tags);
+
+    const save = element("button", "primary-button", "SPEICHERN");
+    save.type = "button";
+    save.disabled = state.h2ActionPending || !h2ActionsAllowed();
+    save.addEventListener("click", () =>
+      runH2Action({
+        operation: "annotate",
+        material_id: item.material_id,
+        title: title.value,
+        note: note.value,
+        tags: tags.value
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      }),
+    );
+    form.append(titleLabel, noteLabel, tagsLabel, save);
+    card.append(form);
+    appendText(
+      card,
+      "small",
+      "h2-safety-note",
+      "Benennung und Tags verändern weder Master-WAV noch Herkunftsmanifest.",
+    );
+    archiveCards.push(card);
+  }
+  if (!archiveCards.length) {
+    const empty = element("article", "h2-card h2-empty");
+    empty.textContent =
+      "Noch nichts archiviert. Oben eine Aufnahme anhören und BEHALTEN wählen.";
+    archiveCards.push(empty);
+  }
+  archive.replaceChildren(...archiveCards);
+}
+
 function renderLibrary() {
   const recording = state.snapshot.recording || {};
   const library = state.recordingLibrary;
@@ -4884,7 +5180,7 @@ function markTransientInteraction() {
 }
 
 function recordingPlaybackActive() {
-  return [...document.querySelectorAll("audio.recording-player")].some(
+  return [...document.querySelectorAll("audio.recording-player, audio.h2-audio")].some(
     (audio) => !audio.paused && !audio.ended,
   );
 }
@@ -4894,6 +5190,7 @@ function autoRefreshBlocked() {
     !byId("dialog-backdrop").hidden ||
     state.loading ||
     state.recordingActionPending ||
+    state.h2ActionPending ||
     state.dauersongActionPending ||
     state.operatingModeActionPending ||
     state.whaleActionPending ||
@@ -4955,6 +5252,7 @@ function wireEvents() {
   });
   byId("refresh-button").addEventListener("click", () => refreshSnapshot(true));
   byId("diagnostic-refresh").addEventListener("click", () => refreshSnapshot(true));
+  byId("h2-refresh").addEventListener("click", () => loadH2Workspace());
   byId("library-view").addEventListener("change", (event) => {
     if (!LIBRARY_VIEWS.has(event.target.value)) return;
     state.libraryView = event.target.value;

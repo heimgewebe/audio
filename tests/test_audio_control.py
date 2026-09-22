@@ -2670,7 +2670,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/operating-mode"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 4)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 5)
 
     def test_static_surface_prioritizes_compact_functional_controls(self):
         html = (ROOT / "ui" / "index.html").read_text()
@@ -2912,10 +2912,11 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("state.loading", policy)
         self.assertIn("state.interactionUntil", policy)
         self.assertIn("state.recordingActionPending", policy)
+        self.assertIn("state.h2ActionPending", policy)
         self.assertIn("state.whaleActionPending", policy)
         self.assertIn("state.replayPlaying", policy)
         self.assertIn("recordingPlaybackActive()", policy)
-        self.assertIn('document.querySelectorAll("audio.recording-player")', javascript)
+        self.assertIn('document.querySelectorAll("audio.recording-player, audio.h2-audio")', javascript)
         self.assertIn("!audio.paused && !audio.ended", javascript)
         self.assertIn("runWhaleAction", javascript)
 
@@ -2934,7 +2935,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/operating-mode"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 4)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 5)
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
 
@@ -4335,6 +4336,136 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
                     "audio_control_error",
                 )
         self.assertFalse(self.runner.whale_active)
+
+
+class H2MaterialControlTests(unittest.TestCase):
+    class Runner:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, argv, *, timeout):
+            self.calls.append((tuple(argv), timeout))
+            command = argv[2] if len(argv) > 2 else ""
+            if command == "scan":
+                report = {
+                    "schema_version": 1,
+                    "kind": "audio_h2_source_scan",
+                    "read_only": True,
+                    "source_mutated": False,
+                    "count": 1,
+                    "device": {"model": "ZOOM H2essential"},
+                    "sessions": [
+                        {
+                            "scene": "170926_191401",
+                            "recorded_date": "2026-09-17",
+                            "recorded_time": "19:14:01",
+                            "duration_seconds": 21.5,
+                            "sample_rate_hz": 44100,
+                            "roles": ["front", "rear", "mix"],
+                            "segment_count": 1,
+                        }
+                    ],
+                }
+            elif command == "library":
+                report = {
+                    "schema_version": 1,
+                    "kind": "audio_material_library",
+                    "read_only": True,
+                    "count": 0,
+                    "items": [],
+                }
+            elif command == "import":
+                report = {
+                    "schema_version": 1,
+                    "kind": "audio_h2_import_result",
+                    "status": "imported",
+                    "material_id": "a" * 24,
+                }
+            elif command == "annotate":
+                report = {
+                    "schema_version": 1,
+                    "kind": "audio_material_annotation_result",
+                    "material_id": "a" * 24,
+                    "changed": True,
+                    "annotations": {},
+                }
+            else:
+                report = {}
+            return MODULE.CommandResult(tuple(argv), 0, json.dumps(report), "")
+
+    def test_h2_material_root_reuses_existing_recording_write_authority(self):
+        self.assertEqual(
+            MODULE.STATIC_H2_LIBRARY_ROOT,
+            MODULE.STATIC_RECORDING_OUTPUT_ROOT / "H2-Material",
+        )
+        unit = (ROOT / "systemd" / "user" / "audio-control-ui-v1.service").read_text()
+        self.assertIn("%h/Music/Audio-Aufnahmen", unit)
+        self.assertNotIn("%h/Music/Audio-Material", unit)
+
+    def test_h2_workspace_projects_source_and_empty_archive(self):
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        workspace = controller.h2_workspace()
+        self.assertEqual(workspace["kind"], "audio_h2_workspace")
+        self.assertEqual(workspace["source"]["status"], "ready")
+        self.assertEqual(workspace["source"]["count"], 1)
+        self.assertEqual(workspace["library"]["count"], 0)
+        self.assertFalse(workspace["source_delete_authorized"])
+        session = workspace["source"]["sessions"][0]
+        self.assertEqual(session["scene"], "170926_191401")
+        self.assertEqual(
+            session["audio_url"],
+            "/api/v1/h2/source/170926_191401/audio/0",
+        )
+
+    def test_h2_import_uses_material_lock_not_global_audio_action_lock(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        controller._action_lock.acquire()
+        try:
+            with mock.patch.object(
+                controller,
+                "h2_workspace",
+                return_value={
+                    "schema_version": 1,
+                    "kind": "audio_h2_workspace",
+                    "source": {"status": "ready", "count": 0, "sessions": []},
+                    "library": {"count": 1, "items": []},
+                    "source_delete_authorized": False,
+                    "creative_handoff_authorized": False,
+                },
+            ):
+                result = controller.perform_h2_action(
+                    {"operation": "import", "scene": "170926_191401"}
+                )
+        finally:
+            controller._action_lock.release()
+        self.assertEqual(result["operation"], "import")
+        call, timeout = runner.calls[0]
+        self.assertEqual(pathlib.Path(call[1]).name, "h2_ingest.py")
+        self.assertIn("import", call)
+        self.assertIn(str(MODULE.STATIC_H2_LIBRARY_ROOT), call)
+        self.assertEqual(timeout, 300)
+
+    def test_h2_surface_is_task_named_and_has_no_delete_action(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        html = (ROOT / "ui" / "index.html").read_text()
+        for needle in (
+            "Neue H2-Aufnahmen",
+            "Mein Klangmaterial",
+            "BEHALTEN",
+            "Was ist zu hören?",
+            "Originale werden beim Archivieren nicht vom H2 gelöscht",
+        ):
+            self.assertIn(needle, html + javascript)
+        self.assertIn('fetchJson("/api/v1/actions/h2"', javascript)
+        self.assertIn("function h2ActionsAllowed()", javascript)
+        self.assertIn('fetchJson("/bridge/v1/actions/h2"', javascript)
+        self.assertIn('state.remoteActionScopes.includes("h2")', javascript)
+        self.assertIn("h2_material_control", javascript)
+        self.assertIn("note.maxLength = 2000", javascript)
+        self.assertNotIn('operation: "delete"', javascript)
+        self.assertNotIn('operation: "source-delete"', javascript)
+
 
 
 class TelemetryTruthSeparationTests(unittest.TestCase):

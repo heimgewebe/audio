@@ -48,9 +48,9 @@ DEFAULT_SOURCE_ROOT = pathlib.Path(
 DEFAULT_LIBRARY_ROOT = pathlib.Path(
     os.environ.get(
         "AUDIO_MATERIAL_ROOT",
-        pathlib.Path.home() / "Music" / "Audio-Material",
+        pathlib.Path.home() / "Music" / "Audio-Aufnahmen" / "H2-Material",
     )
-) / "H2"
+)
 
 
 class H2IngestError(RuntimeError):
@@ -958,6 +958,218 @@ def verify_material(
     }
 
 
+
+MAX_TITLE_CHARS = 160
+MAX_NOTE_CHARS = 2000
+MAX_TAGS = 16
+MAX_TAG_CHARS = 48
+_TEXT_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _validated_annotation_text(value: Any, *, label: str, maximum: int) -> str:
+    if not isinstance(value, str):
+        raise H2IngestError(f"{label} muss Text sein.")
+    normalized = value.strip()
+    if len(normalized) > maximum or _TEXT_CONTROL_RE.search(normalized):
+        raise H2IngestError(f"{label} ist zu lang oder enthält Steuerzeichen.")
+    return normalized
+
+
+def _validated_tags(value: Any) -> list[str]:
+    if not isinstance(value, list) or len(value) > MAX_TAGS:
+        raise H2IngestError("Tags sind ungültig.")
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        tag = _validated_annotation_text(raw, label="Tag", maximum=MAX_TAG_CHARS)
+        if not tag:
+            continue
+        folded = tag.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        result.append(tag)
+    return result
+
+
+def _write_json_replace(path: pathlib.Path, value: dict[str, Any], mode: int) -> None:
+    directory = path.parent
+    _lstat_directory(directory, "Metadatenverzeichnis")
+    _lstat_regular(path, "Metadatendatei")
+    payload = _canonical_bytes(value) + b"\n"
+    fd, temporary_name = tempfile.mkstemp(prefix=".metadata-", dir=directory)
+    temporary = pathlib.Path(temporary_name)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb", closefd=True) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        parent_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def annotate_material(
+    material_id: str,
+    *,
+    title: Any,
+    note: Any,
+    tags: Any,
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    if not MATERIAL_ID_RE.fullmatch(material_id):
+        raise H2IngestError("Ungültige Material-ID.")
+    directory = library_root.expanduser() / material_id
+    _lstat_directory(directory, "Materialobjekt")
+    manifest = _read_json_regular(directory / "manifest.json")
+    annotations_path = directory / "annotations.json"
+    current = _read_json_regular(annotations_path)
+    _library_item(manifest, current, material_id)
+    updated = dict(current)
+    updated["title"] = _validated_annotation_text(
+        title, label="Titel", maximum=MAX_TITLE_CHARS
+    )
+    updated["note"] = _validated_annotation_text(
+        note, label="Notiz", maximum=MAX_NOTE_CHARS
+    )
+    updated["tags"] = _validated_tags(tags)
+    changed = (
+        updated["title"] != current["title"]
+        or updated["note"] != current["note"]
+        or updated["tags"] != current["tags"]
+    )
+    if changed:
+        updated["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        _write_json_replace(annotations_path, updated, 0o600)
+        observed = _read_json_regular(annotations_path)
+        _library_item(manifest, observed, material_id)
+        if observed != updated:
+            raise H2IngestError("Materialannotation wurde nicht exakt zurückgelesen.")
+    else:
+        observed = current
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_material_annotation_result",
+        "material_id": material_id,
+        "changed": changed,
+        "annotations": observed,
+    }
+
+
+def _preferred_session_files(session: dict[str, Any]) -> list[dict[str, Any]]:
+    files = session["files"]
+    for role in ("mix", "front", "rear"):
+        selected = [item for item in files if item["role"] == role]
+        if selected:
+            return sorted(selected, key=lambda item: item["segment_index"])
+    raise H2IngestError("H2-Session besitzt keine abspielbare Spur.")
+
+
+def source_media(
+    scene: str,
+    segment_index: int,
+    *,
+    source_root: pathlib.Path = DEFAULT_SOURCE_ROOT,
+) -> dict[str, Any]:
+    if isinstance(segment_index, bool) or not isinstance(segment_index, int) or segment_index < 0:
+        raise H2IngestError("Ungültiger H2-Vorschausegmentindex.")
+    source = _resolve_source_root(source_root)
+    session = inspect_scene(source, scene)
+    selected = _preferred_session_files(session)
+    if segment_index >= len(selected):
+        raise H2IngestError("H2-Vorschausegment existiert nicht.")
+    item = selected[segment_index]
+    path = source / scene / item["name"]
+    inspected, receipt = _inspect_and_hash_source_master(
+        path, scene, item["role"].upper()
+    )
+    inspected["segment_index"] = item["segment_index"]
+    if inspected != item:
+        raise H2IngestError("H2-Vorschau änderte sich zwischen Prüfung und Medienbindung.")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_h2_source_media_binding",
+        "scene": scene,
+        "role": item["role"],
+        "segment_index": segment_index,
+        "segment_count": len(selected),
+        "path": str(path),
+        "sha256": receipt["sha256"],
+        "bytes": receipt["bytes"],
+        "device": receipt["st_dev"],
+        "inode": receipt["st_ino"],
+        "mtime_ns": receipt["st_mtime_ns"],
+        "duration_seconds": item["audio"]["duration_seconds"],
+        "verified_current": True,
+    }
+
+
+def material_media(
+    material_id: str,
+    segment_index: int,
+    *,
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    if not MATERIAL_ID_RE.fullmatch(material_id):
+        raise H2IngestError("Ungültige Material-ID.")
+    if isinstance(segment_index, bool) or not isinstance(segment_index, int) or segment_index < 0:
+        raise H2IngestError("Ungültiger Materialsegmentindex.")
+    directory = library_root.expanduser() / material_id
+    _lstat_directory(directory, "Materialobjekt")
+    manifest = _read_json_regular(directory / "manifest.json")
+    annotations = _read_json_regular(directory / "annotations.json")
+    item = _library_item(manifest, annotations, material_id)
+    verification = verify_material(material_id, library_root=library_root)
+    masters = item["masters"]
+    for role in ("mix", "front", "rear"):
+        selected = sorted(
+            [entry for entry in masters if entry["role"] == role],
+            key=lambda entry: entry["segment_index"],
+        )
+        if selected:
+            break
+    else:
+        raise H2IngestError("Materialobjekt besitzt keine abspielbare Spur.")
+    if segment_index >= len(selected):
+        raise H2IngestError("Materialsegment existiert nicht.")
+    selected_item = selected[segment_index]
+    verified_by_name = {entry["name"]: entry for entry in verification["masters"]}
+    verified = verified_by_name.get(selected_item["name"])
+    if verified is None:
+        raise H2IngestError("Materialsegment ist nicht im Integritätsbeleg enthalten.")
+    path = directory / "master" / selected_item["name"]
+    metadata = _lstat_regular(path, "Archivierter H2-Master")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_h2_material_media_binding",
+        "material_id": material_id,
+        "role": selected_item["role"],
+        "segment_index": segment_index,
+        "segment_count": len(selected),
+        "path": str(path),
+        "sha256": verified["sha256"],
+        "bytes": verified["bytes"],
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "mtime_ns": metadata.st_mtime_ns,
+        "duration_seconds": selected_item["audio"].get("duration_seconds"),
+        "verified_current": True,
+    }
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -975,6 +1187,23 @@ def _parser() -> argparse.ArgumentParser:
     verify_parser = sub.add_parser("verify")
     verify_parser.add_argument("material_id")
     verify_parser.add_argument("--library-root", type=pathlib.Path, default=DEFAULT_LIBRARY_ROOT)
+
+    annotate_parser = sub.add_parser("annotate")
+    annotate_parser.add_argument("material_id")
+    annotate_parser.add_argument("--title", required=True)
+    annotate_parser.add_argument("--note", required=True)
+    annotate_parser.add_argument("--tags-json", required=True)
+    annotate_parser.add_argument("--library-root", type=pathlib.Path, default=DEFAULT_LIBRARY_ROOT)
+
+    source_media_parser = sub.add_parser("source-media")
+    source_media_parser.add_argument("scene")
+    source_media_parser.add_argument("segment_index", type=int)
+    source_media_parser.add_argument("--source-root", type=pathlib.Path, default=DEFAULT_SOURCE_ROOT)
+
+    material_media_parser = sub.add_parser("material-media")
+    material_media_parser.add_argument("material_id")
+    material_media_parser.add_argument("segment_index", type=int)
+    material_media_parser.add_argument("--library-root", type=pathlib.Path, default=DEFAULT_LIBRARY_ROOT)
     return parser
 
 
@@ -991,8 +1220,32 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "library":
             result = library(args.library_root)
-        else:
+        elif args.command == "verify":
             result = verify_material(args.material_id, library_root=args.library_root)
+        elif args.command == "annotate":
+            try:
+                tags = json.loads(args.tags_json)
+            except json.JSONDecodeError as exc:
+                raise H2IngestError("Tags sind kein gültiges JSON-Array.") from exc
+            result = annotate_material(
+                args.material_id,
+                title=args.title,
+                note=args.note,
+                tags=tags,
+                library_root=args.library_root,
+            )
+        elif args.command == "source-media":
+            result = source_media(
+                args.scene,
+                args.segment_index,
+                source_root=args.source_root,
+            )
+        else:
+            result = material_media(
+                args.material_id,
+                args.segment_index,
+                library_root=args.library_root,
+            )
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except (H2IngestError, OSError, ValueError) as exc:

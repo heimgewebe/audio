@@ -46,7 +46,7 @@ abgewiesen.
 
 ## Sicherheitsvertrag
 
-`scripts/audio-h2-ingest` besitzt vier Operationen:
+`scripts/audio-h2-ingest` besitzt zusätzlich zu den vier Kernoperationen Metadaten- und Medienbindungen für die Audiozentrale. Die Kernoperationen sind:
 
 - `scan`: read-only Erkennung der H2-Sessions;
 - `import <scene>`: byteidentische Archivierung genau einer Session;
@@ -79,7 +79,7 @@ H2-Quellpfads wird ausdrücklich abgewiesen.
 Standardziel:
 
 ```
-~/Music/Audio-Material/H2/<material-id>/
+~/Music/Audio-Aufnahmen/H2-Material/<material-id>/
 ├── manifest.json
 ├── annotations.json
 └── master/
@@ -132,6 +132,5 @@ v1 belegt noch nicht:
 - Bitwig- oder Ardour-Übergabe;
 - Backup auf ein zweites physisches Medium;
 - Freigabe zum Löschen der SD-Karten-Originale;
-- Audiozentrale-UI für den Import.
 
-Diese Punkte sind getrennte Ausbau- und Acceptance-Schritte.
+Markerimport, kreative DAW-Übergabe, zweite Sicherung und eine spätere Löschfreigabe bleiben getrennte Ausbau- und Acceptance-Schritte. Der physische H2-Materialroot liegt bewusst unter dem bereits gehärteten Audio-Aufnahmen-Schreibroot; die Produktdomäne bleibt davon unabhängig „Material“.

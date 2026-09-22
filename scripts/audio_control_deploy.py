@@ -1520,18 +1520,22 @@ REMOTE_BRIDGE_EFFECT_SCOPE = [
     "whale:mode",
     "whale:stop",
     "recording:plan",
+    "recording:prepare",
     "recording:start",
     "recording:stop",
     "recording:recover",
     "recording:categorize",
     "recording:trash",
     "recording:restore",
+    "h2:import",
+    "h2:annotate",
 ]
 REMOTE_BRIDGE_EFFECT_EXCLUSIONS = [
     "profiles",
     "routing",
     "devices",
     "system",
+    "h2:delete-source",
 ]
 
 
@@ -1561,6 +1565,7 @@ def remote_bridge_health_error(marker: str, payload: Any) -> str | None:
         "session_route": "/bridge/v1/session",
         "action_route": "/bridge/v1/actions/whale",
         "recording_action_route": "/bridge/v1/actions/recording",
+        "h2_action_route": "/bridge/v1/actions/h2",
         "session_ttl_seconds": 900,
         "token_header": "X-Audio-Bridge-Session",
         "backend_token_exposed": False,

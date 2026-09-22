@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import struct
@@ -526,6 +527,104 @@ class H2IngestTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(MODULE.H2IngestError, "nicht konsistent"):
                 MODULE.inspect_scene(source, scene)
+
+
+    def test_annotations_are_atomic_metadata_only_and_normalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401", source_root=source, library_root=library
+            )
+            target = library / result["material_id"]
+            master = next((target / "master").glob("*.WAV"))
+            before_master = hashlib.sha256(master.read_bytes()).hexdigest()
+            before_manifest = hashlib.sha256((target / "manifest.json").read_bytes()).hexdigest()
+            updated = MODULE.annotate_material(
+                result["material_id"],
+                title="  Metallgeländer unter Brücke  ",
+                note="  kurzer Impuls  ",
+                tags=["Metall", "perkussiv", "metall"],
+                library_root=library,
+            )
+            self.assertTrue(updated["changed"])
+            self.assertEqual(updated["annotations"]["title"], "Metallgeländer unter Brücke")
+            self.assertEqual(updated["annotations"]["note"], "kurzer Impuls")
+            self.assertEqual(updated["annotations"]["tags"], ["Metall", "perkussiv"])
+            self.assertIsNotNone(updated["annotations"]["updated_at"])
+            self.assertEqual(
+                hashlib.sha256(master.read_bytes()).hexdigest(), before_master
+            )
+            self.assertEqual(
+                hashlib.sha256((target / "manifest.json").read_bytes()).hexdigest(),
+                before_manifest,
+            )
+            projected = MODULE.library(library)
+            self.assertEqual(
+                projected["items"][0]["annotations"]["title"],
+                "Metallgeländer unter Brücke",
+            )
+
+    def test_annotations_reject_controls_and_excess_tags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401", source_root=source, library_root=library
+            )
+            with self.assertRaisesRegex(MODULE.H2IngestError, "Steuerzeichen"):
+                MODULE.annotate_material(
+                    result["material_id"],
+                    title="bad\x01title",
+                    note="",
+                    tags=[],
+                    library_root=library,
+                )
+            with self.assertRaisesRegex(MODULE.H2IngestError, "Tags"):
+                MODULE.annotate_material(
+                    result["material_id"],
+                    title="ok",
+                    note="",
+                    tags=[f"tag-{index}" for index in range(MODULE.MAX_TAGS + 1)],
+                    library_root=library,
+                )
+
+    def test_source_media_prefers_mix_and_is_generation_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root)
+            binding = MODULE.source_media(
+                "170926_191401", 0, source_root=source
+            )
+            self.assertEqual(binding["role"], "mix")
+            self.assertEqual(binding["segment_index"], 0)
+            self.assertEqual(binding["segment_count"], 1)
+            path = pathlib.Path(binding["path"])
+            self.assertEqual(binding["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            metadata = path.stat()
+            self.assertEqual(binding["device"], metadata.st_dev)
+            self.assertEqual(binding["inode"], metadata.st_ino)
+            self.assertTrue(binding["verified_current"])
+
+    def test_material_media_survives_source_removal_and_is_verified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root)
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401", source_root=source, library_root=library
+            )
+            shutil.rmtree(source)
+            binding = MODULE.material_media(
+                result["material_id"], 0, library_root=library
+            )
+            self.assertEqual(binding["role"], "mix")
+            self.assertTrue(binding["verified_current"])
+            path = pathlib.Path(binding["path"])
+            self.assertTrue(path.is_file())
+            self.assertEqual(binding["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 if __name__ == "__main__":
