@@ -4500,6 +4500,18 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertIn("-%h/Music/Audio-Material/H2", unit)
         self.assertNotIn(" %h/Music/Audio-Material ", unit)
 
+    def test_managed_audio_control_rejects_custom_h2_material_root(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AUDIO_MATERIAL_ROOT": "/tmp/custom-material"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(
+                MODULE.ControlError,
+                "AUDIO_MATERIAL_ROOT.*nicht unterstützt",
+            ):
+                MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+
     def test_h2_workspace_projects_source_and_empty_archive(self):
         controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
         workspace = controller.h2_workspace()
@@ -4677,6 +4689,68 @@ class H2MaterialControlTests(unittest.TestCase):
             material_timeout,
             controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=120),
         )
+
+    def test_h2_annotation_rejects_unencodable_or_control_text_before_subprocess(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        invalid_payloads = (
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "nul\x00title",
+                "note": "",
+                "tags": [],
+            },
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "\ud800",
+                "note": "",
+                "tags": [],
+            },
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "",
+                "note": "",
+                "tags": ["bad\x00tag"],
+            },
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                before = len(runner.calls)
+                with self.assertRaises(MODULE.ControlError):
+                    controller.perform_h2_action(payload)
+                self.assertEqual(len(runner.calls), before)
+
+    def test_h2_annotation_normalizes_before_argv(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with mock.patch.object(
+            controller,
+            "h2_workspace",
+            return_value={
+                "schema_version": 1,
+                "kind": "audio_h2_workspace",
+                "source": {"status": "ready", "count": 0, "sessions": []},
+                "library": {"count": 1, "items": []},
+                "source_delete_authorized": False,
+                "creative_handoff_authorized": False,
+            },
+        ):
+            controller.perform_h2_action(
+                {
+                    "operation": "annotate",
+                    "material_id": "a" * 24,
+                    "title": "  Titel  ",
+                    "note": "\nNotiz\t",
+                    "tags": [" Metall ", "metall", "", " Raum "],
+                }
+            )
+        call, _timeout = runner.calls[0]
+        self.assertIn("--title=Titel", call)
+        self.assertIn("--note=Notiz", call)
+        self.assertIn('--tags-json=["Metall","Raum"]', call)
 
     def test_h2_annotation_argv_binds_leading_dashes_as_values(self):
         runner = self.Runner()

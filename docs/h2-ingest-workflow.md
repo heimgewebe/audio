@@ -94,9 +94,11 @@ kein Material, aber im unmittelbar vorherigen Standard
 `~/Music/Audio-Material/H2`, wird genau dieser bestehende Legacy-Root
 weiterverwendet. Liegen in beiden Roots Materialobjekte, wird die automatische
 Rootwahl fail-closed abgewiesen; es gibt keinen stillen Splitbrain-Pfad und
-keine automatische Verschiebung oder Löschung. Ein explizites `AUDIO_MATERIAL_ROOT`
-behält seinen bisherigen Vertrag als Material-Parent; H2 liegt darunter in
-`<AUDIO_MATERIAL_ROOT>/H2`.
+keine automatische Verschiebung oder Löschung. Ein explizites
+`AUDIO_MATERIAL_ROOT` behält diesen historischen Material-Parent-Vertrag nur
+für die direkte Standalone-Nutzung von `h2_ingest.py`; der gehärtete
+Audio-Control-Dienst lehnt den Override ausdrücklich ab und schreibt nur in
+seinen Primär- bzw. Legacy-Root.
 
 `manifest.json` und die Master werden read-only veröffentlicht. Das Manifest
 bindet die Originaldateinamen, Rollen, SHA-256, Größen, Audioformat und

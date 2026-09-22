@@ -1383,6 +1383,63 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(len(FakeBackendHandler.records), before)
 
+    def test_remote_h2_uses_separate_material_effect_lock(self):
+        token = self.issue_remote_session()
+        headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        body = json.dumps(
+            {"operation": "import", "scene": "170926_191401"}
+        ).encode("utf-8")
+
+        before = len(FakeBackendHandler.records)
+        self.assertTrue(self.bridge._action_lock.acquire(blocking=False))
+        try:
+            status, _response_headers, _payload = self.request(
+                "POST",
+                MODULE.REMOTE_H2_ACTION_ROUTE,
+                headers=headers,
+                body=body,
+            )
+        finally:
+            self.bridge._action_lock.release()
+        self.assertEqual(status, 200)
+        self.assertGreater(len(FakeBackendHandler.records), before)
+
+        self.assertTrue(self.bridge._material_action_lock.acquire(blocking=False))
+        try:
+            recording_before = len(FakeBackendHandler.records)
+            recording_status, _response_headers, _payload = self.request(
+                "POST",
+                MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+                headers=headers,
+                body=json.dumps(
+                    {
+                        "operation": "plan",
+                        "mode": "voice",
+                        "name": "while-h2-locked.wav",
+                        "maximum_seconds": 60,
+                    }
+                ).encode("utf-8"),
+            )
+            self.assertEqual(recording_status, 200)
+            self.assertGreater(len(FakeBackendHandler.records), recording_before)
+
+            h2_before = len(FakeBackendHandler.records)
+            h2_status, _response_headers, _payload = self.request(
+                "POST",
+                MODULE.REMOTE_H2_ACTION_ROUTE,
+                headers=headers,
+                body=body,
+            )
+        finally:
+            self.bridge._material_action_lock.release()
+        self.assertEqual(h2_status, 409)
+        self.assertEqual(len(FakeBackendHandler.records), h2_before)
+
     def test_remote_h2_workspace_media_and_actions_are_scoped_without_delete_authority(self):
         status, headers, payload = self.request("GET", "/api/v1/h2")
         self.assertEqual(status, 200)

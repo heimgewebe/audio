@@ -1127,6 +1127,7 @@ class AudioRemoteBridgeHTTPServer(ThreadingHTTPServer):
             raise BridgeError("test bridge port is invalid")
         self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
         self._action_lock = threading.Lock()
+        self._material_action_lock = threading.Lock()
         self._action_session_lock = threading.Lock()
         self._action_sessions: dict[str, tuple[int, str]] = {}
         super().__init__(server_address, AudioRemoteBridgeHandler)
@@ -1215,12 +1216,12 @@ class AudioRemoteBridgeHTTPServer(ThreadingHTTPServer):
             self._action_lock.release()
 
     def execute_h2_action(self, action: dict[str, Any]) -> tuple[int, bytes, int]:
-        if not self._action_lock.acquire(blocking=False):
-            raise ActionBusy("another remote audio action is already in progress")
+        if not self._material_action_lock.acquire(blocking=False):
+            raise ActionBusy("another remote H2 material action is already in progress")
         try:
             return write_backend_h2_action(action)
         finally:
-            self._action_lock.release()
+            self._material_action_lock.release()
 
 
 class AudioRemoteBridgeHandler(BaseHTTPRequestHandler):

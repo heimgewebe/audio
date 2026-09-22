@@ -344,14 +344,9 @@ def _select_h2_library_root(
     return primary if primary_present or not legacy_present else legacy
 
 
-_H2_MATERIAL_ROOT_OVERRIDE = os.environ.get("AUDIO_MATERIAL_ROOT")
-STATIC_H2_LIBRARY_ROOT = (
-    pathlib.Path(_H2_MATERIAL_ROOT_OVERRIDE).expanduser() / "H2"
-    if _H2_MATERIAL_ROOT_OVERRIDE
-    else _select_h2_library_root(
-        STATIC_H2_PRIMARY_LIBRARY_ROOT,
-        STATIC_H2_LEGACY_LIBRARY_ROOT,
-    )
+STATIC_H2_LIBRARY_ROOT = _select_h2_library_root(
+    STATIC_H2_PRIMARY_LIBRARY_ROOT,
+    STATIC_H2_LEGACY_LIBRARY_ROOT,
 )
 STATIC_H2_SOURCE_ROOT = pathlib.Path("/media") / pathlib.Path.home().name / "ZOOM_H2E"
 STATIC_RECORDING_STATE_ROOT = (
@@ -402,6 +397,11 @@ REQUEST_IO_TIMEOUT_SECONDS = 5.0
 H2_MIN_IO_BYTES_PER_SECOND = 512 * 1024
 H2_IO_TIMEOUT_OVERHEAD_SECONDS = 60
 H2_IMPORT_IO_PASSES = 4
+H2_MAX_TITLE_CHARS = 160
+H2_MAX_NOTE_CHARS = 2000
+H2_MAX_TAGS = 16
+H2_MAX_TAG_CHARS = 48
+_H2_TEXT_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 MAX_RUNTIME_SECONDS = 21_600
 MAX_OPERATING_MODE_STATE_BYTES = 16_384
 _SYSTEMD_STATE_DIRECTORY = pathlib.Path(os.environ.get("STATE_DIRECTORY", ""))
@@ -3098,6 +3098,12 @@ class AudioControl:
         telemetry: Any = BUILD_DEFAULT_TELEMETRY,
         operating_mode_state_path: pathlib.Path = OPERATING_MODE_STATE_PATH,
     ) -> None:
+        if os.environ.get("AUDIO_MATERIAL_ROOT"):
+            raise ControlError(
+                "AUDIO_MATERIAL_ROOT wird vom verwalteten Audio-Control-Dienst "
+                "nicht unterstützt; H2 verwendet ausschließlich die gehärteten "
+                "Primär-/Legacy-Roots."
+            )
         self.runner = runner or CommandRunner()
         self.action_token = action_token or secrets.token_urlsafe(32)
         self.host = host
@@ -3583,6 +3589,45 @@ class AudioControl:
         return report
 
     @staticmethod
+    def _validated_h2_annotation_text(
+        value: Any,
+        *,
+        label: str,
+        maximum: int,
+    ) -> str:
+        if not isinstance(value, str):
+            raise ControlError(f"{label} muss Text sein.")
+        normalized = value.strip()
+        if len(normalized) > maximum or _H2_TEXT_CONTROL_RE.search(normalized):
+            raise ControlError(f"{label} ist zu lang oder enthält Steuerzeichen.")
+        try:
+            normalized.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ControlError(f"{label} enthält ungültigen Unicode.") from error
+        return normalized
+
+    @classmethod
+    def _validated_h2_annotation_tags(cls, value: Any) -> list[str]:
+        if not isinstance(value, list) or len(value) > H2_MAX_TAGS:
+            raise ControlError("H2-Tags sind ungültig.")
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            tag = cls._validated_h2_annotation_text(
+                raw,
+                label="H2-Tag",
+                maximum=H2_MAX_TAG_CHARS,
+            )
+            if not tag:
+                continue
+            folded = tag.casefold()
+            if folded in seen:
+                continue
+            seen.add(folded)
+            result.append(tag)
+        return result
+
+    @staticmethod
     def _h2_timeout_for_bytes(
         byte_count: int,
         *,
@@ -3992,12 +4037,19 @@ class AudioControl:
             if (
                 not isinstance(material_id, str)
                 or re.fullmatch(r"[0-9a-f]{24}", material_id) is None
-                or not isinstance(title, str)
-                or not isinstance(note, str)
-                or not isinstance(tags, list)
-                or not all(isinstance(tag, str) for tag in tags)
             ):
                 raise ControlError("H2-Metadaten sind ungültig.")
+            title = self._validated_h2_annotation_text(
+                title,
+                label="H2-Titel",
+                maximum=H2_MAX_TITLE_CHARS,
+            )
+            note = self._validated_h2_annotation_text(
+                note,
+                label="H2-Notiz",
+                maximum=H2_MAX_NOTE_CHARS,
+            )
+            tags = self._validated_h2_annotation_tags(tags)
             command = [
                 "annotate",
                 material_id,
