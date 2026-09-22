@@ -3643,15 +3643,6 @@ class AudioControl:
             fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
         )
         self._validate_h2_library(library_report)
-        imported_scenes = {
-            item["source"]["scene"]
-            for item in library_report["items"]
-            if isinstance(item.get("source"), dict)
-            and isinstance(item["source"].get("scene"), str)
-        }
-        for session in source_projection["sessions"]:
-            session["already_imported"] = session["scene"] in imported_scenes
-
         items: list[dict[str, Any]] = []
         for item in library_report["items"]:
             source = item["source"]

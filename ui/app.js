@@ -433,6 +433,7 @@ const state = {
   h2WorkspaceError: null,
   h2ActivitySequence: 0,
   h2ActionPending: false,
+  h2AnnotationDrafts: new Map(),
   recordingPlayerSessionId: null,
   recordingPlayerAudioUrl: null,
   recordingPlayerReturnFocus: null,
@@ -832,7 +833,7 @@ function stopRemoteActivity() {
     audio.load();
   }
   clearGlobalTakePlayer();
-  renderH2Workspace();
+  renderH2Workspace({ force: true });
   // Kein gelesener Zustand darf als Kennzahl stehen bleiben.
   byId("diagnostic-badge").hidden = true;
   byId("diagnostic-badge").textContent = "0";
@@ -3663,6 +3664,24 @@ function h2ActionsAllowed() {
   return localH2ActionsAllowed() || remoteH2ActionsAllowed();
 }
 
+function h2AnnotationDraftValues(materialId, annotations) {
+  const saved = {
+    title: annotations?.title || "",
+    note: annotations?.note || "",
+    tags: Array.isArray(annotations?.tags) ? annotations.tags.join(", ") : "",
+  };
+  return state.h2AnnotationDrafts.get(materialId) || saved;
+}
+
+function rememberH2AnnotationDraft(materialId, form, title, note, tags) {
+  state.h2AnnotationDrafts.set(materialId, {
+    title: title.value,
+    note: note.value,
+    tags: tags.value,
+  });
+  form.dataset.dirty = "true";
+}
+
 async function loadH2Workspace({ render = true } = {}) {
   if (!backendAllowed()) return;
   const activitySequence = ++state.h2ActivitySequence;
@@ -3718,6 +3737,7 @@ async function postH2Action(payload) {
 
 async function runH2Action(payload) {
   if (state.h2ActionPending) return;
+  let actionSucceeded = false;
   const activitySequence = ++state.h2ActivitySequence;
   state.h2ActionPending = true;
   renderH2Workspace();
@@ -3729,9 +3749,17 @@ async function runH2Action(payload) {
     }
     state.h2Workspace = result.workspace;
     state.h2WorkspaceError = null;
+    actionSucceeded = true;
+    if (payload.operation === "annotate") {
+      state.h2AnnotationDrafts.delete(payload.material_id);
+    }
+    const alreadyImported =
+      payload.operation === "import" && result.result?.status === "already-imported";
     showNotice(
       payload.operation === "import"
-        ? "Aufnahme sicher archiviert. Das Original bleibt auf dem H2."
+        ? alreadyImported
+          ? "Aufnahme ist bereits sicher archiviert. Das Original bleibt auf dem H2."
+          : "Aufnahme sicher archiviert. Das Original bleibt auf dem H2."
         : "Titel, Notiz und Tags gespeichert.",
       "success",
     );
@@ -3741,7 +3769,9 @@ async function runH2Action(payload) {
   } finally {
     state.h2ActionPending = false;
     if (activitySequence === state.h2ActivitySequence && backendAllowed()) {
-      renderH2Workspace();
+      renderH2Workspace({
+        force: payload.operation === "annotate" && actionSucceeded,
+      });
     }
   }
 }
@@ -3785,12 +3815,13 @@ function appendH2Audio(card, audioUrl, segmentCount) {
   card.append(audio);
 }
 
-function renderH2Workspace() {
+function renderH2Workspace({ force = false } = {}) {
   const inbox = byId("h2-inbox");
   const archive = byId("h2-library");
   const status = byId("h2-status");
   const refresh = byId("h2-refresh");
   if (!inbox || !archive || !status || !refresh) return;
+  if (!force && document.activeElement?.closest(".h2-annotation-form")) return;
 
   refresh.disabled = state.h2ActionPending;
   const workspace = state.h2Workspace;
@@ -3827,12 +3858,7 @@ function renderH2Workspace() {
     const card = element("article", "h2-card");
     const top = element("div", "card-topline");
     appendText(top, "span", "card-glyph", "◉").setAttribute("aria-hidden", "true");
-    appendText(
-      top,
-      "span",
-      "status-pill " + (session.already_imported ? "ready" : ""),
-      session.already_imported ? "behalten" : "neu",
-    );
+    appendText(top, "span", "status-pill", "auf H2");
     card.append(top);
     appendText(card, "h3", "", h2DisplayTimestamp(session));
     const rate = Number(session.sample_rate_hz || 0);
@@ -3847,14 +3873,9 @@ function renderH2Workspace() {
         (session.roles || []).join(" + ").toUpperCase(),
     );
     appendH2Audio(card, session.audio_url, session.segment_count);
-    const keep = element(
-      "button",
-      session.already_imported ? "secondary-button" : "primary-button",
-      session.already_imported ? "BEHALTEN ✓" : "BEHALTEN",
-    );
+    const keep = element("button", "primary-button", "BEHALTEN");
     keep.type = "button";
-    keep.disabled =
-      session.already_imported || state.h2ActionPending || !h2ActionsAllowed();
+    keep.disabled = state.h2ActionPending || !h2ActionsAllowed();
     keep.addEventListener("click", () =>
       runH2Action({ operation: "import", scene: session.scene }),
     );
@@ -3884,19 +3905,22 @@ function renderH2Workspace() {
   const archiveCards = [];
   for (const item of items) {
     const card = element("article", "h2-card h2-material-card");
+    card.dataset.materialId = item.material_id;
     const annotations = item.annotations || {};
+    const annotationDraft = h2AnnotationDraftValues(item.material_id, annotations);
     const sourceItem = item.source || {};
     appendText(card, "p", "eyebrow", "Archiviert · unverändertes Master");
     appendText(card, "h3", "", annotations.title || h2DisplayTimestamp(sourceItem));
     appendH2Audio(card, item.audio_url, item.segment_count);
 
     const form = element("div", "h2-annotation-form");
+    form.dataset.dirty = state.h2AnnotationDrafts.has(item.material_id) ? "true" : "false";
     const titleLabel = element("label", "");
     appendText(titleLabel, "span", "", "Titel");
     const title = element("input", "h2-title");
     title.type = "text";
     title.maxLength = 160;
-    title.value = annotations.title || "";
+    title.value = annotationDraft.title;
     title.placeholder = "z. B. Metallgeländer unter Brücke";
     titleLabel.append(title);
 
@@ -3905,7 +3929,7 @@ function renderH2Workspace() {
     const note = element("textarea", "h2-note");
     note.maxLength = 2000;
     note.rows = 2;
-    note.value = annotations.note || "";
+    note.value = annotationDraft.note;
     note.placeholder = "Was ist zu hören?";
     noteLabel.append(note);
 
@@ -3913,9 +3937,15 @@ function renderH2Workspace() {
     appendText(tagsLabel, "span", "", "Tags");
     const tags = element("input", "h2-tags");
     tags.type = "text";
-    tags.value = Array.isArray(annotations.tags) ? annotations.tags.join(", ") : "";
+    tags.value = annotationDraft.tags;
     tags.placeholder = "Metall, perkussiv, draußen";
     tagsLabel.append(tags);
+
+    const rememberDraft = () =>
+      rememberH2AnnotationDraft(item.material_id, form, title, note, tags);
+    title.addEventListener("input", rememberDraft);
+    note.addEventListener("input", rememberDraft);
+    tags.addEventListener("input", rememberDraft);
 
     const save = element("button", "primary-button", "SPEICHERN");
     save.type = "button";
@@ -5229,6 +5259,7 @@ function autoRefreshBlocked() {
     state.loading ||
     state.recordingActionPending ||
     state.h2ActionPending ||
+    state.h2AnnotationDrafts.size > 0 ||
     state.dauersongActionPending ||
     state.operatingModeActionPending ||
     state.whaleActionPending ||

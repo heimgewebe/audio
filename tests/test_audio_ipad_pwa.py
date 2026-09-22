@@ -17,6 +17,7 @@ import json
 import pathlib
 import re
 import struct
+import subprocess
 import sys
 import threading
 import unittest
@@ -626,11 +627,11 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
         self.assertIn("audio.pause();", stop)
         self.assertIn('audio.removeAttribute("src");', stop)
         self.assertIn("audio.load();", stop)
-        self.assertIn("renderH2Workspace();", stop)
+        self.assertIn("renderH2Workspace({ force: true });", stop)
         self.assertIn('byId("local-device-boundary").hidden = backendAllowed();', self.app)
 
     def test_h2_invalid_sessions_render_as_warning_without_new_source_status(self):
-        renderer = self.app.split("function renderH2Workspace() {", 1)[1].split(
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
             "\nfunction renderLibrary", 1
         )[0]
         self.assertIn("source.skipped_invalid_sessions", renderer)
@@ -638,6 +639,76 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
         self.assertNotIn('source.status === "warning"', renderer)
         self.assertIn('" nicht sicher lesbar"', renderer)
         self.assertIn("Keine gültige Aufnahme verfügbar.", renderer)
+
+    def test_h2_annotation_drafts_survive_refresh_rebuilds_until_successful_save(self):
+        self.assertIn("h2AnnotationDrafts: new Map()", self.app)
+        helpers = self.app.split("function h2AnnotationDraftValues", 1)[1].split(
+            "\nasync function loadH2Workspace", 1
+        )[0]
+        helpers = "function h2AnnotationDraftValues" + helpers
+        harness = f"""
+const state = {{ h2AnnotationDrafts: new Map() }};
+{helpers}
+const form = {{ dataset: {{}} }};
+const title = {{ value: "Entwurf" }};
+const note = {{ value: "ungespeichert" }};
+const tags = {{ value: "roh, klang" }};
+rememberH2AnnotationDraft("a".repeat(24), form, title, note, tags);
+const draft = h2AnnotationDraftValues(
+  "a".repeat(24),
+  {{ title: "Server", note: "alt", tags: ["server"] }},
+);
+state.h2AnnotationDrafts.delete("a".repeat(24));
+const saved = h2AnnotationDraftValues(
+  "a".repeat(24),
+  {{ title: "Server neu", note: "gespeichert", tags: ["server"] }},
+);
+process.stdout.write(JSON.stringify({{
+  draft,
+  dirty: form.dataset.dirty,
+  saved,
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["draft"],
+            {"title": "Entwurf", "note": "ungespeichert", "tags": "roh, klang"},
+        )
+        self.assertEqual(result["dirty"], "true")
+        self.assertEqual(
+            result["saved"],
+            {"title": "Server neu", "note": "gespeichert", "tags": "server"},
+        )
+
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn('document.activeElement?.closest(".h2-annotation-form")', renderer)
+        self.assertIn("h2AnnotationDraftValues(item.material_id, annotations)", renderer)
+        self.assertGreaterEqual(renderer.count('addEventListener("input", rememberDraft)'), 3)
+        self.assertNotIn("already_imported", renderer)
+        self.assertIn('"auf H2"', renderer)
+        self.assertIn('element("button", "primary-button", "BEHALTEN")', renderer)
+
+        action = self.app.split("async function runH2Action", 1)[1].split(
+            "\nfunction h2DisplayTimestamp", 1
+        )[0]
+        self.assertIn("state.h2AnnotationDrafts.delete(payload.material_id);", action)
+        self.assertIn('result.result?.status === "already-imported"', action)
+        self.assertIn("let actionSucceeded = false;", action)
+        self.assertIn("actionSucceeded = true;", action)
+        self.assertIn('force: payload.operation === "annotate" && actionSucceeded', action)
+
+        blocked = self.app.split("function autoRefreshBlocked() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("state.h2AnnotationDrafts.size > 0", blocked)
 
     def test_h2_async_results_are_invalidated_when_backend_authority_changes(self):
         load = self.app.split("async function loadH2Workspace", 1)[1].split(

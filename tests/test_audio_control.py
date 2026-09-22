@@ -4387,10 +4387,17 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
 
 class H2MaterialControlTests(unittest.TestCase):
     class Runner:
-        def __init__(self, *, sessions=None, skipped_invalid_sessions=None):
+        def __init__(
+            self,
+            *,
+            sessions=None,
+            skipped_invalid_sessions=None,
+            library_items=None,
+        ):
             self.calls = []
             self.sessions = sessions
             self.skipped_invalid_sessions = list(skipped_invalid_sessions or [])
+            self.library_items = list(library_items or [])
 
         def run(self, argv, *, timeout):
             self.calls.append((tuple(argv), timeout))
@@ -4424,8 +4431,8 @@ class H2MaterialControlTests(unittest.TestCase):
                     "schema_version": 1,
                     "kind": "audio_material_library",
                     "read_only": True,
-                    "count": 0,
-                    "items": [],
+                    "count": len(self.library_items),
+                    "items": self.library_items,
                 }
             elif command == "import":
                 report = {
@@ -4486,6 +4493,31 @@ class H2MaterialControlTests(unittest.TestCase):
             workspace["source"]["skipped_invalid_sessions"],
             ["170926_191402"],
         )
+
+    def test_h2_workspace_never_suppresses_import_by_scene_name_alone(self):
+        archived = {
+            "material_id": "a" * 24,
+            "source": {
+                "scene": "170926_191401",
+                "recorded_date": "2026-09-17",
+                "recorded_time": "19:14:01",
+            },
+            "annotations": {
+                "title": "",
+                "note": "",
+                "tags": [],
+            },
+            "masters": [{"role": "mix", "segment_index": 0}],
+        }
+        controller = MODULE.AudioControl(
+            runner=self.Runner(library_items=[archived]),
+            telemetry=None,
+        )
+        workspace = controller.h2_workspace()
+        session = workspace["source"]["sessions"][0]
+        self.assertEqual(session["scene"], archived["source"]["scene"])
+        self.assertNotIn("already_imported", session)
+        self.assertEqual(workspace["library"]["count"], 1)
 
     def test_h2_import_uses_material_lock_not_global_audio_action_lock(self):
         runner = self.Runner()
