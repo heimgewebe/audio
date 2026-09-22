@@ -107,6 +107,35 @@ def make_source(
 
 
 class H2IngestTests(unittest.TestCase):
+    def test_library_root_prefers_primary_and_falls_back_only_to_existing_legacy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            primary = base / "Audio-Aufnahmen" / "H2-Material"
+            legacy = base / "Audio-Material" / "H2"
+
+            self.assertEqual(MODULE._select_library_root(primary, legacy), primary)
+            legacy.mkdir(parents=True)
+            self.assertEqual(MODULE._select_library_root(primary, legacy), legacy)
+            primary.mkdir(parents=True)
+            self.assertEqual(MODULE._select_library_root(primary, legacy), primary)
+
+            legacy_material = legacy / ("a" * 24)
+            legacy_material.mkdir()
+            self.assertEqual(MODULE._select_library_root(primary, legacy), legacy)
+
+            primary_material = primary / ("b" * 24)
+            primary_material.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "Primär- und Legacy-Root"):
+                MODULE._select_library_root(primary, legacy)
+
+    def test_material_root_override_keeps_preceding_parent_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            configured = pathlib.Path(directory) / "Material"
+            self.assertEqual(
+                MODULE._default_library_root(str(configured)),
+                configured / "H2",
+            )
+
     def test_scan_groups_one_session_and_preserves_h2_roles(self):
         with tempfile.TemporaryDirectory() as directory:
             source = make_source(

@@ -304,7 +304,55 @@ _STATE_HOME = pathlib.Path(
 ).expanduser()
 PROFILE_TRANSITION_STATE_ROOT = _STATE_HOME / "audio" / "profile-transitions-v1"
 STATIC_RECORDING_OUTPUT_ROOT = pathlib.Path.home() / "Music" / "Audio-Aufnahmen"
-STATIC_H2_LIBRARY_ROOT = STATIC_RECORDING_OUTPUT_ROOT / "H2-Material"
+STATIC_H2_PRIMARY_LIBRARY_ROOT = STATIC_RECORDING_OUTPUT_ROOT / "H2-Material"
+STATIC_H2_LEGACY_LIBRARY_ROOT = pathlib.Path.home() / "Music" / "Audio-Material" / "H2"
+
+
+def _h2_root_has_material(root: pathlib.Path) -> bool:
+    if not root.is_dir():
+        return False
+    try:
+        with os.scandir(root) as entries:
+            return any(
+                entry.is_dir(follow_symlinks=False)
+                and re.fullmatch(r"[0-9a-f]{24}", entry.name) is not None
+                for entry in entries
+            )
+    except OSError:
+        return True
+
+
+def _select_h2_library_root(
+    primary: pathlib.Path,
+    legacy: pathlib.Path,
+) -> pathlib.Path:
+    primary = primary.expanduser()
+    legacy = legacy.expanduser()
+    primary_present = primary.exists() or primary.is_symlink()
+    legacy_present = legacy.exists() or legacy.is_symlink()
+    if primary_present and legacy_present:
+        primary_has_material = _h2_root_has_material(primary)
+        legacy_has_material = _h2_root_has_material(legacy)
+        if primary_has_material and legacy_has_material:
+            raise RuntimeError(
+                "H2-Bibliothek besitzt Material in Primär- und Legacy-Root; "
+                "automatische Rootwahl ist verboten."
+            )
+        if legacy_has_material and not primary_has_material:
+            return legacy
+        return primary
+    return primary if primary_present or not legacy_present else legacy
+
+
+_H2_MATERIAL_ROOT_OVERRIDE = os.environ.get("AUDIO_MATERIAL_ROOT")
+STATIC_H2_LIBRARY_ROOT = (
+    pathlib.Path(_H2_MATERIAL_ROOT_OVERRIDE).expanduser() / "H2"
+    if _H2_MATERIAL_ROOT_OVERRIDE
+    else _select_h2_library_root(
+        STATIC_H2_PRIMARY_LIBRARY_ROOT,
+        STATIC_H2_LEGACY_LIBRARY_ROOT,
+    )
+)
 STATIC_H2_SOURCE_ROOT = pathlib.Path("/media") / pathlib.Path.home().name / "ZOOM_H2E"
 STATIC_RECORDING_STATE_ROOT = (
     pathlib.Path.home() / ".local" / "state" / "audio" / "recordings-v1"
@@ -351,6 +399,9 @@ MAX_STATIC_BYTES = 1_048_576
 MAX_SUBPROCESS_OUTPUT_BYTES = 1_048_576
 MAX_CONCURRENT_REQUESTS = 12
 REQUEST_IO_TIMEOUT_SECONDS = 5.0
+H2_MIN_IO_BYTES_PER_SECOND = 512 * 1024
+H2_IO_TIMEOUT_OVERHEAD_SECONDS = 60
+H2_IMPORT_IO_PASSES = 4
 MAX_RUNTIME_SECONDS = 21_600
 MAX_OPERATING_MODE_STATE_BYTES = 16_384
 _SYSTEMD_STATE_DIRECTORY = pathlib.Path(os.environ.get("STATE_DIRECTORY", ""))
@@ -3518,7 +3569,7 @@ class AudioControl:
         self,
         arguments: list[str],
         *,
-        timeout: int,
+        timeout: float,
         label: str,
         fallback: str,
     ) -> dict[str, Any]:
@@ -3530,6 +3581,88 @@ class AudioControl:
         if result.returncode != 0:
             raise ControlError(safe_error_message(report, fallback))
         return report
+
+    @staticmethod
+    def _h2_timeout_for_bytes(
+        byte_count: int,
+        *,
+        passes: int,
+        minimum: int,
+    ) -> float:
+        if (
+            isinstance(byte_count, bool)
+            or not isinstance(byte_count, int)
+            or byte_count <= 0
+            or isinstance(passes, bool)
+            or not isinstance(passes, int)
+            or passes < 1
+            or isinstance(minimum, bool)
+            or not isinstance(minimum, int)
+            or minimum < 1
+        ):
+            raise ControlError("H2-Zeitbudget kann nicht sicher bestimmt werden.")
+        transfer_seconds = math.ceil(
+            (byte_count * passes) / H2_MIN_IO_BYTES_PER_SECOND
+        )
+        return float(max(minimum, H2_IO_TIMEOUT_OVERHEAD_SECONDS + transfer_seconds))
+
+    @staticmethod
+    def _h2_session_files(session: dict[str, Any]) -> list[dict[str, Any]]:
+        files = session.get("files") if isinstance(session, dict) else None
+        if not isinstance(files, list) or not files:
+            raise ControlError("H2-Scanner lieferte keine gebundenen Mastergrößen.")
+        validated: list[dict[str, Any]] = []
+        for item in files:
+            if (
+                not isinstance(item, dict)
+                or item.get("role") not in {"front", "rear", "mix"}
+                or not isinstance(item.get("segment_index"), int)
+                or isinstance(item.get("segment_index"), bool)
+                or item["segment_index"] < 0
+                or not isinstance(item.get("bytes"), int)
+                or isinstance(item.get("bytes"), bool)
+                or item["bytes"] <= 0
+            ):
+                raise ControlError("H2-Scanner lieferte ungültige Mastergrößen.")
+            validated.append(item)
+        return validated
+
+    @classmethod
+    def _h2_preferred_source_master(
+        cls,
+        session: dict[str, Any],
+        segment_index: int,
+    ) -> dict[str, Any]:
+        if (
+            isinstance(segment_index, bool)
+            or not isinstance(segment_index, int)
+            or segment_index < 0
+        ):
+            raise ControlError("Ungültiger H2-Vorschausegmentindex.")
+        files = cls._h2_session_files(session)
+        for role in ("mix", "front", "rear"):
+            selected = sorted(
+                (item for item in files if item["role"] == role),
+                key=lambda item: item["segment_index"],
+            )
+            if selected:
+                if segment_index >= len(selected):
+                    raise ControlError("H2-Vorschausegment existiert nicht.")
+                return selected[segment_index]
+        raise ControlError("H2-Session besitzt keine abspielbare Spur.")
+
+    @staticmethod
+    def _h2_material_bytes(item: dict[str, Any]) -> int:
+        masters = item.get("masters") if isinstance(item, dict) else None
+        if not isinstance(masters, list) or not masters:
+            raise ControlError("H2-Material besitzt keine gebundenen Mastergrößen.")
+        sizes: list[int] = []
+        for master in masters:
+            size = master.get("bytes") if isinstance(master, dict) else None
+            if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+                raise ControlError("H2-Material besitzt ungültige Mastergrößen.")
+            sizes.append(size)
+        return sum(sizes)
 
     @staticmethod
     def _validate_h2_scan(report: dict[str, Any]) -> None:
@@ -3716,6 +3849,24 @@ class AudioControl:
             raise ControlError("H2-Medienbindung liegt außerhalb des erlaubten Roots.")
 
     def verified_h2_source_media(self, scene: str, segment_index: int) -> dict[str, Any]:
+        source_report = self._run_h2_command(
+            ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
+            timeout=30,
+            label="H2-Scanner",
+            fallback="H2 ist nicht als Datei-Quelle verfügbar.",
+        )
+        self._validate_h2_scan(source_report)
+        session = next(
+            (
+                item
+                for item in source_report["sessions"]
+                if isinstance(item, dict) and item.get("scene") == scene
+            ),
+            None,
+        )
+        if session is None:
+            raise ControlError("H2-Szene ist nicht mehr verfügbar.")
+        selected = self._h2_preferred_source_master(session, segment_index)
         report = self._run_h2_command(
             [
                 "source-media",
@@ -3724,7 +3875,11 @@ class AudioControl:
                 "--source-root",
                 str(STATIC_H2_SOURCE_ROOT),
             ],
-            timeout=60,
+            timeout=self._h2_timeout_for_bytes(
+                selected["bytes"],
+                passes=1,
+                minimum=60,
+            ),
             label="H2-Vorschau",
             fallback="H2-Aufnahme ist nicht sicher abspielbar.",
         )
@@ -3738,6 +3893,24 @@ class AudioControl:
     def verified_h2_material_media(
         self, material_id: str, segment_index: int
     ) -> dict[str, Any]:
+        library_report = self._run_h2_command(
+            ["library", "--library-root", str(STATIC_H2_LIBRARY_ROOT)],
+            timeout=30,
+            label="H2-Materialbibliothek",
+            fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
+        )
+        self._validate_h2_library(library_report)
+        item = next(
+            (
+                candidate
+                for candidate in library_report["items"]
+                if isinstance(candidate, dict)
+                and candidate.get("material_id") == material_id
+            ),
+            None,
+        )
+        if item is None:
+            raise ControlError("H2-Material ist nicht mehr verfügbar.")
         report = self._run_h2_command(
             [
                 "material-media",
@@ -3746,7 +3919,11 @@ class AudioControl:
                 "--library-root",
                 str(STATIC_H2_LIBRARY_ROOT),
             ],
-            timeout=120,
+            timeout=self._h2_timeout_for_bytes(
+                self._h2_material_bytes(item),
+                passes=1,
+                minimum=120,
+            ),
             label="H2-Material",
             fallback="H2-Material ist nicht sicher abspielbar.",
         )
@@ -3776,7 +3953,31 @@ class AudioControl:
                 "--library-root",
                 str(STATIC_H2_LIBRARY_ROOT),
             ]
-            timeout = 300
+            source_report = self._run_h2_command(
+                ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
+                timeout=30,
+                label="H2-Scanner",
+                fallback="H2 ist nicht als Datei-Quelle verfügbar.",
+            )
+            self._validate_h2_scan(source_report)
+            source_session = next(
+                (
+                    item
+                    for item in source_report["sessions"]
+                    if isinstance(item, dict) and item.get("scene") == scene
+                ),
+                None,
+            )
+            if source_session is None:
+                raise ControlError("H2-Szene ist nicht mehr verfügbar.")
+            source_bytes = sum(
+                item["bytes"] for item in self._h2_session_files(source_session)
+            )
+            timeout = self._h2_timeout_for_bytes(
+                source_bytes,
+                passes=H2_IMPORT_IO_PASSES,
+                minimum=300,
+            )
             label = "H2-Import"
             fallback = "H2-Aufnahme konnte nicht sicher archiviert werden."
         elif operation == "annotate":
@@ -3800,12 +4001,10 @@ class AudioControl:
             command = [
                 "annotate",
                 material_id,
-                "--title",
-                title,
-                "--note",
-                note,
-                "--tags-json",
-                json.dumps(tags, ensure_ascii=False, separators=(",", ":")),
+                f"--title={title}",
+                f"--note={note}",
+                "--tags-json="
+                + json.dumps(tags, ensure_ascii=False, separators=(",", ":")),
                 "--library-root",
                 str(STATIC_H2_LIBRARY_ROOT),
             ]

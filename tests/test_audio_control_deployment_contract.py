@@ -80,6 +80,7 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
             read_write_paths(UI_UNIT_PATH),
             {
                 "%h/Music/Audio-Aufnahmen",
+                "-%h/Music/Audio-Material/H2",
                 "%h/.local/state/audio/recordings-v1",
                 "%h/.local/state/audio/profile-transitions-v1",
                 "%h/.local/state/audio/laboratory",

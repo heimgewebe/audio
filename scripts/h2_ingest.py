@@ -45,12 +45,59 @@ DEFAULT_SOURCE_ROOT = pathlib.Path(
         pathlib.Path("/media") / os.environ.get("USER", "user") / "ZOOM_H2E",
     )
 )
-DEFAULT_LIBRARY_ROOT = pathlib.Path(
-    os.environ.get(
-        "AUDIO_MATERIAL_ROOT",
-        pathlib.Path.home() / "Music" / "Audio-Aufnahmen" / "H2-Material",
-    )
-)
+PRIMARY_LIBRARY_ROOT = pathlib.Path.home() / "Music" / "Audio-Aufnahmen" / "H2-Material"
+LEGACY_LIBRARY_ROOT = pathlib.Path.home() / "Music" / "Audio-Material" / "H2"
+
+
+def _library_root_has_material(root: pathlib.Path) -> bool:
+    if not root.is_dir():
+        return False
+    try:
+        with os.scandir(root) as entries:
+            return any(
+                entry.is_dir(follow_symlinks=False)
+                and re.fullmatch(r"[0-9a-f]{24}", entry.name) is not None
+                for entry in entries
+            )
+    except OSError:
+        return True
+
+
+def _select_library_root(
+    primary: pathlib.Path,
+    legacy: pathlib.Path,
+) -> pathlib.Path:
+    primary = primary.expanduser()
+    legacy = legacy.expanduser()
+    primary_present = primary.exists() or primary.is_symlink()
+    legacy_present = legacy.exists() or legacy.is_symlink()
+    if primary_present and legacy_present:
+        primary_has_material = _library_root_has_material(primary)
+        legacy_has_material = _library_root_has_material(legacy)
+        if primary_has_material and legacy_has_material:
+            raise RuntimeError(
+                "H2-Bibliothek besitzt Material in Primär- und Legacy-Root; "
+                "automatische Rootwahl ist verboten."
+            )
+        if legacy_has_material and not primary_has_material:
+            return legacy
+        return primary
+    return primary if primary_present or not legacy_present else legacy
+
+
+def _default_library_root(
+    material_root_override: str | None,
+    primary: pathlib.Path = PRIMARY_LIBRARY_ROOT,
+    legacy: pathlib.Path = LEGACY_LIBRARY_ROOT,
+) -> pathlib.Path:
+    if material_root_override:
+        # Preserve the preceding release contract: AUDIO_MATERIAL_ROOT names
+        # the material parent and H2 remains its child.
+        return pathlib.Path(material_root_override).expanduser() / "H2"
+    return _select_library_root(primary, legacy)
+
+
+DEFAULT_LIBRARY_ROOT = _default_library_root(os.environ.get("AUDIO_MATERIAL_ROOT"))
 
 
 class H2IngestError(RuntimeError):

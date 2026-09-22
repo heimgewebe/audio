@@ -214,7 +214,6 @@ const LIBRARY_VIEWS = new Set(["active", "trash", "all"]);
 const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category"]);
 const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
 const H2_WORKSPACE_TIMEOUT_MS = 90000;
-const H2_IMPORT_TIMEOUT_MS = 420000;
 const H2_ANNOTATE_TIMEOUT_MS = 150000;
 
 const RECORDING_COLLISION_BLOCKERS = new Set([
@@ -916,7 +915,8 @@ async function fetchJson(url, options = {}) {
   }
   const { timeoutMs = 12000, ...fetchOptions } = options;
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const timeout =
+    timeoutMs === null ? null : window.setTimeout(() => controller.abort(), timeoutMs);
   let response;
   try {
     response = await fetch(url, {
@@ -926,7 +926,7 @@ async function fetchJson(url, options = {}) {
       ...fetchOptions,
     });
   } catch (error) {
-    window.clearTimeout(timeout);
+    if (timeout !== null) window.clearTimeout(timeout);
     if (
       controller.signal.aborted ||
       (error instanceof DOMException && error.name === "AbortError")
@@ -960,7 +960,7 @@ async function fetchJson(url, options = {}) {
     }
     throw new Error(`Der Control-Dienst antwortet unlesbar (${response.status}).`);
   } finally {
-    window.clearTimeout(timeout);
+    if (timeout !== null) window.clearTimeout(timeout);
   }
   if (!response.ok) {
     const serviceCode =
@@ -3704,7 +3704,7 @@ async function loadH2Workspace({ render = true } = {}) {
 
 async function postH2Action(payload) {
   const timeoutMs =
-    payload?.operation === "import" ? H2_IMPORT_TIMEOUT_MS : H2_ANNOTATE_TIMEOUT_MS;
+    payload?.operation === "import" ? null : H2_ANNOTATE_TIMEOUT_MS;
   if (localH2ActionsAllowed()) {
     return fetchJson("/api/v1/actions/h2", {
       method: "POST",
@@ -3767,11 +3767,13 @@ async function runH2Action(payload) {
     if (activitySequence !== state.h2ActivitySequence || !backendAllowed()) return;
     showNotice(error instanceof Error ? error.message : "H2-Aktion wurde abgewiesen.");
   } finally {
-    state.h2ActionPending = false;
-    if (activitySequence === state.h2ActivitySequence && backendAllowed()) {
-      renderH2Workspace({
-        force: payload.operation === "annotate" && actionSucceeded,
-      });
+    if (activitySequence === state.h2ActivitySequence) {
+      state.h2ActionPending = false;
+      if (backendAllowed()) {
+        renderH2Workspace({
+          force: payload.operation === "annotate" && actionSucceeded,
+        });
+      }
     }
   }
 }
@@ -3789,11 +3791,20 @@ function appendH2Audio(card, audioUrl, segmentCount) {
   if (typeof audioUrl !== "string" || !audioUrl) return;
   const audio = element("audio", "h2-audio");
   audio.controls = true;
-  audio.preload = "metadata";
+  audio.preload = "none";
   const total = Math.max(1, Number(segmentCount) || 1);
   const urlForSegment = (index) =>
     audioUrl.replace(/\/audio\/[0-9]+$/, "/audio/" + index);
-  audio.src = urlForSegment(0);
+  let selectedSegment = 0;
+  const activateSource = () => {
+    if (audio.hasAttribute("src")) return;
+    audio.src = urlForSegment(selectedSegment);
+    audio.load();
+  };
+  audio.addEventListener("pointerdown", activateSource);
+  audio.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") activateSource();
+  });
   if (total > 1) {
     const segmentLabel = element("label", "h2-segment-select");
     appendText(segmentLabel, "span", "", "Teil");
@@ -3804,9 +3815,9 @@ function appendH2Audio(card, audioUrl, segmentCount) {
       segmentSelect.append(option);
     }
     segmentSelect.addEventListener("change", () => {
+      selectedSegment = Number(segmentSelect.value) || 0;
       audio.pause();
-      audio.currentTime = 0;
-      audio.src = urlForSegment(Number(segmentSelect.value) || 0);
+      audio.removeAttribute("src");
       audio.load();
     });
     segmentLabel.append(segmentSelect);
@@ -3950,8 +3961,8 @@ function renderH2Workspace({ force = false } = {}) {
     const save = element("button", "primary-button", "SPEICHERN");
     save.type = "button";
     save.disabled = state.h2ActionPending || !h2ActionsAllowed();
-    save.addEventListener("click", () =>
-      runH2Action({
+    save.addEventListener("click", () => {
+      const payload = {
         operation: "annotate",
         material_id: item.material_id,
         title: title.value,
@@ -3960,8 +3971,13 @@ function renderH2Workspace({ force = false } = {}) {
           .split(",")
           .map((value) => value.trim())
           .filter(Boolean),
-      }),
-    );
+      };
+      title.disabled = true;
+      note.disabled = true;
+      tags.disabled = true;
+      save.disabled = true;
+      runH2Action(payload);
+    });
     form.append(titleLabel, noteLabel, tagsLabel, save);
     card.append(form);
     appendText(

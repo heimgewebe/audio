@@ -433,8 +433,9 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('/api/v1/actions/h2', h2_router)
         self.assertIn('/bridge/v1/actions/h2', h2_router)
         self.assertIn('"X-Audio-Bridge-Session"', h2_router)
-        self.assertIn("H2_IMPORT_TIMEOUT_MS", h2_router)
+        self.assertIn('payload?.operation === "import" ? null', h2_router)
         self.assertIn("H2_ANNOTATE_TIMEOUT_MS", h2_router)
+        self.assertNotIn("H2_IMPORT_TIMEOUT_MS", self.app)
         self.assertNotIn("delete-source", h2_router)
 
         h2_load = self.app.split("async function loadH2Workspace", 1)[1].split(
@@ -442,8 +443,12 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         )[0]
         self.assertIn("timeoutMs: H2_WORKSPACE_TIMEOUT_MS", h2_load)
         self.assertIn("const H2_WORKSPACE_TIMEOUT_MS = 90000;", self.app)
-        self.assertIn("const H2_IMPORT_TIMEOUT_MS = 420000;", self.app)
         self.assertIn("const H2_ANNOTATE_TIMEOUT_MS = 150000;", self.app)
+        fetch_json = self.app.split("async function fetchJson", 1)[1].split(
+            "\nfunction showNotice", 1
+        )[0]
+        self.assertIn("timeoutMs === null ? null", fetch_json)
+        self.assertGreaterEqual(fetch_json.count("if (timeout !== null)"), 2)
 
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
         controls = self.app.split("function renderRecordingControls(", 1)[1].split(
@@ -704,11 +709,45 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("let actionSucceeded = false;", action)
         self.assertIn("actionSucceeded = true;", action)
         self.assertIn('force: payload.operation === "annotate" && actionSucceeded', action)
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        save_handler = renderer.split('save.addEventListener("click"', 1)[1].split(
+            "form.append", 1
+        )[0]
+        for control in ("title", "note", "tags", "save"):
+            self.assertIn(f"{control}.disabled = true;", save_handler)
+        self.assertLess(
+            save_handler.index("title.disabled = true;"),
+            save_handler.index("runH2Action(payload);"),
+        )
+        finally_block = action.split("} finally {", 1)[1]
+        self.assertIn(
+            "if (activitySequence === state.h2ActivitySequence)",
+            finally_block,
+        )
+        self.assertLess(
+            finally_block.index("if (activitySequence === state.h2ActivitySequence)"),
+            finally_block.index("state.h2ActionPending = false;"),
+        )
 
         blocked = self.app.split("function autoRefreshBlocked() {", 1)[1].split(
             "\n}", 1
         )[0]
         self.assertIn("state.h2AnnotationDrafts.size > 0", blocked)
+
+    def test_h2_audio_defers_native_media_load_until_explicit_interaction(self):
+        helper = self.app.split("function appendH2Audio", 1)[1].split(
+            "\nfunction renderH2Workspace", 1
+        )[0]
+        self.assertIn('audio.preload = "none";', helper)
+        initial = helper.split('if (total > 1) {', 1)[0]
+        self.assertNotIn("audio.src =", initial.split("const activateSource", 1)[0])
+        self.assertIn('audio.addEventListener("pointerdown", activateSource)', helper)
+        self.assertIn('event.key === "Enter" || event.key === " "', helper)
+        self.assertIn('audio.removeAttribute("src");', helper)
+        segment_change = helper.split('segmentSelect.addEventListener("change"', 1)[1]
+        self.assertNotIn("audio.src =", segment_change)
 
     def test_h2_async_results_are_invalidated_when_backend_authority_changes(self):
         load = self.app.split("async function loadH2Workspace", 1)[1].split(

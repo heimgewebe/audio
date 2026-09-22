@@ -1145,8 +1145,8 @@ class BridgeHTTPTests(unittest.TestCase):
             45 + 30 + 30,
         )
 
-    def test_h2_media_backend_timeout_covers_source_and_archive_verification(self):
-        observed: list[float] = []
+    def test_h2_media_bridge_does_not_preempt_size_bound_backend_verification(self):
+        observed: list[float | None] = []
 
         class TimeoutProbeConnection:
             def __init__(self, _host, _port, *, timeout):
@@ -1171,11 +1171,10 @@ class BridgeHTTPTests(unittest.TestCase):
                         MODULE.stream_backend_recording_artifact(
                             mock.Mock(), path, {}, head_only=False
                         )
-                self.assertEqual(observed, [MODULE.H2_MEDIA_BACKEND_TIMEOUT_SECONDS])
-        self.assertGreater(MODULE.H2_MEDIA_BACKEND_TIMEOUT_SECONDS, 120)
+                self.assertEqual(observed, [None])
 
     def test_h2_workspace_and_action_timeouts_cover_backend_contract(self):
-        observed: list[float] = []
+        observed: list[float | None] = []
 
         class TimeoutProbeConnection:
             def __init__(self, _host, _port, *, timeout):
@@ -1202,8 +1201,7 @@ class BridgeHTTPTests(unittest.TestCase):
                 MODULE.write_backend_h2_action(
                     {"operation": "import", "scene": "170926_191401"}
                 )
-        self.assertEqual(observed, [MODULE.H2_IMPORT_BACKEND_TIMEOUT_SECONDS])
-        self.assertGreater(MODULE.H2_IMPORT_BACKEND_TIMEOUT_SECONDS, 300 + 30 + 30 + 1)
+        self.assertEqual(observed, [None])
 
         observed.clear()
         with (
@@ -1235,11 +1233,11 @@ class BridgeHTTPTests(unittest.TestCase):
             ui_timeout("H2_WORKSPACE_TIMEOUT_MS"),
             MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS * 1000,
         )
-        self.assertGreater(
-            ui_timeout("H2_IMPORT_TIMEOUT_MS"),
-            (MODULE.H2_IMPORT_BACKEND_TIMEOUT_SECONDS + MODULE.BACKEND_TIMEOUT_SECONDS)
-            * 1000,
-        )
+        self.assertNotIn("H2_IMPORT_TIMEOUT_MS", app)
+        h2_router = app.split("async function postH2Action(payload) {", 1)[1].split(
+            "\nasync function runH2Action", 1
+        )[0]
+        self.assertIn('payload?.operation === "import" ? null', h2_router)
         self.assertGreater(
             ui_timeout("H2_ANNOTATE_TIMEOUT_MS"),
             (MODULE.H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS + MODULE.BACKEND_TIMEOUT_SECONDS)

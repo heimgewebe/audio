@@ -89,6 +89,15 @@ Standardziel:
     └── <scene>_MIX.WAV
 ```
 
+Für neue Installationen ist dieser Root autoritativ. Liegt im neuen Root noch
+kein Material, aber im unmittelbar vorherigen Standard
+`~/Music/Audio-Material/H2`, wird genau dieser bestehende Legacy-Root
+weiterverwendet. Liegen in beiden Roots Materialobjekte, wird die automatische
+Rootwahl fail-closed abgewiesen; es gibt keinen stillen Splitbrain-Pfad und
+keine automatische Verschiebung oder Löschung. Ein explizites `AUDIO_MATERIAL_ROOT`
+behält seinen bisherigen Vertrag als Material-Parent; H2 liegt darunter in
+`<AUDIO_MATERIAL_ROOT>/H2`.
+
 `manifest.json` und die Master werden read-only veröffentlicht. Das Manifest
 bindet die Originaldateinamen, Rollen, SHA-256, Größen, Audioformat und
 BWF-Metadaten.
@@ -133,4 +142,4 @@ v1 belegt noch nicht:
 - Backup auf ein zweites physisches Medium;
 - Freigabe zum Löschen der SD-Karten-Originale;
 
-Markerimport, kreative DAW-Übergabe, zweite Sicherung und eine spätere Löschfreigabe bleiben getrennte Ausbau- und Acceptance-Schritte. Der physische H2-Materialroot liegt bewusst unter dem bereits gehärteten Audio-Aufnahmen-Schreibroot; die Produktdomäne bleibt davon unabhängig „Material“.
+Markerimport, kreative DAW-Übergabe, zweite Sicherung und eine spätere Löschfreigabe bleiben getrennte Ausbau- und Acceptance-Schritte. Neue Installationen legen den physischen H2-Materialroot bewusst unter den bereits gehärteten Audio-Aufnahmen-Schreibroot; bestehende Installationen mit dem vorherigen `Audio-Material/H2`-Root behalten genau diesen einen Root als Übergangspfad. Die Produktdomäne bleibt davon unabhängig „Material“.

@@ -148,6 +148,10 @@ PWA_CRITICAL_RELEASE_FILES = (
     "ui/icon-512.png",
 )
 PWA_RELEASE_SENTINEL = "tests/test_audio_ipad_pwa.py"
+H2_INGEST_CRITICAL_RELEASE_FILES = (
+    "scripts/h2_ingest.py",
+    "tests/test_h2_ingest.py",
+)
 REMOTE_BRIDGE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_remote_bridge.py",
     "scripts/audio_remote_bridge_tailscale.py",
@@ -175,6 +179,7 @@ PROFILE_TRANSITION_CRITICAL_RELEASE_FILES = (
 
 BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
+    *H2_INGEST_CRITICAL_RELEASE_FILES,
     "scripts/dauersong_live.py",
     "inventory/dauersong-v9-legacy.v1.json",
     "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
@@ -788,6 +793,16 @@ def extract_commit(repository: pathlib.Path, commit: str, destination: pathlib.P
         raise DeployError(f"git archive fehlgeschlagen: {stderr.strip()}")
 
 
+def h2_ingest_release_supported(release: pathlib.Path) -> bool:
+    control = release / "scripts" / "audio_control.py"
+    if control.is_symlink() or not control.is_file():
+        return False
+    try:
+        return b"h2_material_control" in control.read_bytes()
+    except OSError:
+        return False
+
+
 def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
     required = [
         release / "scripts" / "audio_control.py",
@@ -816,6 +831,14 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         release / "tests" / "test_audio_ipad_pwa.py",
         release / "tests" / "test_audio_remote_bridge.py",
     ]
+    h2_ingest_supported = h2_ingest_release_supported(release)
+    if h2_ingest_supported:
+        required.extend(
+            [
+                release / "scripts" / "h2_ingest.py",
+                release / "tests" / "test_h2_ingest.py",
+            ]
+        )
     qbzd_qconnect_recovery_supported = (
         (release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL).is_file()
         and not (release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL).is_symlink()
@@ -900,6 +923,14 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
             timeout=120,
         ),
     ]
+    if h2_ingest_supported:
+        checks.append(
+            run_command(
+                [sys.executable, "-m", "unittest", "tests/test_h2_ingest.py"],
+                cwd=release,
+                timeout=180,
+            )
+        )
     if qbzd_qconnect_recovery_supported:
         checks.extend(
             [
@@ -947,6 +978,9 @@ def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
     if not (release / PWA_RELEASE_SENTINEL).is_file():
         pwa_paths = set(PWA_CRITICAL_RELEASE_FILES)
         paths = [relative for relative in paths if relative not in pwa_paths]
+    if not h2_ingest_release_supported(release):
+        h2_paths = set(H2_INGEST_CRITICAL_RELEASE_FILES)
+        paths = [relative for relative in paths if relative not in h2_paths]
     if not (release / REMOTE_BRIDGE_RELEASE_SENTINEL).is_file():
         remote_bridge_paths = set(REMOTE_BRIDGE_CRITICAL_RELEASE_FILES)
         paths = [relative for relative in paths if relative not in remote_bridge_paths]

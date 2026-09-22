@@ -76,15 +76,15 @@ RECORDING_BACKEND_TIMEOUT_SECONDS = 120.0
 # bridge beyond that complete backend bound so successful convergence is not
 # misreported as a remote timeout.
 RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
-# H2 media validation may spend up to 120 s hashing an archived master before
-# response headers are available. Keep the bridge beyond that backend bound.
-H2_MEDIA_BACKEND_TIMEOUT_SECONDS = 130.0
+# H2 media verification has a size-derived finite bound in the backend and
+# the backend then generation-checks the opened file again before headers.
+# The bridge deliberately adds no shorter independent media deadline.
 # H2 workspace may spend 30 s scanning the source plus 30 s reading the
 # library. A timed-out source scan can add the runner's bounded 1 s kill drain.
 H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS = 75.0
-# H2 actions synchronously return a fresh workspace: import is bounded at
-# 300 s and annotation at 30 s before the same ~61 s workspace budget.
-H2_IMPORT_BACKEND_TIMEOUT_SECONDS = 390.0
+# H2 import has a size-derived finite bound in the backend. The bridge must
+# not preempt it with a second fixed deadline. Annotation remains small and
+# keeps a fixed outer budget beyond its backend + workspace path.
 H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS = 120.0
 REQUEST_IO_TIMEOUT_SECONDS = 6.0
 MAX_REQUEST_LINE_BYTES = 2048
@@ -791,7 +791,7 @@ def stream_backend_recording_artifact(
     else:
         raise RequestRejected("audio media target is invalid")
     backend_timeout_seconds = (
-        H2_MEDIA_BACKEND_TIMEOUT_SECONDS
+        None
         if h2_source_media is not None or h2_material_media is not None
         else BACKEND_TIMEOUT_SECONDS
     )
@@ -1064,7 +1064,7 @@ def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
         action, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     timeout = (
-        H2_IMPORT_BACKEND_TIMEOUT_SECONDS
+        None
         if action.get("operation") == "import"
         else H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS
     )

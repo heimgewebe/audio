@@ -28,7 +28,8 @@ class AudioControlDeployTests(unittest.TestCase):
         recorder_binding: bool = False,
     ) -> None:
         files = {
-            "scripts/audio_control.py": b"print('control')\n",
+            "scripts/audio_control.py": b"print('control h2_material_control')\n",
+            "scripts/h2_ingest.py": b"print('h2 ingest')\n",
             "scripts/dauersong_live.py": b"print('dauersong')\n",
             "inventory/dauersong-v9-legacy.v1.json": b"{}\n",
             "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf": b"[Service]\nRestart=no\n",
@@ -74,6 +75,7 @@ class AudioControlDeployTests(unittest.TestCase):
             "ui/icon-192.png": b"PNG-192\n",
             "ui/icon-512.png": b"PNG-512\n",
             "tests/test_audio_control.py": b"import unittest\n",
+            "tests/test_h2_ingest.py": b"import unittest\n",
             "tests/test_audio_level_observer.py": b"import unittest\n",
             "tests/test_audio_live_telemetry.py": b"import unittest\n",
             "tests/test_qobuz_desktop_recovery.py": b"import unittest\n",
@@ -377,6 +379,41 @@ class AudioControlDeployTests(unittest.TestCase):
                         MODULE.DeployError, "Kritische Releasedatei"
                     ):
                         MODULE.release_hashes(release)
+
+    def test_h2_ingest_runtime_files_are_release_critical(self):
+        expected = set(MODULE.H2_INGEST_CRITICAL_RELEASE_FILES)
+        self.assertEqual(
+            expected,
+            {"scripts/h2_ingest.py", "tests/test_h2_ingest.py"},
+        )
+        self.assertTrue(expected <= set(MODULE.BASE_CRITICAL_RELEASE_FILES))
+        commit = "a" * 40
+        for missing in sorted(expected):
+            with self.subTest(missing=missing):
+                with tempfile.TemporaryDirectory() as directory:
+                    release = pathlib.Path(directory)
+                    self.write_release(release, commit)
+                    (release / missing).unlink()
+                    with self.assertRaisesRegex(
+                        MODULE.DeployError, "Kritische Releasedatei"
+                    ):
+                        MODULE.release_hashes(release)
+
+    def test_pre_h2_release_without_sentinel_remains_marker_upgradeable(self):
+        commit = "b" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            self.write_release(release, commit)
+            (release / "scripts" / "audio_control.py").write_bytes(
+                b"print('control')\n"
+            )
+            for relative in MODULE.H2_INGEST_CRITICAL_RELEASE_FILES:
+                (release / relative).unlink()
+            paths = set(MODULE.critical_release_paths(release))
+            self.assertTrue(
+                set(MODULE.H2_INGEST_CRITICAL_RELEASE_FILES).isdisjoint(paths)
+            )
+            MODULE.release_hashes(release)
 
     def test_replay_runtime_files_are_release_critical(self):
         expected = {

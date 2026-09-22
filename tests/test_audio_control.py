@@ -4419,6 +4419,26 @@ class H2MaterialControlTests(unittest.TestCase):
                             "sample_rate_hz": 44100,
                             "roles": ["front", "rear", "mix"],
                             "segment_count": 1,
+                            "files": [
+                                {
+                                    "name": "170926_191401_FRONT.WAV",
+                                    "role": "front",
+                                    "segment_index": 0,
+                                    "bytes": 1_048_576,
+                                },
+                                {
+                                    "name": "170926_191401_REAR.WAV",
+                                    "role": "rear",
+                                    "segment_index": 0,
+                                    "bytes": 1_048_576,
+                                },
+                                {
+                                    "name": "170926_191401_MIX.WAV",
+                                    "role": "mix",
+                                    "segment_index": 0,
+                                    "bytes": 1_048_576,
+                                },
+                            ],
                         }
                     ],
                     "skipped_invalid_sessions": self.skipped_invalid_sessions,
@@ -4453,14 +4473,32 @@ class H2MaterialControlTests(unittest.TestCase):
                 report = {}
             return MODULE.CommandResult(tuple(argv), 0, json.dumps(report), "")
 
-    def test_h2_material_root_reuses_existing_recording_write_authority(self):
+    def test_h2_material_root_uses_one_primary_or_legacy_path(self):
         self.assertEqual(
             MODULE.STATIC_H2_LIBRARY_ROOT,
-            MODULE.STATIC_RECORDING_OUTPUT_ROOT / "H2-Material",
+            MODULE.STATIC_H2_PRIMARY_LIBRARY_ROOT,
         )
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            primary = base / "Audio-Aufnahmen" / "H2-Material"
+            legacy = base / "Audio-Material" / "H2"
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), primary)
+            legacy.mkdir(parents=True)
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), legacy)
+            primary.mkdir(parents=True)
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), primary)
+
+            (legacy / ("a" * 24)).mkdir()
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), legacy)
+
+            (primary / ("b" * 24)).mkdir()
+            with self.assertRaisesRegex(RuntimeError, "Primär- und Legacy-Root"):
+                MODULE._select_h2_library_root(primary, legacy)
+
         unit = (ROOT / "systemd" / "user" / "audio-control-ui-v1.service").read_text()
         self.assertIn("%h/Music/Audio-Aufnahmen", unit)
-        self.assertNotIn("%h/Music/Audio-Material", unit)
+        self.assertIn("-%h/Music/Audio-Material/H2", unit)
+        self.assertNotIn(" %h/Music/Audio-Material ", unit)
 
     def test_h2_workspace_projects_source_and_empty_archive(self):
         controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
@@ -4542,11 +4580,135 @@ class H2MaterialControlTests(unittest.TestCase):
         finally:
             controller._action_lock.release()
         self.assertEqual(result["operation"], "import")
-        call, timeout = runner.calls[0]
+        self.assertEqual(runner.calls[0][0][2], "scan")
+        call, timeout = runner.calls[1]
         self.assertEqual(pathlib.Path(call[1]).name, "h2_ingest.py")
         self.assertIn("import", call)
         self.assertIn(str(MODULE.STATIC_H2_LIBRARY_ROOT), call)
-        self.assertEqual(timeout, 300)
+        expected = controller._h2_timeout_for_bytes(
+            3 * 1_048_576,
+            passes=MODULE.H2_IMPORT_IO_PASSES,
+            minimum=300,
+        )
+        self.assertEqual(timeout, expected)
+        self.assertGreaterEqual(timeout, 300)
+
+    def test_h2_media_and_import_timeouts_scale_with_bound_master_bytes(self):
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        two_gib = 2 * 1024 * 1024 * 1024
+        source_session = {
+            "scene": "170926_191401",
+            "recorded_date": "2026-09-17",
+            "recorded_time": "19:14:01",
+            "duration_seconds": 21.5,
+            "roles": ["mix"],
+            "segment_count": 1,
+            "files": [
+                {
+                    "name": "170926_191401_MIX.WAV",
+                    "role": "mix",
+                    "segment_index": 0,
+                    "bytes": two_gib,
+                }
+            ],
+        }
+        library_item = {
+            "material_id": "a" * 24,
+            "source": {
+                "scene": "170926_191401",
+                "recorded_date": "2026-09-17",
+                "recorded_time": "19:14:01",
+            },
+            "annotations": {"title": "", "note": "", "tags": []},
+            "masters": [
+                {
+                    "name": "170926_191401_MIX.WAV",
+                    "role": "mix",
+                    "segment_index": 0,
+                    "bytes": two_gib,
+                    "audio": {},
+                }
+            ],
+        }
+        observed = []
+
+        def fake_run(arguments, *, timeout, label, fallback):
+            observed.append((arguments[0], timeout))
+            if arguments[0] == "scan":
+                return {
+                    "schema_version": 1,
+                    "kind": "audio_h2_source_scan",
+                    "read_only": True,
+                    "source_mutated": False,
+                    "count": 1,
+                    "sessions": [source_session],
+                    "skipped_invalid_sessions": [],
+                }
+            if arguments[0] == "library":
+                return {
+                    "schema_version": 1,
+                    "kind": "audio_material_library",
+                    "read_only": True,
+                    "count": 1,
+                    "items": [library_item],
+                }
+            if arguments[0] == "source-media":
+                return {"schema_version": 1, "kind": "audio_h2_source_media_binding"}
+            return {"schema_version": 1, "kind": "audio_h2_material_media_binding"}
+
+        with (
+            mock.patch.object(controller, "_run_h2_command", side_effect=fake_run),
+            mock.patch.object(controller, "_validate_h2_media_binding"),
+        ):
+            controller.verified_h2_source_media("170926_191401", 0)
+            controller.verified_h2_material_media("a" * 24, 0)
+
+        source_timeout = next(timeout for command, timeout in observed if command == "source-media")
+        material_timeout = next(
+            timeout for command, timeout in observed if command == "material-media"
+        )
+        self.assertGreater(source_timeout, 60)
+        self.assertGreater(material_timeout, 120)
+        self.assertEqual(
+            source_timeout,
+            controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=60),
+        )
+        self.assertEqual(
+            material_timeout,
+            controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=120),
+        )
+
+    def test_h2_annotation_argv_binds_leading_dashes_as_values(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with mock.patch.object(
+            controller,
+            "h2_workspace",
+            return_value={
+                "schema_version": 1,
+                "kind": "audio_h2_workspace",
+                "source": {"status": "ready", "count": 0, "sessions": []},
+                "library": {"count": 1, "items": []},
+                "source_delete_authorized": False,
+                "creative_handoff_authorized": False,
+            },
+        ):
+            controller.perform_h2_action(
+                {
+                    "operation": "annotate",
+                    "material_id": "a" * 24,
+                    "title": "- draft",
+                    "note": "- note",
+                    "tags": ["- tag"],
+                }
+            )
+        call, timeout = runner.calls[0]
+        self.assertIn("--title=- draft", call)
+        self.assertIn("--note=- note", call)
+        self.assertIn('--tags-json=["- tag"]', call)
+        self.assertNotIn("- draft", call)
+        self.assertNotIn("- note", call)
+        self.assertEqual(timeout, 30)
 
     def test_h2_surface_is_task_named_and_has_no_delete_action(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
