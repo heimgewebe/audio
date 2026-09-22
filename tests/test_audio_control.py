@@ -4280,6 +4280,53 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
                 self.assertIn(status, {403, 415})
         self.assertFalse(self.runner.whale_active)
 
+    def test_h2_request_budget_covers_ui_annotation_contract_without_broadening_other_actions(self):
+        payload = {
+            "operation": "annotate",
+            "material_id": "a" * 24,
+            "title": "😀" * 160,
+            "note": "😀" * 2000,
+            "tags": ["😀" * 48] * 16,
+        }
+        body = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        self.assertGreater(len(body), MODULE.MAX_REQUEST_BYTES)
+        self.assertLessEqual(len(body), MODULE.MAX_H2_REQUEST_BYTES)
+        result = {
+            "schema_version": 1,
+            "kind": "audio_control_h2_action_result",
+            "operation": "annotate",
+            "result": {"kind": "audio_material_annotation_result"},
+            "workspace": {"kind": "audio_h2_workspace"},
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": "http://127.0.0.1:8765",
+            "X-Audio-Control-Token": "memory-token",
+        }
+        with mock.patch.object(
+            self.controller, "perform_h2_action", return_value=result
+        ) as perform:
+            status, _response_headers, response = self.request(
+                "POST",
+                "/api/v1/actions/h2",
+                body=body,
+                headers=headers,
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(response)["kind"], "audio_control_h2_action_result")
+        perform.assert_called_once_with(payload)
+
+        status, _response_headers, response = self.request(
+            "POST",
+            "/api/v1/actions/whale",
+            body=body,
+            headers=headers,
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(json.loads(response)["error"]["code"], "invalid_content_length")
+
     def test_header_and_request_line_limits_fail_closed(self):
         oversized_header = (
             b"GET /api/v1/health HTTP/1.1\r\n"
@@ -4340,8 +4387,10 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
 
 class H2MaterialControlTests(unittest.TestCase):
     class Runner:
-        def __init__(self):
+        def __init__(self, *, sessions=None, skipped_invalid_sessions=None):
             self.calls = []
+            self.sessions = sessions
+            self.skipped_invalid_sessions = list(skipped_invalid_sessions or [])
 
         def run(self, argv, *, timeout):
             self.calls.append((tuple(argv), timeout))
@@ -4365,7 +4414,11 @@ class H2MaterialControlTests(unittest.TestCase):
                             "segment_count": 1,
                         }
                     ],
+                    "skipped_invalid_sessions": self.skipped_invalid_sessions,
                 }
+                if self.sessions is not None:
+                    report["sessions"] = list(self.sessions)
+                    report["count"] = len(report["sessions"])
             elif command == "library":
                 report = {
                     "schema_version": 1,
@@ -4408,6 +4461,7 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(workspace["kind"], "audio_h2_workspace")
         self.assertEqual(workspace["source"]["status"], "ready")
         self.assertEqual(workspace["source"]["count"], 1)
+        self.assertEqual(workspace["source"]["skipped_invalid_sessions"], [])
         self.assertEqual(workspace["library"]["count"], 0)
         self.assertFalse(workspace["source_delete_authorized"])
         session = workspace["source"]["sessions"][0]
@@ -4415,6 +4469,22 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(
             session["audio_url"],
             "/api/v1/h2/source/170926_191401/audio/0",
+        )
+
+    def test_h2_workspace_surfaces_invalid_only_source_without_claiming_empty(self):
+        controller = MODULE.AudioControl(
+            runner=self.Runner(
+                sessions=[],
+                skipped_invalid_sessions=["170926_191402"],
+            ),
+            telemetry=None,
+        )
+        workspace = controller.h2_workspace()
+        self.assertEqual(workspace["source"]["status"], "ready")
+        self.assertEqual(workspace["source"]["count"], 0)
+        self.assertEqual(
+            workspace["source"]["skipped_invalid_sessions"],
+            ["170926_191402"],
         )
 
     def test_h2_import_uses_material_lock_not_global_audio_action_lock(self):

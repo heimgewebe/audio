@@ -629,6 +629,16 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
         self.assertIn("renderH2Workspace();", stop)
         self.assertIn('byId("local-device-boundary").hidden = backendAllowed();', self.app)
 
+    def test_h2_invalid_sessions_render_as_warning_without_new_source_status(self):
+        renderer = self.app.split("function renderH2Workspace() {", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn("source.skipped_invalid_sessions", renderer)
+        self.assertIn('source.status === "ready"', renderer)
+        self.assertNotIn('source.status === "warning"', renderer)
+        self.assertIn('" nicht sicher lesbar"', renderer)
+        self.assertIn("Keine gültige Aufnahme verfügbar.", renderer)
+
     def test_h2_async_results_are_invalidated_when_backend_authority_changes(self):
         load = self.app.split("async function loadH2Workspace", 1)[1].split(
             "\nasync function postH2Action", 1

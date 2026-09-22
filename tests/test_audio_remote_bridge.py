@@ -371,6 +371,19 @@ class TargetValidationTests(unittest.TestCase):
             MODULE.validate_h2_action_payload(json.dumps(annotated).encode()),
             annotated,
         )
+        maximal = {
+            "operation": "annotate",
+            "material_id": "a" * 24,
+            "title": "😀" * 160,
+            "note": "😀" * 2000,
+            "tags": ["😀" * 48] * 16,
+        }
+        maximal_body = json.dumps(
+            maximal, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        self.assertGreater(len(maximal_body), 4096)
+        self.assertLessEqual(len(maximal_body), MODULE.MAX_H2_ACTION_BODY_BYTES)
+        self.assertEqual(MODULE.validate_h2_action_payload(maximal_body), maximal)
         rejected = (
             {"operation": "import", "scene": "../x"},
             {"operation": "import", "scene": "170926_191401", "delete": True},
@@ -1409,6 +1422,13 @@ class BridgeHTTPTests(unittest.TestCase):
                 "note": "erste Zeile\nzweite Zeile\tDetail",
                 "tags": ["Metall"],
             },
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "😀" * 160,
+                "note": "😀" * 2000,
+                "tags": ["😀" * 48] * 16,
+            },
         ):
             with self.subTest(action=action):
                 before = len(FakeBackendHandler.records)
@@ -1416,7 +1436,9 @@ class BridgeHTTPTests(unittest.TestCase):
                     "POST",
                     MODULE.REMOTE_H2_ACTION_ROUTE,
                     headers=action_headers,
-                    body=json.dumps(action).encode(),
+                    body=json.dumps(
+                        action, ensure_ascii=False, separators=(",", ":")
+                    ).encode("utf-8"),
                 )
                 self.assertEqual(status, 200)
                 self.assertEqual(
@@ -1434,6 +1456,10 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual([record["method"] for record in records], ["GET", "POST"])
                 self.assertEqual(records[1]["path"], "/api/v1/actions/h2")
                 self.assertEqual(json.loads(records[1]["body"]), action)
+                self.assertLessEqual(
+                    len(records[1]["body"]),
+                    MODULE.MAX_H2_ACTION_BODY_BYTES,
+                )
 
         before = len(FakeBackendHandler.records)
         status, _headers, _payload = self.request(

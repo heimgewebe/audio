@@ -340,7 +340,7 @@
               "const": "/bridge/v1/actions/h2"
             },
             "h2_max_body_bytes": {
-              "const": 4096
+              "const": 16384
             },
             "h2_operations": {
               "const": [

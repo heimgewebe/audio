@@ -46,7 +46,7 @@ REMOTE_ACTION_SESSION_TTL_SECONDS = 15 * 60
 REMOTE_ACTION_SESSION_CAPACITY = 8
 MAX_ACTION_BODY_BYTES = 512
 MAX_RECORDING_ACTION_BODY_BYTES = 1024
-MAX_H2_ACTION_BODY_BYTES = 4096
+MAX_H2_ACTION_BODY_BYTES = 16_384
 WHALE_ACTION_MODES = frozenset({"morph", "organic", "realistic", "ufo"})
 WHALE_ACTION_OPERATIONS = frozenset({"start", "mode", "stop"})
 RECORDING_ACTION_MODES = frozenset({"voice", "piano-vocal"})
@@ -1060,7 +1060,9 @@ def write_backend_recording_action(action: dict[str, Any]) -> tuple[int, bytes, 
 
 def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
     token = read_backend_action_token("h2")
-    body = json.dumps(action, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    body = json.dumps(
+        action, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
     timeout = (
         H2_IMPORT_BACKEND_TIMEOUT_SECONDS
         if action.get("operation") == "import"

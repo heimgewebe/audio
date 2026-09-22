@@ -343,6 +343,7 @@ H2_MATERIAL_MEDIA_PATH_RE = re.compile(
 )
 MAX_DEPLOY_RECEIPT_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 4096
+MAX_H2_REQUEST_BYTES = 16_384
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
 MAX_RANGE_HEADER_BYTES = 128
@@ -3539,6 +3540,12 @@ class AudioControl:
             or report.get("source_mutated") is not False
             or not isinstance(report.get("sessions"), list)
             or report.get("count") != len(report["sessions"])
+            or not isinstance(report.get("skipped_invalid_sessions"), list)
+            or not all(
+                isinstance(scene, str)
+                and re.fullmatch(r"[0-9]{6}_[0-9]{6}", scene) is not None
+                for scene in report["skipped_invalid_sessions"]
+            )
         ):
             raise ControlError("H2-Scanner lieferte keinen gültigen Quellzustand.")
         for item in report["sessions"]:
@@ -3602,13 +3609,16 @@ class AudioControl:
                 "status": "unavailable",
                 "count": 0,
                 "sessions": [],
+                "skipped_invalid_sessions": [],
                 "error": str(error),
             }
         else:
+            skipped_invalid_sessions = sorted(source_report["skipped_invalid_sessions"])
             source_projection = {
                 "status": "ready",
                 "count": source_report["count"],
                 "device": source_report.get("device"),
+                "skipped_invalid_sessions": skipped_invalid_sessions,
                 "sessions": [
                     {
                         "scene": item["scene"],
@@ -6316,7 +6326,12 @@ class AudioControlHandler(BaseHTTPRequestHandler):
             )
         except ValueError:
             content_length = -1
-        if not 0 < content_length <= MAX_REQUEST_BYTES:
+        request_byte_limit = (
+            MAX_H2_REQUEST_BYTES
+            if parsed.path == f"/api/{API_VERSION}/actions/h2"
+            else MAX_REQUEST_BYTES
+        )
+        if not 0 < content_length <= request_byte_limit:
             self.close_connection = True
             self._send_error_json(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,

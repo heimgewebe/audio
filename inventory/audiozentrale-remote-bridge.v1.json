@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "8202734f814576c3a0a4567a1739fb8948e9b1163ff29b8c3149f3cb27b6bd35"
+    "sha256": "fe37e714d99b7740c049360224e6840f1dc2871e427a2c8a2302ffbb588b5c99"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -151,7 +151,7 @@
       "recording_action_response_marker": "recording-action-v1",
       "recording_effects_value": "recording-v1",
       "h2_action_route": "/bridge/v1/actions/h2",
-      "h2_max_body_bytes": 4096,
+      "h2_max_body_bytes": 16384,
       "h2_operations": [
         "import",
         "annotate"

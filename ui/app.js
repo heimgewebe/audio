@@ -3805,11 +3805,22 @@ function renderH2Workspace() {
 
   const source = workspace.source || {};
   const sessions = Array.isArray(source.sessions) ? source.sessions : [];
+  const invalidSessions = Array.isArray(source.skipped_invalid_sessions)
+    ? source.skipped_invalid_sessions
+    : [];
   const items = Array.isArray(workspace.library?.items) ? workspace.library.items : [];
-  status.textContent =
-    source.status === "ready"
-      ? String(source.count) + " Aufnahmen auf dem H2 · " + String(items.length) + " im Klangarchiv"
-      : "H2 nicht verbunden · " + String(items.length) + " archivierte Aufnahmen bleiben verfügbar";
+  const sourceReadable = source.status === "ready";
+  const invalidSummary = invalidSessions.length
+    ? " · " + String(invalidSessions.length) + " nicht sicher lesbar"
+    : "";
+  status.textContent = sourceReadable
+    ? String(source.count) +
+      " Aufnahmen auf dem H2" +
+      invalidSummary +
+      " · " +
+      String(items.length) +
+      " im Klangarchiv"
+    : "H2 nicht verbunden · " + String(items.length) + " archivierte Aufnahmen bleiben verfügbar";
 
   const sourceCards = [];
   for (const session of sessions) {
@@ -3858,10 +3869,14 @@ function renderH2Workspace() {
   }
   if (!sourceCards.length) {
     const empty = element("article", "h2-card h2-empty");
-    empty.textContent =
-      source.status === "ready"
-        ? "Keine Aufnahmen auf dem H2 gefunden."
-        : source.error || "H2 ist nicht im Datei-Transfer-Modus verbunden.";
+    empty.textContent = sourceReadable
+      ? invalidSessions.length
+        ? String(invalidSessions.length) +
+          " H2-Aufnahme" +
+          (invalidSessions.length === 1 ? "" : "n") +
+          " konnten nicht sicher gelesen werden. Keine gültige Aufnahme verfügbar."
+        : "Keine Aufnahmen auf dem H2 gefunden."
+      : source.error || "H2 ist nicht im Datei-Transfer-Modus verbunden.";
     sourceCards.push(empty);
   }
   inbox.replaceChildren(...sourceCards);
