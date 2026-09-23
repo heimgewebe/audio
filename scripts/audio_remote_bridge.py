@@ -779,22 +779,26 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         connection.close()
 
 
+def _read_backend_h2_workspace() -> dict[str, Any]:
+    status, _headers, payload, _redactions = read_backend_response("/api/v1/h2", None)
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend H2 workspace is unavailable for timeout binding")
+    try:
+        workspace = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend H2 workspace is invalid for timeout binding") from error
+    if not isinstance(workspace, dict) or workspace.get("kind") != "audio_h2_workspace":
+        raise BackendFailure("backend H2 workspace is invalid for timeout binding")
+    return workspace
+
+
 def h2_media_backend_timeout_seconds(target: str) -> float:
     source_media = H2_SOURCE_MEDIA_RE.fullmatch(target)
     material_media = H2_MATERIAL_MEDIA_RE.fullmatch(target)
     if source_media is None and material_media is None:
         raise RequestRejected("H2 media target is invalid")
 
-    status, _headers, payload, _redactions = read_backend_response("/api/v1/h2", None)
-    if status != HTTPStatus.OK:
-        raise BackendFailure("backend H2 workspace is unavailable for media timeout")
-    try:
-        workspace = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BackendFailure("backend H2 workspace is invalid for media timeout") from error
-    if not isinstance(workspace, dict) or workspace.get("kind") != "audio_h2_workspace":
-        raise BackendFailure("backend H2 workspace is invalid for media timeout")
-
+    workspace = _read_backend_h2_workspace()
     if source_media is not None:
         identity, segment_raw = source_media.groups()
         container = workspace.get("source")
@@ -833,6 +837,33 @@ def h2_media_backend_timeout_seconds(target: str) -> float:
         or timeout <= 0
     ):
         raise BackendFailure("backend H2 media timeout projection is invalid")
+    return float(timeout)
+
+
+def h2_import_backend_timeout_seconds(scene: str) -> float:
+    if H2_SCENE_RE.fullmatch(scene) is None:
+        raise RequestRejected("remote H2 scene is invalid")
+    workspace = _read_backend_h2_workspace()
+    source = workspace.get("source")
+    sessions = source.get("sessions") if isinstance(source, dict) else None
+    if not isinstance(sessions, list):
+        raise BackendFailure("backend H2 workspace has no import timeout projection")
+    session = next(
+        (
+            candidate
+            for candidate in sessions
+            if isinstance(candidate, dict) and candidate.get("scene") == scene
+        ),
+        None,
+    )
+    timeout = session.get("import_timeout_seconds") if isinstance(session, dict) else None
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise BackendFailure("backend H2 import timeout projection is invalid")
     return float(timeout)
 
 
@@ -1126,7 +1157,7 @@ def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
         action, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     timeout = (
-        None
+        h2_import_backend_timeout_seconds(action["scene"])
         if action.get("operation") == "import"
         else H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS
     )

@@ -107,7 +107,7 @@ def make_source(
 
 
 class H2IngestTests(unittest.TestCase):
-    def test_library_root_prefers_primary_and_falls_back_only_to_existing_legacy(self):
+    def test_library_root_prefers_primary_and_falls_back_only_to_legacy_material(self):
         with tempfile.TemporaryDirectory() as directory:
             base = pathlib.Path(directory)
             primary = base / "Audio-Aufnahmen" / "H2-Material"
@@ -115,7 +115,7 @@ class H2IngestTests(unittest.TestCase):
 
             self.assertEqual(MODULE._select_library_root(primary, legacy), primary)
             legacy.mkdir(parents=True)
-            self.assertEqual(MODULE._select_library_root(primary, legacy), legacy)
+            self.assertEqual(MODULE._select_library_root(primary, legacy), primary)
             primary.mkdir(parents=True)
             self.assertEqual(MODULE._select_library_root(primary, legacy), primary)
 
@@ -594,6 +594,21 @@ class H2IngestTests(unittest.TestCase):
                 projected["items"][0]["annotations"]["title"],
                 "Metallgeländer unter Brücke",
             )
+
+    def test_annotation_replace_does_not_double_close_transferred_fd(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            path = root / "annotations.json"
+            path.write_text("{}\n", encoding="utf-8")
+            with (
+                mock.patch.object(MODULE.os, "replace", side_effect=OSError("replace failed")),
+                mock.patch.object(MODULE.os, "close", wraps=os.close) as close_mock,
+            ):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    MODULE._write_json_replace(path, {"value": 1}, 0o600)
+            close_mock.assert_not_called()
+            self.assertEqual(path.read_text(encoding="utf-8"), "{}\n")
+            self.assertFalse(any(root.glob(".metadata-*")))
 
     def test_annotations_reject_controls_and_excess_tags(self):
         with tempfile.TemporaryDirectory() as directory:

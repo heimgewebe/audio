@@ -700,6 +700,7 @@ class BridgeHTTPTests(unittest.TestCase):
                                     "segment_count": 1,
                                     "audio_url": "/api/v1/h2/source/170926_191401/audio/0",
                                     "media_timeout_seconds": 180.0,
+                                    "import_timeout_seconds": 480.0,
                                 }
                             ],
                         },
@@ -1239,6 +1240,39 @@ class BridgeHTTPTests(unittest.TestCase):
                     "/api/v1/h2/source/170926_191401/audio/0"
                 )
 
+    def test_h2_import_timeout_is_read_from_current_workspace_projection(self):
+        workspace = {
+            "kind": "audio_h2_workspace",
+            "source": {
+                "sessions": [
+                    {
+                        "scene": "170926_191401",
+                        "import_timeout_seconds": 777.0,
+                    }
+                ]
+            },
+            "library": {"items": []},
+        }
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(workspace).encode("utf-8"), 0),
+        ) as readback:
+            self.assertEqual(
+                MODULE.h2_import_backend_timeout_seconds("170926_191401"),
+                777.0,
+            )
+        readback.assert_called_once_with("/api/v1/h2", None)
+
+        workspace["source"]["sessions"][0]["import_timeout_seconds"] = None
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(workspace).encode("utf-8"), 0),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.h2_import_backend_timeout_seconds("170926_191401")
+
     def test_h2_workspace_and_action_timeouts_cover_backend_contract(self):
         observed: list[float | None] = []
 
@@ -1261,13 +1295,18 @@ class BridgeHTTPTests(unittest.TestCase):
         observed.clear()
         with (
             mock.patch.object(MODULE, "read_backend_action_token", return_value="x" * 32),
+            mock.patch.object(
+                MODULE,
+                "h2_import_backend_timeout_seconds",
+                return_value=987.0,
+            ),
             mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
         ):
             with self.assertRaises(MODULE.BackendFailure):
                 MODULE.write_backend_h2_action(
                     {"operation": "import", "scene": "170926_191401"}
                 )
-        self.assertEqual(observed, [None])
+        self.assertEqual(observed, [987.0])
 
         observed.clear()
         with (
@@ -1299,11 +1338,22 @@ class BridgeHTTPTests(unittest.TestCase):
             ui_timeout("H2_WORKSPACE_TIMEOUT_MS"),
             MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS * 1000,
         )
-        self.assertNotIn("H2_IMPORT_TIMEOUT_MS", app)
         h2_router = app.split("async function postH2Action(payload) {", 1)[1].split(
             "\nasync function runH2Action", 1
         )[0]
-        self.assertIn('payload?.operation === "import" ? null', h2_router)
+        self.assertIn("h2ImportTimeoutMs(payload.scene)", h2_router)
+        h2_timeout = app.split("function h2ImportTimeoutMs(scene) {", 1)[1].split(
+            "\n}\n\nasync function postH2Action", 1
+        )[0]
+        self.assertIn("session?.import_timeout_seconds", h2_timeout)
+        self.assertIn(
+            "Math.ceil(backendSeconds * 1000) + H2_IMPORT_UI_TIMEOUT_MARGIN_MS",
+            h2_timeout,
+        )
+        self.assertIn(
+            "const H2_IMPORT_UI_TIMEOUT_MARGIN_MS = H2_WORKSPACE_TIMEOUT_MS;",
+            app,
+        )
         self.assertGreater(
             ui_timeout("H2_ANNOTATE_TIMEOUT_MS"),
             (MODULE.H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS + MODULE.BACKEND_TIMEOUT_SECONDS)
@@ -1597,11 +1647,19 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(decoded["kind"], "audio_control_h2_action_result")
                 self.assertEqual(decoded["operation"], action["operation"])
                 records = FakeBackendHandler.records[before:]
-                self.assertEqual([record["method"] for record in records], ["GET", "POST"])
-                self.assertEqual(records[1]["path"], "/api/v1/actions/h2")
-                self.assertEqual(json.loads(records[1]["body"]), action)
+                expected_methods = (
+                    ["GET", "GET", "POST"]
+                    if action["operation"] == "import"
+                    else ["GET", "POST"]
+                )
+                self.assertEqual(
+                    [record["method"] for record in records],
+                    expected_methods,
+                )
+                self.assertEqual(records[-1]["path"], "/api/v1/actions/h2")
+                self.assertEqual(json.loads(records[-1]["body"]), action)
                 self.assertLessEqual(
-                    len(records[1]["body"]),
+                    len(records[-1]["body"]),
                     MODULE.MAX_H2_ACTION_BODY_BYTES,
                 )
 

@@ -330,18 +330,16 @@ def _select_h2_library_root(
     legacy = legacy.expanduser()
     primary_present = primary.exists() or primary.is_symlink()
     legacy_present = legacy.exists() or legacy.is_symlink()
-    if primary_present and legacy_present:
-        primary_has_material = _h2_root_has_material(primary)
-        legacy_has_material = _h2_root_has_material(legacy)
-        if primary_has_material and legacy_has_material:
-            raise RuntimeError(
-                "H2-Bibliothek besitzt Material in Primär- und Legacy-Root; "
-                "automatische Rootwahl ist verboten."
-            )
-        if legacy_has_material and not primary_has_material:
-            return legacy
-        return primary
-    return primary if primary_present or not legacy_present else legacy
+    primary_has_material = _h2_root_has_material(primary) if primary_present else False
+    legacy_has_material = _h2_root_has_material(legacy) if legacy_present else False
+    if primary_has_material and legacy_has_material:
+        raise RuntimeError(
+            "H2-Bibliothek besitzt Material in Primär- und Legacy-Root; "
+            "automatische Rootwahl ist verboten."
+        )
+    if legacy_has_material and not primary_has_material:
+        return legacy
+    return primary
 
 
 STATIC_H2_LIBRARY_ROOT = _select_h2_library_root(
@@ -3659,9 +3657,34 @@ class AudioControl:
         *,
         minimum: int,
     ) -> float:
+        verification = cls._h2_timeout_for_bytes(
+            byte_count,
+            passes=1,
+            minimum=minimum,
+        )
+        response_hash = cls._h2_timeout_for_bytes(
+            byte_count,
+            passes=1,
+            minimum=60,
+        )
         return float(
             H2_METADATA_TIMEOUT_SECONDS
-            + cls._h2_timeout_for_bytes(byte_count, passes=2, minimum=minimum)
+            + verification
+            + response_hash
+            + REQUEST_IO_TIMEOUT_SECONDS
+        )
+
+    @classmethod
+    def _h2_import_action_timeout_for_bytes(cls, byte_count: int) -> float:
+        import_work = cls._h2_timeout_for_bytes(
+            byte_count,
+            passes=H2_IMPORT_IO_PASSES,
+            minimum=300,
+        )
+        return float(
+            H2_METADATA_TIMEOUT_SECONDS
+            + import_work
+            + (2 * H2_METADATA_TIMEOUT_SECONDS)
             + REQUEST_IO_TIMEOUT_SECONDS
         )
 
@@ -3829,6 +3852,12 @@ class AudioControl:
                                 for master in self._h2_session_files(item)
                             ),
                             minimum=60,
+                        ),
+                        "import_timeout_seconds": self._h2_import_action_timeout_for_bytes(
+                            sum(
+                                master["bytes"]
+                                for master in self._h2_session_files(item)
+                            )
                         ),
                     }
                     for item in reversed(source_report["sessions"])

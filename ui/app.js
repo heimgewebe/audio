@@ -215,6 +215,7 @@ const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category
 const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
 const H2_WORKSPACE_TIMEOUT_MS = 90000;
 const H2_ANNOTATE_TIMEOUT_MS = 150000;
+const H2_IMPORT_UI_TIMEOUT_MARGIN_MS = H2_WORKSPACE_TIMEOUT_MS;
 
 const RECORDING_COLLISION_BLOCKERS = new Set([
   "output-already-exists",
@@ -3702,9 +3703,27 @@ async function loadH2Workspace({ render = true } = {}) {
   if (render) renderH2Workspace();
 }
 
+function h2ImportTimeoutMs(scene) {
+  const sessions = Array.isArray(state.h2Workspace?.source?.sessions)
+    ? state.h2Workspace.source.sessions
+    : [];
+  const session = sessions.find((candidate) => candidate?.scene === scene);
+  const backendSeconds = session?.import_timeout_seconds;
+  if (
+    typeof backendSeconds !== "number" ||
+    !Number.isFinite(backendSeconds) ||
+    backendSeconds <= 0
+  ) {
+    throw new Error("H2-Import besitzt kein gültiges Zeitbudget.");
+  }
+  return Math.ceil(backendSeconds * 1000) + H2_IMPORT_UI_TIMEOUT_MARGIN_MS;
+}
+
 async function postH2Action(payload) {
   const timeoutMs =
-    payload?.operation === "import" ? null : H2_ANNOTATE_TIMEOUT_MS;
+    payload?.operation === "import"
+      ? h2ImportTimeoutMs(payload.scene)
+      : H2_ANNOTATE_TIMEOUT_MS;
   if (localH2ActionsAllowed()) {
     return fetchJson("/api/v1/actions/h2", {
       method: "POST",

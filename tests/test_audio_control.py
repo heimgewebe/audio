@@ -4484,7 +4484,7 @@ class H2MaterialControlTests(unittest.TestCase):
             legacy = base / "Audio-Material" / "H2"
             self.assertEqual(MODULE._select_h2_library_root(primary, legacy), primary)
             legacy.mkdir(parents=True)
-            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), legacy)
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), primary)
             primary.mkdir(parents=True)
             self.assertEqual(MODULE._select_h2_library_root(primary, legacy), primary)
 
@@ -4530,7 +4530,19 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(
             session["media_timeout_seconds"],
             MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + controller._h2_timeout_for_bytes(1_048_576, passes=2, minimum=60)
+            + controller._h2_timeout_for_bytes(1_048_576, passes=1, minimum=60)
+            + controller._h2_timeout_for_bytes(1_048_576, passes=1, minimum=60)
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            session["import_timeout_seconds"],
+            MODULE.H2_METADATA_TIMEOUT_SECONDS
+            + controller._h2_timeout_for_bytes(
+                3 * 1_048_576,
+                passes=MODULE.H2_IMPORT_IO_PASSES,
+                minimum=300,
+            )
+            + (2 * MODULE.H2_METADATA_TIMEOUT_SECONDS)
             + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
         )
 
@@ -4706,22 +4718,45 @@ class H2MaterialControlTests(unittest.TestCase):
             telemetry=None,
         )
         workspace = workspace_controller.h2_workspace()
-        source_outer = workspace["source"]["sessions"][0]["media_timeout_seconds"]
+        source_projection = workspace["source"]["sessions"][0]
+        source_outer = source_projection["media_timeout_seconds"]
+        import_outer = source_projection["import_timeout_seconds"]
         material_outer = workspace["library"]["items"][0]["media_timeout_seconds"]
         self.assertEqual(
             source_outer,
             MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + controller._h2_timeout_for_bytes(two_gib, passes=2, minimum=60)
+            + controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=60)
+            + controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=60)
             + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
         )
         self.assertEqual(
             material_outer,
             MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + controller._h2_timeout_for_bytes(two_gib, passes=2, minimum=120)
+            + controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=120)
+            + controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=60)
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            import_outer,
+            MODULE.H2_METADATA_TIMEOUT_SECONDS
+            + controller._h2_timeout_for_bytes(
+                two_gib,
+                passes=MODULE.H2_IMPORT_IO_PASSES,
+                minimum=300,
+            )
+            + (2 * MODULE.H2_METADATA_TIMEOUT_SECONDS)
             + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
         )
         self.assertGreater(source_outer, source_timeout)
         self.assertGreater(material_outer, material_timeout)
+        self.assertGreater(
+            import_outer,
+            controller._h2_timeout_for_bytes(
+                two_gib,
+                passes=MODULE.H2_IMPORT_IO_PASSES,
+                minimum=300,
+            ),
+        )
 
     def test_h2_annotation_rejects_unencodable_or_control_text_before_subprocess(self):
         runner = self.Runner()

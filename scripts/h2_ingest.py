@@ -71,18 +71,20 @@ def _select_library_root(
     legacy = legacy.expanduser()
     primary_present = primary.exists() or primary.is_symlink()
     legacy_present = legacy.exists() or legacy.is_symlink()
-    if primary_present and legacy_present:
-        primary_has_material = _library_root_has_material(primary)
-        legacy_has_material = _library_root_has_material(legacy)
-        if primary_has_material and legacy_has_material:
-            raise RuntimeError(
-                "H2-Bibliothek besitzt Material in Primär- und Legacy-Root; "
-                "automatische Rootwahl ist verboten."
-            )
-        if legacy_has_material and not primary_has_material:
-            return legacy
-        return primary
-    return primary if primary_present or not legacy_present else legacy
+    primary_has_material = (
+        _library_root_has_material(primary) if primary_present else False
+    )
+    legacy_has_material = (
+        _library_root_has_material(legacy) if legacy_present else False
+    )
+    if primary_has_material and legacy_has_material:
+        raise RuntimeError(
+            "H2-Bibliothek besitzt Material in Primär- und Legacy-Root; "
+            "automatische Rootwahl ist verboten."
+        )
+    if legacy_has_material and not primary_has_material:
+        return legacy
+    return primary
 
 
 def _default_library_root(
@@ -1049,6 +1051,7 @@ def _write_json_replace(path: pathlib.Path, value: dict[str, Any], mode: int) ->
     try:
         os.fchmod(fd, mode)
         with os.fdopen(fd, "wb", closefd=True) as handle:
+            fd = None
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
@@ -1059,10 +1062,11 @@ def _write_json_replace(path: pathlib.Path, value: dict[str, Any], mode: int) ->
         finally:
             os.close(parent_fd)
     except Exception:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             temporary.unlink()
         except OSError:

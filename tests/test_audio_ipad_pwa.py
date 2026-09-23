@@ -433,10 +433,20 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('/api/v1/actions/h2', h2_router)
         self.assertIn('/bridge/v1/actions/h2', h2_router)
         self.assertIn('"X-Audio-Bridge-Session"', h2_router)
-        self.assertIn('payload?.operation === "import" ? null', h2_router)
+        self.assertIn('payload?.operation === "import"', h2_router)
+        self.assertIn("h2ImportTimeoutMs(payload.scene)", h2_router)
         self.assertIn("H2_ANNOTATE_TIMEOUT_MS", h2_router)
-        self.assertNotIn("H2_IMPORT_TIMEOUT_MS", self.app)
         self.assertNotIn("delete-source", h2_router)
+
+        h2_timeout = self.app.split("function h2ImportTimeoutMs(scene) {", 1)[1].split(
+            "\n}\n\nasync function postH2Action", 1
+        )[0]
+        self.assertIn("state.h2Workspace?.source?.sessions", h2_timeout)
+        self.assertIn("candidate?.scene === scene", h2_timeout)
+        self.assertIn("session?.import_timeout_seconds", h2_timeout)
+        self.assertIn("Number.isFinite(backendSeconds)", h2_timeout)
+        self.assertIn("Math.ceil(backendSeconds * 1000)", h2_timeout)
+        self.assertIn("H2_IMPORT_UI_TIMEOUT_MARGIN_MS", h2_timeout)
 
         h2_load = self.app.split("async function loadH2Workspace", 1)[1].split(
             "\nasync function postH2Action", 1
@@ -444,6 +454,10 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("timeoutMs: H2_WORKSPACE_TIMEOUT_MS", h2_load)
         self.assertIn("const H2_WORKSPACE_TIMEOUT_MS = 90000;", self.app)
         self.assertIn("const H2_ANNOTATE_TIMEOUT_MS = 150000;", self.app)
+        self.assertIn(
+            "const H2_IMPORT_UI_TIMEOUT_MARGIN_MS = H2_WORKSPACE_TIMEOUT_MS;",
+            self.app,
+        )
         fetch_json = self.app.split("async function fetchJson", 1)[1].split(
             "\nfunction showNotice", 1
         )[0]
