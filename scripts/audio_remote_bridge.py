@@ -15,6 +15,7 @@ import hmac
 import http.client
 import ipaddress
 import json
+import math
 import os
 import pathlib
 import re
@@ -76,9 +77,9 @@ RECORDING_BACKEND_TIMEOUT_SECONDS = 120.0
 # bridge beyond that complete backend bound so successful convergence is not
 # misreported as a remote timeout.
 RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
-# H2 media verification has a size-derived finite bound in the backend and
-# the backend then generation-checks the opened file again before headers.
-# The bridge deliberately adds no shorter independent media deadline.
+# H2 media verification and the second pre-header generation hash are covered
+# by a finite size-derived budget projected by the backend H2 workspace. The
+# bridge consumes that budget rather than maintaining a duplicate size formula.
 # H2 workspace may spend 30 s scanning the source plus 30 s reading the
 # library. A timed-out source scan can add the runner's bounded 1 s kill drain.
 H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS = 75.0
@@ -778,6 +779,63 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         connection.close()
 
 
+def h2_media_backend_timeout_seconds(target: str) -> float:
+    source_media = H2_SOURCE_MEDIA_RE.fullmatch(target)
+    material_media = H2_MATERIAL_MEDIA_RE.fullmatch(target)
+    if source_media is None and material_media is None:
+        raise RequestRejected("H2 media target is invalid")
+
+    status, _headers, payload, _redactions = read_backend_response("/api/v1/h2", None)
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend H2 workspace is unavailable for media timeout")
+    try:
+        workspace = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend H2 workspace is invalid for media timeout") from error
+    if not isinstance(workspace, dict) or workspace.get("kind") != "audio_h2_workspace":
+        raise BackendFailure("backend H2 workspace is invalid for media timeout")
+
+    if source_media is not None:
+        identity, segment_raw = source_media.groups()
+        container = workspace.get("source")
+        items = container.get("sessions") if isinstance(container, dict) else None
+        identity_key = "scene"
+    else:
+        assert material_media is not None
+        identity, segment_raw = material_media.groups()
+        container = workspace.get("library")
+        items = container.get("items") if isinstance(container, dict) else None
+        identity_key = "material_id"
+    if not isinstance(items, list):
+        raise BackendFailure("backend H2 workspace has no media timeout projection")
+
+    segment_index = int(segment_raw, 10)
+    item = next(
+        (
+            candidate
+            for candidate in items
+            if isinstance(candidate, dict) and candidate.get(identity_key) == identity
+        ),
+        None,
+    )
+    if item is None:
+        raise BackendFailure("backend H2 media is no longer present in the workspace")
+    segment_count = item.get("segment_count")
+    timeout = item.get("media_timeout_seconds")
+    if (
+        isinstance(segment_count, bool)
+        or not isinstance(segment_count, int)
+        or segment_count < 1
+        or segment_index >= segment_count
+        or isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise BackendFailure("backend H2 media timeout projection is invalid")
+    return float(timeout)
+
+
 def stream_backend_recording_artifact(
     handler: "AudioRemoteBridgeHandler",
     target: str,
@@ -795,7 +853,7 @@ def stream_backend_recording_artifact(
     else:
         raise RequestRejected("audio media target is invalid")
     backend_timeout_seconds = (
-        None
+        h2_media_backend_timeout_seconds(target)
         if h2_source_media is not None or h2_material_media is not None
         else BACKEND_TIMEOUT_SECONDS
     )

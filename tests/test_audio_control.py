@@ -4527,6 +4527,12 @@ class H2MaterialControlTests(unittest.TestCase):
             session["audio_url"],
             "/api/v1/h2/source/170926_191401/audio/0",
         )
+        self.assertEqual(
+            session["media_timeout_seconds"],
+            MODULE.H2_METADATA_TIMEOUT_SECONDS
+            + controller._h2_timeout_for_bytes(1_048_576, passes=2, minimum=60)
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+        )
 
     def test_h2_workspace_surfaces_invalid_only_source_without_claiming_empty(self):
         controller = MODULE.AudioControl(
@@ -4557,7 +4563,7 @@ class H2MaterialControlTests(unittest.TestCase):
                 "note": "",
                 "tags": [],
             },
-            "masters": [{"role": "mix", "segment_index": 0}],
+            "masters": [{"role": "mix", "segment_index": 0, "bytes": 1_048_576}],
         }
         controller = MODULE.AudioControl(
             runner=self.Runner(library_items=[archived]),
@@ -4565,9 +4571,11 @@ class H2MaterialControlTests(unittest.TestCase):
         )
         workspace = controller.h2_workspace()
         session = workspace["source"]["sessions"][0]
+        material = workspace["library"]["items"][0]
         self.assertEqual(session["scene"], archived["source"]["scene"])
         self.assertNotIn("already_imported", session)
         self.assertEqual(workspace["library"]["count"], 1)
+        self.assertGreater(material["media_timeout_seconds"], 120)
 
     def test_h2_import_uses_material_lock_not_global_audio_action_lock(self):
         runner = self.Runner()
@@ -4689,6 +4697,31 @@ class H2MaterialControlTests(unittest.TestCase):
             material_timeout,
             controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=120),
         )
+
+        workspace_controller = MODULE.AudioControl(
+            runner=self.Runner(
+                sessions=[source_session],
+                library_items=[library_item],
+            ),
+            telemetry=None,
+        )
+        workspace = workspace_controller.h2_workspace()
+        source_outer = workspace["source"]["sessions"][0]["media_timeout_seconds"]
+        material_outer = workspace["library"]["items"][0]["media_timeout_seconds"]
+        self.assertEqual(
+            source_outer,
+            MODULE.H2_METADATA_TIMEOUT_SECONDS
+            + controller._h2_timeout_for_bytes(two_gib, passes=2, minimum=60)
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            material_outer,
+            MODULE.H2_METADATA_TIMEOUT_SECONDS
+            + controller._h2_timeout_for_bytes(two_gib, passes=2, minimum=120)
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+        )
+        self.assertGreater(source_outer, source_timeout)
+        self.assertGreater(material_outer, material_timeout)
 
     def test_h2_annotation_rejects_unencodable_or_control_text_before_subprocess(self):
         runner = self.Runner()

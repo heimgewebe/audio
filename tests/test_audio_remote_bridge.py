@@ -697,7 +697,9 @@ class BridgeHTTPTests(unittest.TestCase):
                             "sessions": [
                                 {
                                     "scene": "170926_191401",
+                                    "segment_count": 1,
                                     "audio_url": "/api/v1/h2/source/170926_191401/audio/0",
+                                    "media_timeout_seconds": 180.0,
                                 }
                             ],
                         },
@@ -706,7 +708,9 @@ class BridgeHTTPTests(unittest.TestCase):
                             "items": [
                                 {
                                     "material_id": "a" * 24,
+                                    "segment_count": 1,
                                     "audio_url": "/api/v1/h2/material/" + "a" * 24 + "/audio/0",
+                                    "media_timeout_seconds": 240.0,
                                 }
                             ],
                         },
@@ -1147,7 +1151,7 @@ class BridgeHTTPTests(unittest.TestCase):
             45 + 30 + 30,
         )
 
-    def test_h2_media_bridge_does_not_preempt_size_bound_backend_verification(self):
+    def test_h2_media_bridge_uses_finite_backend_projected_timeout(self):
         observed: list[float | None] = []
 
         class TimeoutProbeConnection:
@@ -1166,14 +1170,74 @@ class BridgeHTTPTests(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 observed.clear()
-                with mock.patch.object(
-                    MODULE.http.client, "HTTPConnection", TimeoutProbeConnection
+                with (
+                    mock.patch.object(
+                        MODULE,
+                        "h2_media_backend_timeout_seconds",
+                        return_value=987.0,
+                    ),
+                    mock.patch.object(
+                        MODULE.http.client, "HTTPConnection", TimeoutProbeConnection
+                    ),
                 ):
                     with self.assertRaises(MODULE.BackendFailure):
                         MODULE.stream_backend_recording_artifact(
                             mock.Mock(), path, {}, head_only=False
                         )
-                self.assertEqual(observed, [None])
+                self.assertEqual(observed, [987.0])
+
+    def test_h2_media_timeout_is_read_from_current_workspace_projection(self):
+        workspace = {
+            "kind": "audio_h2_workspace",
+            "source": {
+                "sessions": [
+                    {
+                        "scene": "170926_191401",
+                        "segment_count": 2,
+                        "media_timeout_seconds": 321.0,
+                    }
+                ]
+            },
+            "library": {
+                "items": [
+                    {
+                        "material_id": "a" * 24,
+                        "segment_count": 3,
+                        "media_timeout_seconds": 654.0,
+                    }
+                ]
+            },
+        }
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(workspace).encode("utf-8"), 0),
+        ) as readback:
+            self.assertEqual(
+                MODULE.h2_media_backend_timeout_seconds(
+                    "/api/v1/h2/source/170926_191401/audio/1"
+                ),
+                321.0,
+            )
+            self.assertEqual(
+                MODULE.h2_media_backend_timeout_seconds(
+                    "/api/v1/h2/material/" + "a" * 24 + "/audio/2"
+                ),
+                654.0,
+            )
+        self.assertEqual(readback.call_count, 2)
+        readback.assert_called_with("/api/v1/h2", None)
+
+        workspace["source"]["sessions"][0]["media_timeout_seconds"] = None
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(workspace).encode("utf-8"), 0),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.h2_media_backend_timeout_seconds(
+                    "/api/v1/h2/source/170926_191401/audio/0"
+                )
 
     def test_h2_workspace_and_action_timeouts_cover_backend_contract(self):
         observed: list[float | None] = []

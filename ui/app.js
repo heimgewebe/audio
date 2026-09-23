@@ -3737,7 +3737,6 @@ async function postH2Action(payload) {
 
 async function runH2Action(payload) {
   if (state.h2ActionPending) return;
-  let actionSucceeded = false;
   const activitySequence = ++state.h2ActivitySequence;
   state.h2ActionPending = true;
   renderH2Workspace();
@@ -3749,7 +3748,6 @@ async function runH2Action(payload) {
     }
     state.h2Workspace = result.workspace;
     state.h2WorkspaceError = null;
-    actionSucceeded = true;
     if (payload.operation === "annotate") {
       state.h2AnnotationDrafts.delete(payload.material_id);
     }
@@ -3771,7 +3769,7 @@ async function runH2Action(payload) {
       state.h2ActionPending = false;
       if (backendAllowed()) {
         renderH2Workspace({
-          force: payload.operation === "annotate" && actionSucceeded,
+          force: payload.operation === "annotate",
         });
       }
     }

@@ -396,6 +396,7 @@ MAX_CONCURRENT_REQUESTS = 12
 REQUEST_IO_TIMEOUT_SECONDS = 5.0
 H2_MIN_IO_BYTES_PER_SECOND = 512 * 1024
 H2_IO_TIMEOUT_OVERHEAD_SECONDS = 60
+H2_METADATA_TIMEOUT_SECONDS = 30
 H2_IMPORT_IO_PASSES = 4
 H2_MAX_TITLE_CHARS = 160
 H2_MAX_NOTE_CHARS = 2000
@@ -3651,6 +3652,19 @@ class AudioControl:
         )
         return float(max(minimum, H2_IO_TIMEOUT_OVERHEAD_SECONDS + transfer_seconds))
 
+    @classmethod
+    def _h2_media_stream_timeout_for_bytes(
+        cls,
+        byte_count: int,
+        *,
+        minimum: int,
+    ) -> float:
+        return float(
+            H2_METADATA_TIMEOUT_SECONDS
+            + cls._h2_timeout_for_bytes(byte_count, passes=2, minimum=minimum)
+            + REQUEST_IO_TIMEOUT_SECONDS
+        )
+
     @staticmethod
     def _h2_session_files(session: dict[str, Any]) -> list[dict[str, Any]]:
         files = session.get("files") if isinstance(session, dict) else None
@@ -3777,7 +3791,7 @@ class AudioControl:
         try:
             source_report = self._run_h2_command(
                 ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
-                timeout=30,
+                timeout=H2_METADATA_TIMEOUT_SECONDS,
                 label="H2-Scanner",
                 fallback="H2 ist nicht als Datei-Quelle verfügbar.",
             )
@@ -3809,6 +3823,13 @@ class AudioControl:
                         "audio_url": (
                             f"/api/{API_VERSION}/h2/source/{item['scene']}/audio/0"
                         ),
+                        "media_timeout_seconds": self._h2_media_stream_timeout_for_bytes(
+                            max(
+                                master["bytes"]
+                                for master in self._h2_session_files(item)
+                            ),
+                            minimum=60,
+                        ),
                     }
                     for item in reversed(source_report["sessions"])
                 ],
@@ -3816,7 +3837,7 @@ class AudioControl:
 
         library_report = self._run_h2_command(
             ["library", "--library-root", str(STATIC_H2_LIBRARY_ROOT)],
-            timeout=30,
+            timeout=H2_METADATA_TIMEOUT_SECONDS,
             label="H2-Materialbibliothek",
             fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
         )
@@ -3832,6 +3853,7 @@ class AudioControl:
                 ),
                 default=0,
             ) + 1
+            material_bytes = self._h2_material_bytes(item)
             items.append(
                 {
                     "material_id": item["material_id"],
@@ -3849,6 +3871,10 @@ class AudioControl:
                     "segment_count": segment_count,
                     "audio_url": (
                         f"/api/{API_VERSION}/h2/material/{item['material_id']}/audio/0"
+                    ),
+                    "media_timeout_seconds": self._h2_media_stream_timeout_for_bytes(
+                        material_bytes,
+                        minimum=120,
                     ),
                 }
             )
@@ -3896,7 +3922,7 @@ class AudioControl:
     def verified_h2_source_media(self, scene: str, segment_index: int) -> dict[str, Any]:
         source_report = self._run_h2_command(
             ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
-            timeout=30,
+            timeout=H2_METADATA_TIMEOUT_SECONDS,
             label="H2-Scanner",
             fallback="H2 ist nicht als Datei-Quelle verfügbar.",
         )
@@ -3940,7 +3966,7 @@ class AudioControl:
     ) -> dict[str, Any]:
         library_report = self._run_h2_command(
             ["library", "--library-root", str(STATIC_H2_LIBRARY_ROOT)],
-            timeout=30,
+            timeout=H2_METADATA_TIMEOUT_SECONDS,
             label="H2-Materialbibliothek",
             fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
         )
@@ -4000,7 +4026,7 @@ class AudioControl:
             ]
             source_report = self._run_h2_command(
                 ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
-                timeout=30,
+                timeout=H2_METADATA_TIMEOUT_SECONDS,
                 label="H2-Scanner",
                 fallback="H2 ist nicht als Datei-Quelle verfügbar.",
             )
@@ -4060,7 +4086,7 @@ class AudioControl:
                 "--library-root",
                 str(STATIC_H2_LIBRARY_ROOT),
             ]
-            timeout = 30
+            timeout = H2_METADATA_TIMEOUT_SECONDS
             label = "H2-Metadaten"
             fallback = "H2-Metadaten konnten nicht sicher gespeichert werden."
         else:

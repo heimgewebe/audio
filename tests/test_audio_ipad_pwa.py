@@ -706,9 +706,9 @@ process.stdout.write(JSON.stringify({{
         )[0]
         self.assertIn("state.h2AnnotationDrafts.delete(payload.material_id);", action)
         self.assertIn('result.result?.status === "already-imported"', action)
-        self.assertIn("let actionSucceeded = false;", action)
-        self.assertIn("actionSucceeded = true;", action)
-        self.assertIn('force: payload.operation === "annotate" && actionSucceeded', action)
+        self.assertNotIn("actionSucceeded", action)
+        self.assertIn('force: payload.operation === "annotate"', action)
+        self.assertNotIn('force: payload.operation === "annotate" && actionSucceeded', action)
         renderer = self.app.split("function renderH2Workspace", 1)[1].split(
             "\nfunction renderLibrary", 1
         )[0]
@@ -729,6 +729,99 @@ process.stdout.write(JSON.stringify({{
         self.assertLess(
             finally_block.index("if (activitySequence === state.h2ActivitySequence)"),
             finally_block.index("state.h2ActionPending = false;"),
+        )
+
+        runnable_action = "async function runH2Action" + self.app.split(
+            "async function runH2Action", 1
+        )[1].split("\nfunction h2DisplayTimestamp", 1)[0]
+        harness = f"""
+const materialId = "a".repeat(24);
+const state = {{
+  h2ActionPending: false,
+  h2ActivitySequence: 0,
+  h2AnnotationDrafts: new Map([[materialId, {{
+    title: "Entwurf",
+    note: "bleibt",
+    tags: "roh",
+  }}]]),
+  h2Workspace: {{}},
+  h2WorkspaceError: null,
+}};
+let attempts = 0;
+const renders = [];
+function backendAllowed() {{ return true; }}
+function showNotice() {{}}
+function renderH2Workspace(options = {{}}) {{
+  renders.push({{
+    force: options.force === true,
+    pending: state.h2ActionPending,
+    draftPresent: state.h2AnnotationDrafts.has(materialId),
+  }});
+}}
+async function postH2Action() {{
+  attempts += 1;
+  if (attempts === 1) throw new Error("save failed");
+  return {{
+    kind: "audio_control_h2_action_result",
+    workspace: {{ kind: "audio_h2_workspace" }},
+    result: {{ status: "annotated" }},
+  }};
+}}
+{runnable_action}
+(async () => {{
+  const payload = {{
+    operation: "annotate",
+    material_id: materialId,
+    title: "Entwurf",
+    note: "bleibt",
+    tags: ["roh"],
+  }};
+  await runH2Action(payload);
+  const failed = {{
+    pending: state.h2ActionPending,
+    draftPresent: state.h2AnnotationDrafts.has(materialId),
+    render: renders.at(-1),
+  }};
+  await runH2Action(payload);
+  const succeeded = {{
+    attempts,
+    pending: state.h2ActionPending,
+    draftPresent: state.h2AnnotationDrafts.has(materialId),
+    render: renders.at(-1),
+  }};
+  process.stdout.write(JSON.stringify({{ failed, succeeded }}));
+}})();
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        retry = json.loads(completed.stdout)
+        self.assertEqual(
+            retry["failed"],
+            {
+                "pending": False,
+                "draftPresent": True,
+                "render": {"force": True, "pending": False, "draftPresent": True},
+            },
+        )
+        self.assertEqual(retry["succeeded"]["attempts"], 2)
+        self.assertFalse(retry["succeeded"]["pending"])
+        self.assertFalse(retry["succeeded"]["draftPresent"])
+        self.assertTrue(retry["succeeded"]["render"]["force"])
+
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn(
+            'if (!force && document.activeElement?.closest(".h2-annotation-form")) return;',
+            renderer,
+        )
+        self.assertIn(
+            "save.disabled = state.h2ActionPending || !h2ActionsAllowed();",
+            renderer,
         )
 
         blocked = self.app.split("function autoRefreshBlocked() {", 1)[1].split(
