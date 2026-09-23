@@ -162,6 +162,86 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(item["bwf"]["originator"], "ZOOM H2essential")
             self.assertNotIn("sha256", item)
 
+    def test_control_scan_projection_keeps_only_controller_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory))
+            report = MODULE.scan(source, projection="control")
+        self.assertEqual(report["projection"], MODULE.CONTROL_SCAN_PROJECTION)
+        self.assertEqual(report["count"], 1)
+        session = report["sessions"][0]
+        self.assertNotIn("files", session)
+        self.assertEqual(session["total_bytes"], session["max_file_bytes"] * 3)
+        self.assertGreater(session["max_file_bytes"], 0)
+        self.assertEqual(session["roles"], ["front", "rear", "mix"])
+
+    def test_control_scan_discards_large_bwf_payload_and_fits_runner_cap(self):
+        huge_bwf = "x" * MODULE.MAX_BEXT_BYTES
+        full_session = {
+            "scene": "170926_191401",
+            "recorded_date": "2026-09-17",
+            "recorded_time": "19:14:01",
+            "sample_rate_hz": 96_000,
+            "duration_seconds": 999_999_999.999999,
+            "roles": ["front", "rear", "mix"],
+            "segment_count": 3,
+            "files": [
+                {
+                    "role": ("front", "rear", "mix")[index % 3],
+                    "segment_index": index // 3,
+                    "bytes": 4_294_967_295,
+                    "bwf": {"coding_history": huge_bwf},
+                }
+                for index in range(9)
+            ],
+        }
+        self.assertGreater(
+            len(json.dumps(full_session, ensure_ascii=False).encode("utf-8")),
+            1_048_576,
+        )
+        compact = MODULE._control_scan_session(full_session)
+        self.assertNotIn("files", compact)
+        self.assertEqual(compact["total_bytes"], 9 * 4_294_967_295)
+        self.assertEqual(compact["max_file_bytes"], 4_294_967_295)
+
+        worst_case = {
+            "schema_version": MODULE.SCHEMA_VERSION,
+            "kind": "audio_h2_source_scan",
+            "projection": MODULE.CONTROL_SCAN_PROJECTION,
+            "device": {
+                "model": MODULE.SOURCE_ORIGINATOR,
+                "transport": "file-transfer",
+                "volume_hint": "x" * 255,
+            },
+            "sessions": [
+                {
+                    **compact,
+                    "scene": f"{index:06d}_{index:06d}",
+                }
+                for index in range(MODULE.MAX_CONTROL_SCAN_SESSIONS)
+            ],
+            "count": MODULE.MAX_CONTROL_SCAN_SESSIONS,
+            "skipped_invalid_sessions": [],
+            "read_only": True,
+            "source_mutated": False,
+        }
+        encoded = json.dumps(
+            worst_case,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        self.assertLess(len(encoded), 1_048_576)
+
+    def test_control_scan_bounds_matching_scene_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory))
+            (source / "170926_191402").mkdir()
+            with (
+                mock.patch.object(MODULE, "MAX_CONTROL_SCAN_SESSIONS", 1),
+                self.assertRaisesRegex(MODULE.H2IngestError, "Session-Limit"),
+            ):
+                MODULE.scan(source, projection="control")
+
     def test_scan_reports_invalid_matching_session_instead_of_claiming_it(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

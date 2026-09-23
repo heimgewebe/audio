@@ -3751,6 +3751,7 @@ class AudioControl:
         if (
             report.get("schema_version") != 1
             or report.get("kind") != "audio_h2_source_scan"
+            or report.get("projection") != "control-v1"
             or report.get("read_only") is not True
             or report.get("source_mutated") is not False
             or not isinstance(report.get("sessions"), list)
@@ -3778,6 +3779,13 @@ class AudioControl:
                 or not isinstance(item.get("segment_count"), int)
                 or isinstance(item.get("segment_count"), bool)
                 or item["segment_count"] < 1
+                or not isinstance(item.get("total_bytes"), int)
+                or isinstance(item.get("total_bytes"), bool)
+                or item["total_bytes"] <= 0
+                or not isinstance(item.get("max_file_bytes"), int)
+                or isinstance(item.get("max_file_bytes"), bool)
+                or item["max_file_bytes"] <= 0
+                or item["max_file_bytes"] > item["total_bytes"]
             ):
                 raise ControlError("H2-Scanner lieferte eine ungültige Session.")
 
@@ -3813,7 +3821,13 @@ class AudioControl:
     def h2_workspace(self) -> dict[str, Any]:
         try:
             source_report = self._run_h2_command(
-                ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
+                [
+                    "scan",
+                    "--source-root",
+                    str(STATIC_H2_SOURCE_ROOT),
+                    "--projection",
+                    "control",
+                ],
                 timeout=H2_METADATA_TIMEOUT_SECONDS,
                 label="H2-Scanner",
                 fallback="H2 ist nicht als Datei-Quelle verfügbar.",
@@ -3847,17 +3861,11 @@ class AudioControl:
                             f"/api/{API_VERSION}/h2/source/{item['scene']}/audio/0"
                         ),
                         "media_timeout_seconds": self._h2_media_stream_timeout_for_bytes(
-                            max(
-                                master["bytes"]
-                                for master in self._h2_session_files(item)
-                            ),
+                            item["max_file_bytes"],
                             minimum=60,
                         ),
                         "import_timeout_seconds": self._h2_import_action_timeout_for_bytes(
-                            sum(
-                                master["bytes"]
-                                for master in self._h2_session_files(item)
-                            )
+                            item["total_bytes"]
                         ),
                     }
                     for item in reversed(source_report["sessions"])
@@ -3950,7 +3958,13 @@ class AudioControl:
 
     def verified_h2_source_media(self, scene: str, segment_index: int) -> dict[str, Any]:
         source_report = self._run_h2_command(
-            ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
+            [
+                    "scan",
+                    "--source-root",
+                    str(STATIC_H2_SOURCE_ROOT),
+                    "--projection",
+                    "control",
+                ],
             timeout=H2_METADATA_TIMEOUT_SECONDS,
             label="H2-Scanner",
             fallback="H2 ist nicht als Datei-Quelle verfügbar.",
@@ -3966,7 +3980,13 @@ class AudioControl:
         )
         if session is None:
             raise ControlError("H2-Szene ist nicht mehr verfügbar.")
-        selected = self._h2_preferred_source_master(session, segment_index)
+        if (
+            isinstance(segment_index, bool)
+            or not isinstance(segment_index, int)
+            or segment_index < 0
+            or segment_index >= session["segment_count"]
+        ):
+            raise ControlError("H2-Vorschausegment existiert nicht.")
         report = self._run_h2_command(
             [
                 "source-media",
@@ -3976,7 +3996,7 @@ class AudioControl:
                 str(STATIC_H2_SOURCE_ROOT),
             ],
             timeout=self._h2_timeout_for_bytes(
-                selected["bytes"],
+                session["max_file_bytes"],
                 passes=1,
                 minimum=60,
             ),
@@ -4054,7 +4074,13 @@ class AudioControl:
                 str(STATIC_H2_LIBRARY_ROOT),
             ]
             source_report = self._run_h2_command(
-                ["scan", "--source-root", str(STATIC_H2_SOURCE_ROOT)],
+                [
+                    "scan",
+                    "--source-root",
+                    str(STATIC_H2_SOURCE_ROOT),
+                    "--projection",
+                    "control",
+                ],
                 timeout=H2_METADATA_TIMEOUT_SECONDS,
                 label="H2-Scanner",
                 fallback="H2 ist nicht als Datei-Quelle verfügbar.",
@@ -4070,9 +4096,7 @@ class AudioControl:
             )
             if source_session is None:
                 raise ControlError("H2-Szene ist nicht mehr verfügbar.")
-            source_bytes = sum(
-                item["bytes"] for item in self._h2_session_files(source_session)
-            )
+            source_bytes = source_session["total_bytes"]
             timeout = self._h2_timeout_for_bytes(
                 source_bytes,
                 passes=H2_IMPORT_IO_PASSES,

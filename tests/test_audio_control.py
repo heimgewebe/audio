@@ -4406,6 +4406,7 @@ class H2MaterialControlTests(unittest.TestCase):
                 report = {
                     "schema_version": 1,
                     "kind": "audio_h2_source_scan",
+                    "projection": "control-v1",
                     "read_only": True,
                     "source_mutated": False,
                     "count": 1,
@@ -4419,6 +4420,8 @@ class H2MaterialControlTests(unittest.TestCase):
                             "sample_rate_hz": 44100,
                             "roles": ["front", "rear", "mix"],
                             "segment_count": 1,
+                            "total_bytes": 3 * 1_048_576,
+                            "max_file_bytes": 1_048_576,
                             "files": [
                                 {
                                     "name": "170926_191401_FRONT.WAV",
@@ -4613,6 +4616,8 @@ class H2MaterialControlTests(unittest.TestCase):
             controller._action_lock.release()
         self.assertEqual(result["operation"], "import")
         self.assertEqual(runner.calls[0][0][2], "scan")
+        self.assertIn("--projection", runner.calls[0][0])
+        self.assertIn("control", runner.calls[0][0])
         call, timeout = runner.calls[1]
         self.assertEqual(pathlib.Path(call[1]).name, "h2_ingest.py")
         self.assertIn("import", call)
@@ -4635,6 +4640,8 @@ class H2MaterialControlTests(unittest.TestCase):
             "duration_seconds": 21.5,
             "roles": ["mix"],
             "segment_count": 1,
+            "total_bytes": two_gib,
+            "max_file_bytes": two_gib,
             "files": [
                 {
                     "name": "170926_191401_MIX.WAV",
@@ -4670,6 +4677,7 @@ class H2MaterialControlTests(unittest.TestCase):
                 return {
                     "schema_version": 1,
                     "kind": "audio_h2_source_scan",
+                    "projection": "control-v1",
                     "read_only": True,
                     "source_mutated": False,
                     "count": 1,

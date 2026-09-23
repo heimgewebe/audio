@@ -39,6 +39,8 @@ ALLOWED_SAMPLE_RATES = frozenset({44_100, 48_000, 96_000})
 COPY_CHUNK_BYTES = 1024 * 1024
 MAX_BEXT_BYTES = 128 * 1024
 MAX_SESSION_FILES = 192
+MAX_CONTROL_SCAN_SESSIONS = 2048
+CONTROL_SCAN_PROJECTION = "control-v1"
 DEFAULT_SOURCE_ROOT = pathlib.Path(
     os.environ.get(
         "AUDIO_H2_SOURCE_ROOT",
@@ -543,22 +545,70 @@ def inspect_scene(source_root: pathlib.Path, scene: str) -> dict[str, Any]:
     }
 
 
-def scan(source_root: pathlib.Path = DEFAULT_SOURCE_ROOT) -> dict[str, Any]:
+def _control_scan_session(session: dict[str, Any]) -> dict[str, Any]:
+    files = session.get("files")
+    if not isinstance(files, list) or not files:
+        raise H2IngestError("H2-Control-Scan besitzt keine Mastergrößen.")
+    sizes = [
+        item.get("bytes")
+        for item in files
+        if isinstance(item, dict)
+    ]
+    if (
+        len(sizes) != len(files)
+        or any(
+            isinstance(size, bool) or not isinstance(size, int) or size <= 0
+            for size in sizes
+        )
+    ):
+        raise H2IngestError("H2-Control-Scan besitzt ungültige Mastergrößen.")
+    return {
+        "scene": session["scene"],
+        "recorded_date": session["recorded_date"],
+        "recorded_time": session["recorded_time"],
+        "sample_rate_hz": session["sample_rate_hz"],
+        "duration_seconds": session["duration_seconds"],
+        "roles": session["roles"],
+        "segment_count": session["segment_count"],
+        "total_bytes": sum(sizes),
+        "max_file_bytes": max(sizes),
+    }
+
+
+def scan(
+    source_root: pathlib.Path = DEFAULT_SOURCE_ROOT,
+    *,
+    projection: str = "full",
+) -> dict[str, Any]:
+    if projection not in {"full", "control"}:
+        raise H2IngestError("Unbekannte H2-Scan-Projektion.")
     source = _resolve_source_root(source_root)
     sessions: list[dict[str, Any]] = []
     skipped: list[str] = []
+    observed_scenes = 0
     with os.scandir(source) as entries:
         for entry in entries:
             if not entry.is_dir(follow_symlinks=False):
                 continue
             if not SCENE_RE.fullmatch(entry.name):
                 continue
+            observed_scenes += 1
+            if projection == "control" and observed_scenes > MAX_CONTROL_SCAN_SESSIONS:
+                raise H2IngestError(
+                    "H2-Control-Scan überschreitet das Session-Limit."
+                )
             try:
-                sessions.append(inspect_scene(source, entry.name))
+                session = inspect_scene(source, entry.name)
             except H2IngestError:
                 skipped.append(entry.name)
+                continue
+            sessions.append(
+                _control_scan_session(session)
+                if projection == "control"
+                else session
+            )
     sessions.sort(key=lambda item: (item["recorded_date"], item["recorded_time"], item["scene"]))
-    return {
+    result = {
         "schema_version": SCHEMA_VERSION,
         "kind": "audio_h2_source_scan",
         "device": {
@@ -572,6 +622,9 @@ def scan(source_root: pathlib.Path = DEFAULT_SOURCE_ROOT) -> dict[str, Any]:
         "read_only": True,
         "source_mutated": False,
     }
+    if projection == "control":
+        result["projection"] = CONTROL_SCAN_PROJECTION
+    return result
 
 
 def _assert_source_receipt_current(source: pathlib.Path, receipt: dict[str, Any]) -> None:
@@ -1226,6 +1279,11 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     scan_parser = sub.add_parser("scan")
     scan_parser.add_argument("--source-root", type=pathlib.Path, default=DEFAULT_SOURCE_ROOT)
+    scan_parser.add_argument(
+        "--projection",
+        choices=("full", "control"),
+        default="full",
+    )
 
     import_parser = sub.add_parser("import")
     import_parser.add_argument("scene")
@@ -1262,7 +1320,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = _parser().parse_args(argv)
         if args.command == "scan":
-            result = scan(args.source_root)
+            result = scan(args.source_root, projection=args.projection)
         elif args.command == "import":
             result = import_scene(
                 args.scene,
