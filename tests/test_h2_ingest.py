@@ -179,11 +179,11 @@ class H2IngestTests(unittest.TestCase):
     def test_control_scan_budget_is_shallow_and_size_bound(self):
         with tempfile.TemporaryDirectory() as directory:
             source = make_source(pathlib.Path(directory))
-            expected_bytes = sum(
-                path.stat().st_size
-                for path in (source / "170926_191401").glob("*.WAV")
-            )
             report = MODULE.scan(source, projection="budget")
+            expected_bytes = (
+                report["candidate_file_count"]
+                * MODULE.CONTROL_SCAN_METADATA_BUDGET_BYTES_PER_FILE
+            )
         self.assertEqual(report["kind"], "audio_h2_source_scan_budget")
         self.assertEqual(report["projection"], MODULE.CONTROL_SCAN_BUDGET_PROJECTION)
         self.assertEqual(report["matching_session_count"], 1)
@@ -387,6 +387,32 @@ class H2IngestTests(unittest.TestCase):
                 handle.truncate(MODULE.MAX_METADATA_JSON_BYTES + 1)
             with self.assertRaisesRegex(MODULE.H2IngestError, "Größenlimit"):
                 MODULE._read_json_regular(path)
+
+    def test_import_rejects_oversized_manifest_before_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            with (
+                mock.patch.object(MODULE, "MAX_METADATA_JSON_BYTES", 256),
+                self.assertRaisesRegex(MODULE.H2IngestError, "Größenlimit"),
+            ):
+                MODULE.import_scene(
+                    "170926_191401",
+                    source_root=source,
+                    library_root=library,
+                )
+            entries = list(library.iterdir())
+            self.assertEqual([path.name for path in entries], [".h2-import.lock"])
+            self.assertFalse(
+                any(path.name.startswith(".h2-staging-") for path in entries)
+            )
+            self.assertFalse(
+                any(
+                    path.is_dir() and MODULE.MATERIAL_ID_RE.fullmatch(path.name)
+                    for path in entries
+                )
+            )
 
     def test_repeat_import_preflights_hashes_without_copying_to_staging(self):
         with tempfile.TemporaryDirectory() as directory:

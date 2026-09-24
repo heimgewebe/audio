@@ -43,6 +43,7 @@ MAX_SESSION_FILES = 192
 MAX_CONTROL_SCAN_SESSIONS = 2048
 MAX_CONTROL_LIBRARY_ITEMS = 80
 MAX_METADATA_JSON_BYTES = 64 * 1024 * 1024
+CONTROL_SCAN_METADATA_BUDGET_BYTES_PER_FILE = MAX_BEXT_BYTES + 4096
 CONTROL_SCAN_PROJECTION = "control-v1"
 CONTROL_SCAN_BUDGET_PROJECTION = "control-budget-v1"
 CONTROL_LIBRARY_PROJECTION = "control-v1"
@@ -595,6 +596,7 @@ def _control_scan_budget(source: pathlib.Path) -> dict[str, Any]:
                 raise H2IngestError(
                     "H2-Control-Scan überschreitet das Session-Limit."
                 )
+            session_candidate_count = 0
             with os.scandir(entry.path) as session_entries:
                 for candidate in session_entries:
                     if candidate.name.startswith("."):
@@ -604,11 +606,13 @@ def _control_scan_budget(source: pathlib.Path) -> dict[str, Any]:
                         continue
                     if not candidate.is_file(follow_symlinks=False):
                         continue
-                    metadata = candidate.stat(follow_symlinks=False)
-                    if metadata.st_size <= 0:
-                        continue
+                    session_candidate_count += 1
+                    if session_candidate_count > MAX_SESSION_FILES:
+                        raise H2IngestError(
+                            "H2-Control-Scan überschreitet das Dateilimit pro Session."
+                        )
                     candidate_file_count += 1
-                    total_candidate_bytes += metadata.st_size
+                    total_candidate_bytes += CONTROL_SCAN_METADATA_BUDGET_BYTES_PER_FILE
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "audio_h2_source_scan_budget",
@@ -756,6 +760,8 @@ def _copy_master(
 
 def _write_json_new(path: pathlib.Path, value: dict[str, Any], mode: int) -> None:
     payload = _canonical_bytes(value) + b"\n"
+    if len(payload) > MAX_METADATA_JSON_BYTES:
+        raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW

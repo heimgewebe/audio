@@ -4588,7 +4588,7 @@ class H2MaterialControlTests(unittest.TestCase):
         call, timeout = runner.calls[0]
         self.assertEqual(call[2], "scan")
         self.assertIn("budget", call)
-        self.assertEqual(timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        self.assertEqual(timeout, MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS)
 
     def test_h2_workspace_budget_keeps_archive_reachable_without_source(self):
         archived = {
@@ -4810,7 +4810,7 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(budget_call[2], "scan")
         self.assertIn("--projection", budget_call)
         self.assertIn("budget", budget_call)
-        self.assertEqual(budget_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        self.assertEqual(budget_timeout, MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS)
         scan_call, scan_timeout = runner.calls[1]
         self.assertEqual(scan_call[2], "scan")
         self.assertIn("--projection", scan_call)

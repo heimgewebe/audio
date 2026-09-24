@@ -398,6 +398,14 @@ H2_IO_TIMEOUT_OVERHEAD_SECONDS = 60
 H2_METADATA_TIMEOUT_SECONDS = 30
 H2_MAX_CONTROL_LIBRARY_ITEMS = 80
 H2_MAX_METADATA_JSON_BYTES = 64 * 1024 * 1024
+H2_SCAN_BUDGET_MAX_ENTRIES = 2048 * 192
+H2_MIN_SCAN_BUDGET_ENTRIES_PER_SECOND = 512
+H2_SCAN_BUDGET_TIMEOUT_SECONDS = float(
+    H2_IO_TIMEOUT_OVERHEAD_SECONDS
+    + math.ceil(
+        H2_SCAN_BUDGET_MAX_ENTRIES / H2_MIN_SCAN_BUDGET_ENTRIES_PER_SECOND
+    )
+)
 H2_IMPORT_IO_PASSES = 4
 H2_MAX_TITLE_CHARS = 160
 H2_MAX_NOTE_CHARS = 2000
@@ -3811,7 +3819,7 @@ class AudioControl:
                 "--projection",
                 "budget",
             ],
-            timeout=H2_METADATA_TIMEOUT_SECONDS,
+            timeout=H2_SCAN_BUDGET_TIMEOUT_SECONDS,
             label="H2-Scanbudget",
             fallback="H2-Scanbudget ist nicht sicher bestimmbar.",
         )

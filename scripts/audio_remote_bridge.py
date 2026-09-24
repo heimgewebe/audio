@@ -80,7 +80,7 @@ RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
 # H2 media verification and the second pre-header generation hash are covered
 # by finite size-derived budgets projected by the backend. The bridge consumes
 # those budgets rather than maintaining duplicate size formulas.
-H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS = 45.0
+H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS = 900.0
 H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS = 15.0
 # H2 import and annotation outer deadlines are projected by the backend.
 # The bridge adds only a transport margin and does not duplicate size formulas.

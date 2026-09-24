@@ -213,7 +213,7 @@ const RECORDING_LIBRARY_CATEGORIES = Object.freeze({
 const LIBRARY_VIEWS = new Set(["active", "trash", "all"]);
 const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category"]);
 const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
-const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 60000;
+const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;
 const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
 const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;
 

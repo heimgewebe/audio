@@ -485,7 +485,7 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", annotate_timeout)
         self.assertIn("H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS", annotate_timeout)
 
-        self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 60000;", self.app)
+        self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;", self.app)
         self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
         self.assertIn("const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;", self.app)
         self.assertNotIn("H2_WORKSPACE_TIMEOUT_MS", self.app)
