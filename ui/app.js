@@ -213,9 +213,8 @@ const RECORDING_LIBRARY_CATEGORIES = Object.freeze({
 const LIBRARY_VIEWS = new Set(["active", "trash", "all"]);
 const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category"]);
 const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
-const H2_WORKSPACE_TIMEOUT_MS = 90000;
-const H2_ANNOTATE_TIMEOUT_MS = 150000;
-const H2_IMPORT_UI_TIMEOUT_MARGIN_MS = H2_WORKSPACE_TIMEOUT_MS;
+const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 60000;
+const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
 
 const RECORDING_COLLISION_BLOCKERS = new Set([
   "output-already-exists",
@@ -3683,11 +3682,44 @@ function rememberH2AnnotationDraft(materialId, form, title, note, tags) {
   form.dataset.dirty = "true";
 }
 
+async function h2WorkspaceBudget() {
+  const budget = await fetchJson("/api/v1/h2/budget", {
+    timeoutMs: H2_WORKSPACE_BUDGET_TIMEOUT_MS,
+  });
+  const workspaceSeconds = budget?.workspace_timeout_seconds;
+  const annotationSeconds = budget?.annotation_timeout_seconds;
+  if (
+    budget?.kind !== "audio_h2_workspace_budget" ||
+    budget?.read_only !== true ||
+    budget?.source_mutated !== false ||
+    typeof workspaceSeconds !== "number" ||
+    !Number.isFinite(workspaceSeconds) ||
+    workspaceSeconds <= 0 ||
+    typeof annotationSeconds !== "number" ||
+    !Number.isFinite(annotationSeconds) ||
+    annotationSeconds <= 0
+  ) {
+    throw new Error("H2-Arbeitsbereich besitzt kein gültiges Zeitbudget.");
+  }
+  return budget;
+}
+
+async function h2WorkspaceTimeoutMs() {
+  const budget = await h2WorkspaceBudget();
+  return (
+    Math.ceil(budget.workspace_timeout_seconds * 1000) +
+    H2_WORKSPACE_BUDGET_TIMEOUT_MS +
+    H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS
+  );
+}
+
 async function loadH2Workspace({ render = true } = {}) {
   if (!backendAllowed()) return;
   const activitySequence = ++state.h2ActivitySequence;
   try {
-    const workspace = await fetchJson("/api/v1/h2", { timeoutMs: H2_WORKSPACE_TIMEOUT_MS });
+    const timeoutMs = await h2WorkspaceTimeoutMs();
+    if (activitySequence !== state.h2ActivitySequence || !backendAllowed()) return;
+    const workspace = await fetchJson("/api/v1/h2", { timeoutMs });
     if (activitySequence !== state.h2ActivitySequence || !backendAllowed()) return;
     if (workspace?.kind !== "audio_h2_workspace") {
       throw new Error("H2-Arbeitsbereich besitzt keinen gültigen Vertrag.");
@@ -3703,7 +3735,7 @@ async function loadH2Workspace({ render = true } = {}) {
   if (render) renderH2Workspace();
 }
 
-function h2ImportTimeoutMs(scene) {
+async function h2ImportTimeoutMs(scene) {
   const sessions = Array.isArray(state.h2Workspace?.source?.sessions)
     ? state.h2Workspace.source.sessions
     : [];
@@ -3716,14 +3748,23 @@ function h2ImportTimeoutMs(scene) {
   ) {
     throw new Error("H2-Import besitzt kein gültiges Zeitbudget.");
   }
-  return Math.ceil(backendSeconds * 1000) + H2_IMPORT_UI_TIMEOUT_MARGIN_MS;
+  return Math.ceil(backendSeconds * 1000) + (await h2WorkspaceTimeoutMs());
+}
+
+async function h2AnnotationTimeoutMs() {
+  const budget = await h2WorkspaceBudget();
+  return (
+    Math.ceil(budget.annotation_timeout_seconds * 1000) +
+    H2_WORKSPACE_BUDGET_TIMEOUT_MS +
+    H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS
+  );
 }
 
 async function postH2Action(payload) {
   const timeoutMs =
     payload?.operation === "import"
-      ? h2ImportTimeoutMs(payload.scene)
-      : H2_ANNOTATE_TIMEOUT_MS;
+      ? await h2ImportTimeoutMs(payload.scene)
+      : await h2AnnotationTimeoutMs();
   if (localH2ActionsAllowed()) {
     return fetchJson("/api/v1/actions/h2", {
       method: "POST",

@@ -251,6 +251,10 @@ class TargetValidationTests(unittest.TestCase):
         )
         self.assertEqual(MODULE.validate_request_target("/api/v1/h2"), ("/api/v1/h2", True))
         self.assertEqual(
+            MODULE.validate_request_target("/api/v1/h2/budget"),
+            ("/api/v1/h2/budget", True),
+        )
+        self.assertEqual(
             MODULE.validate_request_target("/api/v1/h2/source/170926_191401/audio/0"),
             ("/api/v1/h2/source/170926_191401/audio/0", True),
         )
@@ -683,6 +687,20 @@ class BridgeHTTPTests(unittest.TestCase):
                     ("Content-Range", "bytes 0-3/16"),
                 ],
                 b"MThd",
+            ),
+            "/api/v1/h2/budget": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_workspace_budget",
+                        "workspace_timeout_seconds": 180.0,
+                        "annotation_timeout_seconds": 240.0,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
             ),
             "/api/v1/h2": (
                 200,
@@ -1274,6 +1292,40 @@ class BridgeHTTPTests(unittest.TestCase):
                 MODULE.h2_import_backend_timeout_seconds("170926_191401")
 
     def test_h2_workspace_and_action_timeouts_cover_backend_contract(self):
+        budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_workspace_budget",
+            "workspace_timeout_seconds": 333.0,
+            "annotation_timeout_seconds": 444.0,
+            "read_only": True,
+            "source_mutated": False,
+        }
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(budget).encode("utf-8"), 0),
+        ) as readback:
+            self.assertEqual(
+                MODULE.h2_workspace_backend_timeout_seconds(),
+                333.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+            self.assertEqual(
+                MODULE.h2_annotation_backend_timeout_seconds(),
+                444.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+        self.assertEqual(readback.call_count, 2)
+        readback.assert_called_with("/api/v1/h2/budget", None)
+
+        invalid = dict(budget)
+        invalid["annotation_timeout_seconds"] = None
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(invalid).encode("utf-8"), 0),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.h2_annotation_backend_timeout_seconds()
+
         observed: list[float | None] = []
 
         class TimeoutProbeConnection:
@@ -1288,9 +1340,24 @@ class BridgeHTTPTests(unittest.TestCase):
 
         with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
             with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/budget", {})
+        self.assertEqual(
+            observed,
+            [MODULE.H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_workspace_backend_timeout_seconds",
+                return_value=987.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
                 MODULE.read_backend_response("/api/v1/h2", {})
-        self.assertEqual(observed, [MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS])
-        self.assertGreater(MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS, 30 + 30 + 1)
+        self.assertEqual(observed, [987.0])
 
         observed.clear()
         with (
@@ -1311,6 +1378,11 @@ class BridgeHTTPTests(unittest.TestCase):
         observed.clear()
         with (
             mock.patch.object(MODULE, "read_backend_action_token", return_value="x" * 32),
+            mock.patch.object(
+                MODULE,
+                "h2_annotation_backend_timeout_seconds",
+                return_value=654.0,
+            ),
             mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
         ):
             with self.assertRaises(MODULE.BackendFailure):
@@ -1323,42 +1395,15 @@ class BridgeHTTPTests(unittest.TestCase):
                         "tags": [],
                     }
                 )
-        self.assertEqual(observed, [MODULE.H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS])
-        self.assertGreater(MODULE.H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS, 30 + 30 + 30 + 1)
+        self.assertEqual(observed, [654.0])
 
         app = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
-
-        def ui_timeout(name: str) -> int:
-            match = re.search(rf"const {name} = ([0-9]+);", app)
-            self.assertIsNotNone(match)
-            assert match is not None
-            return int(match.group(1))
-
-        self.assertGreater(
-            ui_timeout("H2_WORKSPACE_TIMEOUT_MS"),
-            MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS * 1000,
-        )
-        h2_router = app.split("async function postH2Action(payload) {", 1)[1].split(
-            "\nasync function runH2Action", 1
-        )[0]
-        self.assertIn("h2ImportTimeoutMs(payload.scene)", h2_router)
-        h2_timeout = app.split("function h2ImportTimeoutMs(scene) {", 1)[1].split(
-            "\n}\n\nasync function postH2Action", 1
-        )[0]
-        self.assertIn("session?.import_timeout_seconds", h2_timeout)
-        self.assertIn(
-            "Math.ceil(backendSeconds * 1000) + H2_IMPORT_UI_TIMEOUT_MARGIN_MS",
-            h2_timeout,
-        )
-        self.assertIn(
-            "const H2_IMPORT_UI_TIMEOUT_MARGIN_MS = H2_WORKSPACE_TIMEOUT_MS;",
-            app,
-        )
-        self.assertGreater(
-            ui_timeout("H2_ANNOTATE_TIMEOUT_MS"),
-            (MODULE.H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS + MODULE.BACKEND_TIMEOUT_SECONDS)
-            * 1000,
-        )
+        self.assertIn('fetchJson("/api/v1/h2/budget"', app)
+        self.assertIn("async function h2WorkspaceTimeoutMs()", app)
+        self.assertIn("await h2ImportTimeoutMs(payload.scene)", app)
+        self.assertIn("await h2AnnotationTimeoutMs()", app)
+        self.assertNotIn("H2_WORKSPACE_TIMEOUT_MS", app)
+        self.assertNotIn("H2_ANNOTATE_TIMEOUT_MS", app)
 
     def test_recording_prepare_timeout_covers_full_path_convergence_budget(self):
         self.assertEqual(
@@ -1648,9 +1693,9 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(decoded["operation"], action["operation"])
                 records = FakeBackendHandler.records[before:]
                 expected_methods = (
-                    ["GET", "GET", "POST"]
+                    ["GET", "GET", "GET", "POST"]
                     if action["operation"] == "import"
-                    else ["GET", "POST"]
+                    else ["GET", "GET", "POST"]
                 )
                 self.assertEqual(
                     [record["method"] for record in records],

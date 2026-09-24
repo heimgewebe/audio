@@ -40,7 +40,10 @@ COPY_CHUNK_BYTES = 1024 * 1024
 MAX_BEXT_BYTES = 128 * 1024
 MAX_SESSION_FILES = 192
 MAX_CONTROL_SCAN_SESSIONS = 2048
+MAX_CONTROL_LIBRARY_ITEMS = 80
 CONTROL_SCAN_PROJECTION = "control-v1"
+CONTROL_SCAN_BUDGET_PROJECTION = "control-budget-v1"
+CONTROL_LIBRARY_PROJECTION = "control-v1"
 DEFAULT_SOURCE_ROOT = pathlib.Path(
     os.environ.get(
         "AUDIO_H2_SOURCE_ROOT",
@@ -575,14 +578,57 @@ def _control_scan_session(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _control_scan_budget(source: pathlib.Path) -> dict[str, Any]:
+    matching_session_count = 0
+    candidate_file_count = 0
+    total_candidate_bytes = 0
+    with os.scandir(source) as entries:
+        for entry in entries:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            if not SCENE_RE.fullmatch(entry.name):
+                continue
+            matching_session_count += 1
+            if matching_session_count > MAX_CONTROL_SCAN_SESSIONS:
+                raise H2IngestError(
+                    "H2-Control-Scan überschreitet das Session-Limit."
+                )
+            with os.scandir(entry.path) as session_entries:
+                for candidate in session_entries:
+                    if candidate.name.startswith("."):
+                        continue
+                    match = ROLE_RE.fullmatch(candidate.name)
+                    if match is None or match.group("scene") != entry.name:
+                        continue
+                    if not candidate.is_file(follow_symlinks=False):
+                        continue
+                    metadata = candidate.stat(follow_symlinks=False)
+                    if metadata.st_size <= 0:
+                        continue
+                    candidate_file_count += 1
+                    total_candidate_bytes += metadata.st_size
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_h2_source_scan_budget",
+        "projection": CONTROL_SCAN_BUDGET_PROJECTION,
+        "matching_session_count": matching_session_count,
+        "candidate_file_count": candidate_file_count,
+        "total_candidate_bytes": total_candidate_bytes,
+        "read_only": True,
+        "source_mutated": False,
+    }
+
+
 def scan(
     source_root: pathlib.Path = DEFAULT_SOURCE_ROOT,
     *,
     projection: str = "full",
 ) -> dict[str, Any]:
-    if projection not in {"full", "control"}:
+    if projection not in {"full", "control", "budget"}:
         raise H2IngestError("Unbekannte H2-Scan-Projektion.")
     source = _resolve_source_root(source_root)
+    if projection == "budget":
+        return _control_scan_budget(source)
     sessions: list[dict[str, Any]] = []
     skipped: list[str] = []
     observed_scenes = 0
@@ -981,34 +1027,144 @@ def import_scene(
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
         raise
-def library(library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT) -> dict[str, Any]:
+
+
+def _control_library_item(item: dict[str, Any]) -> dict[str, Any]:
+    source = item.get("source")
+    annotations = item.get("annotations")
+    masters = item.get("masters")
+    imported_at = item.get("imported_at")
+    if (
+        not isinstance(source, dict)
+        or not isinstance(annotations, dict)
+        or not isinstance(masters, list)
+        or not masters
+        or len(masters) > MAX_SESSION_FILES
+        or not isinstance(imported_at, str)
+        or len(imported_at) > 64
+    ):
+        raise H2IngestError("H2-Control-Bibliothek enthält ein ungültiges Objekt.")
+
+    scene = source.get("scene")
+    recorded_date = source.get("recorded_date")
+    recorded_time = source.get("recorded_time")
+    if (
+        not isinstance(scene, str)
+        or SCENE_RE.fullmatch(scene) is None
+        or not isinstance(recorded_date, str)
+        or len(recorded_date) > 10
+        or not isinstance(recorded_time, str)
+        or len(recorded_time) > 8
+    ):
+        raise H2IngestError("H2-Control-Bibliothek enthält ungültige Herkunftsdaten.")
+
+    title = annotations.get("title")
+    note = annotations.get("note")
+    tags = annotations.get("tags")
+    normalized_title = _validated_annotation_text(
+        title, label="Titel", maximum=MAX_TITLE_CHARS
+    )
+    normalized_note = _validated_annotation_text(
+        note, label="Notiz", maximum=MAX_NOTE_CHARS
+    )
+    normalized_tags = _validated_tags(tags)
+    if (
+        normalized_title != title
+        or normalized_note != note
+        or normalized_tags != tags
+    ):
+        raise H2IngestError("H2-Control-Bibliothek enthält nicht-kanonische Annotationen.")
+
+    sizes: list[int] = []
+    roles: set[str] = set()
+    segment_indexes: list[int] = []
+    for master in masters:
+        if not isinstance(master, dict):
+            raise H2IngestError("H2-Control-Bibliothek enthält ungültige Master.")
+        size = master.get("bytes")
+        role = master.get("role")
+        segment_index = master.get("segment_index", 0)
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or size <= 0
+            or size > (2**63 - 1)
+            or role not in {"front", "rear", "mix"}
+            or isinstance(segment_index, bool)
+            or not isinstance(segment_index, int)
+            or segment_index < 0
+            or segment_index >= MAX_SESSION_FILES
+        ):
+            raise H2IngestError("H2-Control-Bibliothek enthält ungültige Master.")
+        sizes.append(size)
+        roles.add(role)
+        segment_indexes.append(segment_index)
+
+    return {
+        "material_id": item["material_id"],
+        "source": {
+            "scene": scene,
+            "recorded_date": recorded_date,
+            "recorded_time": recorded_time,
+        },
+        "imported_at": imported_at,
+        "annotations": {
+            "title": title,
+            "note": note,
+            "tags": tags,
+        },
+        "roles": sorted(roles, key=lambda role: ROLE_ORDER[role.upper()]),
+        "segment_count": max(segment_indexes) + 1,
+        "total_bytes": sum(sizes),
+        "max_file_bytes": max(sizes),
+    }
+
+
+def library(
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+    *,
+    projection: str = "full",
+) -> dict[str, Any]:
+    if projection not in {"full", "control"}:
+        raise H2IngestError("Unbekannte H2-Bibliotheksprojektion.")
     root = library_root.expanduser()
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_material_library",
+        "items": [],
+        "count": 0,
+        "read_only": True,
+    }
+    if projection == "control":
+        result["projection"] = CONTROL_LIBRARY_PROJECTION
     if not root.exists() and not root.is_symlink():
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "kind": "audio_material_library",
-            "items": [],
-            "count": 0,
-            "read_only": True,
-        }
+        return result
+
     _lstat_directory(root, "Materialbibliothek")
     items: list[dict[str, Any]] = []
+    observed_items = 0
     with os.scandir(root) as entries:
         for entry in entries:
             if not entry.is_dir(follow_symlinks=False) or not MATERIAL_ID_RE.fullmatch(entry.name):
                 continue
+            observed_items += 1
+            if projection == "control" and observed_items > MAX_CONTROL_LIBRARY_ITEMS:
+                raise H2IngestError(
+                    "H2-Control-Bibliothek überschreitet das Material-Limit."
+                )
             directory = pathlib.Path(entry.path)
             manifest = _read_json_regular(directory / "manifest.json")
             annotations = _read_json_regular(directory / "annotations.json")
-            items.append(_library_item(manifest, annotations, entry.name))
+            item = _library_item(manifest, annotations, entry.name)
+            items.append(
+                _control_library_item(item)
+                if projection == "control"
+                else item
+            )
     items.sort(key=lambda item: item["imported_at"], reverse=True)
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "kind": "audio_material_library",
-        "items": items,
-        "count": len(items),
-        "read_only": True,
-    }
+    result["items"] = items
+    result["count"] = len(items)
+    return result
 
 
 def verify_material(
@@ -1281,7 +1437,7 @@ def _parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--source-root", type=pathlib.Path, default=DEFAULT_SOURCE_ROOT)
     scan_parser.add_argument(
         "--projection",
-        choices=("full", "control"),
+        choices=("full", "control", "budget"),
         default="full",
     )
 
@@ -1292,6 +1448,11 @@ def _parser() -> argparse.ArgumentParser:
 
     library_parser = sub.add_parser("library")
     library_parser.add_argument("--library-root", type=pathlib.Path, default=DEFAULT_LIBRARY_ROOT)
+    library_parser.add_argument(
+        "--projection",
+        choices=("full", "control"),
+        default="full",
+    )
 
     verify_parser = sub.add_parser("verify")
     verify_parser.add_argument("material_id")
@@ -1328,7 +1489,7 @@ def main(argv: list[str] | None = None) -> int:
                 library_root=args.library_root,
             )
         elif args.command == "library":
-            result = library(args.library_root)
+            result = library(args.library_root, projection=args.projection)
         elif args.command == "verify":
             result = verify_material(args.material_id, library_root=args.library_root)
         elif args.command == "annotate":

@@ -78,15 +78,12 @@ RECORDING_BACKEND_TIMEOUT_SECONDS = 120.0
 # misreported as a remote timeout.
 RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
 # H2 media verification and the second pre-header generation hash are covered
-# by a finite size-derived budget projected by the backend H2 workspace. The
-# bridge consumes that budget rather than maintaining a duplicate size formula.
-# H2 workspace may spend 30 s scanning the source plus 30 s reading the
-# library. A timed-out source scan can add the runner's bounded 1 s kill drain.
-H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS = 75.0
-# H2 import has a size-derived finite bound in the backend. The bridge must
-# not preempt it with a second fixed deadline. Annotation remains small and
-# keeps a fixed outer budget beyond its backend + workspace path.
-H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS = 120.0
+# by finite size-derived budgets projected by the backend. The bridge consumes
+# those budgets rather than maintaining duplicate size formulas.
+H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS = 45.0
+H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS = 15.0
+# H2 import and annotation outer deadlines are projected by the backend.
+# The bridge adds only a transport margin and does not duplicate size formulas.
 REQUEST_IO_TIMEOUT_SECONDS = 6.0
 MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
@@ -149,6 +146,7 @@ FIXED_API_ROUTES = frozenset(
         "/api/v1/whale/lesson",
         "/api/v1/recordings",
         "/api/v1/h2",
+        "/api/v1/h2/budget",
     }
 )
 PROFILE_PLAN_RE = re.compile(r"^/api/v1/profiles/([^/]+)/plan$")
@@ -722,12 +720,63 @@ def backend_request_headers(
     return forwarded
 
 
-def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list[tuple[str, str]], bytes, int]:
-    backend_timeout_seconds = (
-        H2_WORKSPACE_BACKEND_TIMEOUT_SECONDS
-        if target == "/api/v1/h2"
-        else BACKEND_TIMEOUT_SECONDS
+def _read_backend_h2_budget() -> dict[str, Any]:
+    status, _headers, payload, _redactions = read_backend_response(
+        "/api/v1/h2/budget", None
     )
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend H2 workspace budget is unavailable")
+    try:
+        budget = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend H2 workspace budget is invalid") from error
+    workspace_timeout = (
+        budget.get("workspace_timeout_seconds") if isinstance(budget, dict) else None
+    )
+    annotation_timeout = (
+        budget.get("annotation_timeout_seconds") if isinstance(budget, dict) else None
+    )
+    if (
+        not isinstance(budget, dict)
+        or budget.get("kind") != "audio_h2_workspace_budget"
+        or budget.get("read_only") is not True
+        or budget.get("source_mutated") is not False
+        or isinstance(workspace_timeout, bool)
+        or not isinstance(workspace_timeout, (int, float))
+        or not math.isfinite(workspace_timeout)
+        or workspace_timeout <= 0
+        or isinstance(annotation_timeout, bool)
+        or not isinstance(annotation_timeout, (int, float))
+        or not math.isfinite(annotation_timeout)
+        or annotation_timeout <= 0
+    ):
+        raise BackendFailure("backend H2 workspace budget is invalid")
+    return budget
+
+
+def h2_workspace_backend_timeout_seconds() -> float:
+    budget = _read_backend_h2_budget()
+    return (
+        float(budget["workspace_timeout_seconds"])
+        + H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS
+    )
+
+
+def h2_annotation_backend_timeout_seconds() -> float:
+    budget = _read_backend_h2_budget()
+    return (
+        float(budget["annotation_timeout_seconds"])
+        + H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS
+    )
+
+
+def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list[tuple[str, str]], bytes, int]:
+    if target == "/api/v1/h2":
+        backend_timeout_seconds = h2_workspace_backend_timeout_seconds()
+    elif target == "/api/v1/h2/budget":
+        backend_timeout_seconds = H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS
+    else:
+        backend_timeout_seconds = BACKEND_TIMEOUT_SECONDS
     connection = http.client.HTTPConnection(
         BACKEND_HOST,
         BACKEND_PORT,
@@ -1159,7 +1208,7 @@ def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
     timeout = (
         h2_import_backend_timeout_seconds(action["scene"])
         if action.get("operation") == "import"
-        else H2_ANNOTATE_BACKEND_TIMEOUT_SECONDS
+        else h2_annotation_backend_timeout_seconds()
     )
     connection = http.client.HTTPConnection(BACKEND_HOST, BACKEND_PORT, timeout=timeout)
     try:

@@ -174,6 +174,23 @@ class H2IngestTests(unittest.TestCase):
         self.assertGreater(session["max_file_bytes"], 0)
         self.assertEqual(session["roles"], ["front", "rear", "mix"])
 
+    def test_control_scan_budget_is_shallow_and_size_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory))
+            expected_bytes = sum(
+                path.stat().st_size
+                for path in (source / "170926_191401").glob("*.WAV")
+            )
+            report = MODULE.scan(source, projection="budget")
+        self.assertEqual(report["kind"], "audio_h2_source_scan_budget")
+        self.assertEqual(report["projection"], MODULE.CONTROL_SCAN_BUDGET_PROJECTION)
+        self.assertEqual(report["matching_session_count"], 1)
+        self.assertEqual(report["candidate_file_count"], 3)
+        self.assertEqual(report["total_candidate_bytes"], expected_bytes)
+        self.assertNotIn("sessions", report)
+        self.assertTrue(report["read_only"])
+        self.assertFalse(report["source_mutated"])
+
     def test_control_scan_discards_large_bwf_payload_and_fits_runner_cap(self):
         huge_bwf = "x" * MODULE.MAX_BEXT_BYTES
         full_session = {
@@ -236,11 +253,13 @@ class H2IngestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = make_source(pathlib.Path(directory))
             (source / "170926_191402").mkdir()
-            with (
-                mock.patch.object(MODULE, "MAX_CONTROL_SCAN_SESSIONS", 1),
-                self.assertRaisesRegex(MODULE.H2IngestError, "Session-Limit"),
-            ):
-                MODULE.scan(source, projection="control")
+            for projection in ("control", "budget"):
+                with (
+                    self.subTest(projection=projection),
+                    mock.patch.object(MODULE, "MAX_CONTROL_SCAN_SESSIONS", 1),
+                    self.assertRaisesRegex(MODULE.H2IngestError, "Session-Limit"),
+                ):
+                    MODULE.scan(source, projection=projection)
 
     def test_scan_reports_invalid_matching_session_instead_of_claiming_it(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -265,9 +284,9 @@ class H2IngestTests(unittest.TestCase):
             source = make_source(root, roles=("FRONT",))
             scene = "170926_191401"
             original = source / scene / f"{scene}_FRONT.WAV"
-            real = source / scene / "real.wav"
+            real = root / "real.wav"
             original.rename(real)
-            original.symlink_to(real.name)
+            original.symlink_to(real)
             with self.assertRaisesRegex(MODULE.H2IngestError, "Nicht-Datei"):
                 MODULE.inspect_scene(source, scene)
 
@@ -612,6 +631,94 @@ class H2IngestTests(unittest.TestCase):
         self.assertEqual(item["material_id"], result["material_id"])
         self.assertFalse(item["current_bytes_verified"])
         self.assertEqual(item["source"]["kind"], "zoom-h2essential-file-transfer")
+
+    def test_control_library_projection_is_compact_and_fits_runner_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            tags = ["😀" * 47 + chr(0x1F600 + index) for index in range(MODULE.MAX_TAGS)]
+            MODULE.annotate_material(
+                result["material_id"],
+                title="😀" * MODULE.MAX_TITLE_CHARS,
+                note="😀" * MODULE.MAX_NOTE_CHARS,
+                tags=tags,
+                library_root=library,
+            )
+            report = MODULE.library(library, projection="control")
+
+        self.assertEqual(report["projection"], MODULE.CONTROL_LIBRARY_PROJECTION)
+        self.assertEqual(report["count"], 1)
+        compact = report["items"][0]
+        self.assertNotIn("masters", compact)
+        self.assertNotIn("markers", compact)
+        self.assertGreater(compact["total_bytes"], 0)
+        self.assertGreater(compact["max_file_bytes"], 0)
+        self.assertEqual(compact["roles"], ["front"])
+        self.assertEqual(compact["segment_count"], 1)
+        self.assertEqual(compact["annotations"]["note"], "😀" * MODULE.MAX_NOTE_CHARS)
+
+        worst_case = {
+            "schema_version": MODULE.SCHEMA_VERSION,
+            "kind": "audio_material_library",
+            "projection": MODULE.CONTROL_LIBRARY_PROJECTION,
+            "items": [
+                {
+                    **compact,
+                    "material_id": f"{index:024x}",
+                    "imported_at": "x" * 64,
+                    "total_bytes": 2**63 - 1,
+                    "max_file_bytes": 2**63 - 1,
+                    "roles": ["front", "rear", "mix"],
+                    "segment_count": MODULE.MAX_SESSION_FILES,
+                }
+                for index in range(MODULE.MAX_CONTROL_LIBRARY_ITEMS)
+            ],
+            "count": MODULE.MAX_CONTROL_LIBRARY_ITEMS,
+            "read_only": True,
+        }
+        encoded = json.dumps(
+            worst_case,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        self.assertLess(len(encoded), 1_048_576)
+
+    def test_control_library_bounds_material_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            second_scene = "170926_191402"
+            second = source / second_scene
+            second.mkdir()
+            write_h2_wav(
+                second / f"{second_scene}_FRONT.WAV",
+                scene=second_scene,
+                role="FRONT",
+                recorded_time="19:14:02",
+            )
+            MODULE.import_scene(
+                second_scene,
+                source_root=source,
+                library_root=library,
+            )
+            with (
+                mock.patch.object(MODULE, "MAX_CONTROL_LIBRARY_ITEMS", 1),
+                self.assertRaisesRegex(MODULE.H2IngestError, "Material-Limit"),
+            ):
+                MODULE.library(library, projection="control")
 
     def test_library_may_not_be_created_on_the_h2_source(self):
         with tempfile.TemporaryDirectory() as directory:

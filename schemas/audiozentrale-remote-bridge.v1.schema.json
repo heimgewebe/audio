@@ -108,7 +108,8 @@
             "/api/v1/replay",
             "/api/v1/whale/lesson",
             "/api/v1/recordings",
-            "/api/v1/h2"
+            "/api/v1/h2",
+            "/api/v1/h2/budget"
           ]
         },
         "snapshot_queries": {

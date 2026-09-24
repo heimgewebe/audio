@@ -434,30 +434,62 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('/bridge/v1/actions/h2', h2_router)
         self.assertIn('"X-Audio-Bridge-Session"', h2_router)
         self.assertIn('payload?.operation === "import"', h2_router)
-        self.assertIn("h2ImportTimeoutMs(payload.scene)", h2_router)
-        self.assertIn("H2_ANNOTATE_TIMEOUT_MS", h2_router)
+        self.assertIn("await h2ImportTimeoutMs(payload.scene)", h2_router)
+        self.assertIn("await h2AnnotationTimeoutMs()", h2_router)
         self.assertNotIn("delete-source", h2_router)
 
-        h2_timeout = self.app.split("function h2ImportTimeoutMs(scene) {", 1)[1].split(
-            "\n}\n\nasync function postH2Action", 1
+        h2_budget = self.app.split("async function h2WorkspaceBudget() {", 1)[1].split(
+            "\n}\n\nasync function h2WorkspaceTimeoutMs", 1
+        )[0]
+        self.assertIn('fetchJson("/api/v1/h2/budget"', h2_budget)
+        self.assertIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", h2_budget)
+        self.assertIn('budget?.kind !== "audio_h2_workspace_budget"', h2_budget)
+        self.assertIn("budget?.read_only !== true", h2_budget)
+        self.assertIn("budget?.source_mutated !== false", h2_budget)
+        self.assertIn("budget?.workspace_timeout_seconds", h2_budget)
+        self.assertIn("budget?.annotation_timeout_seconds", h2_budget)
+
+        workspace_timeout = self.app.split("async function h2WorkspaceTimeoutMs() {", 1)[1].split(
+            "\n}\n\nasync function loadH2Workspace", 1
+        )[0]
+        self.assertIn("await h2WorkspaceBudget()", workspace_timeout)
+        self.assertIn("budget.workspace_timeout_seconds * 1000", workspace_timeout)
+        self.assertIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", workspace_timeout)
+        self.assertIn("H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS", workspace_timeout)
+
+        h2_load = self.app.split("async function loadH2Workspace", 1)[1].split(
+            "\nasync function h2ImportTimeoutMs", 1
+        )[0]
+        self.assertIn("const timeoutMs = await h2WorkspaceTimeoutMs();", h2_load)
+        self.assertIn('fetchJson("/api/v1/h2", { timeoutMs })', h2_load)
+        self.assertIn(
+            "activitySequence !== state.h2ActivitySequence || !backendAllowed()",
+            h2_load,
+        )
+
+        h2_timeout = self.app.split("async function h2ImportTimeoutMs(scene) {", 1)[1].split(
+            "\n}\n\nasync function h2AnnotationTimeoutMs", 1
         )[0]
         self.assertIn("state.h2Workspace?.source?.sessions", h2_timeout)
         self.assertIn("candidate?.scene === scene", h2_timeout)
         self.assertIn("session?.import_timeout_seconds", h2_timeout)
         self.assertIn("Number.isFinite(backendSeconds)", h2_timeout)
         self.assertIn("Math.ceil(backendSeconds * 1000)", h2_timeout)
-        self.assertIn("H2_IMPORT_UI_TIMEOUT_MARGIN_MS", h2_timeout)
+        self.assertIn("await h2WorkspaceTimeoutMs()", h2_timeout)
 
-        h2_load = self.app.split("async function loadH2Workspace", 1)[1].split(
-            "\nasync function postH2Action", 1
+        annotate_timeout = self.app.split("async function h2AnnotationTimeoutMs() {", 1)[1].split(
+            "\n}\n\nasync function postH2Action", 1
         )[0]
-        self.assertIn("timeoutMs: H2_WORKSPACE_TIMEOUT_MS", h2_load)
-        self.assertIn("const H2_WORKSPACE_TIMEOUT_MS = 90000;", self.app)
-        self.assertIn("const H2_ANNOTATE_TIMEOUT_MS = 150000;", self.app)
-        self.assertIn(
-            "const H2_IMPORT_UI_TIMEOUT_MARGIN_MS = H2_WORKSPACE_TIMEOUT_MS;",
-            self.app,
-        )
+        self.assertIn("await h2WorkspaceBudget()", annotate_timeout)
+        self.assertIn("budget.annotation_timeout_seconds * 1000", annotate_timeout)
+        self.assertIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", annotate_timeout)
+        self.assertIn("H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS", annotate_timeout)
+
+        self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 60000;", self.app)
+        self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
+        self.assertNotIn("H2_WORKSPACE_TIMEOUT_MS", self.app)
+        self.assertNotIn("H2_ANNOTATE_TIMEOUT_MS", self.app)
+        self.assertNotIn("H2_IMPORT_UI_TIMEOUT_MARGIN_MS", self.app)
         fetch_json = self.app.split("async function fetchJson", 1)[1].split(
             "\nfunction showNotice", 1
         )[0]
@@ -662,7 +694,7 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
     def test_h2_annotation_drafts_survive_refresh_rebuilds_until_successful_save(self):
         self.assertIn("h2AnnotationDrafts: new Map()", self.app)
         helpers = self.app.split("function h2AnnotationDraftValues", 1)[1].split(
-            "\nasync function loadH2Workspace", 1
+            "\nasync function h2WorkspaceBudget", 1
         )[0]
         helpers = "function h2AnnotationDraftValues" + helpers
         harness = f"""

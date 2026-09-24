@@ -4403,6 +4403,48 @@ class H2MaterialControlTests(unittest.TestCase):
             self.calls.append((tuple(argv), timeout))
             command = argv[2] if len(argv) > 2 else ""
             if command == "scan":
+                projection = (
+                    argv[argv.index("--projection") + 1]
+                    if "--projection" in argv
+                    else "full"
+                )
+                if projection == "budget":
+                    if self.sessions is None:
+                        budget_sessions = 1
+                        candidate_files = 3
+                        total_candidate_bytes = 3 * 1_048_576
+                    else:
+                        budget_sessions = len(self.sessions) + len(
+                            self.skipped_invalid_sessions
+                        )
+                        total_candidate_bytes = sum(
+                            item.get("total_bytes", 0)
+                            for item in self.sessions
+                            if isinstance(item, dict)
+                        )
+                        candidate_files = (
+                            sum(
+                                max(1, len(item.get("roles", [])))
+                                * max(1, item.get("segment_count", 1))
+                                for item in self.sessions
+                                if isinstance(item, dict)
+                            )
+                            if total_candidate_bytes > 0
+                            else 0
+                        )
+                    report = {
+                        "schema_version": 1,
+                        "kind": "audio_h2_source_scan_budget",
+                        "projection": "control-budget-v1",
+                        "read_only": True,
+                        "source_mutated": False,
+                        "matching_session_count": budget_sessions,
+                        "candidate_file_count": candidate_files,
+                        "total_candidate_bytes": total_candidate_bytes,
+                    }
+                    return MODULE.CommandResult(
+                        tuple(argv), 0, json.dumps(report), ""
+                    )
                 report = {
                     "schema_version": 1,
                     "kind": "audio_h2_source_scan",
@@ -4453,6 +4495,7 @@ class H2MaterialControlTests(unittest.TestCase):
                 report = {
                     "schema_version": 1,
                     "kind": "audio_material_library",
+                    "projection": "control-v1",
                     "read_only": True,
                     "count": len(self.library_items),
                     "items": self.library_items,
@@ -4515,14 +4558,46 @@ class H2MaterialControlTests(unittest.TestCase):
             ):
                 MODULE.AudioControl(runner=self.Runner(), telemetry=None)
 
+    def test_h2_workspace_budget_projects_dynamic_workspace_and_annotation_bounds(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        budget = controller.h2_workspace_budget()
+        expected_scan_timeout = controller._h2_timeout_for_bytes(
+            3 * 1_048_576,
+            passes=1,
+            minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+        )
+        expected_workspace = controller._h2_workspace_timeout_for_scan(
+            expected_scan_timeout
+        )
+        self.assertEqual(budget["kind"], "audio_h2_workspace_budget")
+        self.assertTrue(budget["read_only"])
+        self.assertFalse(budget["source_mutated"])
+        self.assertEqual(budget["workspace_timeout_seconds"], expected_workspace)
+        self.assertEqual(
+            budget["annotation_timeout_seconds"],
+            MODULE.H2_METADATA_TIMEOUT_SECONDS
+            + expected_workspace
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(len(runner.calls), 1)
+        call, timeout = runner.calls[0]
+        self.assertEqual(call[2], "scan")
+        self.assertIn("budget", call)
+        self.assertEqual(timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+
     def test_h2_workspace_projects_source_and_empty_archive(self):
-        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
         workspace = controller.h2_workspace()
         self.assertEqual(workspace["kind"], "audio_h2_workspace")
         self.assertEqual(workspace["source"]["status"], "ready")
         self.assertEqual(workspace["source"]["count"], 1)
         self.assertEqual(workspace["source"]["skipped_invalid_sessions"], [])
         self.assertEqual(workspace["library"]["count"], 0)
+        library_call = next(call for call, _timeout in runner.calls if call[2] == "library")
+        self.assertIn("--projection", library_call)
+        self.assertIn("control", library_call)
         self.assertFalse(workspace["source_delete_authorized"])
         session = workspace["source"]["sessions"][0]
         self.assertEqual(session["scene"], "170926_191401")
@@ -4530,23 +4605,25 @@ class H2MaterialControlTests(unittest.TestCase):
             session["audio_url"],
             "/api/v1/h2/source/170926_191401/audio/0",
         )
+        expected_scan_timeout = controller._h2_timeout_for_bytes(
+            3 * 1_048_576,
+            passes=1,
+            minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+        )
         self.assertEqual(
             session["media_timeout_seconds"],
-            MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + controller._h2_timeout_for_bytes(1_048_576, passes=1, minimum=60)
-            + controller._h2_timeout_for_bytes(1_048_576, passes=1, minimum=60)
-            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+            expected_scan_timeout
+            + controller._h2_media_stream_timeout_for_bytes(
+                1_048_576,
+                minimum=60,
+            ),
         )
         self.assertEqual(
             session["import_timeout_seconds"],
-            MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + controller._h2_timeout_for_bytes(
+            controller._h2_import_action_timeout_for_bytes(
                 3 * 1_048_576,
-                passes=MODULE.H2_IMPORT_IO_PASSES,
-                minimum=300,
-            )
-            + (2 * MODULE.H2_METADATA_TIMEOUT_SECONDS)
-            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+                scan_timeout=expected_scan_timeout,
+            ),
         )
 
     def test_h2_workspace_surfaces_invalid_only_source_without_claiming_empty(self):
@@ -4578,7 +4655,10 @@ class H2MaterialControlTests(unittest.TestCase):
                 "note": "",
                 "tags": [],
             },
-            "masters": [{"role": "mix", "segment_index": 0, "bytes": 1_048_576}],
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": 1_048_576,
+            "max_file_bytes": 1_048_576,
         }
         controller = MODULE.AudioControl(
             runner=self.Runner(library_items=[archived]),
@@ -4615,10 +4695,23 @@ class H2MaterialControlTests(unittest.TestCase):
         finally:
             controller._action_lock.release()
         self.assertEqual(result["operation"], "import")
-        self.assertEqual(runner.calls[0][0][2], "scan")
-        self.assertIn("--projection", runner.calls[0][0])
-        self.assertIn("control", runner.calls[0][0])
-        call, timeout = runner.calls[1]
+        budget_call, budget_timeout = runner.calls[0]
+        self.assertEqual(budget_call[2], "scan")
+        self.assertIn("--projection", budget_call)
+        self.assertIn("budget", budget_call)
+        self.assertEqual(budget_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        scan_call, scan_timeout = runner.calls[1]
+        self.assertEqual(scan_call[2], "scan")
+        self.assertIn("--projection", scan_call)
+        self.assertIn("control", scan_call)
+        expected_scan_timeout = controller._h2_timeout_for_bytes(
+            3 * 1_048_576,
+            passes=1,
+            minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(scan_timeout, expected_scan_timeout)
+        self.assertGreater(scan_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        call, timeout = runner.calls[2]
         self.assertEqual(pathlib.Path(call[1]).name, "h2_ingest.py")
         self.assertIn("import", call)
         self.assertIn(str(MODULE.STATIC_H2_LIBRARY_ROOT), call)
@@ -4642,14 +4735,6 @@ class H2MaterialControlTests(unittest.TestCase):
             "segment_count": 1,
             "total_bytes": two_gib,
             "max_file_bytes": two_gib,
-            "files": [
-                {
-                    "name": "170926_191401_MIX.WAV",
-                    "role": "mix",
-                    "segment_index": 0,
-                    "bytes": two_gib,
-                }
-            ],
         }
         library_item = {
             "material_id": "a" * 24,
@@ -4659,21 +4744,28 @@ class H2MaterialControlTests(unittest.TestCase):
                 "recorded_time": "19:14:01",
             },
             "annotations": {"title": "", "note": "", "tags": []},
-            "masters": [
-                {
-                    "name": "170926_191401_MIX.WAV",
-                    "role": "mix",
-                    "segment_index": 0,
-                    "bytes": two_gib,
-                    "audio": {},
-                }
-            ],
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": two_gib,
+            "max_file_bytes": two_gib,
         }
         observed = []
 
         def fake_run(arguments, *, timeout, label, fallback):
-            observed.append((arguments[0], timeout))
+            observed.append((tuple(arguments), timeout))
             if arguments[0] == "scan":
+                projection = arguments[arguments.index("--projection") + 1]
+                if projection == "budget":
+                    return {
+                        "schema_version": 1,
+                        "kind": "audio_h2_source_scan_budget",
+                        "projection": "control-budget-v1",
+                        "read_only": True,
+                        "source_mutated": False,
+                        "matching_session_count": 1,
+                        "candidate_file_count": 1,
+                        "total_candidate_bytes": two_gib,
+                    }
                 return {
                     "schema_version": 1,
                     "kind": "audio_h2_source_scan",
@@ -4688,6 +4780,7 @@ class H2MaterialControlTests(unittest.TestCase):
                 return {
                     "schema_version": 1,
                     "kind": "audio_material_library",
+                    "projection": "control-v1",
                     "read_only": True,
                     "count": 1,
                     "items": [library_item],
@@ -4703,9 +4796,26 @@ class H2MaterialControlTests(unittest.TestCase):
             controller.verified_h2_source_media("170926_191401", 0)
             controller.verified_h2_material_media("a" * 24, 0)
 
-        source_timeout = next(timeout for command, timeout in observed if command == "source-media")
+        control_scan_timeout = next(
+            timeout
+            for arguments, timeout in observed
+            if arguments[0] == "scan"
+            and arguments[arguments.index("--projection") + 1] == "control"
+        )
+        source_timeout = next(
+            timeout for arguments, timeout in observed if arguments[0] == "source-media"
+        )
         material_timeout = next(
-            timeout for command, timeout in observed if command == "material-media"
+            timeout for arguments, timeout in observed if arguments[0] == "material-media"
+        )
+        self.assertGreater(control_scan_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        self.assertEqual(
+            control_scan_timeout,
+            controller._h2_timeout_for_bytes(
+                two_gib,
+                passes=1,
+                minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+            ),
         )
         self.assertGreater(source_timeout, 60)
         self.assertGreater(material_timeout, 120)
@@ -4730,12 +4840,18 @@ class H2MaterialControlTests(unittest.TestCase):
         source_outer = source_projection["media_timeout_seconds"]
         import_outer = source_projection["import_timeout_seconds"]
         material_outer = workspace["library"]["items"][0]["media_timeout_seconds"]
+        expected_scan_timeout = controller._h2_timeout_for_bytes(
+            two_gib,
+            passes=1,
+            minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+        )
         self.assertEqual(
             source_outer,
-            MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=60)
-            + controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=60)
-            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+            expected_scan_timeout
+            + controller._h2_media_stream_timeout_for_bytes(
+                two_gib,
+                minimum=60,
+            ),
         )
         self.assertEqual(
             material_outer,
@@ -4746,14 +4862,10 @@ class H2MaterialControlTests(unittest.TestCase):
         )
         self.assertEqual(
             import_outer,
-            MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + controller._h2_timeout_for_bytes(
+            controller._h2_import_action_timeout_for_bytes(
                 two_gib,
-                passes=MODULE.H2_IMPORT_IO_PASSES,
-                minimum=300,
-            )
-            + (2 * MODULE.H2_METADATA_TIMEOUT_SECONDS)
-            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+                scan_timeout=expected_scan_timeout,
+            ),
         )
         self.assertGreater(source_outer, source_timeout)
         self.assertGreater(material_outer, material_timeout)

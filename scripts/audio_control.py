@@ -3674,8 +3674,28 @@ class AudioControl:
             + REQUEST_IO_TIMEOUT_SECONDS
         )
 
+    @staticmethod
+    def _h2_workspace_timeout_for_scan(scan_timeout: float) -> float:
+        if (
+            isinstance(scan_timeout, bool)
+            or not isinstance(scan_timeout, (int, float))
+            or not math.isfinite(scan_timeout)
+            or scan_timeout <= 0
+        ):
+            raise ControlError("H2-Workspace-Zeitbudget ist ungültig.")
+        return float(
+            (2 * H2_METADATA_TIMEOUT_SECONDS)
+            + scan_timeout
+            + REQUEST_IO_TIMEOUT_SECONDS
+        )
+
     @classmethod
-    def _h2_import_action_timeout_for_bytes(cls, byte_count: int) -> float:
+    def _h2_import_action_timeout_for_bytes(
+        cls,
+        byte_count: int,
+        *,
+        scan_timeout: float,
+    ) -> float:
         import_work = cls._h2_timeout_for_bytes(
             byte_count,
             passes=H2_IMPORT_IO_PASSES,
@@ -3683,9 +3703,9 @@ class AudioControl:
         )
         return float(
             H2_METADATA_TIMEOUT_SECONDS
+            + scan_timeout
             + import_work
-            + (2 * H2_METADATA_TIMEOUT_SECONDS)
-            + REQUEST_IO_TIMEOUT_SECONDS
+            + cls._h2_workspace_timeout_for_scan(scan_timeout)
         )
 
     @staticmethod
@@ -3747,6 +3767,87 @@ class AudioControl:
         return sum(sizes)
 
     @staticmethod
+    def _validate_h2_scan_budget(report: dict[str, Any]) -> None:
+        matching_session_count = report.get("matching_session_count")
+        candidate_file_count = report.get("candidate_file_count")
+        total_candidate_bytes = report.get("total_candidate_bytes")
+        if (
+            report.get("schema_version") != 1
+            or report.get("kind") != "audio_h2_source_scan_budget"
+            or report.get("projection") != "control-budget-v1"
+            or report.get("read_only") is not True
+            or report.get("source_mutated") is not False
+            or isinstance(matching_session_count, bool)
+            or not isinstance(matching_session_count, int)
+            or matching_session_count < 0
+            or isinstance(candidate_file_count, bool)
+            or not isinstance(candidate_file_count, int)
+            or candidate_file_count < 0
+            or isinstance(total_candidate_bytes, bool)
+            or not isinstance(total_candidate_bytes, int)
+            or total_candidate_bytes < 0
+            or (candidate_file_count == 0) != (total_candidate_bytes == 0)
+        ):
+            raise ControlError("H2-Scanbudget ist nicht sicher bestimmbar.")
+
+    def _h2_scan_budget(self) -> tuple[dict[str, Any], float]:
+        budget_report = self._run_h2_command(
+            [
+                "scan",
+                "--source-root",
+                str(STATIC_H2_SOURCE_ROOT),
+                "--projection",
+                "budget",
+            ],
+            timeout=H2_METADATA_TIMEOUT_SECONDS,
+            label="H2-Scanbudget",
+            fallback="H2-Scanbudget ist nicht sicher bestimmbar.",
+        )
+        self._validate_h2_scan_budget(budget_report)
+        total_candidate_bytes = budget_report["total_candidate_bytes"]
+        scan_timeout = float(H2_METADATA_TIMEOUT_SECONDS)
+        if total_candidate_bytes > 0:
+            scan_timeout = self._h2_timeout_for_bytes(
+                total_candidate_bytes,
+                passes=1,
+                minimum=H2_METADATA_TIMEOUT_SECONDS,
+            )
+        return budget_report, scan_timeout
+
+    def h2_workspace_budget(self) -> dict[str, Any]:
+        _budget_report, scan_timeout = self._h2_scan_budget()
+        workspace_timeout = self._h2_workspace_timeout_for_scan(scan_timeout)
+        return {
+            "schema_version": 1,
+            "kind": "audio_h2_workspace_budget",
+            "workspace_timeout_seconds": workspace_timeout,
+            "annotation_timeout_seconds": float(
+                H2_METADATA_TIMEOUT_SECONDS
+                + workspace_timeout
+                + REQUEST_IO_TIMEOUT_SECONDS
+            ),
+            "read_only": True,
+            "source_mutated": False,
+        }
+
+    def _h2_control_scan(self) -> tuple[dict[str, Any], float]:
+        _budget_report, scan_timeout = self._h2_scan_budget()
+        report = self._run_h2_command(
+            [
+                "scan",
+                "--source-root",
+                str(STATIC_H2_SOURCE_ROOT),
+                "--projection",
+                "control",
+            ],
+            timeout=scan_timeout,
+            label="H2-Scanner",
+            fallback="H2 ist nicht als Datei-Quelle verfügbar.",
+        )
+        self._validate_h2_scan(report)
+        return report, scan_timeout
+
+    @staticmethod
     def _validate_h2_scan(report: dict[str, Any]) -> None:
         if (
             report.get("schema_version") != 1
@@ -3794,6 +3895,7 @@ class AudioControl:
         if (
             report.get("schema_version") != 1
             or report.get("kind") != "audio_material_library"
+            or report.get("projection") != "control-v1"
             or report.get("read_only") is not True
             or not isinstance(report.get("items"), list)
             or report.get("count") != len(report["items"])
@@ -3802,37 +3904,43 @@ class AudioControl:
         for item in report["items"]:
             annotations = item.get("annotations") if isinstance(item, dict) else None
             source = item.get("source") if isinstance(item, dict) else None
+            roles = item.get("roles") if isinstance(item, dict) else None
+            total_bytes = item.get("total_bytes") if isinstance(item, dict) else None
+            max_file_bytes = item.get("max_file_bytes") if isinstance(item, dict) else None
+            segment_count = item.get("segment_count") if isinstance(item, dict) else None
             if (
                 not isinstance(item, dict)
                 or not isinstance(item.get("material_id"), str)
                 or re.fullmatch(r"[0-9a-f]{24}", item["material_id"]) is None
                 or not isinstance(source, dict)
                 or not isinstance(source.get("scene"), str)
+                or re.fullmatch(r"[0-9]{6}_[0-9]{6}", source["scene"]) is None
+                or not isinstance(source.get("recorded_date"), str)
+                or not isinstance(source.get("recorded_time"), str)
                 or not isinstance(annotations, dict)
                 or not isinstance(annotations.get("title"), str)
                 or not isinstance(annotations.get("note"), str)
                 or not isinstance(annotations.get("tags"), list)
                 or not all(isinstance(tag, str) for tag in annotations["tags"])
-                or not isinstance(item.get("masters"), list)
-                or not item["masters"]
+                or not isinstance(roles, list)
+                or not roles
+                or not all(role in {"front", "rear", "mix"} for role in roles)
+                or isinstance(segment_count, bool)
+                or not isinstance(segment_count, int)
+                or segment_count < 1
+                or isinstance(total_bytes, bool)
+                or not isinstance(total_bytes, int)
+                or total_bytes <= 0
+                or isinstance(max_file_bytes, bool)
+                or not isinstance(max_file_bytes, int)
+                or max_file_bytes <= 0
+                or max_file_bytes > total_bytes
             ):
                 raise ControlError("H2-Materialbibliothek enthält ein ungültiges Objekt.")
 
     def h2_workspace(self) -> dict[str, Any]:
         try:
-            source_report = self._run_h2_command(
-                [
-                    "scan",
-                    "--source-root",
-                    str(STATIC_H2_SOURCE_ROOT),
-                    "--projection",
-                    "control",
-                ],
-                timeout=H2_METADATA_TIMEOUT_SECONDS,
-                label="H2-Scanner",
-                fallback="H2 ist nicht als Datei-Quelle verfügbar.",
-            )
-            self._validate_h2_scan(source_report)
+            source_report, source_scan_timeout = self._h2_control_scan()
         except ControlError as error:
             source_projection: dict[str, Any] = {
                 "status": "unavailable",
@@ -3860,12 +3968,16 @@ class AudioControl:
                         "audio_url": (
                             f"/api/{API_VERSION}/h2/source/{item['scene']}/audio/0"
                         ),
-                        "media_timeout_seconds": self._h2_media_stream_timeout_for_bytes(
-                            item["max_file_bytes"],
-                            minimum=60,
+                        "media_timeout_seconds": (
+                            source_scan_timeout
+                            + self._h2_media_stream_timeout_for_bytes(
+                                item["max_file_bytes"],
+                                minimum=60,
+                            )
                         ),
                         "import_timeout_seconds": self._h2_import_action_timeout_for_bytes(
-                            item["total_bytes"]
+                            item["total_bytes"],
+                            scan_timeout=source_scan_timeout,
                         ),
                     }
                     for item in reversed(source_report["sessions"])
@@ -3873,7 +3985,13 @@ class AudioControl:
             }
 
         library_report = self._run_h2_command(
-            ["library", "--library-root", str(STATIC_H2_LIBRARY_ROOT)],
+            [
+                "library",
+                "--library-root",
+                str(STATIC_H2_LIBRARY_ROOT),
+                "--projection",
+                "control",
+            ],
             timeout=H2_METADATA_TIMEOUT_SECONDS,
             label="H2-Materialbibliothek",
             fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
@@ -3881,36 +3999,19 @@ class AudioControl:
         self._validate_h2_library(library_report)
         items: list[dict[str, Any]] = []
         for item in library_report["items"]:
-            source = item["source"]
-            segment_count = max(
-                (
-                    master.get("segment_index", 0)
-                    for master in item["masters"]
-                    if isinstance(master, dict)
-                ),
-                default=0,
-            ) + 1
-            material_bytes = self._h2_material_bytes(item)
             items.append(
                 {
                     "material_id": item["material_id"],
-                    "source": source,
+                    "source": item["source"],
                     "imported_at": item.get("imported_at"),
                     "annotations": item["annotations"],
-                    "roles": sorted(
-                        {
-                            master.get("role")
-                            for master in item["masters"]
-                            if isinstance(master, dict)
-                            and master.get("role") in {"front", "rear", "mix"}
-                        }
-                    ),
-                    "segment_count": segment_count,
+                    "roles": item["roles"],
+                    "segment_count": item["segment_count"],
                     "audio_url": (
                         f"/api/{API_VERSION}/h2/material/{item['material_id']}/audio/0"
                     ),
                     "media_timeout_seconds": self._h2_media_stream_timeout_for_bytes(
-                        material_bytes,
+                        item["total_bytes"],
                         minimum=120,
                     ),
                 }
@@ -3957,19 +4058,7 @@ class AudioControl:
             raise ControlError("H2-Medienbindung liegt außerhalb des erlaubten Roots.")
 
     def verified_h2_source_media(self, scene: str, segment_index: int) -> dict[str, Any]:
-        source_report = self._run_h2_command(
-            [
-                    "scan",
-                    "--source-root",
-                    str(STATIC_H2_SOURCE_ROOT),
-                    "--projection",
-                    "control",
-                ],
-            timeout=H2_METADATA_TIMEOUT_SECONDS,
-            label="H2-Scanner",
-            fallback="H2 ist nicht als Datei-Quelle verfügbar.",
-        )
-        self._validate_h2_scan(source_report)
+        source_report, _scan_timeout = self._h2_control_scan()
         session = next(
             (
                 item
@@ -4014,7 +4103,13 @@ class AudioControl:
         self, material_id: str, segment_index: int
     ) -> dict[str, Any]:
         library_report = self._run_h2_command(
-            ["library", "--library-root", str(STATIC_H2_LIBRARY_ROOT)],
+            [
+                "library",
+                "--library-root",
+                str(STATIC_H2_LIBRARY_ROOT),
+                "--projection",
+                "control",
+            ],
             timeout=H2_METADATA_TIMEOUT_SECONDS,
             label="H2-Materialbibliothek",
             fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
@@ -4040,7 +4135,7 @@ class AudioControl:
                 str(STATIC_H2_LIBRARY_ROOT),
             ],
             timeout=self._h2_timeout_for_bytes(
-                self._h2_material_bytes(item),
+                item["total_bytes"],
                 passes=1,
                 minimum=120,
             ),
@@ -4073,19 +4168,7 @@ class AudioControl:
                 "--library-root",
                 str(STATIC_H2_LIBRARY_ROOT),
             ]
-            source_report = self._run_h2_command(
-                [
-                    "scan",
-                    "--source-root",
-                    str(STATIC_H2_SOURCE_ROOT),
-                    "--projection",
-                    "control",
-                ],
-                timeout=H2_METADATA_TIMEOUT_SECONDS,
-                label="H2-Scanner",
-                fallback="H2 ist nicht als Datei-Quelle verfügbar.",
-            )
-            self._validate_h2_scan(source_report)
+            source_report, _scan_timeout = self._h2_control_scan()
             source_session = next(
                 (
                     item
@@ -6365,6 +6448,27 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, lesson, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/h2/budget":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Das H2-Workspace-Budget akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                budget = self.server.controller.h2_workspace_budget()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_workspace_budget_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, budget, head_only=head_only)
             return
         if parsed.path == f"/api/{API_VERSION}/h2":
             if parsed.query:
