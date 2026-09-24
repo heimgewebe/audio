@@ -380,6 +380,26 @@ class H2IngestTests(unittest.TestCase):
             self.assertTrue(entries[0].is_file())
             self.assertEqual(stat.S_IMODE(entries[0].stat().st_mode), 0o600)
 
+    def test_metadata_limit_preserves_shared_service_memory_headroom(self):
+        unit = (
+            ROOT / "systemd" / "user" / "audio-control-ui-v1.service"
+        ).read_text(encoding="utf-8")
+        memory_line = next(
+            line for line in unit.splitlines() if line.startswith("MemoryMax=")
+        )
+        memory_max = int(memory_line.split("=", 1)[1])
+        self.assertLessEqual(
+            MODULE.MAX_METADATA_JSON_BYTES * 64,
+            memory_max,
+        )
+        control = (ROOT / "scripts" / "audio_control.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "H2_MAX_METADATA_JSON_BYTES = 2 * 1024 * 1024",
+            control,
+        )
+
     def test_metadata_reader_rejects_oversized_json_before_reading(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "manifest.json"
