@@ -498,6 +498,13 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;", self.app)
         self.assertIn("const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;", self.app)
         self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
+        h2_render = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn("library.total_count", h2_render)
+        self.assertIn("library.truncated === true", h2_render)
+        self.assertIn('" von " + String(libraryTotal)', h2_render)
+
         self.assertIn("const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;", self.app)
         self.assertNotIn("H2_WORKSPACE_TIMEOUT_MS", self.app)
         self.assertNotIn("H2_ANNOTATE_TIMEOUT_MS", self.app)

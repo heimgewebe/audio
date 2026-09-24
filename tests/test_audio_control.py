@@ -4505,6 +4505,8 @@ class H2MaterialControlTests(unittest.TestCase):
                     "projection": "control-v1",
                     "read_only": True,
                     "count": len(self.library_items),
+                    "total_count": len(self.library_items),
+                    "truncated": False,
                     "items": self.library_items,
                 }
             elif command == "import":
@@ -4705,6 +4707,16 @@ class H2MaterialControlTests(unittest.TestCase):
             (call, timeout) for call, timeout in runner.calls if call[2] == "library"
         )
         self.assertEqual(library_timeout, controller._h2_library_timeout())
+        self.assertEqual(
+            library_timeout,
+            controller._h2_timeout_for_bytes(
+                MODULE.H2_MAX_CONTROL_LIBRARY_ITEMS
+                * 2
+                * MODULE.H2_MAX_METADATA_JSON_BYTES,
+                passes=1,
+                minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+            ),
+        )
         self.assertGreater(library_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
         self.assertIn("--projection", library_call)
         self.assertIn("control", library_call)
@@ -4892,6 +4904,8 @@ class H2MaterialControlTests(unittest.TestCase):
                     "projection": "control-v1",
                     "read_only": True,
                     "count": 1,
+                    "total_count": 1,
+                    "truncated": False,
                     "items": [library_item],
                 }
             if arguments[0] == "source-media":

@@ -742,6 +742,8 @@ class H2IngestTests(unittest.TestCase):
                 for index in range(MODULE.MAX_CONTROL_LIBRARY_ITEMS)
             ],
             "count": MODULE.MAX_CONTROL_LIBRARY_ITEMS,
+            "total_count": MODULE.MAX_CONTROL_LIBRARY_ITEMS,
+            "truncated": False,
             "read_only": True,
         }
         encoded = json.dumps(
@@ -751,6 +753,42 @@ class H2IngestTests(unittest.TestCase):
             sort_keys=True,
         ).encode("utf-8")
         self.assertLess(len(encoded), 1_048_576)
+
+    def test_control_library_truncates_legacy_archive_without_whole_archive_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            first = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            second_scene = "170926_191402"
+            second = source / second_scene
+            second.mkdir()
+            write_h2_wav(
+                second / f"{second_scene}_FRONT.WAV",
+                scene=second_scene,
+                role="FRONT",
+                recorded_time="19:14:02",
+            )
+            second_result = MODULE.import_scene(
+                second_scene,
+                source_root=source,
+                library_root=library,
+            )
+
+            with mock.patch.object(MODULE, "MAX_CONTROL_LIBRARY_ITEMS", 1):
+                report = MODULE.library(library, projection="control")
+
+            self.assertEqual(report["count"], 1)
+            self.assertEqual(report["total_count"], 2)
+            self.assertIs(report["truncated"], True)
+            self.assertEqual(
+                report["items"][0]["material_id"],
+                min(first["material_id"], second_result["material_id"]),
+            )
 
     def test_control_library_rejects_new_material_before_publish_at_capacity(self):
         with tempfile.TemporaryDirectory() as directory:

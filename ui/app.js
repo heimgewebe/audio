@@ -3993,7 +3993,16 @@ function renderH2Workspace({ force = false } = {}) {
   const invalidSessions = Array.isArray(source.skipped_invalid_sessions)
     ? source.skipped_invalid_sessions
     : [];
-  const items = Array.isArray(workspace.library?.items) ? workspace.library.items : [];
+  const library = workspace.library || {};
+  const items = Array.isArray(library.items) ? library.items : [];
+  const libraryTotal =
+    Number.isInteger(library.total_count) && library.total_count >= items.length
+      ? library.total_count
+      : items.length;
+  const librarySummary =
+    library.truncated === true
+      ? String(items.length) + " von " + String(libraryTotal)
+      : String(items.length);
   const sourceReadable = source.status === "ready";
   const invalidSummary = invalidSessions.length
     ? " · " + String(invalidSessions.length) + " nicht sicher lesbar"
@@ -4003,9 +4012,9 @@ function renderH2Workspace({ force = false } = {}) {
       " Aufnahmen auf dem H2" +
       invalidSummary +
       " · " +
-      String(items.length) +
+      librarySummary +
       " im Klangarchiv"
-    : "H2 nicht verbunden · " + String(items.length) + " archivierte Aufnahmen bleiben verfügbar";
+    : "H2 nicht verbunden · " + librarySummary + " archivierte Aufnahmen bleiben verfügbar";
 
   const sourceCards = [];
   for (const session of sessions) {

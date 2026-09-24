@@ -11,6 +11,7 @@ immutable manifest plus separate mutable annotations.
 from __future__ import annotations
 
 import argparse
+import bisect
 import datetime as dt
 import fcntl
 import hashlib
@@ -1201,31 +1202,53 @@ def library(
         "read_only": True,
     }
     if projection == "control":
-        result["projection"] = CONTROL_LIBRARY_PROJECTION
+        result.update(
+            {
+                "projection": CONTROL_LIBRARY_PROJECTION,
+                "total_count": 0,
+                "truncated": False,
+            }
+        )
     if not root.exists() and not root.is_symlink():
         return result
 
     _lstat_directory(root, "Materialbibliothek")
     items: list[dict[str, Any]] = []
-    observed_items = 0
-    with os.scandir(root) as entries:
-        for entry in entries:
-            if not entry.is_dir(follow_symlinks=False) or not MATERIAL_ID_RE.fullmatch(entry.name):
-                continue
-            observed_items += 1
-            if projection == "control" and observed_items > MAX_CONTROL_LIBRARY_ITEMS:
-                raise H2IngestError(
-                    "H2-Control-Bibliothek überschreitet das Material-Limit."
-                )
-            directory = pathlib.Path(entry.path)
+    if projection == "control":
+        selected_names: list[str] = []
+        observed_items = 0
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if (
+                    not entry.is_dir(follow_symlinks=False)
+                    or not MATERIAL_ID_RE.fullmatch(entry.name)
+                ):
+                    continue
+                observed_items += 1
+                bisect.insort(selected_names, entry.name)
+                if len(selected_names) > MAX_CONTROL_LIBRARY_ITEMS:
+                    selected_names.pop()
+        for name in selected_names:
+            directory = root / name
             manifest = _read_json_regular(directory / "manifest.json")
             annotations = _read_json_regular(directory / "annotations.json")
-            item = _library_item(manifest, annotations, entry.name)
-            items.append(
-                _control_library_item(item)
-                if projection == "control"
-                else item
-            )
+            item = _library_item(manifest, annotations, name)
+            items.append(_control_library_item(item))
+        result["total_count"] = observed_items
+        result["truncated"] = observed_items > len(items)
+    else:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if (
+                    not entry.is_dir(follow_symlinks=False)
+                    or not MATERIAL_ID_RE.fullmatch(entry.name)
+                ):
+                    continue
+                directory = pathlib.Path(entry.path)
+                manifest = _read_json_regular(directory / "manifest.json")
+                annotations = _read_json_regular(directory / "annotations.json")
+                items.append(_library_item(manifest, annotations, entry.name))
+
     items.sort(key=lambda item: item["imported_at"], reverse=True)
     result["items"] = items
     result["count"] = len(items)

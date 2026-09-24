@@ -3740,7 +3740,7 @@ class AudioControl:
     @classmethod
     def _h2_library_timeout(cls) -> float:
         return cls._h2_timeout_for_bytes(
-            H2_MAX_CONTROL_LIBRARY_ITEMS * H2_MAX_METADATA_JSON_BYTES,
+            H2_MAX_CONTROL_LIBRARY_ITEMS * 2 * H2_MAX_METADATA_JSON_BYTES,
             passes=1,
             minimum=H2_METADATA_TIMEOUT_SECONDS,
         )
@@ -3978,6 +3978,12 @@ class AudioControl:
             or report.get("read_only") is not True
             or not isinstance(report.get("items"), list)
             or report.get("count") != len(report["items"])
+            or isinstance(report.get("total_count"), bool)
+            or not isinstance(report.get("total_count"), int)
+            or report["total_count"] < report["count"]
+            or not isinstance(report.get("truncated"), bool)
+            or report["truncated"] is not (report["total_count"] > report["count"])
+            or report["count"] > H2_MAX_CONTROL_LIBRARY_ITEMS
         ):
             raise ControlError("H2-Materialbibliothek ist nicht sicher lesbar.")
         for item in report["items"]:
@@ -4077,7 +4083,12 @@ class AudioControl:
                     ),
                 }
             )
-        return {"count": len(items), "items": items}
+        return {
+            "count": len(items),
+            "total_count": library_report["total_count"],
+            "truncated": library_report["truncated"],
+            "items": items,
+        }
 
     def h2_library(self) -> dict[str, Any]:
         library = {
