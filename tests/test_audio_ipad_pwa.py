@@ -515,16 +515,20 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         )
 
     def test_h2_workspace_load_has_independent_single_flight_gate(self):
+        self.assertIn("h2WorkspaceLoadGeneration: 0", self.app)
         self.assertIn("h2WorkspaceLoading: false", self.app)
         loader = "async function loadH2Workspace" + self.app.split(
             "async function loadH2Workspace", 1
         )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
         self.assertIn("state.h2WorkspaceLoading", loader)
+        self.assertIn("const loadGeneration = ++state.h2WorkspaceLoadGeneration;", loader)
         self.assertIn("finally {", loader)
+        self.assertIn("loadGeneration === state.h2WorkspaceLoadGeneration", loader)
         self.assertIn("state.h2WorkspaceLoading = false;", loader)
 
         harness = f"""
 const state = {{
+  h2WorkspaceLoadGeneration: 0,
   h2WorkspaceLoading: false,
   h2ActivitySequence: 0,
   h2Workspace: null,
@@ -547,7 +551,7 @@ function renderH2Workspace() {{ renders += 1; }}
   const second = loadH2Workspace({{ render: true }});
   await Promise.resolve();
   await Promise.resolve();
-  if (fetchCalls !== 1 || timeoutCalls !== 1 || state.h2WorkspaceLoading !== true) {{
+  if (fetchCalls !== 1 || timeoutCalls !== 1 || state.h2WorkspaceLoadGeneration !== 1 || state.h2WorkspaceLoading !== true) {{
     throw new Error("H2 single-flight gate did not suppress the duplicate load");
   }}
   resolveFetch({{ kind: "audio_h2_workspace" }});
@@ -576,6 +580,98 @@ function renderH2Workspace() {{ renders += 1; }}
         self.assertIn(
             "refresh.disabled = state.h2ActionPending || state.h2WorkspaceLoading;",
             renderer,
+        )
+
+    def test_h2_workspace_load_gate_restarts_after_authority_invalidation(self):
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
+        stop = self.app.split("function stopRemoteActivity() {", 1)[1].split(
+            "\n}\n\nfunction applyRuntimeMode", 1
+        )[0]
+        self.assertIn("state.h2WorkspaceLoadGeneration += 1;", stop)
+        self.assertIn("state.h2WorkspaceLoading = false;", stop)
+
+        harness = f"""
+const state = {{
+  h2WorkspaceLoadGeneration: 0,
+  h2WorkspaceLoading: false,
+  h2ActivitySequence: 0,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+}};
+let allowed = true;
+let fetchCalls = 0;
+let timeoutCalls = 0;
+let renders = 0;
+const resolvers = [];
+function backendAllowed() {{ return allowed; }}
+async function h2WorkspaceTimeoutMs() {{ timeoutCalls += 1; return 1000; }}
+function fetchJson() {{
+  fetchCalls += 1;
+  return new Promise((resolve) => resolvers.push(resolve));
+}}
+function renderH2Workspace() {{ renders += 1; }}
+{loader}
+(async () => {{
+  const first = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  if (fetchCalls !== 1 || state.h2WorkspaceLoading !== true) {{
+    throw new Error("first H2 load did not start");
+  }}
+
+  allowed = false;
+  state.h2ActivitySequence += 1;
+  state.h2WorkspaceLoadGeneration += 1;
+  state.h2WorkspaceLoading = false;
+
+  allowed = true;
+  const second = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  if (fetchCalls !== 2 || state.h2WorkspaceLoading !== true) {{
+    throw new Error("replacement H2 load was blocked by stale single-flight state");
+  }}
+
+  resolvers[0]({{ kind: "audio_h2_workspace", marker: "stale" }});
+  await first;
+  if (state.h2WorkspaceLoading !== true) {{
+    throw new Error("stale H2 finally cleared the replacement load gate");
+  }}
+
+  resolvers[1]({{ kind: "audio_h2_workspace", marker: "fresh" }});
+  await second;
+  if (
+    state.h2WorkspaceLoading !== false ||
+    state.h2Workspace?.marker !== "fresh" ||
+    renders !== 1
+  ) {{
+    throw new Error("replacement H2 load did not become authoritative");
+  }}
+
+  process.stdout.write(JSON.stringify({{
+    fetchCalls,
+    timeoutCalls,
+    renders,
+    marker: state.h2Workspace?.marker,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "fetchCalls": 2,
+                "timeoutCalls": 2,
+                "renders": 1,
+                "marker": "fresh",
+            },
         )
 
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):

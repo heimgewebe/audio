@@ -431,6 +431,7 @@ const state = {
   h2Workspace: null,
   h2WorkspaceError: null,
   h2ActivitySequence: 0,
+  h2WorkspaceLoadGeneration: 0,
   h2WorkspaceLoading: false,
   h2ActionPending: false,
   h2AnnotationDrafts: new Map(),
@@ -811,6 +812,8 @@ function stopRemoteActivity() {
   state.recordingLibrary = null;
   state.recordingLibraryError = null;
   state.h2ActivitySequence += 1;
+  state.h2WorkspaceLoadGeneration += 1;
+  state.h2WorkspaceLoading = false;
   state.h2Workspace = null;
   state.h2WorkspaceError = null;
   state.h2ActionPending = false;
@@ -3721,6 +3724,7 @@ async function h2WorkspaceTimeoutMs() {
 async function loadH2Workspace({ render = true } = {}) {
   if (!backendAllowed() || state.h2WorkspaceLoading) return;
   state.h2WorkspaceLoading = true;
+  const loadGeneration = ++state.h2WorkspaceLoadGeneration;
   const activitySequence = ++state.h2ActivitySequence;
   try {
     const timeoutMs = await h2WorkspaceTimeoutMs();
@@ -3738,7 +3742,9 @@ async function loadH2Workspace({ render = true } = {}) {
     state.h2WorkspaceError =
       error instanceof Error ? error.message : "H2-Arbeitsbereich ist nicht lesbar.";
   } finally {
-    state.h2WorkspaceLoading = false;
+    if (loadGeneration === state.h2WorkspaceLoadGeneration) {
+      state.h2WorkspaceLoading = false;
+    }
   }
   if (render) renderH2Workspace();
 }
