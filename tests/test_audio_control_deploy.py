@@ -399,6 +399,65 @@ class AudioControlDeployTests(unittest.TestCase):
                     ):
                         MODULE.release_hashes(release)
 
+    def test_h2_legacy_manifest_migration_uses_release_script_for_both_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            script = release / "scripts" / "h2_ingest.py"
+            script.parent.mkdir(parents=True)
+            script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            observed = []
+
+            def fake_run(argv, *, cwd, timeout, **_kwargs):
+                observed.append((tuple(argv), pathlib.Path(cwd), timeout))
+                return MODULE.CommandResult(
+                    tuple(argv),
+                    0,
+                    "{}\n",
+                    "",
+                    0.01,
+                )
+
+            with (
+                mock.patch.object(MODULE, "h2_ingest_release_supported", return_value=True),
+                mock.patch.object(MODULE, "run_command", side_effect=fake_run),
+            ):
+                receipts = MODULE.migrate_h2_legacy_manifests(release)
+
+            self.assertEqual(len(receipts), 2)
+            self.assertEqual(
+                [call[0][-1] for call in observed],
+                [str(root) for root in MODULE.H2_LIBRARY_ROOTS],
+            )
+            self.assertTrue(
+                all(call[0][2] == "migrate-legacy-manifests" for call in observed)
+            )
+            self.assertTrue(all(call[1] == release for call in observed))
+            self.assertTrue(
+                all(
+                    call[2] == MODULE.H2_LEGACY_MIGRATION_TIMEOUT_SECONDS
+                    for call in observed
+                )
+            )
+
+    def test_deploy_service_timeout_covers_legacy_migration_budget(self):
+        unit = (
+            ROOT / "systemd" / "user" / "audio-control-deploy.service"
+        ).read_text(encoding="utf-8")
+        timeout_line = next(
+            line for line in unit.splitlines() if line.startswith("TimeoutStartSec=")
+        )
+        self.assertEqual(timeout_line, "TimeoutStartSec=15min")
+        service_timeout_seconds = 15 * 60
+        previous_deploy_budget_seconds = 5 * 60
+        migration_budget_seconds = (
+            len(MODULE.H2_LIBRARY_ROOTS)
+            * MODULE.H2_LEGACY_MIGRATION_TIMEOUT_SECONDS
+        )
+        self.assertGreaterEqual(
+            service_timeout_seconds,
+            previous_deploy_budget_seconds + migration_budget_seconds,
+        )
+
     def test_pre_h2_release_without_sentinel_remains_marker_upgradeable(self):
         commit = "b" * 40
         with tempfile.TemporaryDirectory() as directory:

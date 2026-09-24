@@ -81,6 +81,7 @@ RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
 # by finite size-derived budgets projected by the backend. The bridge consumes
 # those budgets rather than maintaining duplicate size formulas.
 H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS = 900.0
+H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS = 900.0
 H2_LIBRARY_BUDGET_BACKEND_TIMEOUT_SECONDS = 30.0
 H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS = 15.0
 # H2 import and annotation outer deadlines are projected by the backend.
@@ -149,6 +150,8 @@ FIXED_API_ROUTES = frozenset(
         "/api/v1/recordings",
         "/api/v1/h2",
         "/api/v1/h2/budget",
+        "/api/v1/h2/source",
+        "/api/v1/h2/source/budget",
         "/api/v1/h2/library",
         "/api/v1/h2/library/budget",
     }
@@ -762,6 +765,34 @@ def _read_backend_h2_budget() -> dict[str, Any]:
     return budget
 
 
+def _read_backend_h2_source_budget() -> dict[str, Any]:
+    status, _headers, payload, _redactions = read_backend_response(
+        "/api/v1/h2/source/budget", None
+    )
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend H2 source budget is unavailable")
+    try:
+        budget = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend H2 source budget is invalid") from error
+    source_timeout = (
+        budget.get("source_timeout_seconds") if isinstance(budget, dict) else None
+    )
+    if (
+        not isinstance(budget, dict)
+        or budget.get("kind") != "audio_h2_source_budget"
+        or budget.get("read_only") is not True
+        or budget.get("source_mutated") is not False
+        or not isinstance(budget.get("source_budget_available"), bool)
+        or isinstance(source_timeout, bool)
+        or not isinstance(source_timeout, (int, float))
+        or not math.isfinite(source_timeout)
+        or source_timeout <= 0
+    ):
+        raise BackendFailure("backend H2 source budget is invalid")
+    return budget
+
+
 def _read_backend_h2_library_budget() -> dict[str, Any]:
     status, _headers, payload, _redactions = read_backend_response(
         "/api/v1/h2/library/budget", None
@@ -804,6 +835,14 @@ def h2_workspace_backend_timeout_seconds() -> float:
     )
 
 
+def h2_source_backend_timeout_seconds() -> float:
+    budget = _read_backend_h2_source_budget()
+    return (
+        float(budget["source_timeout_seconds"])
+        + H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS
+    )
+
+
 def h2_library_backend_timeout_seconds() -> float:
     budget = _read_backend_h2_library_budget()
     return (
@@ -825,6 +864,10 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         backend_timeout_seconds = h2_workspace_backend_timeout_seconds()
     elif target == "/api/v1/h2/budget":
         backend_timeout_seconds = H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS
+    elif target == "/api/v1/h2/source":
+        backend_timeout_seconds = h2_source_backend_timeout_seconds()
+    elif target == "/api/v1/h2/source/budget":
+        backend_timeout_seconds = H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS
     elif target == "/api/v1/h2/library":
         backend_timeout_seconds = h2_library_backend_timeout_seconds()
     elif target == "/api/v1/h2/library/budget":
@@ -856,7 +899,7 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
             raise BackendFailure("backend headers exceed bridge limit")
         response_limit = (
             MAX_H2_RESPONSE_BYTES
-            if target in {"/api/v1/h2", "/api/v1/h2/library"}
+            if target in {"/api/v1/h2", "/api/v1/h2/source", "/api/v1/h2/library"}
             else MAX_RESPONSE_BYTES
         )
         payload = response.read(response_limit + 1)
@@ -902,6 +945,25 @@ def _read_backend_h2_workspace() -> dict[str, Any]:
     return workspace
 
 
+def _read_backend_h2_source() -> dict[str, Any]:
+    status, _headers, payload, _redactions = read_backend_response(
+        "/api/v1/h2/source", None
+    )
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend H2 source is unavailable for timeout binding")
+    try:
+        source = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend H2 source is invalid for timeout binding") from error
+    if (
+        not isinstance(source, dict)
+        or source.get("kind") != "audio_h2_source"
+        or not isinstance(source.get("source"), dict)
+    ):
+        raise BackendFailure("backend H2 source is invalid for timeout binding")
+    return source
+
+
 def _read_backend_h2_library() -> dict[str, Any]:
     status, _headers, payload, _redactions = read_backend_response(
         "/api/v1/h2/library", None
@@ -928,9 +990,9 @@ def h2_media_backend_timeout_seconds(target: str) -> float:
         raise RequestRejected("H2 media target is invalid")
 
     if source_media is not None:
-        workspace = _read_backend_h2_workspace()
+        source = _read_backend_h2_source()
         identity, segment_raw = source_media.groups()
-        container = workspace.get("source")
+        container = source.get("source")
         items = container.get("sessions") if isinstance(container, dict) else None
         identity_key = "scene"
     else:

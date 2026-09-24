@@ -26,6 +26,11 @@ from typing import Any, BinaryIO, Callable, Iterable
 DEFAULT_SOURCE_REPO = pathlib.Path.home() / "repos" / "audio"
 DEFAULT_DEPLOY_ROOT = pathlib.Path.home() / ".local" / "share" / "audio-control-ui"
 DEFAULT_STATE_ROOT = pathlib.Path.home() / ".local" / "state" / "audio-control-deploy"
+H2_LIBRARY_ROOTS = (
+    pathlib.Path.home() / "Music" / "Audio-Aufnahmen" / "H2-Material",
+    pathlib.Path.home() / "Music" / "Audio-Material" / "H2",
+)
+H2_LEGACY_MIGRATION_TIMEOUT_SECONDS = 240
 DEFAULT_REMOTE = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_UNIT = "audio-control-ui-v1.service"
@@ -801,6 +806,28 @@ def h2_ingest_release_supported(release: pathlib.Path) -> bool:
         return b"h2_material_control" in control.read_bytes()
     except OSError:
         return False
+
+
+def migrate_h2_legacy_manifests(release: pathlib.Path) -> list[dict[str, Any]]:
+    if not h2_ingest_release_supported(release):
+        return []
+    script = release / "scripts" / "h2_ingest.py"
+    receipts: list[dict[str, Any]] = []
+    for root in H2_LIBRARY_ROOTS:
+        receipts.append(
+            run_command(
+                [
+                    sys.executable,
+                    str(script),
+                    "migrate-legacy-manifests",
+                    "--library-root",
+                    str(root),
+                ],
+                cwd=release,
+                timeout=H2_LEGACY_MIGRATION_TIMEOUT_SECONDS,
+            ).receipt()
+        )
+    return receipts
 
 
 def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
@@ -1899,6 +1926,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         runtime_environment: dict[str, Any] = {}
         runtime_environment_backup: dict[str, Any] | None = None
         service_receipts: list[dict[str, Any]] = []
+        h2_legacy_manifest_migration: list[dict[str, Any]] = []
         service_activation_attempted = False
         bridge_activation_receipts: list[dict[str, Any]] = []
         bridge_activity_after: dict[str, Any] | None = None
@@ -1968,6 +1996,8 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 changed or bridge_unit_updated
             )
             timer_updated = "systemd/user/audio-control-deploy.timer" in updated_sources
+            if h2_ingest_release_supported(release):
+                h2_legacy_manifest_migration = migrate_h2_legacy_manifests(release)
             restart_required = (
                 changed
                 or bool(runtime_environment.get("changed"))
@@ -2179,6 +2209,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "runtime_updates": runtime_updates,
             "runtime_environment": runtime_environment,
             "runtime_activation": runtime_activation,
+            "h2_legacy_manifest_migration": h2_legacy_manifest_migration,
             "service_commands": service_receipts,
             "qobuz_recovery": qobuz_recovery,
             "qbzd_qconnect_recovery": qbzd_qconnect_recovery,

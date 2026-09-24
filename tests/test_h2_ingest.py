@@ -380,6 +380,65 @@ class H2IngestTests(unittest.TestCase):
             self.assertTrue(entries[0].is_file())
             self.assertEqual(stat.S_IMODE(entries[0].stat().st_mode), 0o600)
 
+    def test_legacy_oversized_manifest_is_migrated_to_bound_control_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            manifest_path = material / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["legacy_padding"] = "x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)
+            oversized = MODULE._canonical_bytes(manifest) + b"\n"
+            self.assertGreater(len(oversized), MODULE.MAX_METADATA_JSON_BYTES)
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_bytes(oversized)
+            os.chmod(manifest_path, 0o440)
+            before = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "Control-Sidecar|sicher lesbar|nicht lesbar",
+            ):
+                MODULE.library(library, projection="control")
+
+            migration = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(migration["migrated"], 1)
+            self.assertIs(migration["read_only_originals"], True)
+            control_path = material / MODULE.LEGACY_MANIFEST_CONTROL_NAME
+            self.assertTrue(control_path.is_file())
+            self.assertEqual(stat.S_IMODE(control_path.stat().st_mode), 0o440)
+            self.assertEqual(
+                hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                before,
+            )
+
+            projected = MODULE.library(library, projection="control")
+            self.assertEqual(projected["count"], 1)
+            self.assertEqual(projected["items"][0]["material_id"], result["material_id"])
+            verified = MODULE.verify_material(
+                result["material_id"],
+                library_root=library,
+            )
+            self.assertTrue(verified["verified_current"])
+            annotated = MODULE.annotate_material(
+                result["material_id"],
+                title="Legacy",
+                note="weiter lesbar",
+                tags=["migration"],
+                library_root=library,
+            )
+            self.assertTrue(annotated["changed"])
+
+            second = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(second["migrated"], 0)
+            self.assertEqual(second["already_bound"], 1)
+
     def test_metadata_limit_preserves_shared_service_memory_headroom(self):
         unit = (
             ROOT / "systemd" / "user" / "audio-control-ui-v1.service"

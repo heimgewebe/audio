@@ -108,6 +108,14 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
             read_write_paths(DEPLOY_UNIT_PATH),
         )
 
+    def test_deploy_sandbox_allows_only_named_h2_migration_roots(self):
+        paths = read_write_paths(DEPLOY_UNIT_PATH)
+        self.assertIn("-%h/Music/Audio-Aufnahmen/H2-Material", paths)
+        self.assertIn("-%h/Music/Audio-Material/H2", paths)
+        self.assertNotIn("%h/Music", paths)
+        self.assertNotIn("%h/Music/Audio-Aufnahmen", paths)
+        self.assertNotIn("%h/Music/Audio-Material", paths)
+
     def test_level_observer_is_pipewire_only_and_coupled_to_the_ui_lifecycle(self):
         self.assertEqual(address_families(LEVEL_OBSERVER_UNIT_PATH), {"AF_UNIX"})
         observer = LEVEL_OBSERVER_UNIT_PATH.read_text(encoding="utf-8")

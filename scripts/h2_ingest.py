@@ -44,6 +44,8 @@ MAX_SESSION_FILES = 192
 MAX_CONTROL_SCAN_SESSIONS = 2048
 MAX_CONTROL_LIBRARY_ITEMS = 80
 MAX_METADATA_JSON_BYTES = 2 * 1024 * 1024
+MAX_LEGACY_MANIFEST_JSON_BYTES = 144 * 1024 * 1024
+LEGACY_MANIFEST_CONTROL_NAME = "manifest.control-v1.json"
 CONTROL_SCAN_METADATA_BUDGET_BYTES_PER_FILE = MAX_BEXT_BYTES + 4096
 CONTROL_SCAN_PROJECTION = "control-v1"
 CONTROL_SCAN_BUDGET_PROJECTION = "control-budget-v1"
@@ -777,9 +779,18 @@ def _write_json_new(path: pathlib.Path, value: dict[str, Any], mode: int) -> Non
     os.chmod(path, mode)
 
 
-def _read_json_regular(path: pathlib.Path) -> dict[str, Any]:
+def _read_json_regular(
+    path: pathlib.Path,
+    *,
+    max_bytes: int = MAX_METADATA_JSON_BYTES,
+) -> dict[str, Any]:
     metadata = _lstat_regular(path, "Metadatendatei")
-    if metadata.st_size > MAX_METADATA_JSON_BYTES:
+    if (
+        isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or max_bytes <= 0
+        or metadata.st_size > max_bytes
+    ):
         raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -877,6 +888,216 @@ def _library_item(
     }
 
 
+
+def _legacy_manifest_control_projection(
+    manifest: dict[str, Any],
+    material_id: str,
+    *,
+    legacy_sha256: str,
+    legacy_bytes: int,
+    legacy_mtime_ns: int,
+) -> dict[str, Any]:
+    empty_annotations = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_material_annotations",
+        "material_id": material_id,
+        "title": "",
+        "note": "",
+        "tags": [],
+        "markers": [],
+        "updated_at": None,
+    }
+    projected = _library_item(manifest, empty_annotations, material_id)
+    source = projected["source"]
+    compact_source = {
+        "kind": source.get("kind"),
+        "recorder_model": source.get("recorder_model"),
+        "scene": source.get("scene"),
+        "take": source.get("take"),
+        "recorded_date": source.get("recorded_date"),
+        "recorded_time": source.get("recorded_time"),
+        "segment_count": source.get("segment_count"),
+    }
+    original_masters = manifest.get("masters")
+    if not isinstance(original_masters, list) or len(original_masters) != len(projected["masters"]):
+        raise H2IngestError("Legacy-Materialmanifest besitzt keine eindeutige Masterprojektion.")
+    compact_masters: list[dict[str, Any]] = []
+    for original, compact in zip(original_masters, projected["masters"], strict=True):
+        digest = original.get("sha256") if isinstance(original, dict) else None
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise H2IngestError("Legacy-Materialmanifest besitzt keinen gültigen Masterhash.")
+        compact_masters.append({**compact, "sha256": digest})
+    binding = {
+        "sha256": legacy_sha256,
+        "bytes": legacy_bytes,
+        "mtime_ns": legacy_mtime_ns,
+    }
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", legacy_sha256) is None
+        or isinstance(legacy_bytes, bool)
+        or not isinstance(legacy_bytes, int)
+        or legacy_bytes <= MAX_METADATA_JSON_BYTES
+        or isinstance(legacy_mtime_ns, bool)
+        or not isinstance(legacy_mtime_ns, int)
+        or legacy_mtime_ns < 0
+    ):
+        raise H2IngestError("Legacy-Materialmanifest besitzt keinen gültigen Sidecar-Beleg.")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_imported_material_manifest_control",
+        "material_id": material_id,
+        "source": compact_source,
+        "imported_at": projected["imported_at"],
+        "master_set_sha256": projected["master_set_sha256"],
+        "masters": compact_masters,
+        "legacy_manifest": binding,
+        "read_only": True,
+    }
+
+
+def _manifest_from_legacy_control(
+    control: dict[str, Any],
+    material_id: str,
+    *,
+    manifest_metadata: os.stat_result,
+) -> dict[str, Any]:
+    legacy = control.get("legacy_manifest")
+    masters = control.get("masters")
+    source = control.get("source")
+    if (
+        control.get("schema_version") != SCHEMA_VERSION
+        or control.get("kind") != "audio_imported_material_manifest_control"
+        or control.get("material_id") != material_id
+        or control.get("read_only") is not True
+        or not isinstance(legacy, dict)
+        or legacy.get("bytes") != manifest_metadata.st_size
+        or legacy.get("mtime_ns") != manifest_metadata.st_mtime_ns
+        or not isinstance(legacy.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", legacy["sha256"]) is None
+        or not isinstance(source, dict)
+        or not isinstance(masters, list)
+        or not masters
+        or len(masters) > MAX_SESSION_FILES
+    ):
+        raise H2IngestError(
+            "Legacy-Materialmanifest benötigt eine aktuelle, gebundene Control-Sidecar."
+        )
+    synthetic = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_imported_material_manifest",
+        "material_id": material_id,
+        "source": source,
+        "imported_at": control.get("imported_at"),
+        "master_set_sha256": control.get("master_set_sha256"),
+        "masters": masters,
+        "integrity": {
+            "legacy_manifest_sha256": legacy["sha256"],
+            "legacy_control_projection": True,
+        },
+    }
+    empty_annotations = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_material_annotations",
+        "material_id": material_id,
+        "title": "",
+        "note": "",
+        "tags": [],
+        "markers": [],
+        "updated_at": None,
+    }
+    _library_item(synthetic, empty_annotations, material_id)
+    for master in masters:
+        digest = master.get("sha256") if isinstance(master, dict) else None
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise H2IngestError("Legacy-Control-Sidecar besitzt einen ungültigen Masterhash.")
+    return synthetic
+
+
+def _read_manifest(directory: pathlib.Path, material_id: str) -> dict[str, Any]:
+    manifest_path = directory / "manifest.json"
+    metadata = _lstat_regular(manifest_path, "Materialmanifest")
+    if metadata.st_size <= MAX_METADATA_JSON_BYTES:
+        return _read_json_regular(manifest_path)
+    control = _read_json_regular(directory / LEGACY_MANIFEST_CONTROL_NAME)
+    return _manifest_from_legacy_control(
+        control,
+        material_id,
+        manifest_metadata=metadata,
+    )
+
+
+def migrate_legacy_manifests(
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    root = library_root.expanduser()
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_h2_legacy_manifest_migration",
+        "library_root": str(root),
+        "migrated": 0,
+        "already_bound": 0,
+        "compact": 0,
+        "read_only_originals": True,
+    }
+    if not root.exists() and not root.is_symlink():
+        return result
+    _lstat_directory(root, "Materialbibliothek")
+    names: list[str] = []
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False) and MATERIAL_ID_RE.fullmatch(entry.name):
+                names.append(entry.name)
+    for material_id in sorted(names):
+        directory = root / material_id
+        manifest_path = directory / "manifest.json"
+        metadata = _lstat_regular(manifest_path, "Materialmanifest")
+        if metadata.st_size <= MAX_METADATA_JSON_BYTES:
+            result["compact"] += 1
+            continue
+        if metadata.st_size > MAX_LEGACY_MANIFEST_JSON_BYTES:
+            raise H2IngestError(
+                "Legacy-Materialmanifest überschreitet das sichere Migrationslimit."
+            )
+        control_path = directory / LEGACY_MANIFEST_CONTROL_NAME
+        if control_path.exists() or control_path.is_symlink():
+            try:
+                control = _read_json_regular(control_path)
+                _manifest_from_legacy_control(
+                    control,
+                    material_id,
+                    manifest_metadata=metadata,
+                )
+            except H2IngestError:
+                pass
+            else:
+                result["already_bound"] += 1
+                continue
+        manifest = _read_json_regular(
+            manifest_path,
+            max_bytes=MAX_LEGACY_MANIFEST_JSON_BYTES,
+        )
+        digest = _sha256_path(manifest_path)
+        control = _legacy_manifest_control_projection(
+            manifest,
+            material_id,
+            legacy_sha256=digest,
+            legacy_bytes=metadata.st_size,
+            legacy_mtime_ns=metadata.st_mtime_ns,
+        )
+        if control_path.exists() or control_path.is_symlink():
+            _write_json_replace(control_path, control, 0o440)
+        else:
+            _write_json_new(control_path, control, 0o440)
+        observed = _read_json_regular(control_path)
+        _manifest_from_legacy_control(
+            observed,
+            material_id,
+            manifest_metadata=metadata,
+        )
+        result["migrated"] += 1
+    return result
+
+
 def _control_library_material_count(root: pathlib.Path) -> int:
     count = 0
     with os.scandir(root) as entries:
@@ -970,7 +1191,7 @@ def _import_scene_locked(
     final_dir = library / material_id
     if final_dir.exists() or final_dir.is_symlink():
         _lstat_directory(final_dir, "Vorhandenes Materialobjekt")
-        existing = _read_json_regular(final_dir / "manifest.json")
+        existing = _read_manifest(final_dir, material_id)
         if (
             existing.get("material_id") == material_id
             and existing.get("master_set_sha256") == master_set_sha256
@@ -1238,7 +1459,7 @@ def library(
                     heapq.heapreplace(recent_candidates, candidate)
         for _manifest_mtime_ns, name in recent_candidates:
             directory = root / name
-            manifest = _read_json_regular(directory / "manifest.json")
+            manifest = _read_manifest(directory, name)
             annotations = _read_json_regular(directory / "annotations.json")
             item = _library_item(manifest, annotations, name)
             items.append(_control_library_item(item))
@@ -1253,7 +1474,7 @@ def library(
                 ):
                     continue
                 directory = pathlib.Path(entry.path)
-                manifest = _read_json_regular(directory / "manifest.json")
+                manifest = _read_manifest(directory, entry.name)
                 annotations = _read_json_regular(directory / "annotations.json")
                 items.append(_library_item(manifest, annotations, entry.name))
 
@@ -1270,7 +1491,7 @@ def verify_material(
         raise H2IngestError("Ungültige Material-ID.")
     directory = library_root.expanduser() / material_id
     _lstat_directory(directory, "Materialobjekt")
-    manifest = _read_json_regular(directory / "manifest.json")
+    manifest = _read_manifest(directory, material_id)
     if manifest.get("material_id") != material_id:
         raise H2IngestError("Materialmanifest gehört nicht zur angeforderten Material-ID.")
     masters = manifest.get("masters")
@@ -1393,7 +1614,7 @@ def annotate_material(
         raise H2IngestError("Ungültige Material-ID.")
     directory = library_root.expanduser() / material_id
     _lstat_directory(directory, "Materialobjekt")
-    manifest = _read_json_regular(directory / "manifest.json")
+    manifest = _read_manifest(directory, material_id)
     annotations_path = directory / "annotations.json"
     current = _read_json_regular(annotations_path)
     _library_item(manifest, current, material_id)
@@ -1488,7 +1709,7 @@ def material_media(
         raise H2IngestError("Ungültiger Materialsegmentindex.")
     directory = library_root.expanduser() / material_id
     _lstat_directory(directory, "Materialobjekt")
-    manifest = _read_json_regular(directory / "manifest.json")
+    manifest = _read_manifest(directory, material_id)
     annotations = _read_json_regular(directory / "annotations.json")
     item = _library_item(manifest, annotations, material_id)
     verification = verify_material(material_id, library_root=library_root)
@@ -1572,6 +1793,13 @@ def _parser() -> argparse.ArgumentParser:
     material_media_parser.add_argument("material_id")
     material_media_parser.add_argument("segment_index", type=int)
     material_media_parser.add_argument("--library-root", type=pathlib.Path, default=DEFAULT_LIBRARY_ROOT)
+
+    migrate_parser = sub.add_parser("migrate-legacy-manifests")
+    migrate_parser.add_argument(
+        "--library-root",
+        type=pathlib.Path,
+        default=DEFAULT_LIBRARY_ROOT,
+    )
     return parser
 
 
@@ -1608,12 +1836,14 @@ def main(argv: list[str] | None = None) -> int:
                 args.segment_index,
                 source_root=args.source_root,
             )
-        else:
+        elif args.command == "material-media":
             result = material_media(
                 args.material_id,
                 args.segment_index,
                 library_root=args.library_root,
             )
+        else:
+            result = migrate_legacy_manifests(args.library_root)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except (H2IngestError, OSError, ValueError) as exc:

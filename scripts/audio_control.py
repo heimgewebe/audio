@@ -3746,6 +3746,21 @@ class AudioControl:
         )
 
     @classmethod
+    def _h2_source_timeout_for_scan(cls, scan_timeout: float) -> float:
+        if (
+            isinstance(scan_timeout, bool)
+            or not isinstance(scan_timeout, (int, float))
+            or not math.isfinite(scan_timeout)
+            or scan_timeout <= 0
+        ):
+            raise ControlError("H2-Quellzeitbudget ist ungültig.")
+        return float(
+            H2_SCAN_BUDGET_TIMEOUT_SECONDS
+            + scan_timeout
+            + REQUEST_IO_TIMEOUT_SECONDS
+        )
+
+    @classmethod
     def _h2_workspace_timeout_for_scan(cls, scan_timeout: float) -> float:
         if (
             isinstance(scan_timeout, bool)
@@ -3885,6 +3900,22 @@ class AudioControl:
                 minimum=H2_METADATA_TIMEOUT_SECONDS,
             )
         return budget_report, scan_timeout
+
+    def h2_source_budget(self) -> dict[str, Any]:
+        source_budget_available = True
+        try:
+            _budget_report, scan_timeout = self._h2_scan_budget()
+        except ControlError:
+            source_budget_available = False
+            scan_timeout = float(H2_METADATA_TIMEOUT_SECONDS)
+        return {
+            "schema_version": 1,
+            "kind": "audio_h2_source_budget",
+            "source_timeout_seconds": self._h2_source_timeout_for_scan(scan_timeout),
+            "source_budget_available": source_budget_available,
+            "read_only": True,
+            "source_mutated": False,
+        }
 
     def h2_workspace_budget(self) -> dict[str, Any]:
         source_budget_available = True
@@ -4090,6 +4121,61 @@ class AudioControl:
             "items": items,
         }
 
+    def _h2_source_projection(self) -> dict[str, Any]:
+        try:
+            source_report, source_scan_timeout = self._h2_control_scan()
+        except ControlError as error:
+            return {
+                "status": "unavailable",
+                "count": 0,
+                "sessions": [],
+                "skipped_invalid_sessions": [],
+                "error": str(error),
+            }
+        skipped_invalid_sessions = sorted(source_report["skipped_invalid_sessions"])
+        return {
+            "status": "ready",
+            "count": source_report["count"],
+            "device": source_report.get("device"),
+            "skipped_invalid_sessions": skipped_invalid_sessions,
+            "sessions": [
+                {
+                    "scene": item["scene"],
+                    "recorded_date": item["recorded_date"],
+                    "recorded_time": item["recorded_time"],
+                    "duration_seconds": item["duration_seconds"],
+                    "sample_rate_hz": item.get("sample_rate_hz"),
+                    "roles": item["roles"],
+                    "segment_count": item["segment_count"],
+                    "audio_url": (
+                        f"/api/{API_VERSION}/h2/source/{item['scene']}/audio/0"
+                    ),
+                    "media_timeout_seconds": self._h2_source_media_outer_timeout_for_bytes(
+                        item["max_file_bytes"],
+                        scan_timeout=source_scan_timeout,
+                    ),
+                    "import_timeout_seconds": self._h2_import_action_timeout_for_bytes(
+                        item["total_bytes"],
+                        scan_timeout=source_scan_timeout,
+                    ),
+                }
+                for item in reversed(source_report["sessions"])
+            ],
+        }
+
+    def h2_source(self) -> dict[str, Any]:
+        source = {
+            "schema_version": 1,
+            "kind": "audio_h2_source",
+            "source": self._h2_source_projection(),
+        }
+        encoded = (
+            json.dumps(source, ensure_ascii=False, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        if len(encoded) > MAX_H2_WORKSPACE_RESPONSE_BYTES:
+            raise ControlError("H2-Quelle überschreitet das sichere Antwortlimit.")
+        return source
+
     def h2_library(self) -> dict[str, Any]:
         library = {
             "schema_version": 1,
@@ -4111,47 +4197,7 @@ class AudioControl:
         return library
 
     def h2_workspace(self) -> dict[str, Any]:
-        try:
-            source_report, source_scan_timeout = self._h2_control_scan()
-        except ControlError as error:
-            source_projection: dict[str, Any] = {
-                "status": "unavailable",
-                "count": 0,
-                "sessions": [],
-                "skipped_invalid_sessions": [],
-                "error": str(error),
-            }
-        else:
-            skipped_invalid_sessions = sorted(source_report["skipped_invalid_sessions"])
-            source_projection = {
-                "status": "ready",
-                "count": source_report["count"],
-                "device": source_report.get("device"),
-                "skipped_invalid_sessions": skipped_invalid_sessions,
-                "sessions": [
-                    {
-                        "scene": item["scene"],
-                        "recorded_date": item["recorded_date"],
-                        "recorded_time": item["recorded_time"],
-                        "duration_seconds": item["duration_seconds"],
-                        "sample_rate_hz": item.get("sample_rate_hz"),
-                        "roles": item["roles"],
-                        "segment_count": item["segment_count"],
-                        "audio_url": (
-                            f"/api/{API_VERSION}/h2/source/{item['scene']}/audio/0"
-                        ),
-                        "media_timeout_seconds": self._h2_source_media_outer_timeout_for_bytes(
-                            item["max_file_bytes"],
-                            scan_timeout=source_scan_timeout,
-                        ),
-                        "import_timeout_seconds": self._h2_import_action_timeout_for_bytes(
-                            item["total_bytes"],
-                            scan_timeout=source_scan_timeout,
-                        ),
-                    }
-                    for item in reversed(source_report["sessions"])
-                ],
-            }
+        source_projection = self._h2_source_projection()
 
         library_projection = self._h2_library_projection()
         workspace = {
@@ -6588,6 +6634,48 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, lesson, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/h2/source/budget":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Das H2-Quellbudget akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                budget = self.server.controller.h2_source_budget()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_source_budget_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, budget, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/h2/source":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Die H2-Quelle akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                source = self.server.controller.h2_source()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_source_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, source, head_only=head_only)
             return
         if parsed.path == f"/api/{API_VERSION}/h2/library/budget":
             if parsed.query:

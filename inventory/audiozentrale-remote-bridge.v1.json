@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "93a670d5b27c5819b5075ad534c0760420a707e3828dfb204602cdef8a77b6bd"
+    "sha256": "868183262767c6d584d9f2b748840e0fe7b072a8d2544f1e5732883801409f1a"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -42,6 +42,8 @@
       "/api/v1/recordings",
       "/api/v1/h2",
       "/api/v1/h2/budget",
+      "/api/v1/h2/source",
+      "/api/v1/h2/source/budget",
       "/api/v1/h2/library",
       "/api/v1/h2/library/budget"
     ],

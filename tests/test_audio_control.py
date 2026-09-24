@@ -4694,6 +4694,20 @@ class H2MaterialControlTests(unittest.TestCase):
             MODULE.MAX_H2_WORKSPACE_RESPONSE_BYTES,
         )
 
+    def test_h2_source_projection_never_reads_persistent_library(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with mock.patch.object(
+            controller,
+            "_h2_library_projection",
+            side_effect=AssertionError("source projection touched library"),
+        ):
+            source = controller.h2_source()
+        self.assertEqual(source["kind"], "audio_h2_source")
+        self.assertEqual(source["source"]["status"], "ready")
+        self.assertEqual(source["source"]["count"], 1)
+        self.assertFalse(any(call[0][2] == "library" for call in runner.calls))
+
     def test_h2_workspace_projects_source_and_empty_archive(self):
         runner = self.Runner()
         controller = MODULE.AudioControl(runner=runner, telemetry=None)

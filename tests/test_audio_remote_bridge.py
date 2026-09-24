@@ -715,6 +715,43 @@ class BridgeHTTPTests(unittest.TestCase):
                     }
                 ).encode(),
             ),
+            "/api/v1/h2/source/budget": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_source_budget",
+                        "source_timeout_seconds": 180.0,
+                        "source_budget_available": True,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/source": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_source",
+                        "source": {
+                            "status": "ready",
+                            "count": 1,
+                            "sessions": [
+                                {
+                                    "scene": "170926_191401",
+                                    "segment_count": 1,
+                                    "audio_url": "/api/v1/h2/source/170926_191401/audio/0",
+                                    "media_timeout_seconds": 180.0,
+                                    "import_timeout_seconds": 480.0,
+                                }
+                            ],
+                        },
+                    }
+                ).encode(),
+            ),
             "/api/v1/h2/library/budget": (
                 200,
                 [("Content-Type", "application/json; charset=utf-8")],
@@ -1254,8 +1291,8 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(observed, [987.0])
 
     def test_h2_media_timeout_uses_source_or_library_specific_projection(self):
-        workspace = {
-            "kind": "audio_h2_workspace",
+        source_projection = {
+            "kind": "audio_h2_source",
             "source": {
                 "sessions": [
                     {
@@ -1265,7 +1302,6 @@ class BridgeHTTPTests(unittest.TestCase):
                     }
                 ]
             },
-            "library": {"items": []},
         }
         library = {
             "kind": "audio_h2_library",
@@ -1281,7 +1317,12 @@ class BridgeHTTPTests(unittest.TestCase):
         }
 
         def readback(target, _headers):
-            payload = workspace if target == "/api/v1/h2" else library
+            if target == "/api/v1/h2/source":
+                payload = source_projection
+            elif target == "/api/v1/h2/library":
+                payload = library
+            else:
+                raise AssertionError(f"unexpected H2 timeout readback: {target}")
             return 200, [], json.dumps(payload).encode("utf-8"), 0
 
         with mock.patch.object(
@@ -1304,14 +1345,14 @@ class BridgeHTTPTests(unittest.TestCase):
 
         self.assertEqual(
             [call.args[0] for call in observed.call_args_list],
-            ["/api/v1/h2", "/api/v1/h2/library"],
+            ["/api/v1/h2/source", "/api/v1/h2/library"],
         )
 
-        workspace["source"]["sessions"][0]["media_timeout_seconds"] = None
+        source_projection["source"]["sessions"][0]["media_timeout_seconds"] = None
         with mock.patch.object(
             MODULE,
             "read_backend_response",
-            return_value=(200, [], json.dumps(workspace).encode("utf-8"), 0),
+            return_value=(200, [], json.dumps(source_projection).encode("utf-8"), 0),
         ):
             with self.assertRaises(MODULE.BackendFailure):
                 MODULE.h2_media_backend_timeout_seconds(
@@ -1485,6 +1526,14 @@ class BridgeHTTPTests(unittest.TestCase):
             "read_only": True,
             "source_mutated": False,
         }
+        source_budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_source_budget",
+            "source_timeout_seconds": 111.0,
+            "source_budget_available": True,
+            "read_only": True,
+            "source_mutated": False,
+        }
         library_budget = {
             "schema_version": 1,
             "kind": "audio_h2_library_budget",
@@ -1495,11 +1544,14 @@ class BridgeHTTPTests(unittest.TestCase):
         }
 
         def budget_readback(target, _headers):
-            payload = (
-                workspace_budget
-                if target == "/api/v1/h2/budget"
-                else library_budget
-            )
+            if target == "/api/v1/h2/budget":
+                payload = workspace_budget
+            elif target == "/api/v1/h2/source/budget":
+                payload = source_budget
+            elif target == "/api/v1/h2/library/budget":
+                payload = library_budget
+            else:
+                raise AssertionError(f"unexpected budget target: {target}")
             return 200, [], json.dumps(payload).encode("utf-8"), 0
 
         with mock.patch.object(
@@ -1510,6 +1562,10 @@ class BridgeHTTPTests(unittest.TestCase):
             self.assertEqual(
                 MODULE.h2_workspace_backend_timeout_seconds(),
                 333.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+            self.assertEqual(
+                MODULE.h2_source_backend_timeout_seconds(),
+                111.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
             )
             self.assertEqual(
                 MODULE.h2_library_backend_timeout_seconds(),
@@ -1523,6 +1579,7 @@ class BridgeHTTPTests(unittest.TestCase):
             [call.args[0] for call in readback.call_args_list],
             [
                 "/api/v1/h2/budget",
+                "/api/v1/h2/source/budget",
                 "/api/v1/h2/library/budget",
                 "/api/v1/h2/library/budget",
             ],
@@ -1561,6 +1618,15 @@ class BridgeHTTPTests(unittest.TestCase):
         observed.clear()
         with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
             with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/source/budget", {})
+        self.assertEqual(
+            observed,
+            [MODULE.H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
                 MODULE.read_backend_response("/api/v1/h2/library/budget", {})
         self.assertEqual(
             observed,
@@ -1579,6 +1645,19 @@ class BridgeHTTPTests(unittest.TestCase):
             with self.assertRaises(MODULE.BackendFailure):
                 MODULE.read_backend_response("/api/v1/h2", {})
         self.assertEqual(observed, [987.0])
+
+        observed.clear()
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_source_backend_timeout_seconds",
+                return_value=765.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/source", {})
+        self.assertEqual(observed, [765.0])
 
         observed.clear()
         with (
