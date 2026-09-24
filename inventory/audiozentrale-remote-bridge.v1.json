@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "4f5665bd498acfff9e91ecd0c879f91e21d245f4d020f0a80f751c7ca67561f1"
+    "sha256": "93a670d5b27c5819b5075ad534c0760420a707e3828dfb204602cdef8a77b6bd"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -41,7 +41,9 @@
       "/api/v1/whale/lesson",
       "/api/v1/recordings",
       "/api/v1/h2",
-      "/api/v1/h2/budget"
+      "/api/v1/h2/budget",
+      "/api/v1/h2/library",
+      "/api/v1/h2/library/budget"
     ],
     "snapshot_queries": [
       "",

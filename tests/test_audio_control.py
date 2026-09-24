@@ -4298,7 +4298,10 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
             "kind": "audio_control_h2_action_result",
             "operation": "annotate",
             "result": {"kind": "audio_material_annotation_result"},
-            "workspace": {"kind": "audio_h2_workspace"},
+            "library": {
+                "kind": "audio_h2_library",
+                "library": {"count": 1, "items": []},
+            },
         }
         headers = {
             "Content-Type": "application/json",
@@ -4580,9 +4583,7 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(budget["workspace_timeout_seconds"], expected_workspace)
         self.assertEqual(
             budget["annotation_timeout_seconds"],
-            MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + expected_workspace
-            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+            controller.h2_library_budget()["annotation_timeout_seconds"],
         )
         self.assertEqual(len(runner.calls), 1)
         call, timeout = runner.calls[0]
@@ -4618,9 +4619,7 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(budget["workspace_timeout_seconds"], expected_workspace)
         self.assertEqual(
             budget["annotation_timeout_seconds"],
-            MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + expected_workspace
-            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+            controller.h2_library_budget()["annotation_timeout_seconds"],
         )
 
         workspace = controller.h2_workspace()
@@ -4723,10 +4722,9 @@ class H2MaterialControlTests(unittest.TestCase):
         )
         self.assertEqual(
             session["media_timeout_seconds"],
-            expected_scan_timeout
-            + controller._h2_media_stream_timeout_for_bytes(
+            controller._h2_source_media_outer_timeout_for_bytes(
                 1_048_576,
-                minimum=60,
+                scan_timeout=expected_scan_timeout,
             ),
         )
         self.assertEqual(
@@ -4932,11 +4930,14 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertGreater(material_timeout, 120)
         self.assertEqual(
             source_timeout,
-            controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=60),
+            controller._h2_source_media_binding_timeout_for_bytes(
+                two_gib,
+                scan_timeout=control_scan_timeout,
+            ),
         )
         self.assertEqual(
             material_timeout,
-            controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=120),
+            controller._h2_material_binding_timeout_for_bytes(two_gib),
         )
 
         workspace_controller = MODULE.AudioControl(
@@ -4958,18 +4959,17 @@ class H2MaterialControlTests(unittest.TestCase):
         )
         self.assertEqual(
             source_outer,
-            expected_scan_timeout
-            + controller._h2_media_stream_timeout_for_bytes(
+            controller._h2_source_media_outer_timeout_for_bytes(
                 two_gib,
-                minimum=60,
+                scan_timeout=expected_scan_timeout,
             ),
         )
         self.assertEqual(
             material_outer,
-            MODULE.H2_METADATA_TIMEOUT_SECONDS
-            + controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=120)
-            + controller._h2_timeout_for_bytes(two_gib, passes=1, minimum=60)
-            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+            controller._h2_material_media_outer_timeout_for_bytes(
+                two_gib,
+                max_file_bytes=two_gib,
+            ),
         )
         self.assertEqual(
             import_outer,
@@ -5022,19 +5022,55 @@ class H2MaterialControlTests(unittest.TestCase):
                     controller.perform_h2_action(payload)
                 self.assertEqual(len(runner.calls), before)
 
+    def test_h2_annotation_budget_and_readback_never_scan_source(self):
+        material = {
+            "material_id": "a" * 24,
+            "source": {
+                "scene": "170926_191401",
+                "recorded_date": "2026-09-17",
+                "recorded_time": "19:14:01",
+            },
+            "imported_at": "2026-09-17T19:15:00+00:00",
+            "annotations": {"title": "", "note": "", "tags": []},
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": 1_048_576,
+            "max_file_bytes": 1_048_576,
+        }
+        runner = self.Runner(library_items=[material], budget_error=True)
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+
+        budget = controller.h2_library_budget()
+        self.assertEqual(budget["kind"], "audio_h2_library_budget")
+        self.assertGreater(budget["annotation_timeout_seconds"], 0)
+        self.assertEqual(runner.calls, [])
+
+        result = controller.perform_h2_action(
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "Archiv",
+                "note": "Quelle darf dafür nicht gelesen werden.",
+                "tags": ["archiv"],
+            }
+        )
+        commands = [call[0][2] for call in runner.calls]
+        self.assertEqual(commands, ["annotate", "library"])
+        self.assertNotIn("scan", commands)
+        self.assertNotIn("workspace", result)
+        self.assertEqual(result["library"]["kind"], "audio_h2_library")
+        self.assertEqual(result["library"]["library"]["count"], 1)
+
     def test_h2_annotation_normalizes_before_argv(self):
         runner = self.Runner()
         controller = MODULE.AudioControl(runner=runner, telemetry=None)
         with mock.patch.object(
             controller,
-            "h2_workspace",
+            "h2_library",
             return_value={
                 "schema_version": 1,
-                "kind": "audio_h2_workspace",
-                "source": {"status": "ready", "count": 0, "sessions": []},
+                "kind": "audio_h2_library",
                 "library": {"count": 1, "items": []},
-                "source_delete_authorized": False,
-                "creative_handoff_authorized": False,
             },
         ):
             controller.perform_h2_action(
@@ -5056,14 +5092,11 @@ class H2MaterialControlTests(unittest.TestCase):
         controller = MODULE.AudioControl(runner=runner, telemetry=None)
         with mock.patch.object(
             controller,
-            "h2_workspace",
+            "h2_library",
             return_value={
                 "schema_version": 1,
-                "kind": "audio_h2_workspace",
-                "source": {"status": "ready", "count": 0, "sessions": []},
+                "kind": "audio_h2_library",
                 "library": {"count": 1, "items": []},
-                "source_delete_authorized": False,
-                "creative_handoff_authorized": False,
             },
         ):
             controller.perform_h2_action(
@@ -5083,11 +5116,7 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertNotIn("- note", call)
         self.assertEqual(
             timeout,
-            controller._h2_timeout_for_bytes(
-                MODULE.H2_MAX_METADATA_JSON_BYTES,
-                passes=1,
-                minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
-            ),
+            controller._h2_annotation_command_timeout(),
         )
 
     def test_h2_surface_is_task_named_and_has_no_delete_action(self):

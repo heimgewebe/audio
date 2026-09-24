@@ -214,6 +214,7 @@ const LIBRARY_VIEWS = new Set(["active", "trash", "all"]);
 const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category"]);
 const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
 const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;
+const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;
 const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
 const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;
 
@@ -3798,11 +3799,33 @@ async function h2ImportTimeoutMs(scene) {
   return Math.ceil(backendSeconds * 1000) + (await h2WorkspaceTimeoutMs());
 }
 
+async function h2LibraryBudget() {
+  const budget = await fetchJson("/api/v1/h2/library/budget", {
+    timeoutMs: H2_LIBRARY_BUDGET_TIMEOUT_MS,
+  });
+  const librarySeconds = budget?.library_timeout_seconds;
+  const annotationSeconds = budget?.annotation_timeout_seconds;
+  if (
+    budget?.kind !== "audio_h2_library_budget" ||
+    budget?.read_only !== true ||
+    budget?.source_mutated !== false ||
+    typeof librarySeconds !== "number" ||
+    !Number.isFinite(librarySeconds) ||
+    librarySeconds <= 0 ||
+    typeof annotationSeconds !== "number" ||
+    !Number.isFinite(annotationSeconds) ||
+    annotationSeconds <= 0
+  ) {
+    throw new Error("H2-Materialbibliothek besitzt kein gültiges Zeitbudget.");
+  }
+  return budget;
+}
+
 async function h2AnnotationTimeoutMs() {
-  const budget = await h2WorkspaceBudget();
+  const budget = await h2LibraryBudget();
   return (
     Math.ceil(budget.annotation_timeout_seconds * 1000) +
-    H2_WORKSPACE_BUDGET_TIMEOUT_MS +
+    H2_LIBRARY_BUDGET_TIMEOUT_MS +
     H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS
   );
 }
@@ -3850,14 +3873,29 @@ async function runH2Action(payload) {
   try {
     const result = await postH2Action(payload);
     if (activitySequence !== state.h2ActivitySequence || !backendAllowed()) return;
-    if (result?.kind !== "audio_control_h2_action_result" || !result.workspace) {
+    if (result?.kind !== "audio_control_h2_action_result") {
       throw new Error("H2-Aktion lieferte keinen aktuellen Materialzustand.");
     }
-    state.h2Workspace = result.workspace;
-    state.h2WorkspaceError = null;
-    if (payload.operation === "annotate") {
+    if (payload.operation === "import") {
+      if (result.workspace?.kind !== "audio_h2_workspace") {
+        throw new Error("H2-Import lieferte keinen aktuellen Arbeitsbereich.");
+      }
+      state.h2Workspace = result.workspace;
+    } else {
+      if (
+        result.library?.kind !== "audio_h2_library" ||
+        !result.library?.library ||
+        state.h2Workspace?.kind !== "audio_h2_workspace"
+      ) {
+        throw new Error("H2-Metadaten lieferten keine aktuelle Bibliothek.");
+      }
+      state.h2Workspace = {
+        ...state.h2Workspace,
+        library: result.library.library,
+      };
       state.h2AnnotationDrafts.delete(payload.material_id);
     }
+    state.h2WorkspaceError = null;
     const alreadyImported =
       payload.operation === "import" && result.result?.status === "already-imported";
     showNotice(

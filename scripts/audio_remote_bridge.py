@@ -81,6 +81,7 @@ RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
 # by finite size-derived budgets projected by the backend. The bridge consumes
 # those budgets rather than maintaining duplicate size formulas.
 H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS = 900.0
+H2_LIBRARY_BUDGET_BACKEND_TIMEOUT_SECONDS = 30.0
 H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS = 15.0
 # H2 import and annotation outer deadlines are projected by the backend.
 # The bridge adds only a transport margin and does not duplicate size formulas.
@@ -148,6 +149,8 @@ FIXED_API_ROUTES = frozenset(
         "/api/v1/recordings",
         "/api/v1/h2",
         "/api/v1/h2/budget",
+        "/api/v1/h2/library",
+        "/api/v1/h2/library/budget",
     }
 )
 PROFILE_PLAN_RE = re.compile(r"^/api/v1/profiles/([^/]+)/plan$")
@@ -759,6 +762,40 @@ def _read_backend_h2_budget() -> dict[str, Any]:
     return budget
 
 
+def _read_backend_h2_library_budget() -> dict[str, Any]:
+    status, _headers, payload, _redactions = read_backend_response(
+        "/api/v1/h2/library/budget", None
+    )
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend H2 library budget is unavailable")
+    try:
+        budget = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend H2 library budget is invalid") from error
+    library_timeout = (
+        budget.get("library_timeout_seconds") if isinstance(budget, dict) else None
+    )
+    annotation_timeout = (
+        budget.get("annotation_timeout_seconds") if isinstance(budget, dict) else None
+    )
+    if (
+        not isinstance(budget, dict)
+        or budget.get("kind") != "audio_h2_library_budget"
+        or budget.get("read_only") is not True
+        or budget.get("source_mutated") is not False
+        or isinstance(library_timeout, bool)
+        or not isinstance(library_timeout, (int, float))
+        or not math.isfinite(library_timeout)
+        or library_timeout <= 0
+        or isinstance(annotation_timeout, bool)
+        or not isinstance(annotation_timeout, (int, float))
+        or not math.isfinite(annotation_timeout)
+        or annotation_timeout <= 0
+    ):
+        raise BackendFailure("backend H2 library budget is invalid")
+    return budget
+
+
 def h2_workspace_backend_timeout_seconds() -> float:
     budget = _read_backend_h2_budget()
     return (
@@ -767,8 +804,16 @@ def h2_workspace_backend_timeout_seconds() -> float:
     )
 
 
+def h2_library_backend_timeout_seconds() -> float:
+    budget = _read_backend_h2_library_budget()
+    return (
+        float(budget["library_timeout_seconds"])
+        + H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS
+    )
+
+
 def h2_annotation_backend_timeout_seconds() -> float:
-    budget = _read_backend_h2_budget()
+    budget = _read_backend_h2_library_budget()
     return (
         float(budget["annotation_timeout_seconds"])
         + H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS
@@ -780,6 +825,10 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         backend_timeout_seconds = h2_workspace_backend_timeout_seconds()
     elif target == "/api/v1/h2/budget":
         backend_timeout_seconds = H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS
+    elif target == "/api/v1/h2/library":
+        backend_timeout_seconds = h2_library_backend_timeout_seconds()
+    elif target == "/api/v1/h2/library/budget":
+        backend_timeout_seconds = H2_LIBRARY_BUDGET_BACKEND_TIMEOUT_SECONDS
     else:
         backend_timeout_seconds = BACKEND_TIMEOUT_SECONDS
     connection = http.client.HTTPConnection(
@@ -806,7 +855,9 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         if header_bytes > MAX_BACKEND_HEADER_BYTES:
             raise BackendFailure("backend headers exceed bridge limit")
         response_limit = (
-            MAX_H2_RESPONSE_BYTES if target == "/api/v1/h2" else MAX_RESPONSE_BYTES
+            MAX_H2_RESPONSE_BYTES
+            if target in {"/api/v1/h2", "/api/v1/h2/library"}
+            else MAX_RESPONSE_BYTES
         )
         payload = response.read(response_limit + 1)
         if len(payload) > response_limit:
@@ -851,22 +902,42 @@ def _read_backend_h2_workspace() -> dict[str, Any]:
     return workspace
 
 
+def _read_backend_h2_library() -> dict[str, Any]:
+    status, _headers, payload, _redactions = read_backend_response(
+        "/api/v1/h2/library", None
+    )
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend H2 library is unavailable for timeout binding")
+    try:
+        library = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend H2 library is invalid for timeout binding") from error
+    if (
+        not isinstance(library, dict)
+        or library.get("kind") != "audio_h2_library"
+        or not isinstance(library.get("library"), dict)
+    ):
+        raise BackendFailure("backend H2 library is invalid for timeout binding")
+    return library
+
+
 def h2_media_backend_timeout_seconds(target: str) -> float:
     source_media = H2_SOURCE_MEDIA_RE.fullmatch(target)
     material_media = H2_MATERIAL_MEDIA_RE.fullmatch(target)
     if source_media is None and material_media is None:
         raise RequestRejected("H2 media target is invalid")
 
-    workspace = _read_backend_h2_workspace()
     if source_media is not None:
+        workspace = _read_backend_h2_workspace()
         identity, segment_raw = source_media.groups()
         container = workspace.get("source")
         items = container.get("sessions") if isinstance(container, dict) else None
         identity_key = "scene"
     else:
         assert material_media is not None
+        library = _read_backend_h2_library()
         identity, segment_raw = material_media.groups()
-        container = workspace.get("library")
+        container = library.get("library")
         items = container.get("items") if isinstance(container, dict) else None
         identity_key = "material_id"
     if not isinstance(items, list):
@@ -1254,10 +1325,27 @@ def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
                 not isinstance(decoded, dict)
                 or decoded.get("kind") != "audio_control_h2_action_result"
                 or decoded.get("operation") != action["operation"]
-                or not isinstance(decoded.get("workspace"), dict)
-                or decoded["workspace"].get("kind") != "audio_h2_workspace"
             ):
-                raise BackendFailure("backend H2 action lacks bound workspace readback")
+                raise BackendFailure("backend H2 action lacks a bound readback")
+            if action["operation"] == "import":
+                workspace = decoded.get("workspace")
+                if (
+                    not isinstance(workspace, dict)
+                    or workspace.get("kind") != "audio_h2_workspace"
+                ):
+                    raise BackendFailure(
+                        "backend H2 import lacks bound workspace readback"
+                    )
+            else:
+                library = decoded.get("library")
+                if (
+                    not isinstance(library, dict)
+                    or library.get("kind") != "audio_h2_library"
+                    or not isinstance(library.get("library"), dict)
+                ):
+                    raise BackendFailure(
+                        "backend H2 annotation lacks bound library readback"
+                    )
         return response.status, scrubbed, redactions
     except BackendFailure:
         raise

@@ -468,7 +468,7 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         )
 
         h2_timeout = self.app.split("async function h2ImportTimeoutMs(scene) {", 1)[1].split(
-            "\n}\n\nasync function h2AnnotationTimeoutMs", 1
+            "\n}\n\nasync function h2LibraryBudget", 1
         )[0]
         self.assertIn("state.h2Workspace?.source?.sessions", h2_timeout)
         self.assertIn("candidate?.scene === scene", h2_timeout)
@@ -477,15 +477,26 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("Math.ceil(backendSeconds * 1000)", h2_timeout)
         self.assertIn("await h2WorkspaceTimeoutMs()", h2_timeout)
 
+        library_budget = self.app.split("async function h2LibraryBudget() {", 1)[1].split(
+            "\n}\n\nasync function h2AnnotationTimeoutMs", 1
+        )[0]
+        self.assertIn('fetchJson("/api/v1/h2/library/budget"', library_budget)
+        self.assertIn("H2_LIBRARY_BUDGET_TIMEOUT_MS", library_budget)
+        self.assertIn('budget?.kind !== "audio_h2_library_budget"', library_budget)
+        self.assertIn("budget?.library_timeout_seconds", library_budget)
+        self.assertIn("budget?.annotation_timeout_seconds", library_budget)
+
         annotate_timeout = self.app.split("async function h2AnnotationTimeoutMs() {", 1)[1].split(
             "\n}\n\nasync function postH2Action", 1
         )[0]
-        self.assertIn("await h2WorkspaceBudget()", annotate_timeout)
+        self.assertIn("await h2LibraryBudget()", annotate_timeout)
         self.assertIn("budget.annotation_timeout_seconds * 1000", annotate_timeout)
-        self.assertIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", annotate_timeout)
+        self.assertIn("H2_LIBRARY_BUDGET_TIMEOUT_MS", annotate_timeout)
+        self.assertNotIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", annotate_timeout)
         self.assertIn("H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS", annotate_timeout)
 
         self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;", self.app)
+        self.assertIn("const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;", self.app)
         self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
         self.assertIn("const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;", self.app)
         self.assertNotIn("H2_WORKSPACE_TIMEOUT_MS", self.app)
@@ -1071,7 +1082,11 @@ const state = {{
     note: "bleibt",
     tags: "roh",
   }}]]),
-  h2Workspace: {{}},
+  h2Workspace: {{
+    kind: "audio_h2_workspace",
+    source: {{ marker: "source-preserved" }},
+    library: {{ count: 1, items: [] }},
+  }},
   h2WorkspaceError: null,
 }};
 let attempts = 0;
@@ -1090,7 +1105,10 @@ async function postH2Action() {{
   if (attempts === 1) throw new Error("save failed");
   return {{
     kind: "audio_control_h2_action_result",
-    workspace: {{ kind: "audio_h2_workspace" }},
+    library: {{
+      kind: "audio_h2_library",
+      library: {{ count: 1, items: [{{ material_id: materialId }}] }},
+    }},
     result: {{ status: "annotated" }},
   }};
 }}
@@ -1114,6 +1132,8 @@ async function postH2Action() {{
     attempts,
     pending: state.h2ActionPending,
     draftPresent: state.h2AnnotationDrafts.has(materialId),
+    sourceMarker: state.h2Workspace?.source?.marker,
+    libraryCount: state.h2Workspace?.library?.count,
     render: renders.at(-1),
   }};
   process.stdout.write(JSON.stringify({{ failed, succeeded }}));
@@ -1137,6 +1157,8 @@ async function postH2Action() {{
         self.assertEqual(retry["succeeded"]["attempts"], 2)
         self.assertFalse(retry["succeeded"]["pending"])
         self.assertFalse(retry["succeeded"]["draftPresent"])
+        self.assertEqual(retry["succeeded"]["sourceMarker"], "source-preserved")
+        self.assertEqual(retry["succeeded"]["libraryCount"], 1)
         self.assertTrue(retry["succeeded"]["render"]["force"])
 
         renderer = self.app.split("function renderH2Workspace", 1)[1].split(

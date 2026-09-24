@@ -3662,16 +3662,31 @@ class AudioControl:
         return float(max(minimum, H2_IO_TIMEOUT_OVERHEAD_SECONDS + transfer_seconds))
 
     @classmethod
-    def _h2_media_stream_timeout_for_bytes(
+    def _h2_source_media_binding_timeout_for_bytes(
         cls,
         byte_count: int,
         *,
-        minimum: int,
+        scan_timeout: float,
     ) -> float:
-        verification = cls._h2_timeout_for_bytes(
+        return float(
+            scan_timeout
+            + cls._h2_timeout_for_bytes(
+                byte_count,
+                passes=1,
+                minimum=60,
+            )
+        )
+
+    @classmethod
+    def _h2_source_media_outer_timeout_for_bytes(
+        cls,
+        byte_count: int,
+        *,
+        scan_timeout: float,
+    ) -> float:
+        binding = cls._h2_source_media_binding_timeout_for_bytes(
             byte_count,
-            passes=1,
-            minimum=minimum,
+            scan_timeout=scan_timeout,
         )
         response_hash = cls._h2_timeout_for_bytes(
             byte_count,
@@ -3679,8 +3694,45 @@ class AudioControl:
             minimum=60,
         )
         return float(
-            H2_METADATA_TIMEOUT_SECONDS
-            + verification
+            H2_SCAN_BUDGET_TIMEOUT_SECONDS
+            + scan_timeout
+            + binding
+            + response_hash
+            + REQUEST_IO_TIMEOUT_SECONDS
+        )
+
+    @classmethod
+    def _h2_material_binding_timeout_for_bytes(
+        cls,
+        byte_count: int,
+    ) -> float:
+        metadata_reads = cls._h2_timeout_for_bytes(
+            H2_MAX_METADATA_JSON_BYTES,
+            passes=2,
+            minimum=H2_METADATA_TIMEOUT_SECONDS,
+        )
+        master_verification = cls._h2_timeout_for_bytes(
+            byte_count,
+            passes=1,
+            minimum=120,
+        )
+        return float(metadata_reads + master_verification)
+
+    @classmethod
+    def _h2_material_media_outer_timeout_for_bytes(
+        cls,
+        byte_count: int,
+        *,
+        max_file_bytes: int,
+    ) -> float:
+        response_hash = cls._h2_timeout_for_bytes(
+            max_file_bytes,
+            passes=1,
+            minimum=60,
+        )
+        return float(
+            cls._h2_library_timeout()
+            + cls._h2_material_binding_timeout_for_bytes(byte_count)
             + response_hash
             + REQUEST_IO_TIMEOUT_SECONDS
         )
@@ -3703,7 +3755,7 @@ class AudioControl:
         ):
             raise ControlError("H2-Workspace-Zeitbudget ist ungültig.")
         return float(
-            H2_METADATA_TIMEOUT_SECONDS
+            H2_SCAN_BUDGET_TIMEOUT_SECONDS
             + cls._h2_library_timeout()
             + scan_timeout
             + REQUEST_IO_TIMEOUT_SECONDS
@@ -3722,7 +3774,7 @@ class AudioControl:
             minimum=300,
         )
         return float(
-            H2_METADATA_TIMEOUT_SECONDS
+            H2_SCAN_BUDGET_TIMEOUT_SECONDS
             + scan_timeout
             + import_work
             + cls._h2_workspace_timeout_for_scan(scan_timeout)
@@ -3849,11 +3901,9 @@ class AudioControl:
             "schema_version": 1,
             "kind": "audio_h2_workspace_budget",
             "workspace_timeout_seconds": workspace_timeout,
-            "annotation_timeout_seconds": float(
-                H2_METADATA_TIMEOUT_SECONDS
-                + workspace_timeout
-                + REQUEST_IO_TIMEOUT_SECONDS
-            ),
+            "annotation_timeout_seconds": self.h2_library_budget()[
+                "annotation_timeout_seconds"
+            ],
             "source_budget_available": source_budget_available,
             "read_only": True,
             "source_mutated": False,
@@ -3967,6 +4017,88 @@ class AudioControl:
             ):
                 raise ControlError("H2-Materialbibliothek enthält ein ungültiges Objekt.")
 
+    @classmethod
+    def _h2_annotation_command_timeout(cls) -> float:
+        return cls._h2_timeout_for_bytes(
+            H2_MAX_METADATA_JSON_BYTES,
+            passes=3,
+            minimum=H2_METADATA_TIMEOUT_SECONDS,
+        )
+
+    def h2_library_budget(self) -> dict[str, Any]:
+        library_timeout = self._h2_library_timeout()
+        return {
+            "schema_version": 1,
+            "kind": "audio_h2_library_budget",
+            "library_timeout_seconds": library_timeout,
+            "annotation_timeout_seconds": float(
+                self._h2_annotation_command_timeout()
+                + library_timeout
+                + REQUEST_IO_TIMEOUT_SECONDS
+            ),
+            "read_only": True,
+            "source_mutated": False,
+        }
+
+    def _h2_library_report(self) -> dict[str, Any]:
+        library_report = self._run_h2_command(
+            [
+                "library",
+                "--library-root",
+                str(STATIC_H2_LIBRARY_ROOT),
+                "--projection",
+                "control",
+            ],
+            timeout=self._h2_library_timeout(),
+            label="H2-Materialbibliothek",
+            fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
+        )
+        self._validate_h2_library(library_report)
+        return library_report
+
+    def _h2_library_projection(self) -> dict[str, Any]:
+        library_report = self._h2_library_report()
+        items: list[dict[str, Any]] = []
+        for item in library_report["items"]:
+            items.append(
+                {
+                    "material_id": item["material_id"],
+                    "source": item["source"],
+                    "imported_at": item.get("imported_at"),
+                    "annotations": item["annotations"],
+                    "roles": item["roles"],
+                    "segment_count": item["segment_count"],
+                    "audio_url": (
+                        f"/api/{API_VERSION}/h2/material/{item['material_id']}/audio/0"
+                    ),
+                    "media_timeout_seconds": self._h2_material_media_outer_timeout_for_bytes(
+                        item["total_bytes"],
+                        max_file_bytes=item["max_file_bytes"],
+                    ),
+                }
+            )
+        return {"count": len(items), "items": items}
+
+    def h2_library(self) -> dict[str, Any]:
+        library = {
+            "schema_version": 1,
+            "kind": "audio_h2_library",
+            "library": self._h2_library_projection(),
+        }
+        encoded = (
+            json.dumps(
+                library,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        if len(encoded) > MAX_H2_WORKSPACE_RESPONSE_BYTES:
+            raise ControlError(
+                "H2-Materialbibliothek überschreitet das sichere Antwortlimit."
+            )
+        return library
+
     def h2_workspace(self) -> dict[str, Any]:
         try:
             source_report, source_scan_timeout = self._h2_control_scan()
@@ -3997,12 +4129,9 @@ class AudioControl:
                         "audio_url": (
                             f"/api/{API_VERSION}/h2/source/{item['scene']}/audio/0"
                         ),
-                        "media_timeout_seconds": (
-                            source_scan_timeout
-                            + self._h2_media_stream_timeout_for_bytes(
-                                item["max_file_bytes"],
-                                minimum=60,
-                            )
+                        "media_timeout_seconds": self._h2_source_media_outer_timeout_for_bytes(
+                            item["max_file_bytes"],
+                            scan_timeout=source_scan_timeout,
                         ),
                         "import_timeout_seconds": self._h2_import_action_timeout_for_bytes(
                             item["total_bytes"],
@@ -4013,43 +4142,12 @@ class AudioControl:
                 ],
             }
 
-        library_report = self._run_h2_command(
-            [
-                "library",
-                "--library-root",
-                str(STATIC_H2_LIBRARY_ROOT),
-                "--projection",
-                "control",
-            ],
-            timeout=self._h2_library_timeout(),
-            label="H2-Materialbibliothek",
-            fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
-        )
-        self._validate_h2_library(library_report)
-        items: list[dict[str, Any]] = []
-        for item in library_report["items"]:
-            items.append(
-                {
-                    "material_id": item["material_id"],
-                    "source": item["source"],
-                    "imported_at": item.get("imported_at"),
-                    "annotations": item["annotations"],
-                    "roles": item["roles"],
-                    "segment_count": item["segment_count"],
-                    "audio_url": (
-                        f"/api/{API_VERSION}/h2/material/{item['material_id']}/audio/0"
-                    ),
-                    "media_timeout_seconds": self._h2_media_stream_timeout_for_bytes(
-                        item["total_bytes"],
-                        minimum=120,
-                    ),
-                }
-            )
+        library_projection = self._h2_library_projection()
         workspace = {
             "schema_version": 1,
             "kind": "audio_h2_workspace",
             "source": source_projection,
-            "library": {"count": len(items), "items": items},
+            "library": library_projection,
             "source_delete_authorized": False,
             "creative_handoff_authorized": False,
         }
@@ -4100,7 +4198,7 @@ class AudioControl:
             raise ControlError("H2-Medienbindung liegt außerhalb des erlaubten Roots.")
 
     def verified_h2_source_media(self, scene: str, segment_index: int) -> dict[str, Any]:
-        source_report, _scan_timeout = self._h2_control_scan()
+        source_report, scan_timeout = self._h2_control_scan()
         session = next(
             (
                 item
@@ -4126,10 +4224,9 @@ class AudioControl:
                 "--source-root",
                 str(STATIC_H2_SOURCE_ROOT),
             ],
-            timeout=self._h2_timeout_for_bytes(
+            timeout=self._h2_source_media_binding_timeout_for_bytes(
                 session["max_file_bytes"],
-                passes=1,
-                minimum=60,
+                scan_timeout=scan_timeout,
             ),
             label="H2-Vorschau",
             fallback="H2-Aufnahme ist nicht sicher abspielbar.",
@@ -4144,19 +4241,7 @@ class AudioControl:
     def verified_h2_material_media(
         self, material_id: str, segment_index: int
     ) -> dict[str, Any]:
-        library_report = self._run_h2_command(
-            [
-                "library",
-                "--library-root",
-                str(STATIC_H2_LIBRARY_ROOT),
-                "--projection",
-                "control",
-            ],
-            timeout=self._h2_library_timeout(),
-            label="H2-Materialbibliothek",
-            fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
-        )
-        self._validate_h2_library(library_report)
+        library_report = self._h2_library_report()
         item = next(
             (
                 candidate
@@ -4176,10 +4261,8 @@ class AudioControl:
                 "--library-root",
                 str(STATIC_H2_LIBRARY_ROOT),
             ],
-            timeout=self._h2_timeout_for_bytes(
+            timeout=self._h2_material_binding_timeout_for_bytes(
                 item["total_bytes"],
-                passes=1,
-                minimum=120,
             ),
             label="H2-Material",
             fallback="H2-Material ist nicht sicher abspielbar.",
@@ -4264,11 +4347,7 @@ class AudioControl:
                 "--library-root",
                 str(STATIC_H2_LIBRARY_ROOT),
             ]
-            timeout = self._h2_timeout_for_bytes(
-                H2_MAX_METADATA_JSON_BYTES,
-                passes=1,
-                minimum=H2_METADATA_TIMEOUT_SECONDS,
-            )
+            timeout = self._h2_annotation_command_timeout()
             label = "H2-Metadaten"
             fallback = "H2-Metadaten konnten nicht sicher gespeichert werden."
         else:
@@ -4290,13 +4369,17 @@ class AudioControl:
             )
             if report.get("schema_version") != 1 or report.get("kind") != expected_kind:
                 raise ControlError("H2-Aktion lieferte keinen gültigen Ergebnisbeleg.")
-            return {
+            response = {
                 "schema_version": 1,
                 "kind": "audio_control_h2_action_result",
                 "operation": operation,
                 "result": report,
-                "workspace": self.h2_workspace(),
             }
+            if operation == "import":
+                response["workspace"] = self.h2_workspace()
+            else:
+                response["library"] = self.h2_library()
+            return response
         finally:
             self._material_action_lock.release()
 
@@ -6494,6 +6577,48 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, lesson, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/h2/library/budget":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Das H2-Bibliotheksbudget akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                budget = self.server.controller.h2_library_budget()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_library_budget_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, budget, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/h2/library":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Die H2-Materialbibliothek akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                library = self.server.controller.h2_library()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_library_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, library, head_only=head_only)
             return
         if parsed.path == f"/api/{API_VERSION}/h2/budget":
             if parsed.query:
