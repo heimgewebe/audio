@@ -42,6 +42,7 @@ MAX_BEXT_BYTES = 128 * 1024
 MAX_SESSION_FILES = 192
 MAX_CONTROL_SCAN_SESSIONS = 2048
 MAX_CONTROL_LIBRARY_ITEMS = 80
+MAX_METADATA_JSON_BYTES = 32 * 1024 * 1024
 CONTROL_SCAN_PROJECTION = "control-v1"
 CONTROL_SCAN_BUDGET_PROJECTION = "control-budget-v1"
 CONTROL_LIBRARY_PROJECTION = "control-v1"
@@ -770,7 +771,9 @@ def _write_json_new(path: pathlib.Path, value: dict[str, Any], mode: int) -> Non
 
 
 def _read_json_regular(path: pathlib.Path) -> dict[str, Any]:
-    _lstat_regular(path, "Metadatendatei")
+    metadata = _lstat_regular(path, "Metadatendatei")
+    if metadata.st_size > MAX_METADATA_JSON_BYTES:
+        raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:

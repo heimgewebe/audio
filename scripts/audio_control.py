@@ -396,6 +396,8 @@ REQUEST_IO_TIMEOUT_SECONDS = 5.0
 H2_MIN_IO_BYTES_PER_SECOND = 512 * 1024
 H2_IO_TIMEOUT_OVERHEAD_SECONDS = 60
 H2_METADATA_TIMEOUT_SECONDS = 30
+H2_MAX_CONTROL_LIBRARY_ITEMS = 80
+H2_MAX_METADATA_JSON_BYTES = 32 * 1024 * 1024
 H2_IMPORT_IO_PASSES = 4
 H2_MAX_TITLE_CHARS = 160
 H2_MAX_NOTE_CHARS = 2000
@@ -3675,8 +3677,16 @@ class AudioControl:
             + REQUEST_IO_TIMEOUT_SECONDS
         )
 
-    @staticmethod
-    def _h2_workspace_timeout_for_scan(scan_timeout: float) -> float:
+    @classmethod
+    def _h2_library_timeout(cls) -> float:
+        return cls._h2_timeout_for_bytes(
+            H2_MAX_CONTROL_LIBRARY_ITEMS * H2_MAX_METADATA_JSON_BYTES,
+            passes=1,
+            minimum=H2_METADATA_TIMEOUT_SECONDS,
+        )
+
+    @classmethod
+    def _h2_workspace_timeout_for_scan(cls, scan_timeout: float) -> float:
         if (
             isinstance(scan_timeout, bool)
             or not isinstance(scan_timeout, (int, float))
@@ -3685,7 +3695,8 @@ class AudioControl:
         ):
             raise ControlError("H2-Workspace-Zeitbudget ist ungültig.")
         return float(
-            (2 * H2_METADATA_TIMEOUT_SECONDS)
+            H2_METADATA_TIMEOUT_SECONDS
+            + cls._h2_library_timeout()
             + scan_timeout
             + REQUEST_IO_TIMEOUT_SECONDS
         )
@@ -4002,7 +4013,7 @@ class AudioControl:
                 "--projection",
                 "control",
             ],
-            timeout=H2_METADATA_TIMEOUT_SECONDS,
+            timeout=self._h2_library_timeout(),
             label="H2-Materialbibliothek",
             fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
         )

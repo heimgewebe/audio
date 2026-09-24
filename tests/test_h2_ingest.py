@@ -380,6 +380,14 @@ class H2IngestTests(unittest.TestCase):
             self.assertTrue(entries[0].is_file())
             self.assertEqual(stat.S_IMODE(entries[0].stat().st_mode), 0o600)
 
+    def test_metadata_reader_rejects_oversized_json_before_reading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            with path.open("wb") as handle:
+                handle.truncate(MODULE.MAX_METADATA_JSON_BYTES + 1)
+            with self.assertRaisesRegex(MODULE.H2IngestError, "Größenlimit"):
+                MODULE._read_json_regular(path)
+
     def test_repeat_import_preflights_hashes_without_copying_to_staging(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

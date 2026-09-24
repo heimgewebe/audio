@@ -4702,7 +4702,11 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(workspace["source"]["count"], 1)
         self.assertEqual(workspace["source"]["skipped_invalid_sessions"], [])
         self.assertEqual(workspace["library"]["count"], 0)
-        library_call = next(call for call, _timeout in runner.calls if call[2] == "library")
+        library_call, library_timeout = next(
+            (call, timeout) for call, timeout in runner.calls if call[2] == "library"
+        )
+        self.assertEqual(library_timeout, controller._h2_library_timeout())
+        self.assertGreater(library_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
         self.assertIn("--projection", library_call)
         self.assertIn("control", library_call)
         self.assertFalse(workspace["source_delete_authorized"])
