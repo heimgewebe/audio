@@ -5081,7 +5081,14 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertIn('--tags-json=["- tag"]', call)
         self.assertNotIn("- draft", call)
         self.assertNotIn("- note", call)
-        self.assertEqual(timeout, 30)
+        self.assertEqual(
+            timeout,
+            controller._h2_timeout_for_bytes(
+                MODULE.H2_MAX_METADATA_JSON_BYTES,
+                passes=1,
+                minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+            ),
+        )
 
     def test_h2_surface_is_task_named_and_has_no_delete_action(self):
         javascript = (ROOT / "ui" / "app.js").read_text()

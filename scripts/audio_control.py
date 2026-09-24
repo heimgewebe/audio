@@ -397,7 +397,7 @@ H2_MIN_IO_BYTES_PER_SECOND = 512 * 1024
 H2_IO_TIMEOUT_OVERHEAD_SECONDS = 60
 H2_METADATA_TIMEOUT_SECONDS = 30
 H2_MAX_CONTROL_LIBRARY_ITEMS = 80
-H2_MAX_METADATA_JSON_BYTES = 32 * 1024 * 1024
+H2_MAX_METADATA_JSON_BYTES = 64 * 1024 * 1024
 H2_IMPORT_IO_PASSES = 4
 H2_MAX_TITLE_CHARS = 160
 H2_MAX_NOTE_CHARS = 2000
@@ -4144,7 +4144,7 @@ class AudioControl:
                 "--projection",
                 "control",
             ],
-            timeout=H2_METADATA_TIMEOUT_SECONDS,
+            timeout=self._h2_library_timeout(),
             label="H2-Materialbibliothek",
             fallback="H2-Materialbibliothek ist nicht sicher lesbar.",
         )
@@ -4256,7 +4256,11 @@ class AudioControl:
                 "--library-root",
                 str(STATIC_H2_LIBRARY_ROOT),
             ]
-            timeout = H2_METADATA_TIMEOUT_SECONDS
+            timeout = self._h2_timeout_for_bytes(
+                H2_MAX_METADATA_JSON_BYTES,
+                passes=1,
+                minimum=H2_METADATA_TIMEOUT_SECONDS,
+            )
             label = "H2-Metadaten"
             fallback = "H2-Metadaten konnten nicht sicher gespeichert werden."
         else:
