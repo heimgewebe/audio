@@ -888,6 +888,40 @@ class H2IngestTests(unittest.TestCase):
                 "Metallgeländer unter Brücke",
             )
 
+    def test_annotation_replace_rejects_oversized_payload_before_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            annotations_path = (
+                library / result["material_id"] / "annotations.json"
+            )
+            current = json.loads(annotations_path.read_text(encoding="utf-8"))
+            current["markers"] = ["x" * 4096]
+            original = MODULE._canonical_bytes(current) + b"\n"
+            annotations_path.write_bytes(original)
+            limit = len(original) + 1
+
+            with (
+                mock.patch.object(MODULE, "MAX_METADATA_JSON_BYTES", limit),
+                self.assertRaisesRegex(MODULE.H2IngestError, "Größenlimit"),
+            ):
+                MODULE.annotate_material(
+                    result["material_id"],
+                    title="neuer Titel",
+                    note="",
+                    tags=[],
+                    library_root=library,
+                )
+
+            self.assertEqual(annotations_path.read_bytes(), original)
+            self.assertFalse(any(annotations_path.parent.glob(".metadata-*")))
+
     def test_annotation_replace_does_not_double_close_transferred_fd(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

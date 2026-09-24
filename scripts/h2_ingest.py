@@ -1320,6 +1320,8 @@ def _write_json_replace(path: pathlib.Path, value: dict[str, Any], mode: int) ->
     _lstat_directory(directory, "Metadatenverzeichnis")
     _lstat_regular(path, "Metadatendatei")
     payload = _canonical_bytes(value) + b"\n"
+    if len(payload) > MAX_METADATA_JSON_BYTES:
+        raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
     fd, temporary_name = tempfile.mkstemp(prefix=".metadata-", dir=directory)
     temporary = pathlib.Path(temporary_name)
     try:
