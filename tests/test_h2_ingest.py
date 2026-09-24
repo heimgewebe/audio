@@ -779,6 +779,11 @@ class H2IngestTests(unittest.TestCase):
                 library_root=library,
             )
 
+            first_manifest = library / first["material_id"] / "manifest.json"
+            second_manifest = library / second_result["material_id"] / "manifest.json"
+            os.utime(first_manifest, ns=(1_000_000_000, 1_000_000_000))
+            os.utime(second_manifest, ns=(2_000_000_000, 2_000_000_000))
+
             with mock.patch.object(MODULE, "MAX_CONTROL_LIBRARY_ITEMS", 1):
                 report = MODULE.library(library, projection="control")
 
@@ -787,7 +792,7 @@ class H2IngestTests(unittest.TestCase):
             self.assertIs(report["truncated"], True)
             self.assertEqual(
                 report["items"][0]["material_id"],
-                min(first["material_id"], second_result["material_id"]),
+                second_result["material_id"],
             )
 
     def test_control_library_rejects_new_material_before_publish_at_capacity(self):

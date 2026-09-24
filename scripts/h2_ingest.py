@@ -11,7 +11,7 @@ immutable manifest plus separate mutable annotations.
 from __future__ import annotations
 
 import argparse
-import bisect
+import heapq
 import datetime as dt
 import fcntl
 import hashlib
@@ -1215,7 +1215,7 @@ def library(
     _lstat_directory(root, "Materialbibliothek")
     items: list[dict[str, Any]] = []
     if projection == "control":
-        selected_names: list[str] = []
+        recent_candidates: list[tuple[int, str]] = []
         observed_items = 0
         with os.scandir(root) as entries:
             for entry in entries:
@@ -1225,10 +1225,18 @@ def library(
                 ):
                     continue
                 observed_items += 1
-                bisect.insort(selected_names, entry.name)
-                if len(selected_names) > MAX_CONTROL_LIBRARY_ITEMS:
-                    selected_names.pop()
-        for name in selected_names:
+                # The manifest is immutable after publication, so its mtime is
+                # a bounded import-recency key without parsing every legacy manifest.
+                manifest_metadata = _lstat_regular(
+                    pathlib.Path(entry.path) / "manifest.json",
+                    "Materialmanifest",
+                )
+                candidate = (manifest_metadata.st_mtime_ns, entry.name)
+                if len(recent_candidates) < MAX_CONTROL_LIBRARY_ITEMS:
+                    heapq.heappush(recent_candidates, candidate)
+                elif candidate > recent_candidates[0]:
+                    heapq.heapreplace(recent_candidates, candidate)
+        for _manifest_mtime_ns, name in recent_candidates:
             directory = root / name
             manifest = _read_json_regular(directory / "manifest.json")
             annotations = _read_json_regular(directory / "annotations.json")
