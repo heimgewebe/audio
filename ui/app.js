@@ -1033,8 +1033,12 @@ async function refreshSnapshot(force = false) {
       await ensureRemoteWhaleSession();
     }
     await loadRecordingLibrary({ render: false });
-    await loadH2Workspace({ render: false });
+    // H2 removable-media scans can legitimately take much longer than the
+    // core snapshot. Release the global loading gate and render recorder/core
+    // state first; the H2 surface converges separately below.
+    setLoading(false);
     renderAll();
+    await loadH2Workspace({ render: true });
   } catch (error) {
     showNotice(error instanceof Error ? error.message : "Zustand konnte nicht gelesen werden.");
     renderAuthority(error?.code === "snapshot_busy" ? "busy" : "offline");

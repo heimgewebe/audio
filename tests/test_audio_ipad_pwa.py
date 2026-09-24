@@ -496,6 +496,24 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("timeoutMs === null ? null", fetch_json)
         self.assertGreaterEqual(fetch_json.count("if (timeout !== null)"), 2)
 
+    def test_h2_scan_never_blocks_core_snapshot_render_or_recorder_controls(self):
+        refresh = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(
+            "\n}\n\nfunction renderAuthority", 1
+        )[0]
+        self.assertIn("await loadRecordingLibrary({ render: false });", refresh)
+        self.assertIn("setLoading(false);", refresh)
+        self.assertIn("renderAll();", refresh)
+        self.assertIn("await loadH2Workspace({ render: true });", refresh)
+        self.assertNotIn("await loadH2Workspace({ render: false });", refresh)
+        self.assertLess(
+            refresh.index("setLoading(false);"),
+            refresh.index("renderAll();"),
+        )
+        self.assertLess(
+            refresh.index("renderAll();"),
+            refresh.index("await loadH2Workspace({ render: true });"),
+        )
+
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
         controls = self.app.split("function renderRecordingControls(", 1)[1].split(
             "\nasync function loadRecordingLibrary", 1
