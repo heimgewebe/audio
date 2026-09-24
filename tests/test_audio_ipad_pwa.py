@@ -487,14 +487,117 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
 
         self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 60000;", self.app)
         self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
+        self.assertIn("const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;", self.app)
         self.assertNotIn("H2_WORKSPACE_TIMEOUT_MS", self.app)
         self.assertNotIn("H2_ANNOTATE_TIMEOUT_MS", self.app)
         self.assertNotIn("H2_IMPORT_UI_TIMEOUT_MARGIN_MS", self.app)
+        deadline = self.app.split("function startAbortDeadline", 1)[1].split(
+            "\nasync function fetchJson", 1
+        )[0]
+        self.assertIn("performance.now() + timeoutMs", deadline)
+        self.assertIn("Math.min(remaining, MAX_BROWSER_TIMER_DELAY_MS)", deadline)
+        self.assertIn("controller.abort();", deadline)
         fetch_json = self.app.split("async function fetchJson", 1)[1].split(
             "\nfunction showNotice", 1
         )[0]
-        self.assertIn("timeoutMs === null ? null", fetch_json)
-        self.assertGreaterEqual(fetch_json.count("if (timeout !== null)"), 2)
+        self.assertIn("startAbortDeadline(controller, timeoutMs)", fetch_json)
+        self.assertGreaterEqual(
+            fetch_json.count("if (cancelTimeout !== null) cancelTimeout();"),
+            2,
+        )
+
+    def test_fetch_json_chains_timer_safe_abort_deadlines(self):
+        helper = "function startAbortDeadline" + self.app.split(
+            "function startAbortDeadline", 1
+        )[1].split("\nasync function fetchJson", 1)[0]
+        harness = f"""
+const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;
+{helper}
+let now = 1000;
+Object.defineProperty(globalThis, "performance", {{
+  configurable: true,
+  value: {{ now: () => now }},
+}});
+const pending = [];
+const cleared = [];
+global.window = {{
+  setTimeout(fn, delay) {{
+    pending.push({{ fn, delay }});
+    return pending.length;
+  }},
+  clearTimeout(id) {{
+    cleared.push(id);
+  }},
+}};
+function controller() {{
+  return {{
+    signal: {{ aborted: false }},
+    abort() {{ this.signal.aborted = true; }},
+  }};
+}}
+
+const start = now;
+const longController = controller();
+const longTimeout = 2147483647 + 5000;
+const cancelLong = startAbortDeadline(longController, longTimeout);
+if (
+  pending.length !== 1 ||
+  pending[0].delay !== MAX_BROWSER_TIMER_DELAY_MS ||
+  longController.signal.aborted
+) {{
+  throw new Error("large deadline was not split into a timer-safe first chunk");
+}}
+now += pending[0].delay;
+pending[0].fn();
+if (
+  pending.length !== 2 ||
+  pending[1].delay <= 0 ||
+  pending[1].delay > MAX_BROWSER_TIMER_DELAY_MS ||
+  longController.signal.aborted
+) {{
+  throw new Error("large deadline did not chain its remaining interval");
+}}
+now = start + longTimeout;
+pending[1].fn();
+if (!longController.signal.aborted) {{
+  throw new Error("large deadline did not abort at the true deadline");
+}}
+cancelLong();
+
+const shortController = controller();
+const shortStart = pending.length;
+const cancelShort = startAbortDeadline(shortController, 5000);
+if (
+  pending.length !== shortStart + 1 ||
+  pending[shortStart].delay !== 5000 ||
+  shortController.signal.aborted
+) {{
+  throw new Error("ordinary timeout no longer uses one unchanged timer");
+}}
+cancelShort();
+if (!cleared.includes(shortStart + 1)) {{
+  throw new Error("ordinary timeout cancellation did not clear its timer");
+}}
+
+process.stdout.write(JSON.stringify({{
+  firstChunk: pending[0].delay,
+  secondChunk: pending[1].delay,
+  longAborted: longController.signal.aborted,
+  shortDelay: pending[shortStart].delay,
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["firstChunk"], 2_147_000_000)
+        self.assertGreater(result["secondChunk"], 0)
+        self.assertLessEqual(result["secondChunk"], 2_147_000_000)
+        self.assertIs(result["longAborted"], True)
+        self.assertEqual(result["shortDelay"], 5000)
 
     def test_h2_scan_never_blocks_core_snapshot_render_or_recorder_controls(self):
         refresh = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(

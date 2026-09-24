@@ -215,6 +215,7 @@ const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category
 const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
 const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 60000;
 const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
+const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;
 
 const RECORDING_COLLISION_BLOCKERS = new Set([
   "output-already-exists",
@@ -913,14 +914,46 @@ function registerServiceWorker() {
     });
 }
 
+function startAbortDeadline(controller, timeoutMs) {
+  if (timeoutMs === null) return null;
+  if (
+    typeof timeoutMs !== "number" ||
+    !Number.isFinite(timeoutMs) ||
+    timeoutMs <= 0
+  ) {
+    throw new Error("Ungültiges Anfrage-Zeitbudget.");
+  }
+
+  const deadline = performance.now() + timeoutMs;
+  let timer = null;
+  let cancelled = false;
+  const arm = () => {
+    if (cancelled || controller.signal.aborted) return;
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) {
+      controller.abort();
+      return;
+    }
+    timer = window.setTimeout(
+      arm,
+      Math.min(remaining, MAX_BROWSER_TIMER_DELAY_MS),
+    );
+  };
+  arm();
+
+  return () => {
+    cancelled = true;
+    if (timer !== null) window.clearTimeout(timer);
+  };
+}
+
 async function fetchJson(url, options = {}) {
   if (!backendAllowed() && sameOriginApiTarget(url)) {
     throw new Error(LOCAL_MODE_API_BLOCK_MESSAGE);
   }
   const { timeoutMs = 12000, ...fetchOptions } = options;
   const controller = new AbortController();
-  const timeout =
-    timeoutMs === null ? null : window.setTimeout(() => controller.abort(), timeoutMs);
+  const cancelTimeout = startAbortDeadline(controller, timeoutMs);
   let response;
   try {
     response = await fetch(url, {
@@ -930,7 +963,7 @@ async function fetchJson(url, options = {}) {
       ...fetchOptions,
     });
   } catch (error) {
-    if (timeout !== null) window.clearTimeout(timeout);
+    if (cancelTimeout !== null) cancelTimeout();
     if (
       controller.signal.aborted ||
       (error instanceof DOMException && error.name === "AbortError")
@@ -964,7 +997,7 @@ async function fetchJson(url, options = {}) {
     }
     throw new Error(`Der Control-Dienst antwortet unlesbar (${response.status}).`);
   } finally {
-    if (timeout !== null) window.clearTimeout(timeout);
+    if (cancelTimeout !== null) cancelTimeout();
   }
   if (!response.ok) {
     const serviceCode =
