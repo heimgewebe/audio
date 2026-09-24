@@ -514,6 +514,70 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
             refresh.index("await loadH2Workspace({ render: true });"),
         )
 
+    def test_h2_workspace_load_has_independent_single_flight_gate(self):
+        self.assertIn("h2WorkspaceLoading: false", self.app)
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
+        self.assertIn("state.h2WorkspaceLoading", loader)
+        self.assertIn("finally {", loader)
+        self.assertIn("state.h2WorkspaceLoading = false;", loader)
+
+        harness = f"""
+const state = {{
+  h2WorkspaceLoading: false,
+  h2ActivitySequence: 0,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+}};
+let fetchCalls = 0;
+let timeoutCalls = 0;
+let renders = 0;
+let resolveFetch;
+function backendAllowed() {{ return true; }}
+async function h2WorkspaceTimeoutMs() {{ timeoutCalls += 1; return 1000; }}
+function fetchJson() {{
+  fetchCalls += 1;
+  return new Promise((resolve) => {{ resolveFetch = resolve; }});
+}}
+function renderH2Workspace() {{ renders += 1; }}
+{loader}
+(async () => {{
+  const first = loadH2Workspace({{ render: true }});
+  const second = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  if (fetchCalls !== 1 || timeoutCalls !== 1 || state.h2WorkspaceLoading !== true) {{
+    throw new Error("H2 single-flight gate did not suppress the duplicate load");
+  }}
+  resolveFetch({{ kind: "audio_h2_workspace" }});
+  await first;
+  await second;
+  if (state.h2WorkspaceLoading !== false || renders !== 1) {{
+    throw new Error("H2 single-flight gate did not release after completion");
+  }}
+  process.stdout.write(JSON.stringify({{ fetchCalls, timeoutCalls, renders }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {"fetchCalls": 1, "timeoutCalls": 1, "renders": 1},
+        )
+
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn(
+            "refresh.disabled = state.h2ActionPending || state.h2WorkspaceLoading;",
+            renderer,
+        )
+
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
         controls = self.app.split("function renderRecordingControls(", 1)[1].split(
             "\nasync function loadRecordingLibrary", 1

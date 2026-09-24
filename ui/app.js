@@ -431,6 +431,7 @@ const state = {
   h2Workspace: null,
   h2WorkspaceError: null,
   h2ActivitySequence: 0,
+  h2WorkspaceLoading: false,
   h2ActionPending: false,
   h2AnnotationDrafts: new Map(),
   recordingPlayerSessionId: null,
@@ -3718,7 +3719,8 @@ async function h2WorkspaceTimeoutMs() {
 }
 
 async function loadH2Workspace({ render = true } = {}) {
-  if (!backendAllowed()) return;
+  if (!backendAllowed() || state.h2WorkspaceLoading) return;
+  state.h2WorkspaceLoading = true;
   const activitySequence = ++state.h2ActivitySequence;
   try {
     const timeoutMs = await h2WorkspaceTimeoutMs();
@@ -3735,6 +3737,8 @@ async function loadH2Workspace({ render = true } = {}) {
     state.h2Workspace = null;
     state.h2WorkspaceError =
       error instanceof Error ? error.message : "H2-Arbeitsbereich ist nicht lesbar.";
+  } finally {
+    state.h2WorkspaceLoading = false;
   }
   if (render) renderH2Workspace();
 }
@@ -3896,7 +3900,7 @@ function renderH2Workspace({ force = false } = {}) {
   if (!inbox || !archive || !status || !refresh) return;
   if (!force && document.activeElement?.closest(".h2-annotation-form")) return;
 
-  refresh.disabled = state.h2ActionPending;
+  refresh.disabled = state.h2ActionPending || state.h2WorkspaceLoading;
   const workspace = state.h2Workspace;
   if (!workspace) {
     status.textContent = state.h2WorkspaceError || "H2 wird gelesen.";
