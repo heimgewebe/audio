@@ -390,6 +390,7 @@ MAX_HEADER_BYTES = 16_384
 MAX_RANGE_HEADER_BYTES = 128
 MAX_STATIC_BYTES = 1_048_576
 MAX_SUBPROCESS_OUTPUT_BYTES = 1_048_576
+MAX_H2_WORKSPACE_RESPONSE_BYTES = 2_097_152
 MAX_CONCURRENT_REQUESTS = 12
 REQUEST_IO_TIMEOUT_SECONDS = 5.0
 H2_MIN_IO_BYTES_PER_SECOND = 512 * 1024
@@ -3815,7 +3816,15 @@ class AudioControl:
         return budget_report, scan_timeout
 
     def h2_workspace_budget(self) -> dict[str, Any]:
-        _budget_report, scan_timeout = self._h2_scan_budget()
+        source_budget_available = True
+        try:
+            _budget_report, scan_timeout = self._h2_scan_budget()
+        except ControlError:
+            # The removable recorder is optional for archive browsing. Use a
+            # finite conservative source-failure bound so the persistent H2
+            # library remains reachable when the card is absent or unreadable.
+            source_budget_available = False
+            scan_timeout = float(H2_METADATA_TIMEOUT_SECONDS)
         workspace_timeout = self._h2_workspace_timeout_for_scan(scan_timeout)
         return {
             "schema_version": 1,
@@ -3826,6 +3835,7 @@ class AudioControl:
                 + workspace_timeout
                 + REQUEST_IO_TIMEOUT_SECONDS
             ),
+            "source_budget_available": source_budget_available,
             "read_only": True,
             "source_mutated": False,
         }
@@ -4016,7 +4026,7 @@ class AudioControl:
                     ),
                 }
             )
-        return {
+        workspace = {
             "schema_version": 1,
             "kind": "audio_h2_workspace",
             "source": source_projection,
@@ -4024,6 +4034,19 @@ class AudioControl:
             "source_delete_authorized": False,
             "creative_handoff_authorized": False,
         }
+        encoded_workspace = (
+            json.dumps(
+                workspace,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        if len(encoded_workspace) > MAX_H2_WORKSPACE_RESPONSE_BYTES:
+            raise ControlError(
+                "H2-Arbeitsbereich überschreitet das sichere Antwortlimit."
+            )
+        return workspace
 
     @staticmethod
     def _validate_h2_media_binding(

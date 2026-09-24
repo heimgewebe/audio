@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -866,7 +867,56 @@ def _library_item(
     }
 
 
+def _control_library_material_count(root: pathlib.Path) -> int:
+    count = 0
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if (
+                entry.is_dir(follow_symlinks=False)
+                and MATERIAL_ID_RE.fullmatch(entry.name) is not None
+            ):
+                count += 1
+    return count
+
+
+def _open_library_import_lock(library: pathlib.Path) -> int:
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(library / ".h2-import.lock", flags, 0o600)
+    except OSError as error:
+        raise H2IngestError("H2-Import-Lock kann nicht geöffnet werden.") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+            raise H2IngestError("H2-Import-Lock ist nicht vertrauenswürdig.")
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 def import_scene(
+    scene: str,
+    *,
+    source_root: pathlib.Path = DEFAULT_SOURCE_ROOT,
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    source = _resolve_source_root(source_root)
+    library = _resolve_library_root(library_root, source)
+    descriptor = _open_library_import_lock(library)
+    try:
+        return _import_scene_locked(
+            scene,
+            source_root=source,
+            library_root=library,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _import_scene_locked(
     scene: str,
     *,
     source_root: pathlib.Path = DEFAULT_SOURCE_ROOT,
@@ -931,6 +981,12 @@ def import_scene(
                 "source_mutated": False,
             }
         raise H2IngestError("Material-ID kollidiert mit einem anderen Bibliotheksobjekt.")
+
+    if _control_library_material_count(library) >= MAX_CONTROL_LIBRARY_ITEMS:
+        raise H2IngestError(
+            "H2-Control-Bibliothek hat ihr Material-Limit erreicht; "
+            "neuer Import wird vor der Veröffentlichung abgewiesen."
+        )
 
     if inspect_scene(source, scene) != session:
         raise H2IngestError("H2-Session änderte sich zwischen Prüfung und Import.")

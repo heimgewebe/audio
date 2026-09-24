@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import hashlib
 import importlib.util
 import json
@@ -370,7 +372,13 @@ class H2IngestTests(unittest.TestCase):
                         source_root=source,
                         library_root=library,
                     )
-            self.assertFalse(library.exists() and any(library.iterdir()))
+            entries = list(library.iterdir()) if library.exists() else []
+            self.assertEqual(
+                [path.name for path in entries],
+                [".h2-import.lock"],
+            )
+            self.assertTrue(entries[0].is_file())
+            self.assertEqual(stat.S_IMODE(entries[0].stat().st_mode), 0o600)
 
     def test_repeat_import_preflights_hashes_without_copying_to_staging(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -690,12 +698,12 @@ class H2IngestTests(unittest.TestCase):
         ).encode("utf-8")
         self.assertLess(len(encoded), 1_048_576)
 
-    def test_control_library_bounds_material_collection(self):
+    def test_control_library_rejects_new_material_before_publish_at_capacity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             source = make_source(root, roles=("FRONT",))
             library = root / "library"
-            MODULE.import_scene(
+            first = MODULE.import_scene(
                 "170926_191401",
                 source_root=source,
                 library_root=library,
@@ -709,16 +717,80 @@ class H2IngestTests(unittest.TestCase):
                 role="FRONT",
                 recorded_time="19:14:02",
             )
-            MODULE.import_scene(
-                second_scene,
-                source_root=source,
-                library_root=library,
+            with mock.patch.object(MODULE, "MAX_CONTROL_LIBRARY_ITEMS", 1):
+                repeated = MODULE.import_scene(
+                    "170926_191401",
+                    source_root=source,
+                    library_root=library,
+                )
+                self.assertEqual(repeated["status"], "already-imported")
+                self.assertEqual(repeated["material_id"], first["material_id"])
+                with self.assertRaisesRegex(MODULE.H2IngestError, "Material-Limit"):
+                    MODULE.import_scene(
+                        second_scene,
+                        source_root=source,
+                        library_root=library,
+                    )
+                report = MODULE.library(library, projection="control")
+            self.assertEqual(report["count"], 1)
+            material_dirs = [
+                path
+                for path in library.iterdir()
+                if path.is_dir() and MODULE.MATERIAL_ID_RE.fullmatch(path.name)
+            ]
+            self.assertEqual([path.name for path in material_dirs], [first["material_id"]])
+            self.assertFalse(
+                any(path.name.startswith(".h2-staging-") for path in library.iterdir())
             )
+
+    def test_control_library_capacity_is_serialized_across_concurrent_imports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            second_scene = "170926_191402"
+            second = source / second_scene
+            second.mkdir()
+            write_h2_wav(
+                second / f"{second_scene}_FRONT.WAV",
+                scene=second_scene,
+                described_scene=second_scene,
+                role="FRONT",
+                recorded_time="19:14:02",
+            )
+            library = root / "library"
+            library.mkdir(mode=0o700)
             with (
                 mock.patch.object(MODULE, "MAX_CONTROL_LIBRARY_ITEMS", 1),
-                self.assertRaisesRegex(MODULE.H2IngestError, "Material-Limit"),
+                ThreadPoolExecutor(max_workers=2) as executor,
             ):
-                MODULE.library(library, projection="control")
+                futures = [
+                    executor.submit(
+                        MODULE.import_scene,
+                        scene,
+                        source_root=source,
+                        library_root=library,
+                    )
+                    for scene in ("170926_191401", second_scene)
+                ]
+                results = []
+                errors = []
+                for future in futures:
+                    try:
+                        results.append(future.result())
+                    except MODULE.H2IngestError as error:
+                        errors.append(str(error))
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("Material-Limit", errors[0])
+            report = MODULE.library(library, projection="control")
+            self.assertEqual(report["count"], 1)
+            material_dirs = [
+                path
+                for path in library.iterdir()
+                if path.is_dir() and MODULE.MATERIAL_ID_RE.fullmatch(path.name)
+            ]
+            self.assertEqual(len(material_dirs), 1)
 
     def test_library_may_not_be_created_on_the_h2_source(self):
         with tempfile.TemporaryDirectory() as directory:

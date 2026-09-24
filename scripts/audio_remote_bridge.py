@@ -89,6 +89,7 @@ MAX_REQUEST_LINE_BYTES = 2048
 MAX_HEADER_BYTES = 16_384
 MAX_BACKEND_HEADER_BYTES = 32_768
 MAX_RESPONSE_BYTES = 1_048_576
+MAX_H2_RESPONSE_BYTES = 2_097_152
 MAX_RECORDING_AUDIO_STREAM_BYTES = 6_000_000_000
 MAX_CONCURRENT_REQUESTS = 8
 MAX_CONDITIONAL_HEADER_BYTES = 4096
@@ -405,8 +406,12 @@ def contains_sensitive_json_key(value: Any) -> bool:
     return False
 
 
-def encode_scrubbed_json(payload: bytes) -> tuple[bytes, int]:
-    if len(payload) > MAX_RESPONSE_BYTES:
+def encode_scrubbed_json(
+    payload: bytes,
+    *,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+) -> tuple[bytes, int]:
+    if len(payload) > max_bytes:
         raise BackendFailure("backend response exceeds bridge limit")
     try:
         decoded = json.loads(payload.decode("utf-8"))
@@ -419,7 +424,7 @@ def encode_scrubbed_json(payload: bytes) -> tuple[bytes, int]:
         json.dumps(scrubbed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         + "\n"
     ).encode("utf-8")
-    if len(encoded) > MAX_RESPONSE_BYTES:
+    if len(encoded) > max_bytes:
         raise BackendFailure("scrubbed response exceeds bridge limit")
     return encoded, removed
 
@@ -800,8 +805,11 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         )
         if header_bytes > MAX_BACKEND_HEADER_BYTES:
             raise BackendFailure("backend headers exceed bridge limit")
-        payload = response.read(MAX_RESPONSE_BYTES + 1)
-        if len(payload) > MAX_RESPONSE_BYTES:
+        response_limit = (
+            MAX_H2_RESPONSE_BYTES if target == "/api/v1/h2" else MAX_RESPONSE_BYTES
+        )
+        payload = response.read(response_limit + 1)
+        if len(payload) > response_limit:
             raise BackendFailure("backend response exceeds bridge limit")
         content_type = next(
             (value for name, value in headers if name.lower() == "content-type"), ""
@@ -811,7 +819,9 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
             content_type.lower().split(";", 1)[0].strip() == "application/json"
             and response.status != HTTPStatus.NOT_MODIFIED
         ):
-            payload, redactions = encode_scrubbed_json(payload)
+            payload, redactions = encode_scrubbed_json(
+                payload, max_bytes=response_limit
+            )
         filtered = [
             (name, value)
             for name, value in headers
@@ -1034,7 +1044,11 @@ def stream_backend_recording_artifact(
         connection.close()
 
 
-def _bounded_backend_payload(response: http.client.HTTPResponse) -> tuple[list[tuple[str, str]], bytes]:
+def _bounded_backend_payload(
+    response: http.client.HTTPResponse,
+    *,
+    max_bytes: int = MAX_RESPONSE_BYTES,
+) -> tuple[list[tuple[str, str]], bytes]:
     headers = response.getheaders()
     header_bytes = sum(
         len(name.encode("latin-1", errors="replace"))
@@ -1044,8 +1058,8 @@ def _bounded_backend_payload(response: http.client.HTTPResponse) -> tuple[list[t
     )
     if header_bytes > MAX_BACKEND_HEADER_BYTES:
         raise BackendFailure("backend headers exceed bridge limit")
-    payload = response.read(MAX_RESPONSE_BYTES + 1)
-    if len(payload) > MAX_RESPONSE_BYTES:
+    payload = response.read(max_bytes + 1)
+    if len(payload) > max_bytes:
         raise BackendFailure("backend response exceeds bridge limit")
     return headers, payload
 
@@ -1223,13 +1237,17 @@ def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
         connection.putheader("X-Audio-Control-Token", token)
         connection.endheaders(body)
         response = connection.getresponse()
-        headers, payload = _bounded_backend_payload(response)
+        headers, payload = _bounded_backend_payload(
+            response, max_bytes=MAX_H2_RESPONSE_BYTES
+        )
         content_type = next(
             (value for name, value in headers if name.lower() == "content-type"), ""
         )
         if content_type.lower().split(";", 1)[0].strip() != "application/json":
             raise BackendFailure("backend H2 action response is not JSON")
-        scrubbed, redactions = encode_scrubbed_json(payload)
+        scrubbed, redactions = encode_scrubbed_json(
+            payload, max_bytes=MAX_H2_RESPONSE_BYTES
+        )
         if response.status == HTTPStatus.OK:
             decoded = json.loads(scrubbed.decode("utf-8"))
             if (

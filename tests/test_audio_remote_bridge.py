@@ -1291,6 +1291,131 @@ class BridgeHTTPTests(unittest.TestCase):
             with self.assertRaises(MODULE.BackendFailure):
                 MODULE.h2_import_backend_timeout_seconds("170926_191401")
 
+    def test_h2_workspace_response_uses_bounded_h2_specific_byte_budget(self):
+        payload = json.dumps(
+            {
+                "kind": "audio_h2_workspace",
+                "padding": "x" * (MODULE.MAX_RESPONSE_BYTES + 4096),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertGreater(len(payload), MODULE.MAX_RESPONSE_BYTES)
+        self.assertLess(len(payload), MODULE.MAX_H2_RESPONSE_BYTES)
+
+        class Response:
+            status = 200
+
+            def getheaders(self):
+                return [("Content-Type", "application/json; charset=utf-8")]
+
+            def read(self, size):
+                return payload[:size]
+
+        class Connection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def putrequest(self, *_args, **_kwargs):
+                pass
+
+            def putheader(self, *_args, **_kwargs):
+                pass
+
+            def endheaders(self, *_args, **_kwargs):
+                pass
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_workspace_backend_timeout_seconds",
+                return_value=120.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", Connection),
+        ):
+            status, _headers, forwarded, _redactions = MODULE.read_backend_response(
+                "/api/v1/h2", None
+            )
+        self.assertEqual(status, 200)
+        self.assertGreater(len(forwarded), MODULE.MAX_RESPONSE_BYTES)
+
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", Connection):
+            with self.assertRaisesRegex(
+                MODULE.BackendFailure, "response exceeds bridge limit"
+            ):
+                MODULE.read_backend_response("/api/v1/snapshot", None)
+
+    def test_h2_action_response_uses_same_h2_specific_byte_budget(self):
+        result = {
+            "kind": "audio_control_h2_action_result",
+            "operation": "annotate",
+            "workspace": {
+                "kind": "audio_h2_workspace",
+                "source": {"status": "unavailable", "count": 0, "sessions": []},
+                "library": {"count": 1, "items": []},
+                "source_delete_authorized": False,
+                "creative_handoff_authorized": False,
+                "padding": "x" * (MODULE.MAX_RESPONSE_BYTES + 4096),
+            },
+        }
+        payload = json.dumps(result, separators=(",", ":")).encode("utf-8")
+        self.assertGreater(len(payload), MODULE.MAX_RESPONSE_BYTES)
+        self.assertLess(len(payload), MODULE.MAX_H2_RESPONSE_BYTES)
+
+        class Response:
+            status = 200
+
+            def getheaders(self):
+                return [("Content-Type", "application/json; charset=utf-8")]
+
+            def read(self, size):
+                return payload[:size]
+
+        class Connection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def putrequest(self, *_args, **_kwargs):
+                pass
+
+            def putheader(self, *_args, **_kwargs):
+                pass
+
+            def endheaders(self, *_args, **_kwargs):
+                pass
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        with (
+            mock.patch.object(
+                MODULE, "read_backend_action_token", return_value="x" * 32
+            ),
+            mock.patch.object(
+                MODULE, "h2_annotation_backend_timeout_seconds", return_value=120.0
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", Connection),
+        ):
+            status, forwarded, _redactions = MODULE.write_backend_h2_action(
+                {
+                    "operation": "annotate",
+                    "material_id": "a" * 24,
+                    "title": "",
+                    "note": "",
+                    "tags": [],
+                }
+            )
+        self.assertEqual(status, 200)
+        self.assertGreater(len(forwarded), MODULE.MAX_RESPONSE_BYTES)
+
     def test_h2_workspace_and_action_timeouts_cover_backend_contract(self):
         budget = {
             "schema_version": 1,

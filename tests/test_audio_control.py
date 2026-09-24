@@ -4393,11 +4393,13 @@ class H2MaterialControlTests(unittest.TestCase):
             sessions=None,
             skipped_invalid_sessions=None,
             library_items=None,
+            budget_error=False,
         ):
             self.calls = []
             self.sessions = sessions
             self.skipped_invalid_sessions = list(skipped_invalid_sessions or [])
             self.library_items = list(library_items or [])
+            self.budget_error = budget_error
 
         def run(self, argv, *, timeout):
             self.calls.append((tuple(argv), timeout))
@@ -4409,6 +4411,8 @@ class H2MaterialControlTests(unittest.TestCase):
                     else "full"
                 )
                 if projection == "budget":
+                    if self.budget_error:
+                        return MODULE.CommandResult(tuple(argv), 1, "{}", "")
                     if self.sessions is None:
                         budget_sessions = 1
                         candidate_files = 3
@@ -4585,6 +4589,109 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(call[2], "scan")
         self.assertIn("budget", call)
         self.assertEqual(timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+
+    def test_h2_workspace_budget_keeps_archive_reachable_without_source(self):
+        archived = {
+            "material_id": "a" * 24,
+            "source": {
+                "scene": "170926_191401",
+                "recorded_date": "2026-09-17",
+                "recorded_time": "19:14:01",
+            },
+            "imported_at": "2026-09-17T19:15:00+00:00",
+            "annotations": {"title": "Archiv", "note": "", "tags": []},
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": 1_048_576,
+            "max_file_bytes": 1_048_576,
+        }
+        runner = self.Runner(
+            library_items=[archived],
+            budget_error=True,
+        )
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        budget = controller.h2_workspace_budget()
+        expected_workspace = controller._h2_workspace_timeout_for_scan(
+            float(MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        )
+        self.assertFalse(budget["source_budget_available"])
+        self.assertEqual(budget["workspace_timeout_seconds"], expected_workspace)
+        self.assertEqual(
+            budget["annotation_timeout_seconds"],
+            MODULE.H2_METADATA_TIMEOUT_SECONDS
+            + expected_workspace
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+        )
+
+        workspace = controller.h2_workspace()
+        self.assertEqual(workspace["source"]["status"], "unavailable")
+        self.assertEqual(workspace["source"]["count"], 0)
+        self.assertEqual(workspace["library"]["count"], 1)
+        self.assertEqual(
+            workspace["library"]["items"][0]["material_id"],
+            archived["material_id"],
+        )
+
+    def test_h2_workspace_combined_projection_stays_under_bridge_cap(self):
+        tags = ["😀" * 47 + chr(0x1F600 + index) for index in range(16)]
+        source_sessions = [
+            {
+                "scene": f"{index:06d}_235959",
+                "recorded_date": "9999-12-31",
+                "recorded_time": "23:59:59",
+                "duration_seconds": 1.7976931348623157e308,
+                "sample_rate_hz": 96000,
+                "roles": ["front", "rear", "mix"],
+                "segment_count": 192,
+                "total_bytes": (2**63 - 1) * 192,
+                "max_file_bytes": 2**63 - 1,
+            }
+            for index in range(2048)
+        ]
+        library_items = [
+            {
+                "material_id": f"{index:024x}",
+                "source": {
+                    "scene": f"{index:06d}_235959",
+                    "recorded_date": "9999-12-31",
+                    "recorded_time": "23:59:59",
+                },
+                "imported_at": "x" * 64,
+                "annotations": {
+                    "title": "😀" * 160,
+                    "note": "😀" * 2000,
+                    "tags": tags,
+                },
+                "roles": ["front", "rear", "mix"],
+                "segment_count": 192,
+                "total_bytes": (2**63 - 1) * 192,
+                "max_file_bytes": 2**63 - 1,
+            }
+            for index in range(80)
+        ]
+        controller = MODULE.AudioControl(
+            runner=self.Runner(
+                sessions=source_sessions,
+                library_items=library_items,
+            ),
+            telemetry=None,
+        )
+        workspace = controller.h2_workspace()
+        encoded = (
+            json.dumps(
+                workspace,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        self.assertEqual(len(workspace["source"]["sessions"]), 2048)
+        self.assertEqual(len(workspace["library"]["items"]), 80)
+        self.assertGreater(len(encoded), 1_048_576)
+        self.assertLessEqual(
+            len(encoded),
+            MODULE.MAX_H2_WORKSPACE_RESPONSE_BYTES,
+        )
 
     def test_h2_workspace_projects_source_and_empty_archive(self):
         runner = self.Runner()
