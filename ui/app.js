@@ -3756,7 +3756,7 @@ async function h2WorkspaceTimeoutMs() {
 }
 
 async function loadH2Workspace({ render = true } = {}) {
-  if (!backendAllowed() || state.h2WorkspaceLoading) return;
+  if (!backendAllowed() || state.h2WorkspaceLoading || state.h2ActionPending) return;
   state.h2WorkspaceLoading = true;
   const loadGeneration = ++state.h2WorkspaceLoadGeneration;
   const activitySequence = ++state.h2ActivitySequence;

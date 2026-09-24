@@ -642,6 +642,7 @@ process.stdout.write(JSON.stringify({{
             "async function loadH2Workspace", 1
         )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
         self.assertIn("state.h2WorkspaceLoading", loader)
+        self.assertIn("state.h2ActionPending", loader)
         self.assertIn("const loadGeneration = ++state.h2WorkspaceLoadGeneration;", loader)
         self.assertIn("finally {", loader)
         self.assertIn("loadGeneration === state.h2WorkspaceLoadGeneration", loader)
@@ -701,6 +702,66 @@ function renderH2Workspace() {{ renders += 1; }}
         self.assertIn(
             "refresh.disabled = state.h2ActionPending || state.h2WorkspaceLoading;",
             renderer,
+        )
+
+    def test_h2_workspace_load_does_not_supersede_pending_action(self):
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
+
+        harness = f"""
+const state = {{
+  h2WorkspaceLoadGeneration: 4,
+  h2WorkspaceLoading: false,
+  h2ActionPending: true,
+  h2ActivitySequence: 7,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+}};
+let timeoutCalls = 0;
+let fetchCalls = 0;
+let renders = 0;
+function backendAllowed() {{ return true; }}
+async function h2WorkspaceTimeoutMs() {{ timeoutCalls += 1; return 1000; }}
+async function fetchJson() {{ fetchCalls += 1; return {{ kind: "audio_h2_workspace" }}; }}
+function renderH2Workspace() {{ renders += 1; }}
+{loader}
+(async () => {{
+  await loadH2Workspace({{ render: true }});
+  if (
+    state.h2ActivitySequence !== 7 ||
+    state.h2WorkspaceLoadGeneration !== 4 ||
+    state.h2WorkspaceLoading !== false ||
+    timeoutCalls !== 0 ||
+    fetchCalls !== 0 ||
+    renders !== 0
+  ) {{
+    throw new Error("pending H2 action was superseded by workspace refresh");
+  }}
+  process.stdout.write(JSON.stringify({{
+    activitySequence: state.h2ActivitySequence,
+    loadGeneration: state.h2WorkspaceLoadGeneration,
+    timeoutCalls,
+    fetchCalls,
+    renders,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "activitySequence": 7,
+                "loadGeneration": 4,
+                "timeoutCalls": 0,
+                "fetchCalls": 0,
+                "renders": 0,
+            },
         )
 
     def test_h2_workspace_load_gate_restarts_after_authority_invalidation(self):
