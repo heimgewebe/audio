@@ -52,6 +52,13 @@ MAX_MANIFEST_MASTER_METADATA_BYTES = (
     MAX_METADATA_JSON_BYTES - MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES
 )
 MAX_WAVE_CHUNK_IDS_JSON_BYTES = MAX_MANIFEST_MASTER_METADATA_BYTES
+MIN_CANONICAL_WAVE_CHUNK_ID_JSON_BYTES = 6
+MAX_WAVE_CHUNK_COUNT = max(
+    0,
+    (MAX_WAVE_CHUNK_IDS_JSON_BYTES - 1)
+    // (MIN_CANONICAL_WAVE_CHUNK_ID_JSON_BYTES + 1),
+)
+MAX_WAVE_CHUNK_HEADER_READ_BYTES = MAX_WAVE_CHUNK_COUNT * 8
 MAX_LEGACY_MANIFEST_JSON_BYTES = 144 * 1024 * 1024
 MAX_LEGACY_ANNOTATIONS_JSON_BYTES = 64 * 1024 * 1024
 LEGACY_MANIFEST_CONTROL_NAME = "manifest.control-v1.json"
@@ -64,7 +71,13 @@ LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS = 60
 LEGACY_MIGRATION_PER_MATERIAL_SECONDS = 1
 LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS = 5 * 60
 RELEASE_MARKER_NAME = ".audio-control-release.json"
-CONTROL_SCAN_METADATA_BUDGET_BYTES_PER_FILE = MAX_BEXT_BYTES + 4096
+CONTROL_SCAN_METADATA_BUDGET_BYTES_PER_FILE = (
+    12
+    + 16
+    + MAX_BEXT_BYTES
+    + MAX_WAVE_CHUNK_HEADER_READ_BYTES
+    + 4096
+)
 CONTROL_SCAN_PROJECTION = "control-v1"
 CONTROL_SCAN_BUDGET_PROJECTION = "control-budget-v1"
 CONTROL_LIBRARY_PROJECTION = "control-v1"
@@ -1636,6 +1649,8 @@ def _legacy_manifest_control_projection(
     legacy_sha256: str,
     legacy_bytes: int,
     legacy_mtime_ns: int,
+    legacy_device: int,
+    legacy_inode: int,
 ) -> dict[str, Any]:
     empty_annotations = {
         "schema_version": SCHEMA_VERSION,
@@ -1671,6 +1686,8 @@ def _legacy_manifest_control_projection(
         "sha256": legacy_sha256,
         "bytes": legacy_bytes,
         "mtime_ns": legacy_mtime_ns,
+        "device": legacy_device,
+        "inode": legacy_inode,
     }
     if (
         re.fullmatch(r"[0-9a-f]{64}", legacy_sha256) is None
@@ -1680,6 +1697,12 @@ def _legacy_manifest_control_projection(
         or isinstance(legacy_mtime_ns, bool)
         or not isinstance(legacy_mtime_ns, int)
         or legacy_mtime_ns < 0
+        or isinstance(legacy_device, bool)
+        or not isinstance(legacy_device, int)
+        or legacy_device < 0
+        or isinstance(legacy_inode, bool)
+        or not isinstance(legacy_inode, int)
+        or legacy_inode <= 0
     ):
         raise H2IngestError("Legacy-Materialmanifest besitzt keinen gültigen Sidecar-Beleg.")
     return {
@@ -1712,6 +1735,8 @@ def _manifest_from_legacy_control(
         or not isinstance(legacy, dict)
         or legacy.get("bytes") != manifest_metadata.st_size
         or legacy.get("mtime_ns") != manifest_metadata.st_mtime_ns
+        or legacy.get("device") != manifest_metadata.st_dev
+        or legacy.get("inode") != manifest_metadata.st_ino
         or not isinstance(legacy.get("sha256"), str)
         or re.fullmatch(r"[0-9a-f]{64}", legacy["sha256"]) is None
         or not isinstance(source, dict)
@@ -1936,6 +1961,8 @@ def migrate_legacy_manifests(
                     legacy_sha256=digest,
                     legacy_bytes=manifest_metadata.st_size,
                     legacy_mtime_ns=manifest_metadata.st_mtime_ns,
+                    legacy_device=manifest_metadata.st_dev,
+                    legacy_inode=manifest_metadata.st_ino,
                 )
                 if control_path.exists() or control_path.is_symlink():
                     _write_json_replace(control_path, control, 0o440)
