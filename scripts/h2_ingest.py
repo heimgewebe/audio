@@ -46,6 +46,10 @@ MAX_SESSION_FILES = 192
 MAX_CONTROL_SCAN_SESSIONS = 2048
 MAX_CONTROL_LIBRARY_ITEMS = 80
 MAX_METADATA_JSON_BYTES = 2 * 1024 * 1024
+MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES = 64 * 1024
+MAX_MANIFEST_MASTER_METADATA_BYTES = (
+    MAX_METADATA_JSON_BYTES - MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES
+)
 MAX_LEGACY_MANIFEST_JSON_BYTES = 144 * 1024 * 1024
 MAX_LEGACY_ANNOTATIONS_JSON_BYTES = 64 * 1024 * 1024
 LEGACY_MANIFEST_CONTROL_NAME = "manifest.control-v1.json"
@@ -133,6 +137,38 @@ def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
+
+
+def _bounded_canonical_size(value: Any, maximum: int) -> int:
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 0:
+        raise H2IngestError("Metadatenbudget ist ungültig.")
+    total = 0
+    encoder = json.JSONEncoder(
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    for chunk in encoder.iterencode(value):
+        total += len(chunk.encode("utf-8"))
+        if total > maximum:
+            raise H2IngestError(
+                "H2-Materialmanifest überschreitet das sichere Metadatenbudget."
+            )
+    return total
+
+
+def _manifest_master_metadata_projection(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": item["name"],
+        "role": item["role"],
+        "segment_index": item["segment_index"],
+        "sha256": "0" * 64,
+        "bytes": item["bytes"],
+        "audio": item["audio"],
+        "bwf": item["bwf"],
+        "chunk_ids": item["chunk_ids"],
+        "marker_chunks_observed": item["marker_chunks_observed"],
+    }
 
 
 def _material_id_for_master_set(master_set_sha256: str) -> str:
@@ -466,6 +502,7 @@ def inspect_scene(source_root: pathlib.Path, scene: str) -> dict[str, Any]:
     _lstat_directory(session_dir, "H2-Session")
     files: list[dict[str, Any]] = []
     seen_segments: set[tuple[str, int]] = set()
+    manifest_master_metadata_bytes = 2  # JSON list brackets.
     with os.scandir(session_dir) as entries:
         for entry in entries:
             if entry.name.startswith("."):
@@ -486,9 +523,24 @@ def inspect_scene(source_root: pathlib.Path, scene: str) -> dict[str, Any]:
             seen_segments.add(segment_key)
             item = inspect_wav(pathlib.Path(entry.path), scene, role)
             item["segment_index"] = segment_index
-            files.append(item)
-            if len(files) > MAX_SESSION_FILES:
+            if len(files) >= MAX_SESSION_FILES:
                 raise H2IngestError("H2-Session überschreitet das Dateilimit.")
+            separator_bytes = 1 if files else 0
+            remaining_metadata_bytes = (
+                MAX_MANIFEST_MASTER_METADATA_BYTES
+                - manifest_master_metadata_bytes
+                - separator_bytes
+            )
+            if remaining_metadata_bytes < 0:
+                raise H2IngestError(
+                    "H2-Materialmanifest überschreitet das sichere Metadatenbudget."
+                )
+            item_metadata_bytes = _bounded_canonical_size(
+                _manifest_master_metadata_projection(item),
+                remaining_metadata_bytes,
+            )
+            manifest_master_metadata_bytes += separator_bytes + item_metadata_bytes
+            files.append(item)
     if not files:
         raise H2IngestError("H2-Session enthält keine WAV-Master.")
 

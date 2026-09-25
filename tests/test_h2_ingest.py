@@ -164,6 +164,83 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(item["bwf"]["originator"], "ZOOM H2essential")
             self.assertNotIn("sha256", item)
 
+    def test_scene_rejects_cumulative_manifest_metadata_before_full_serialization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            scene = "170926_191401"
+            session = root / scene
+            session.mkdir()
+            names = [
+                f"{scene}_FRONT.WAV",
+                *[
+                    f"{scene}_FRONT_{index:03d}.WAV"
+                    for index in range(1, 8)
+                ],
+            ]
+            for name in names:
+                (session / name).write_bytes(b"x")
+
+            control_payload = "\x01" * (MODULE.MAX_BEXT_BYTES - 604)
+            coding_history = "A=" + control_payload
+
+            def inspected(path, expected_scene, role):
+                self.assertEqual(expected_scene, scene)
+                return {
+                    "name": path.name,
+                    "role": role.lower(),
+                    "bytes": 1,
+                    "audio": {
+                        "codec": "pcm_f32le",
+                        "sample_rate_hz": 44_100,
+                        "channels": 2,
+                        "bits_per_sample": 32,
+                        "frames": 441,
+                        "duration_seconds": 0.01,
+                    },
+                    "bwf": {
+                        "description": f"zTAKE=001\\r\\nzSCENE={scene}\\r\\n",
+                        "description_fields": {
+                            "zTAKE": "001",
+                            "zSCENE": scene,
+                        },
+                        "originator": MODULE.SOURCE_ORIGINATOR,
+                        "originator_reference": "",
+                        "recorded_date": "2026-09-17",
+                        "recorded_time": "19:14:01",
+                        "time_reference_samples": 123456,
+                        "version": 1,
+                        "coding_history": coding_history,
+                        "coding_fields": {"A": control_payload},
+                    },
+                    "chunk_ids": ["bext", "fmt ", "data"],
+                    "marker_chunks_observed": [],
+                }
+
+            with mock.patch.object(
+                MODULE,
+                "inspect_wav",
+                side_effect=inspected,
+            ) as inspector:
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "sichere Metadatenbudget",
+                ):
+                    MODULE.inspect_scene(root, scene)
+
+            self.assertLess(inspector.call_count, len(names))
+            self.assertLessEqual(inspector.call_count, 2)
+
+    def test_manifest_master_metadata_budget_leaves_bounded_envelope_headroom(self):
+        self.assertEqual(
+            MODULE.MAX_MANIFEST_MASTER_METADATA_BYTES
+            + MODULE.MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES,
+            MODULE.MAX_METADATA_JSON_BYTES,
+        )
+        self.assertGreaterEqual(
+            MODULE.MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES,
+            64 * 1024,
+        )
+
     def test_control_scan_projection_keeps_only_controller_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             source = make_source(pathlib.Path(directory))
