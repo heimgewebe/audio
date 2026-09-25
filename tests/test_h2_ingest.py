@@ -948,6 +948,124 @@ class H2IngestTests(unittest.TestCase):
             ):
                 MODULE.migrate_legacy_manifests(library)
 
+    def test_legacy_migration_receipt_atomic_publish_failure_leaves_no_partial_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            receipt_path = root / MODULE.LEGACY_MIGRATION_RECEIPT_NAME
+            payload = {
+                "schema_version": MODULE.SCHEMA_VERSION,
+                "kind": "audio_h2_legacy_migration_receipt",
+                "status": "success",
+            }
+
+            with mock.patch.object(
+                MODULE.os,
+                "replace",
+                side_effect=OSError("interrupted"),
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "atomar veröffentlicht",
+                ):
+                    MODULE._write_legacy_migration_receipt(root, payload)
+
+            self.assertFalse(receipt_path.exists())
+            self.assertFalse(
+                any(path.name.startswith(".metadata-") for path in root.iterdir())
+            )
+
+            MODULE._write_legacy_migration_receipt(root, payload)
+            self.assertEqual(
+                MODULE._read_json_regular(receipt_path),
+                payload,
+            )
+            self.assertEqual(stat.S_IMODE(receipt_path.stat().st_mode), 0o600)
+
+    def test_durable_migration_recovers_partial_receipt_and_republishes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            imported = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / imported["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = [
+                "x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)
+            ]
+            annotations_path.write_bytes(MODULE._canonical_bytes(annotations) + b"\n")
+            receipt_path = library / MODULE.LEGACY_MIGRATION_RECEIPT_NAME
+            receipt_path.write_bytes(b'{"schema_version":1,"kind":"audio_h2_')
+            commit = "b" * 40
+            inactive = {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+            }
+
+            def launch(_root, _inventory):
+                MODULE._run_legacy_migration_worker(library)
+                return MODULE._legacy_migration_worker_unit(library)
+
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_durable_migration_release_commit",
+                    return_value=commit,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_legacy_migration_systemd_state",
+                    return_value=inactive,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_launch_legacy_migration_worker",
+                    side_effect=launch,
+                ) as launcher,
+            ):
+                result = MODULE.migrate_legacy_manifests_durable(library)
+
+            self.assertTrue(result["durable_receipt_reused"])
+            launcher.assert_called_once()
+            receipt = MODULE._read_json_regular(receipt_path)
+            self.assertEqual(receipt["release_commit"], commit)
+            self.assertEqual(receipt["status"], "success")
+            self.assertRegex(receipt["postcondition_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(stat.S_IMODE(receipt_path.stat().st_mode), 0o600)
+
+    def test_legacy_migration_receipt_io_error_remains_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            receipt_path = root / MODULE.LEGACY_MIGRATION_RECEIPT_NAME
+            receipt_path.write_text("{}", encoding="utf-8")
+            real_read = MODULE._read_json_regular
+
+            def read_with_permission_failure(path, **kwargs):
+                if path == receipt_path:
+                    try:
+                        raise PermissionError("denied")
+                    except PermissionError as cause:
+                        raise MODULE.H2IngestError(
+                            "Metadatendatei ist nicht sicher lesbar."
+                        ) from cause
+                return real_read(path, **kwargs)
+
+            with mock.patch.object(
+                MODULE,
+                "_read_json_regular",
+                side_effect=read_with_permission_failure,
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "nicht sicher lesbar",
+                ):
+                    MODULE._read_legacy_migration_receipt(root)
+
     def test_durable_migration_survives_caller_timeout_via_release_bound_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

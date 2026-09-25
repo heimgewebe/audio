@@ -855,6 +855,64 @@ def _write_json_new(path: pathlib.Path, value: dict[str, Any], mode: int) -> Non
     os.chmod(path, mode)
 
 
+def _write_json_atomic_publish(
+    path: pathlib.Path,
+    value: dict[str, Any],
+    mode: int,
+) -> None:
+    directory = path.parent
+    _lstat_directory(directory, "Metadatenverzeichnis")
+    if path.exists() or path.is_symlink():
+        _lstat_regular(path, "Metadatendatei")
+    payload = _canonical_bytes(value) + b"\n"
+    if len(payload) > MAX_METADATA_JSON_BYTES:
+        raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+    fd: int | None = None
+    temporary: pathlib.Path | None = None
+    try:
+        fd, temporary_name = tempfile.mkstemp(prefix=".metadata-", dir=directory)
+        temporary = pathlib.Path(temporary_name)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb", closefd=True) as handle:
+            fd = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        parent_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except OSError as exc:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+        raise H2IngestError(
+            "Metadatendatei kann nicht atomar veröffentlicht werden."
+        ) from exc
+    except Exception:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+        raise
+
+
 def _read_json_regular(
     path: pathlib.Path,
     *,
@@ -1839,15 +1897,20 @@ def _read_legacy_migration_receipt(root: pathlib.Path) -> dict[str, Any] | None:
     path = _legacy_migration_receipt_path(root)
     if not path.exists() and not path.is_symlink():
         return None
-    return _read_json_regular(path)
+    try:
+        return _read_json_regular(path)
+    except H2IngestError as exc:
+        if isinstance(exc.__cause__, (UnicodeError, json.JSONDecodeError)):
+            return None
+        raise
 
 
 def _write_legacy_migration_receipt(root: pathlib.Path, value: dict[str, Any]) -> None:
-    path = _legacy_migration_receipt_path(root)
-    if path.exists() or path.is_symlink():
-        _write_json_replace(path, value, 0o600)
-    else:
-        _write_json_new(path, value, 0o600)
+    _write_json_atomic_publish(
+        _legacy_migration_receipt_path(root),
+        value,
+        0o600,
+    )
 
 
 def _durable_migration_receipt_result(
