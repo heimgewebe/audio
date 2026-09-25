@@ -16,6 +16,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -951,6 +952,42 @@ _LEGACY_ANNOTATION_FIELDS = frozenset(
         "updated_at",
     }
 )
+_LEGACY_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "material_id",
+        "source",
+        "imported_at",
+        "master_set_sha256",
+        "masters",
+    }
+)
+_LEGACY_MANIFEST_SOURCE_FIELDS = frozenset(
+    {
+        "kind",
+        "recorder_model",
+        "scene",
+        "take",
+        "recorded_date",
+        "recorded_time",
+        "segment_count",
+    }
+)
+_LEGACY_MANIFEST_MASTER_FIELDS = frozenset(
+    {"name", "role", "bytes", "audio", "segment_index", "sha256"}
+)
+_LEGACY_MANIFEST_AUDIO_FIELDS = frozenset(
+    {
+        "codec",
+        "sample_rate_hz",
+        "channels",
+        "bits_per_sample",
+        "frames",
+        "duration_seconds",
+    }
+)
+MAX_LEGACY_PROJECTION_SCALAR_JSON_BYTES = 64 * 1024
 
 
 def _json_skip_whitespace(value: str, index: int) -> int:
@@ -1168,6 +1205,294 @@ def _legacy_json_schema_version(
     except json.JSONDecodeError:
         return None
     return decoded if isinstance(decoded, int) and not isinstance(decoded, bool) else None
+
+
+def _legacy_json_object_field_ranges(
+    value: str,
+    bounds: tuple[int, int] | None,
+    recognized_fields: frozenset[str],
+) -> dict[str, tuple[int, int]] | None:
+    if bounds is None:
+        return None
+    start, end = bounds
+    if start >= end or value[start] != "{":
+        return None
+    index = _json_skip_whitespace(value, start + 1)
+    fields: dict[str, tuple[int, int]] = {}
+    if index < end and value[index] == "}":
+        return fields if index + 1 == end else None
+    while index < end:
+        key_start = index
+        key_end = _json_scan_string(value, key_start)
+        if key_end > end:
+            return None
+        key: str | None = None
+        if key_end - key_start <= 128:
+            try:
+                decoded_key = json.loads(value[key_start:key_end])
+            except json.JSONDecodeError as exc:
+                raise H2IngestError(
+                    "Legacy-Materialmanifest enthält ungültiges JSON."
+                ) from exc
+            if isinstance(decoded_key, str):
+                key = decoded_key
+        index = _json_skip_whitespace(value, key_end)
+        if index >= end or value[index] != ":":
+            raise H2IngestError("Legacy-Materialmanifest enthält ungültiges JSON.")
+        value_start = _json_skip_whitespace(value, index + 1)
+        try:
+            value_end = _json_skip_value(value, value_start)
+        except RecursionError as exc:
+            raise H2IngestError(
+                "Legacy-Materialmanifest ist zu tief verschachtelt."
+            ) from exc
+        if value_end > end:
+            raise H2IngestError("Legacy-Materialmanifest enthält ungültiges JSON.")
+        if key in recognized_fields:
+            fields[key] = (value_start, value_end)
+        index = _json_skip_whitespace(value, value_end)
+        if index >= end:
+            raise H2IngestError("Legacy-Materialmanifest enthält ungültiges JSON.")
+        if value[index] == "}":
+            return fields if index + 1 == end else None
+        if value[index] != ",":
+            raise H2IngestError("Legacy-Materialmanifest enthält ungültiges JSON.")
+        index = _json_skip_whitespace(value, index + 1)
+    raise H2IngestError("Legacy-Materialmanifest enthält ungültiges JSON.")
+
+
+def _legacy_manifest_field_ranges(value: str) -> dict[str, tuple[int, int]]:
+    start = _json_skip_whitespace(value, 0)
+    if start >= len(value) or value[start] != "{":
+        raise H2IngestError("Legacy-Materialmanifest besitzt kein Objektformat.")
+    try:
+        end = _json_skip_value(value, start)
+    except RecursionError as exc:
+        raise H2IngestError(
+            "Legacy-Materialmanifest ist zu tief verschachtelt."
+        ) from exc
+    if _json_skip_whitespace(value, end) != len(value):
+        raise H2IngestError("Legacy-Materialmanifest enthält ungültiges JSON.")
+    fields = _legacy_json_object_field_ranges(
+        value,
+        (start, end),
+        _LEGACY_MANIFEST_FIELDS,
+    )
+    if fields is None:
+        raise H2IngestError("Legacy-Materialmanifest besitzt kein Objektformat.")
+    return fields
+
+
+def _legacy_manifest_json_string(
+    value: str,
+    bounds: tuple[int, int] | None,
+) -> str | None:
+    if bounds is None:
+        return None
+    start, end = bounds
+    if end - start > MAX_LEGACY_PROJECTION_SCALAR_JSON_BYTES:
+        return None
+    return _legacy_json_string(value, bounds)
+
+
+def _legacy_json_integer(
+    value: str,
+    bounds: tuple[int, int] | None,
+) -> int | None:
+    if bounds is None:
+        return None
+    start, end = bounds
+    token = value[start:end]
+    if len(token) > 64 or not re.fullmatch(r"-?(?:0|[1-9][0-9]*)", token):
+        return None
+    try:
+        decoded = json.loads(token)
+    except json.JSONDecodeError:
+        return None
+    return decoded if isinstance(decoded, int) and not isinstance(decoded, bool) else None
+
+
+def _legacy_json_finite_number(
+    value: str,
+    bounds: tuple[int, int] | None,
+) -> int | float | None:
+    if bounds is None:
+        return None
+    start, end = bounds
+    token = value[start:end]
+    if len(token) > 128:
+        return None
+    try:
+        decoded = json.loads(token)
+    except json.JSONDecodeError:
+        return None
+    if (
+        isinstance(decoded, bool)
+        or not isinstance(decoded, (int, float))
+        or not math.isfinite(decoded)
+    ):
+        return None
+    return decoded
+
+
+def _legacy_manifest_source_projection(
+    value: str,
+    bounds: tuple[int, int] | None,
+) -> dict[str, Any] | None:
+    fields = _legacy_json_object_field_ranges(
+        value,
+        bounds,
+        _LEGACY_MANIFEST_SOURCE_FIELDS,
+    )
+    if fields is None:
+        return None
+    take_bounds = fields.get("take")
+    if take_bounds is None:
+        take: str | None | int = None
+    elif value[take_bounds[0] : take_bounds[1]] == "null":
+        take = None
+    else:
+        decoded_take = _legacy_manifest_json_string(value, take_bounds)
+        take = decoded_take if decoded_take is not None else 0
+    return {
+        "kind": _legacy_manifest_json_string(value, fields.get("kind")),
+        "recorder_model": _legacy_manifest_json_string(
+            value, fields.get("recorder_model")
+        ),
+        "scene": _legacy_manifest_json_string(value, fields.get("scene")),
+        "take": take,
+        "recorded_date": _legacy_manifest_json_string(
+            value, fields.get("recorded_date")
+        ),
+        "recorded_time": _legacy_manifest_json_string(
+            value, fields.get("recorded_time")
+        ),
+        "segment_count": _legacy_json_integer(
+            value, fields.get("segment_count")
+        ),
+    }
+
+
+def _legacy_manifest_audio_projection(
+    value: str,
+    bounds: tuple[int, int] | None,
+) -> dict[str, Any] | None:
+    fields = _legacy_json_object_field_ranges(
+        value,
+        bounds,
+        _LEGACY_MANIFEST_AUDIO_FIELDS,
+    )
+    if fields is None:
+        return None
+    projected: dict[str, Any] = {}
+    codec = _legacy_manifest_json_string(value, fields.get("codec"))
+    if codec is not None:
+        projected["codec"] = codec
+    for name in ("sample_rate_hz", "channels", "bits_per_sample", "frames"):
+        decoded = _legacy_json_integer(value, fields.get(name))
+        if decoded is not None:
+            projected[name] = decoded
+    duration = _legacy_json_finite_number(value, fields.get("duration_seconds"))
+    if duration is not None:
+        projected["duration_seconds"] = duration
+    return projected
+
+
+def _legacy_manifest_masters_projection(
+    value: str,
+    bounds: tuple[int, int] | None,
+) -> list[dict[str, Any]] | None:
+    if bounds is None:
+        return None
+    start, end = bounds
+    if start >= end or value[start] != "[":
+        return None
+    index = _json_skip_whitespace(value, start + 1)
+    masters: list[dict[str, Any]] = []
+    if index < end and value[index] == "]":
+        return masters if index + 1 == end else None
+    while index < end:
+        if len(masters) >= MAX_SESSION_FILES:
+            raise H2IngestError(
+                "Legacy-Materialmanifest überschreitet das sichere Master-Limit."
+            )
+        item_start = index
+        item_end = _json_skip_value(value, item_start)
+        fields = _legacy_json_object_field_ranges(
+            value,
+            (item_start, item_end),
+            _LEGACY_MANIFEST_MASTER_FIELDS,
+        )
+        if fields is None:
+            return None
+        segment_bounds = fields.get("segment_index")
+        segment_index = (
+            0
+            if segment_bounds is None
+            else _legacy_json_integer(value, segment_bounds)
+        )
+        masters.append(
+            {
+                "name": _legacy_manifest_json_string(value, fields.get("name")),
+                "role": _legacy_manifest_json_string(value, fields.get("role")),
+                "bytes": _legacy_json_integer(value, fields.get("bytes")),
+                "audio": _legacy_manifest_audio_projection(
+                    value, fields.get("audio")
+                ),
+                "segment_index": segment_index,
+                "sha256": _legacy_manifest_json_string(
+                    value, fields.get("sha256")
+                ),
+            }
+        )
+        index = _json_skip_whitespace(value, item_end)
+        if index >= end:
+            return None
+        if value[index] == "]":
+            return masters if index + 1 == end else None
+        if value[index] != ",":
+            raise H2IngestError("Legacy-Materialmanifest enthält ungültiges JSON.")
+        index = _json_skip_whitespace(value, index + 1)
+    return None
+
+
+def _read_legacy_manifest_projection(
+    path: pathlib.Path,
+) -> dict[str, Any]:
+    metadata = _lstat_regular(path, "Legacy-Materialmanifest")
+    if (
+        metadata.st_size <= MAX_METADATA_JSON_BYTES
+        or metadata.st_size > MAX_LEGACY_MANIFEST_JSON_BYTES
+    ):
+        raise H2IngestError(
+            "Legacy-Materialmanifest liegt außerhalb des Migrationslimits."
+        )
+    try:
+        value = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise H2IngestError("Legacy-Materialmanifest ist nicht sicher lesbar.") from exc
+    fields = _legacy_manifest_field_ranges(value)
+    return {
+        "schema_version": _legacy_json_schema_version(
+            value, fields.get("schema_version")
+        ),
+        "kind": _legacy_manifest_json_string(value, fields.get("kind")),
+        "material_id": _legacy_manifest_json_string(
+            value, fields.get("material_id")
+        ),
+        "source": _legacy_manifest_source_projection(
+            value, fields.get("source")
+        ),
+        "imported_at": _legacy_manifest_json_string(
+            value, fields.get("imported_at")
+        ),
+        "master_set_sha256": _legacy_manifest_json_string(
+            value, fields.get("master_set_sha256")
+        ),
+        "masters": _legacy_manifest_masters_projection(
+            value, fields.get("masters")
+        ),
+    }
 
 
 def _read_legacy_annotations_projection(
@@ -1603,10 +1928,7 @@ def migrate_legacy_manifests(
                     result["already_bound"] += 1
                     result["manifest_already_bound"] += 1
             if not manifest_bound:
-                manifest = _read_json_regular(
-                    manifest_path,
-                    max_bytes=MAX_LEGACY_MANIFEST_JSON_BYTES,
-                )
+                manifest = _read_legacy_manifest_projection(manifest_path)
                 digest = _sha256_path(manifest_path)
                 control = _legacy_manifest_control_projection(
                     manifest,
@@ -2107,6 +2429,51 @@ def _run_legacy_migration_worker(
     completed["durable_receipt_reused"] = False
     completed["release_commit"] = release_commit
     return completed
+
+
+def launch_legacy_manifests_durable(
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    """Schedule oversized legacy migration without waiting for worker completion."""
+    root = library_root.expanduser()
+    release_commit = _durable_migration_release_commit()
+    if release_commit is None:
+        result = migrate_legacy_manifests(root)
+        result["durable_worker"] = False
+        result["launch_only"] = True
+        return result
+
+    inventory = _legacy_migration_inventory(root)
+    if inventory["candidate_file_count"] == 0:
+        result = migrate_legacy_manifests(root)
+        result["durable_worker"] = False
+        result["launch_only"] = True
+        result["release_commit"] = release_commit
+        return result
+
+    receipt_result = _durable_migration_receipt_result(
+        root,
+        release_commit=release_commit,
+        inventory=inventory,
+    )
+    if receipt_result is not None:
+        receipt_result["launch_only"] = True
+        return receipt_result
+
+    unit = _launch_legacy_migration_worker(root, inventory)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_h2_legacy_migration_launch",
+        "status": "scheduled",
+        "library_root": str(root),
+        "durable_worker": True,
+        "launch_only": True,
+        "release_commit": release_commit,
+        "unit": unit,
+        "candidate_file_count": inventory["candidate_file_count"],
+        "candidate_bytes": inventory["candidate_bytes"],
+        "candidate_metadata_sha256": inventory["candidate_metadata_sha256"],
+    }
 
 
 def migrate_legacy_manifests_durable(
@@ -2852,6 +3219,11 @@ def _parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
         default=DEFAULT_LIBRARY_ROOT,
     )
+    migrate_parser.add_argument(
+        "--launch-only",
+        action="store_true",
+        help="schedule a durable migration worker without waiting for completion",
+    )
     worker_parser = sub.add_parser(
         "_migrate-legacy-manifests-worker",
         help=argparse.SUPPRESS,
@@ -2904,7 +3276,10 @@ def main(argv: list[str] | None = None) -> int:
                 library_root=args.library_root,
             )
         elif args.command == "migrate-legacy-manifests":
-            result = migrate_legacy_manifests_durable(args.library_root)
+            if args.launch_only:
+                result = launch_legacy_manifests_durable(args.library_root)
+            else:
+                result = migrate_legacy_manifests_durable(args.library_root)
         else:
             result = _run_legacy_migration_worker(args.library_root)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))

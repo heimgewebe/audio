@@ -541,6 +541,111 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(second["migrated"], 0)
             self.assertEqual(second["already_bound"], 1)
 
+    def test_legacy_manifest_migration_streams_dense_audio_metadata_without_full_json_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            manifest_path = material / "manifest.json"
+            original = json.loads(manifest_path.read_text(encoding="utf-8"))
+            expected_audio = original["masters"][0]["audio"]
+            expected_duration = expected_audio["duration_seconds"]
+            raw = manifest_path.read_text(encoding="utf-8").rstrip()
+            dense = ",".join(["{}"] * 6000)
+            payload = raw.replace(
+                '"audio":{',
+                '"audio":{"legacy_padding":[' + dense + '],',
+                1,
+            ) + "\n"
+            self.assertGreater(len(payload), 8192)
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_text(payload, encoding="utf-8")
+            os.chmod(manifest_path, 0o440)
+            before = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            real_loads = json.loads
+
+            def bounded_loads(value, *args, **kwargs):
+                self.assertLessEqual(len(value), 8192)
+                return real_loads(value, *args, **kwargs)
+
+            with (
+                mock.patch.object(MODULE, "MAX_METADATA_JSON_BYTES", 8192),
+                mock.patch.object(MODULE.json, "loads", side_effect=bounded_loads),
+            ):
+                migration = MODULE.migrate_legacy_manifests(library)
+
+            self.assertEqual(migration["manifest_migrated"], 1)
+            self.assertEqual(
+                hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                before,
+            )
+            control = MODULE._read_json_regular(
+                material / MODULE.LEGACY_MANIFEST_CONTROL_NAME
+            )
+            self.assertEqual(control["masters"][0]["audio"], expected_audio)
+            media = MODULE.material_media(
+                result["material_id"],
+                0,
+                library_root=library,
+            )
+            self.assertEqual(media["duration_seconds"], expected_duration)
+
+    def test_legacy_manifest_stream_projection_rejects_invalid_skipped_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            manifest_path = library / result["material_id"] / "manifest.json"
+            raw = manifest_path.read_text(encoding="utf-8").rstrip()
+            payload = raw.replace(
+                '"audio":{',
+                '"audio":{"legacy_padding":[{},],',
+                1,
+            ) + "\n"
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_text(payload, encoding="utf-8")
+            os.chmod(manifest_path, 0o440)
+            with (
+                mock.patch.object(MODULE, "MAX_METADATA_JSON_BYTES", 512),
+                self.assertRaisesRegex(MODULE.H2IngestError, "ungültiges JSON"),
+            ):
+                MODULE._read_legacy_manifest_projection(manifest_path)
+
+    def test_legacy_manifest_stream_projection_preserves_last_duplicate_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            manifest_path = library / result["material_id"] / "manifest.json"
+            raw = manifest_path.read_text(encoding="utf-8").rstrip()
+            payload = raw[:-1] + ',"imported_at":"last-value"}\n'
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_text(payload, encoding="utf-8")
+            os.chmod(manifest_path, 0o440)
+            with mock.patch.object(MODULE, "MAX_METADATA_JSON_BYTES", 512):
+                projected = MODULE._read_legacy_manifest_projection(manifest_path)
+            self.assertEqual(projected["imported_at"], "last-value")
+            self.assertEqual(
+                projected["imported_at"],
+                json.loads(payload)["imported_at"],
+            )
+
     def test_legacy_oversized_annotations_are_migrated_without_rewriting_original(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1212,6 +1317,83 @@ class H2IngestTests(unittest.TestCase):
             )
         self.assertEqual(status, 0)
         durable.assert_called_once_with(pathlib.Path("/tmp/example"))
+
+    def test_launch_only_durable_migration_schedules_worker_without_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            inventory = {
+                "library_root": str(root),
+                "material_count": 2,
+                "candidate_file_count": 1,
+                "candidate_bytes": 8 * 1024 * 1024,
+                "candidate_metadata_sha256": "1" * 64,
+            }
+            unit = "audio-h2-legacy-migrate-v1-example.service"
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_durable_migration_release_commit",
+                    return_value="a" * 40,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_legacy_migration_inventory",
+                    return_value=inventory,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_durable_migration_receipt_result",
+                    return_value=None,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_launch_legacy_migration_worker",
+                    return_value=unit,
+                ) as launcher,
+                mock.patch.object(
+                    MODULE.time,
+                    "sleep",
+                    side_effect=AssertionError("launch-only must not wait"),
+                ),
+            ):
+                result = MODULE.launch_legacy_manifests_durable(root)
+
+            launcher.assert_called_once_with(root, inventory)
+            self.assertEqual(result["kind"], "audio_h2_legacy_migration_launch")
+            self.assertEqual(result["status"], "scheduled")
+            self.assertTrue(result["launch_only"])
+            self.assertTrue(result["durable_worker"])
+            self.assertEqual(result["unit"], unit)
+
+    def test_migrate_legacy_cli_launch_only_routes_to_nonblocking_handoff(self):
+        expected = {
+            "schema_version": MODULE.SCHEMA_VERSION,
+            "kind": "audio_h2_legacy_migration_launch",
+            "status": "scheduled",
+        }
+        with (
+            mock.patch.object(
+                MODULE,
+                "launch_legacy_manifests_durable",
+                return_value=expected,
+            ) as launch,
+            mock.patch.object(
+                MODULE,
+                "migrate_legacy_manifests_durable",
+                side_effect=AssertionError("launch-only must not use wait path"),
+            ),
+            mock.patch("builtins.print"),
+        ):
+            status = MODULE.main(
+                [
+                    "migrate-legacy-manifests",
+                    "--launch-only",
+                    "--library-root",
+                    "/tmp/example",
+                ]
+            )
+        self.assertEqual(status, 0)
+        launch.assert_called_once_with(pathlib.Path("/tmp/example"))
 
     def test_metadata_limit_preserves_shared_service_memory_headroom(self):
         unit = (

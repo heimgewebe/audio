@@ -113,13 +113,13 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         primary = (
             "ExecStartPre=+/usr/bin/python3 "
             "%h/.local/share/audio-control-ui/current/scripts/h2_ingest.py "
-            "migrate-legacy-manifests --library-root "
+            "migrate-legacy-manifests --launch-only --library-root "
             "%h/Music/Audio-Aufnahmen/H2-Material"
         )
         legacy = (
             "ExecStartPre=+/usr/bin/python3 "
             "%h/.local/share/audio-control-ui/current/scripts/h2_ingest.py "
-            "migrate-legacy-manifests --library-root "
+            "migrate-legacy-manifests --launch-only --library-root "
             "%h/Music/Audio-Material/H2"
         )
         prepare = (
@@ -136,6 +136,7 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         self.assertLess(ui.index(primary), ui.index(legacy))
         self.assertLess(ui.index(legacy), ui.index(prepare))
         self.assertLess(ui.index(prepare), ui.index(start))
+        self.assertNotIn("migrate-legacy-manifests --library-root", ui)
 
     def test_deploy_sandbox_allows_only_named_h2_migration_roots(self):
         paths = read_write_paths(DEPLOY_UNIT_PATH)
