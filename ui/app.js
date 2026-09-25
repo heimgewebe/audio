@@ -3846,6 +3846,9 @@ async function postH2Action(payload) {
       body: JSON.stringify(payload),
     });
   }
+  if (state.remoteBridgeProjection === true) {
+    await ensureRemoteWhaleSession({ force: true });
+  }
   if (remoteH2ActionsAllowed()) {
     return fetchJson("/bridge/v1/actions/h2", {
       method: "POST",

@@ -436,6 +436,15 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('payload?.operation === "import"', h2_router)
         self.assertIn("await h2ImportTimeoutMs(payload.scene)", h2_router)
         self.assertIn("await h2AnnotationTimeoutMs()", h2_router)
+        self.assertIn("await ensureRemoteWhaleSession({ force: true })", h2_router)
+        self.assertLess(
+            h2_router.index("await h2ImportTimeoutMs(payload.scene)"),
+            h2_router.index("await ensureRemoteWhaleSession({ force: true })"),
+        )
+        self.assertLess(
+            h2_router.index("await ensureRemoteWhaleSession({ force: true })"),
+            h2_router.index("if (remoteH2ActionsAllowed())"),
+        )
         self.assertNotIn("delete-source", h2_router)
 
         h2_budget = self.app.split("async function h2WorkspaceBudget() {", 1)[1].split(
@@ -1245,6 +1254,77 @@ async function postH2Action() {{
             "\n}", 1
         )[0]
         self.assertIn("state.h2AnnotationDrafts.size > 0", blocked)
+
+    def test_remote_h2_post_refreshes_session_after_async_deadline_computation(self):
+        post = "async function postH2Action" + self.app.split(
+            "async function postH2Action", 1
+        )[1].split("\nasync function runH2Action", 1)[0]
+        harness = f"""
+const state = {{
+  remoteBridgeProjection: true,
+  remoteWhaleSessionToken: "o".repeat(32),
+  remoteWhaleSessionError: null,
+}};
+let fresh = true;
+const events = [];
+function localH2ActionsAllowed() {{
+  events.push("local-check");
+  return false;
+}}
+function remoteH2ActionsAllowed() {{
+  events.push("remote-check:" + String(fresh) + ":" + state.remoteWhaleSessionToken[0]);
+  return fresh;
+}}
+async function h2ImportTimeoutMs() {{
+  events.push("deadline-start");
+  fresh = false;
+  events.push("session-expired-during-deadline");
+  return 12345;
+}}
+async function h2AnnotationTimeoutMs() {{
+  throw new Error("unexpected annotation budget");
+}}
+async function ensureRemoteWhaleSession({{ force = false }} = {{}}) {{
+  events.push("session-refresh:" + String(force));
+  if (!force) throw new Error("refresh must be forced");
+  state.remoteWhaleSessionToken = "n".repeat(32);
+  fresh = true;
+  return true;
+}}
+async function fetchJson(url, options) {{
+  events.push("post:" + url + ":" + options.headers["X-Audio-Bridge-Session"][0]);
+  return {{
+    kind: "ok",
+    timeoutMs: options.timeoutMs,
+    token: options.headers["X-Audio-Bridge-Session"],
+  }};
+}}
+{post}
+(async () => {{
+  const result = await postH2Action({{ operation: "import", scene: "170926_191401" }});
+  process.stdout.write(JSON.stringify({{ events, result }}));
+}})();
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["events"],
+            [
+                "deadline-start",
+                "session-expired-during-deadline",
+                "local-check",
+                "session-refresh:true",
+                "remote-check:true:n",
+                "post:/bridge/v1/actions/h2:n",
+            ],
+        )
+        self.assertEqual(result["result"]["timeoutMs"], 12345)
+        self.assertEqual(result["result"]["token"], "n" * 32)
 
     def test_h2_audio_defers_native_media_load_until_explicit_interaction(self):
         helper = self.app.split("function appendH2Audio", 1)[1].split(
