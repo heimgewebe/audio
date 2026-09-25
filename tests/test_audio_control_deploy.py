@@ -399,13 +399,28 @@ class AudioControlDeployTests(unittest.TestCase):
                     ):
                         MODULE.release_hashes(release)
 
-    def test_h2_legacy_manifest_migration_uses_release_script_for_both_roots(self):
+    def test_h2_legacy_manifest_migration_uses_workload_scaled_deadlines_for_both_roots(self):
         with tempfile.TemporaryDirectory() as directory:
             release = pathlib.Path(directory)
             script = release / "scripts" / "h2_ingest.py"
             script.parent.mkdir(parents=True)
             script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
             observed = []
+            extensions = []
+            budgets = [
+                {
+                    "library_root": str(MODULE.H2_LIBRARY_ROOTS[0]),
+                    "material_count": 3,
+                    "candidate_file_count": 2,
+                    "candidate_bytes": 10 * 1024 * 1024,
+                },
+                {
+                    "library_root": str(MODULE.H2_LIBRARY_ROOTS[1]),
+                    "material_count": 1,
+                    "candidate_file_count": 1,
+                    "candidate_bytes": 3 * 1024 * 1024,
+                },
+            ]
 
             def fake_run(argv, *, cwd, timeout, **_kwargs):
                 observed.append((tuple(argv), pathlib.Path(cwd), timeout))
@@ -419,10 +434,15 @@ class AudioControlDeployTests(unittest.TestCase):
 
             with (
                 mock.patch.object(MODULE, "h2_ingest_release_supported", return_value=True),
+                mock.patch.object(MODULE, "h2_legacy_migration_budget", side_effect=budgets),
+                mock.patch.object(MODULE, "extend_systemd_start_timeout", side_effect=lambda value: extensions.append(value) or True),
                 mock.patch.object(MODULE, "run_command", side_effect=fake_run),
             ):
                 receipts = MODULE.migrate_h2_legacy_manifests(release)
 
+            expected_timeouts = [
+                MODULE.h2_legacy_migration_timeout_seconds(budget) for budget in budgets
+            ]
             self.assertEqual(len(receipts), 2)
             self.assertEqual(
                 [call[0][-1] for call in observed],
@@ -432,14 +452,62 @@ class AudioControlDeployTests(unittest.TestCase):
                 all(call[0][2] == "migrate-legacy-manifests" for call in observed)
             )
             self.assertTrue(all(call[1] == release for call in observed))
-            self.assertTrue(
-                all(
-                    call[2] == MODULE.H2_LEGACY_MIGRATION_TIMEOUT_SECONDS
-                    for call in observed
-                )
+            self.assertEqual([call[2] for call in observed], expected_timeouts)
+            self.assertEqual(extensions, expected_timeouts)
+            self.assertEqual(
+                [receipt["migration_budget"] for receipt in receipts],
+                budgets,
             )
 
-    def test_deploy_service_timeout_covers_legacy_migration_budget(self):
+    def test_h2_legacy_migration_budget_counts_candidate_bytes_without_reading_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            material = root / ("a" * 24)
+            material.mkdir(parents=True)
+            manifest = material / "manifest.json"
+            annotations = material / "annotations.json"
+            with manifest.open("wb") as handle:
+                handle.truncate(MODULE.H2_RUNTIME_METADATA_MAX_BYTES + 17)
+            with annotations.open("wb") as handle:
+                handle.truncate(MODULE.H2_RUNTIME_METADATA_MAX_BYTES + 23)
+            budget = MODULE.h2_legacy_migration_budget(root)
+            self.assertEqual(budget["material_count"], 1)
+            self.assertEqual(budget["candidate_file_count"], 2)
+            self.assertEqual(
+                budget["candidate_bytes"],
+                (MODULE.H2_RUNTIME_METADATA_MAX_BYTES * 2) + 40,
+            )
+
+    def test_h2_legacy_migration_budget_rejects_unsupported_candidate_before_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            material = root / ("a" * 24)
+            material.mkdir(parents=True)
+            manifest = material / "manifest.json"
+            with manifest.open("wb") as handle:
+                handle.truncate(MODULE.H2_LEGACY_MANIFEST_MAX_BYTES + 1)
+            with self.assertRaisesRegex(MODULE.DeployError, "Migrationslimit"):
+                MODULE.h2_legacy_migration_budget(root)
+
+    def test_h2_legacy_migration_timeout_scales_with_archive_size_and_count(self):
+        small = MODULE.h2_legacy_migration_timeout_seconds(
+            {
+                "material_count": 1,
+                "candidate_file_count": 1,
+                "candidate_bytes": 3 * 1024 * 1024,
+            }
+        )
+        large = MODULE.h2_legacy_migration_timeout_seconds(
+            {
+                "material_count": 7,
+                "candidate_file_count": 4,
+                "candidate_bytes": 300 * 1024 * 1024,
+            }
+        )
+        self.assertGreater(large, small)
+        self.assertGreater(large, 240)
+
+    def test_deploy_service_can_extend_initial_timeout_for_scaled_legacy_work(self):
         unit = (
             ROOT / "systemd" / "user" / "audio-control-deploy.service"
         ).read_text(encoding="utf-8")
@@ -447,16 +515,29 @@ class AudioControlDeployTests(unittest.TestCase):
             line for line in unit.splitlines() if line.startswith("TimeoutStartSec=")
         )
         self.assertEqual(timeout_line, "TimeoutStartSec=15min")
-        service_timeout_seconds = 15 * 60
-        previous_deploy_budget_seconds = 5 * 60
-        migration_budget_seconds = (
-            len(MODULE.H2_LIBRARY_ROOTS)
-            * MODULE.H2_LEGACY_MIGRATION_TIMEOUT_SECONDS
-        )
-        self.assertGreaterEqual(
-            service_timeout_seconds,
-            previous_deploy_budget_seconds + migration_budget_seconds,
-        )
+        self.assertIn("NotifyAccess=main", unit)
+        with mock.patch.dict(MODULE.os.environ, {}, clear=True):
+            self.assertFalse(MODULE.extend_systemd_start_timeout(600))
+        with tempfile.TemporaryDirectory() as directory:
+            notify_path = pathlib.Path(directory) / "notify.sock"
+            listener = MODULE.socket.socket(MODULE.socket.AF_UNIX, MODULE.socket.SOCK_DGRAM)
+            try:
+                listener.bind(str(notify_path))
+                listener.settimeout(1.0)
+                with mock.patch.dict(
+                    MODULE.os.environ,
+                    {"NOTIFY_SOCKET": str(notify_path)},
+                    clear=True,
+                ):
+                    self.assertTrue(MODULE.extend_systemd_start_timeout(12.5))
+                payload = listener.recv(1024).decode("ascii")
+            finally:
+                listener.close()
+            expected_usec = MODULE.math.ceil(
+                (12.5 + MODULE.H2_LEGACY_MIGRATION_NOTIFY_MARGIN_SECONDS)
+                * 1_000_000
+            )
+            self.assertEqual(payload, f"EXTEND_TIMEOUT_USEC={expected_usec}")
 
     def test_pre_h2_release_without_sentinel_remains_marker_upgradeable(self):
         commit = "b" * 40

@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+NotifyAccess=main
 EnvironmentFile=-%h/.config/audio-control-deploy.env
 ExecStart=/usr/bin/python3 %h/.local/libexec/audio-control-deploy.py sync
 TimeoutStartSec=15min

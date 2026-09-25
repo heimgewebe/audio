@@ -9,10 +9,12 @@ import fcntl
 import hashlib
 import http.client
 import json
+import math
 import os
 import pathlib
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -30,7 +32,15 @@ H2_LIBRARY_ROOTS = (
     pathlib.Path.home() / "Music" / "Audio-Aufnahmen" / "H2-Material",
     pathlib.Path.home() / "Music" / "Audio-Material" / "H2",
 )
-H2_LEGACY_MIGRATION_TIMEOUT_SECONDS = 240
+H2_RUNTIME_METADATA_MAX_BYTES = 2 * 1024 * 1024
+H2_LEGACY_MANIFEST_MAX_BYTES = 144 * 1024 * 1024
+H2_LEGACY_ANNOTATIONS_MAX_BYTES = 64 * 1024 * 1024
+H2_LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND = 512 * 1024
+H2_LEGACY_MIGRATION_IO_PASSES = 2
+H2_LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS = 60
+H2_LEGACY_MIGRATION_PER_MATERIAL_SECONDS = 1
+H2_LEGACY_MIGRATION_NOTIFY_MARGIN_SECONDS = 5 * 60
+H2_MATERIAL_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 DEFAULT_REMOTE = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_UNIT = "audio-control-ui-v1.service"
@@ -808,25 +818,138 @@ def h2_ingest_release_supported(release: pathlib.Path) -> bool:
         return False
 
 
+def h2_legacy_migration_budget(root: pathlib.Path) -> dict[str, Any]:
+    expanded = root.expanduser()
+    result = {
+        "library_root": str(expanded),
+        "material_count": 0,
+        "candidate_file_count": 0,
+        "candidate_bytes": 0,
+    }
+    if not expanded.exists() and not expanded.is_symlink():
+        return result
+    try:
+        root_metadata = expanded.lstat()
+    except OSError as exc:
+        raise DeployError("H2-Legacy-Bibliothek ist nicht lesbar.") from exc
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise DeployError("H2-Legacy-Bibliothek muss ein Verzeichnis ohne Symlink sein.")
+    with os.scandir(expanded) as entries:
+        for entry in entries:
+            if (
+                not H2_MATERIAL_ID_RE.fullmatch(entry.name)
+                or not entry.is_dir(follow_symlinks=False)
+            ):
+                continue
+            result["material_count"] += 1
+            directory = pathlib.Path(entry.path)
+            for name, migration_max_bytes in (
+                ("manifest.json", H2_LEGACY_MANIFEST_MAX_BYTES),
+                ("annotations.json", H2_LEGACY_ANNOTATIONS_MAX_BYTES),
+            ):
+                path = directory / name
+                try:
+                    metadata = path.lstat()
+                except OSError as exc:
+                    raise DeployError(
+                        f"H2-Legacy-Metadatei ist nicht lesbar: {path}"
+                    ) from exc
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                    raise DeployError(
+                        f"H2-Legacy-Metadatei ist nicht regulär: {path}"
+                    )
+                if metadata.st_size > migration_max_bytes:
+                    raise DeployError(
+                        f"H2-Legacy-Metadatei überschreitet das sichere Migrationslimit: {path}"
+                    )
+                if metadata.st_size > H2_RUNTIME_METADATA_MAX_BYTES:
+                    result["candidate_file_count"] += 1
+                    result["candidate_bytes"] += metadata.st_size
+    return result
+
+
+def h2_legacy_migration_timeout_seconds(budget: dict[str, Any]) -> float:
+    material_count = budget.get("material_count")
+    candidate_file_count = budget.get("candidate_file_count")
+    candidate_bytes = budget.get("candidate_bytes")
+    if (
+        isinstance(material_count, bool)
+        or not isinstance(material_count, int)
+        or material_count < 0
+        or isinstance(candidate_file_count, bool)
+        or not isinstance(candidate_file_count, int)
+        or candidate_file_count < 0
+        or isinstance(candidate_bytes, bool)
+        or not isinstance(candidate_bytes, int)
+        or candidate_bytes < 0
+        or (candidate_file_count == 0) != (candidate_bytes == 0)
+    ):
+        raise DeployError("H2-Legacy-Migrationsbudget ist ungültig.")
+    io_seconds = math.ceil(
+        (candidate_bytes * H2_LEGACY_MIGRATION_IO_PASSES)
+        / H2_LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND
+    )
+    return float(
+        H2_LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS
+        + (material_count * H2_LEGACY_MIGRATION_PER_MATERIAL_SECONDS)
+        + io_seconds
+    )
+
+
+def extend_systemd_start_timeout(timeout_seconds: float) -> bool:
+    notify_socket = os.environ.get("NOTIFY_SOCKET")
+    if not notify_socket:
+        return False
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise DeployError("Dynamisches systemd-Zeitbudget ist ungültig.")
+    address: str | bytes
+    if notify_socket.startswith("@"):
+        address = b"\0" + notify_socket[1:].encode()
+    else:
+        address = notify_socket
+    payload = (
+        "EXTEND_TIMEOUT_USEC="
+        f"{math.ceil((timeout_seconds + H2_LEGACY_MIGRATION_NOTIFY_MARGIN_SECONDS) * 1_000_000)}"
+    ).encode()
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        client.connect(address)
+        client.sendall(payload)
+    except OSError as exc:
+        raise DeployError("systemd-Starttimeout konnte nicht workload-basiert erweitert werden.") from exc
+    finally:
+        client.close()
+    return True
+
+
 def migrate_h2_legacy_manifests(release: pathlib.Path) -> list[dict[str, Any]]:
     if not h2_ingest_release_supported(release):
         return []
     script = release / "scripts" / "h2_ingest.py"
     receipts: list[dict[str, Any]] = []
     for root in H2_LIBRARY_ROOTS:
-        receipts.append(
-            run_command(
-                [
-                    sys.executable,
-                    str(script),
-                    "migrate-legacy-manifests",
-                    "--library-root",
-                    str(root),
-                ],
-                cwd=release,
-                timeout=H2_LEGACY_MIGRATION_TIMEOUT_SECONDS,
-            ).receipt()
-        )
+        budget = h2_legacy_migration_budget(root)
+        timeout = h2_legacy_migration_timeout_seconds(budget)
+        extend_systemd_start_timeout(timeout)
+        receipt = run_command(
+            [
+                sys.executable,
+                str(script),
+                "migrate-legacy-manifests",
+                "--library-root",
+                str(root),
+            ],
+            cwd=release,
+            timeout=timeout,
+        ).receipt()
+        receipt["migration_budget"] = budget
+        receipt["timeout_seconds"] = timeout
+        receipts.append(receipt)
     return receipts
 
 

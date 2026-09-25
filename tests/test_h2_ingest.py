@@ -439,6 +439,243 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(second["migrated"], 0)
             self.assertEqual(second["already_bound"], 1)
 
+    def test_legacy_oversized_annotations_are_migrated_without_rewriting_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["title"] = "Legacy title"
+            annotations["note"] = "Legacy note"
+            annotations["tags"] = ["legacy", "markers"]
+            annotations["updated_at"] = "2026-09-01T12:34:56+00:00"
+            annotations["markers"] = ["x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)]
+            oversized = MODULE._canonical_bytes(annotations) + b"\n"
+            self.assertGreater(len(oversized), MODULE.MAX_METADATA_JSON_BYTES)
+            self.assertLess(len(oversized), MODULE.MAX_LEGACY_ANNOTATIONS_JSON_BYTES)
+            annotations_path.write_bytes(oversized)
+            before = hashlib.sha256(oversized).hexdigest()
+
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "Control-Sidecar|Größenlimit|nicht lesbar",
+            ):
+                MODULE.library(library, projection="control")
+
+            migration = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(
+                migration["kind"],
+                "audio_h2_legacy_manifest_migration",
+            )
+            self.assertEqual(migration["annotations_migrated"], 1)
+            self.assertEqual(migration["manifest_migrated"], 0)
+            self.assertEqual(migration["migrated"], 0)
+            control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            self.assertTrue(control_path.is_file())
+            self.assertLess(control_path.stat().st_size, MODULE.MAX_METADATA_JSON_BYTES)
+            self.assertEqual(stat.S_IMODE(control_path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(annotations_path.stat().st_mode), 0o440)
+            self.assertEqual(hashlib.sha256(annotations_path.read_bytes()).hexdigest(), before)
+            preserved = json.loads(annotations_path.read_text(encoding="utf-8"))
+            self.assertEqual(preserved["markers"], annotations["markers"])
+
+            projected = MODULE.library(library, projection="control")
+            self.assertEqual(projected["count"], 1)
+            compact = projected["items"][0]["annotations"]
+            self.assertEqual(compact["title"], "Legacy title")
+            self.assertEqual(compact["note"], "Legacy note")
+            self.assertEqual(compact["tags"], ["legacy", "markers"])
+            self.assertEqual(
+                MODULE._read_annotations(
+                    material,
+                    result["material_id"],
+                )["updated_at"],
+                "2026-09-01T12:34:56+00:00",
+            )
+
+            media = MODULE.material_media(
+                result["material_id"],
+                0,
+                library_root=library,
+            )
+            self.assertTrue(media["verified_current"])
+            annotated = MODULE.annotate_material(
+                result["material_id"],
+                title="Neu",
+                note="kompakt",
+                tags=["edited"],
+                library_root=library,
+            )
+            self.assertTrue(annotated["changed"])
+            self.assertEqual(annotated["annotations"]["title"], "Neu")
+            self.assertEqual(hashlib.sha256(annotations_path.read_bytes()).hexdigest(), before)
+
+            second = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(second["migrated"], 0)
+            self.assertEqual(second["annotations_already_bound"], 1)
+
+    def test_legacy_annotation_binding_fails_closed_after_original_tamper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = ["x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)]
+            annotations_path.write_bytes(MODULE._canonical_bytes(annotations) + b"\n")
+            MODULE.migrate_legacy_manifests(library)
+
+            os.chmod(annotations_path, 0o600)
+            annotations_path.write_bytes(annotations_path.read_bytes() + b" ")
+            os.chmod(annotations_path, 0o440)
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "aktuelle, gebundene Control-Sidecar",
+            ):
+                MODULE.library(library, projection="control")
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "aktuelle, gebundene Control-Sidecar",
+            ):
+                MODULE.migrate_legacy_manifests(library)
+
+    def test_legacy_annotation_migration_rehashes_bound_original_on_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = ["x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)]
+            annotations_path.write_bytes(MODULE._canonical_bytes(annotations) + b"\n")
+            MODULE.migrate_legacy_manifests(library)
+
+            before = annotations_path.stat()
+            payload = bytearray(annotations_path.read_bytes())
+            marker_offset = payload.find(b"x")
+            self.assertGreaterEqual(marker_offset, 0)
+            payload[marker_offset] = ord("y")
+            os.chmod(annotations_path, 0o600)
+            annotations_path.write_bytes(payload)
+            os.utime(
+                annotations_path,
+                ns=(before.st_atime_ns, before.st_mtime_ns),
+            )
+            os.chmod(annotations_path, 0o440)
+            after = annotations_path.stat()
+            self.assertEqual(after.st_size, before.st_size)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+            self.assertEqual(after.st_ino, before.st_ino)
+
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "gebundenen Migrationsbeleg",
+            ):
+                MODULE.migrate_legacy_manifests(library)
+
+    def test_legacy_annotation_migration_resumes_after_prior_material_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            second_scene = "180926_191401"
+            second_session = source / second_scene
+            second_session.mkdir()
+            write_h2_wav(
+                second_session / f"{second_scene}_FRONT.WAV",
+                scene=second_scene,
+                role="FRONT",
+            )
+            library = root / "library"
+            first = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            second = MODULE.import_scene(
+                second_scene,
+                source_root=source,
+                library_root=library,
+            )
+
+            def oversize(material_id: str, marker: str) -> tuple[pathlib.Path, str]:
+                path = library / material_id / "annotations.json"
+                value = json.loads(path.read_text(encoding="utf-8"))
+                value["markers"] = [
+                    marker * (MODULE.MAX_METADATA_JSON_BYTES + 4096)
+                ]
+                payload = MODULE._canonical_bytes(value) + b"\n"
+                path.write_bytes(payload)
+                return path, hashlib.sha256(payload).hexdigest()
+
+            first_path, first_hash = oversize(first["material_id"], "x")
+            initial = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(initial["annotations_migrated"], 1)
+            self.assertEqual(initial["annotations_compact"], 1)
+
+            second_path, second_hash = oversize(second["material_id"], "z")
+            resumed = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(resumed["annotations_migrated"], 1)
+            self.assertEqual(resumed["annotations_already_bound"], 1)
+            self.assertEqual(
+                hashlib.sha256(first_path.read_bytes()).hexdigest(),
+                first_hash,
+            )
+            self.assertEqual(
+                hashlib.sha256(second_path.read_bytes()).hexdigest(),
+                second_hash,
+            )
+            self.assertEqual(
+                MODULE.library(library, projection="control")["count"],
+                2,
+            )
+
+    def test_legacy_annotation_sidecar_binding_tamper_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = ["x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)]
+            annotations_path.write_bytes(MODULE._canonical_bytes(annotations) + b"\n")
+            MODULE.migrate_legacy_manifests(library)
+
+            control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            control = json.loads(control_path.read_text(encoding="utf-8"))
+            control["legacy_annotations"]["sha256"] = "0" * 64
+            control_path.write_bytes(MODULE._canonical_bytes(control) + b"\n")
+
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "gebundenen Migrationsbeleg",
+            ):
+                MODULE.migrate_legacy_manifests(library)
+
     def test_metadata_limit_preserves_shared_service_memory_headroom(self):
         unit = (
             ROOT / "systemd" / "user" / "audio-control-ui-v1.service"

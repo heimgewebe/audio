@@ -45,7 +45,9 @@ MAX_CONTROL_SCAN_SESSIONS = 2048
 MAX_CONTROL_LIBRARY_ITEMS = 80
 MAX_METADATA_JSON_BYTES = 2 * 1024 * 1024
 MAX_LEGACY_MANIFEST_JSON_BYTES = 144 * 1024 * 1024
+MAX_LEGACY_ANNOTATIONS_JSON_BYTES = 64 * 1024 * 1024
 LEGACY_MANIFEST_CONTROL_NAME = "manifest.control-v1.json"
+LEGACY_ANNOTATIONS_CONTROL_NAME = "annotations.control-v1.json"
 CONTROL_SCAN_METADATA_BUDGET_BYTES_PER_FILE = MAX_BEXT_BYTES + 4096
 CONTROL_SCAN_PROJECTION = "control-v1"
 CONTROL_SCAN_BUDGET_PROJECTION = "control-budget-v1"
@@ -1026,6 +1028,113 @@ def _read_manifest(directory: pathlib.Path, material_id: str) -> dict[str, Any]:
     )
 
 
+def _legacy_annotations_control_projection(
+    annotations: dict[str, Any],
+    material_id: str,
+    *,
+    legacy_sha256: str,
+    legacy_metadata: os.stat_result,
+) -> dict[str, Any]:
+    if (
+        annotations.get("schema_version") != SCHEMA_VERSION
+        or annotations.get("kind") != "audio_material_annotations"
+        or annotations.get("material_id") != material_id
+        or not isinstance(annotations.get("title"), str)
+        or not isinstance(annotations.get("note"), str)
+        or not isinstance(annotations.get("tags"), list)
+        or not all(isinstance(item, str) for item in annotations["tags"])
+        or not isinstance(annotations.get("markers"), list)
+        or not (
+            annotations.get("updated_at") is None
+            or isinstance(annotations.get("updated_at"), str)
+        )
+    ):
+        raise H2IngestError("Legacy-Materialannotation ist strukturell ungültig.")
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", legacy_sha256) is None
+        or legacy_metadata.st_size <= MAX_METADATA_JSON_BYTES
+        or legacy_metadata.st_size > MAX_LEGACY_ANNOTATIONS_JSON_BYTES
+    ):
+        raise H2IngestError("Legacy-Materialannotation besitzt keinen gültigen Sidecar-Beleg.")
+    binding = {
+        "sha256": legacy_sha256,
+        "bytes": legacy_metadata.st_size,
+        "mtime_ns": legacy_metadata.st_mtime_ns,
+        "device": legacy_metadata.st_dev,
+        "inode": legacy_metadata.st_ino,
+    }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_material_annotations_control",
+        "material_id": material_id,
+        "title": annotations["title"],
+        "note": annotations["note"],
+        "tags": annotations["tags"],
+        "updated_at": annotations.get("updated_at"),
+        "legacy_annotations": binding,
+        "legacy_markers_preserved": True,
+    }
+
+
+def _annotations_from_legacy_control(
+    control: dict[str, Any],
+    material_id: str,
+    *,
+    annotations_metadata: os.stat_result,
+) -> dict[str, Any]:
+    legacy = control.get("legacy_annotations")
+    tags = control.get("tags")
+    if (
+        control.get("schema_version") != SCHEMA_VERSION
+        or control.get("kind") != "audio_material_annotations_control"
+        or control.get("material_id") != material_id
+        or control.get("legacy_markers_preserved") is not True
+        or not isinstance(control.get("title"), str)
+        or not isinstance(control.get("note"), str)
+        or not isinstance(tags, list)
+        or not all(isinstance(item, str) for item in tags)
+        or not (
+            control.get("updated_at") is None
+            or isinstance(control.get("updated_at"), str)
+        )
+        or not isinstance(legacy, dict)
+        or legacy.get("bytes") != annotations_metadata.st_size
+        or legacy.get("mtime_ns") != annotations_metadata.st_mtime_ns
+        or legacy.get("device") != annotations_metadata.st_dev
+        or legacy.get("inode") != annotations_metadata.st_ino
+        or not isinstance(legacy.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", legacy["sha256"]) is None
+        or annotations_metadata.st_size <= MAX_METADATA_JSON_BYTES
+        or annotations_metadata.st_size > MAX_LEGACY_ANNOTATIONS_JSON_BYTES
+    ):
+        raise H2IngestError(
+            "Legacy-Materialannotation benötigt eine aktuelle, gebundene Control-Sidecar."
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_material_annotations",
+        "material_id": material_id,
+        "title": control["title"],
+        "note": control["note"],
+        "tags": tags,
+        "markers": [],
+        "updated_at": control.get("updated_at"),
+    }
+
+
+def _read_annotations(directory: pathlib.Path, material_id: str) -> dict[str, Any]:
+    annotations_path = directory / "annotations.json"
+    metadata = _lstat_regular(annotations_path, "Materialannotation")
+    if metadata.st_size <= MAX_METADATA_JSON_BYTES:
+        return _read_json_regular(annotations_path)
+    control = _read_json_regular(directory / LEGACY_ANNOTATIONS_CONTROL_NAME)
+    return _annotations_from_legacy_control(
+        control,
+        material_id,
+        annotations_metadata=metadata,
+    )
+
+
 def migrate_legacy_manifests(
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
 ) -> dict[str, Any]:
@@ -1037,6 +1146,11 @@ def migrate_legacy_manifests(
         "migrated": 0,
         "already_bound": 0,
         "compact": 0,
+        "manifest_migrated": 0,
+        "manifest_already_bound": 0,
+        "annotations_migrated": 0,
+        "annotations_already_bound": 0,
+        "annotations_compact": 0,
         "read_only_originals": True,
     }
     if not root.exists() and not root.is_symlink():
@@ -1049,52 +1163,110 @@ def migrate_legacy_manifests(
                 names.append(entry.name)
     for material_id in sorted(names):
         directory = root / material_id
+
         manifest_path = directory / "manifest.json"
-        metadata = _lstat_regular(manifest_path, "Materialmanifest")
-        if metadata.st_size <= MAX_METADATA_JSON_BYTES:
+        manifest_metadata = _lstat_regular(manifest_path, "Materialmanifest")
+        if manifest_metadata.st_size <= MAX_METADATA_JSON_BYTES:
             result["compact"] += 1
-            continue
-        if metadata.st_size > MAX_LEGACY_MANIFEST_JSON_BYTES:
-            raise H2IngestError(
-                "Legacy-Materialmanifest überschreitet das sichere Migrationslimit."
-            )
-        control_path = directory / LEGACY_MANIFEST_CONTROL_NAME
-        if control_path.exists() or control_path.is_symlink():
-            try:
-                control = _read_json_regular(control_path)
-                _manifest_from_legacy_control(
-                    control,
-                    material_id,
-                    manifest_metadata=metadata,
-                )
-            except H2IngestError:
-                pass
-            else:
-                result["already_bound"] += 1
-                continue
-        manifest = _read_json_regular(
-            manifest_path,
-            max_bytes=MAX_LEGACY_MANIFEST_JSON_BYTES,
-        )
-        digest = _sha256_path(manifest_path)
-        control = _legacy_manifest_control_projection(
-            manifest,
-            material_id,
-            legacy_sha256=digest,
-            legacy_bytes=metadata.st_size,
-            legacy_mtime_ns=metadata.st_mtime_ns,
-        )
-        if control_path.exists() or control_path.is_symlink():
-            _write_json_replace(control_path, control, 0o440)
         else:
-            _write_json_new(control_path, control, 0o440)
-        observed = _read_json_regular(control_path)
-        _manifest_from_legacy_control(
-            observed,
-            material_id,
-            manifest_metadata=metadata,
+            if manifest_metadata.st_size > MAX_LEGACY_MANIFEST_JSON_BYTES:
+                raise H2IngestError(
+                    "Legacy-Materialmanifest überschreitet das sichere Migrationslimit."
+                )
+            control_path = directory / LEGACY_MANIFEST_CONTROL_NAME
+            manifest_bound = False
+            if control_path.exists() or control_path.is_symlink():
+                try:
+                    control = _read_json_regular(control_path)
+                    _manifest_from_legacy_control(
+                        control,
+                        material_id,
+                        manifest_metadata=manifest_metadata,
+                    )
+                except H2IngestError:
+                    pass
+                else:
+                    manifest_bound = True
+                    result["already_bound"] += 1
+                    result["manifest_already_bound"] += 1
+            if not manifest_bound:
+                manifest = _read_json_regular(
+                    manifest_path,
+                    max_bytes=MAX_LEGACY_MANIFEST_JSON_BYTES,
+                )
+                digest = _sha256_path(manifest_path)
+                control = _legacy_manifest_control_projection(
+                    manifest,
+                    material_id,
+                    legacy_sha256=digest,
+                    legacy_bytes=manifest_metadata.st_size,
+                    legacy_mtime_ns=manifest_metadata.st_mtime_ns,
+                )
+                if control_path.exists() or control_path.is_symlink():
+                    _write_json_replace(control_path, control, 0o440)
+                else:
+                    _write_json_new(control_path, control, 0o440)
+                observed = _read_json_regular(control_path)
+                _manifest_from_legacy_control(
+                    observed,
+                    material_id,
+                    manifest_metadata=manifest_metadata,
+                )
+                result["migrated"] += 1
+                result["manifest_migrated"] += 1
+
+        annotations_path = directory / "annotations.json"
+        annotations_metadata = _lstat_regular(annotations_path, "Materialannotation")
+        if annotations_metadata.st_size <= MAX_METADATA_JSON_BYTES:
+            result["annotations_compact"] += 1
+            continue
+        if annotations_metadata.st_size > MAX_LEGACY_ANNOTATIONS_JSON_BYTES:
+            raise H2IngestError(
+                "Legacy-Materialannotation überschreitet das sichere Migrationslimit."
+            )
+        annotations_control_path = directory / LEGACY_ANNOTATIONS_CONTROL_NAME
+        annotations_bound = False
+        if annotations_control_path.exists() or annotations_control_path.is_symlink():
+            annotations_control = _read_json_regular(annotations_control_path)
+            _annotations_from_legacy_control(
+                annotations_control,
+                material_id,
+                annotations_metadata=annotations_metadata,
+            )
+            binding = annotations_control["legacy_annotations"]
+            if _sha256_path(annotations_path) != binding["sha256"]:
+                raise H2IngestError(
+                    "Legacy-Materialannotation weicht vom gebundenen Migrationsbeleg ab."
+                )
+            annotations_bound = True
+            result["annotations_already_bound"] += 1
+        if annotations_bound:
+            os.chmod(annotations_path, 0o440)
+            continue
+
+        legacy_annotations = _read_json_regular(
+            annotations_path,
+            max_bytes=MAX_LEGACY_ANNOTATIONS_JSON_BYTES,
         )
-        result["migrated"] += 1
+        annotations_digest = _sha256_path(annotations_path)
+        annotations_control = _legacy_annotations_control_projection(
+            legacy_annotations,
+            material_id,
+            legacy_sha256=annotations_digest,
+            legacy_metadata=annotations_metadata,
+        )
+        if annotations_control_path.exists() or annotations_control_path.is_symlink():
+            _write_json_replace(annotations_control_path, annotations_control, 0o600)
+        else:
+            _write_json_new(annotations_control_path, annotations_control, 0o600)
+        observed_control = _read_json_regular(annotations_control_path)
+        _annotations_from_legacy_control(
+            observed_control,
+            material_id,
+            annotations_metadata=annotations_metadata,
+        )
+        os.chmod(annotations_path, 0o440)
+        result["annotations_migrated"] += 1
     return result
 
 
@@ -1460,7 +1632,7 @@ def library(
         for _manifest_mtime_ns, name in recent_candidates:
             directory = root / name
             manifest = _read_manifest(directory, name)
-            annotations = _read_json_regular(directory / "annotations.json")
+            annotations = _read_annotations(directory, name)
             item = _library_item(manifest, annotations, name)
             items.append(_control_library_item(item))
         result["total_count"] = observed_items
@@ -1475,7 +1647,7 @@ def library(
                     continue
                 directory = pathlib.Path(entry.path)
                 manifest = _read_manifest(directory, entry.name)
-                annotations = _read_json_regular(directory / "annotations.json")
+                annotations = _read_annotations(directory, entry.name)
                 items.append(_library_item(manifest, annotations, entry.name))
 
     items.sort(key=lambda item: item["imported_at"], reverse=True)
@@ -1616,7 +1788,8 @@ def annotate_material(
     _lstat_directory(directory, "Materialobjekt")
     manifest = _read_manifest(directory, material_id)
     annotations_path = directory / "annotations.json"
-    current = _read_json_regular(annotations_path)
+    annotations_metadata = _lstat_regular(annotations_path, "Materialannotation")
+    current = _read_annotations(directory, material_id)
     _library_item(manifest, current, material_id)
     updated = dict(current)
     updated["title"] = _validated_annotation_text(
@@ -1633,8 +1806,22 @@ def annotate_material(
     )
     if changed:
         updated["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        _write_json_replace(annotations_path, updated, 0o600)
-        observed = _read_json_regular(annotations_path)
+        if annotations_metadata.st_size <= MAX_METADATA_JSON_BYTES:
+            _write_json_replace(annotations_path, updated, 0o600)
+        else:
+            control_path = directory / LEGACY_ANNOTATIONS_CONTROL_NAME
+            control = _read_json_regular(control_path)
+            _annotations_from_legacy_control(
+                control,
+                material_id,
+                annotations_metadata=annotations_metadata,
+            )
+            control["title"] = updated["title"]
+            control["note"] = updated["note"]
+            control["tags"] = updated["tags"]
+            control["updated_at"] = updated["updated_at"]
+            _write_json_replace(control_path, control, 0o600)
+        observed = _read_annotations(directory, material_id)
         _library_item(manifest, observed, material_id)
         if observed != updated:
             raise H2IngestError("Materialannotation wurde nicht exakt zurückgelesen.")
@@ -1710,7 +1897,7 @@ def material_media(
     directory = library_root.expanduser() / material_id
     _lstat_directory(directory, "Materialobjekt")
     manifest = _read_manifest(directory, material_id)
-    annotations = _read_json_regular(directory / "annotations.json")
+    annotations = _read_annotations(directory, material_id)
     item = _library_item(manifest, annotations, material_id)
     verification = verify_material(material_id, library_root=library_root)
     masters = item["masters"]
