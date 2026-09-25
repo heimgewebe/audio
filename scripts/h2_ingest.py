@@ -50,6 +50,7 @@ MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES = 64 * 1024
 MAX_MANIFEST_MASTER_METADATA_BYTES = (
     MAX_METADATA_JSON_BYTES - MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES
 )
+MAX_WAVE_CHUNK_IDS_JSON_BYTES = MAX_MANIFEST_MASTER_METADATA_BYTES
 MAX_LEGACY_MANIFEST_JSON_BYTES = 144 * 1024 * 1024
 MAX_LEGACY_ANNOTATIONS_JSON_BYTES = 64 * 1024 * 1024
 LEGACY_MANIFEST_CONTROL_NAME = "manifest.control-v1.json"
@@ -305,7 +306,18 @@ def _inspect_wav_handle(
     bext: dict[str, Any] | None = None
     data_bytes: int | None = None
     chunk_ids: list[str] = []
+    chunk_ids_json_bytes = 2  # JSON array brackets.
     for chunk_id, size, offset in _iter_wave_chunks(handle, file_size):
+        encoded_chunk_id_bytes = len(_canonical_bytes(chunk_id))
+        additional_chunk_id_bytes = encoded_chunk_id_bytes + (1 if chunk_ids else 0)
+        if (
+            chunk_ids_json_bytes + additional_chunk_id_bytes
+            > MAX_WAVE_CHUNK_IDS_JSON_BYTES
+        ):
+            raise H2IngestError(
+                "H2-WAV überschreitet das sichere Chunk-Metadatenbudget."
+            )
+        chunk_ids_json_bytes += additional_chunk_id_bytes
         chunk_ids.append(chunk_id)
         if chunk_id == "fmt ":
             if size < 16:
@@ -865,6 +877,287 @@ def _read_json_regular(
     return value
 
 
+_JSON_NUMBER_RE = re.compile(
+    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+)
+_JSON_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+_LEGACY_ANNOTATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "material_id",
+        "title",
+        "note",
+        "tags",
+        "markers",
+        "updated_at",
+    }
+)
+
+
+def _json_skip_whitespace(value: str, index: int) -> int:
+    while index < len(value) and value[index] in " \t\r\n":
+        index += 1
+    return index
+
+
+def _json_scan_string(value: str, index: int) -> int:
+    if index >= len(value) or value[index] != '"':
+        raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+    index += 1
+    while index < len(value):
+        character = value[index]
+        if character == '"':
+            return index + 1
+        if ord(character) < 0x20:
+            raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+        if character != "\\":
+            index += 1
+            continue
+        index += 1
+        if index >= len(value):
+            raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+        escape = value[index]
+        if escape == "u":
+            if (
+                index + 5 > len(value)
+                or any(
+                    character not in _JSON_HEX_DIGITS
+                    for character in value[index + 1 : index + 5]
+                )
+            ):
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            index += 5
+            continue
+        if escape not in '"\\/bfnrt':
+            raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+        index += 1
+    raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+
+
+def _json_skip_value(value: str, index: int, depth: int = 0) -> int:
+    if depth > 512:
+        raise H2IngestError("Legacy-Materialannotation ist zu tief verschachtelt.")
+    index = _json_skip_whitespace(value, index)
+    if index >= len(value):
+        raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+    token = value[index]
+    if token == '"':
+        return _json_scan_string(value, index)
+    if token == "{":
+        index = _json_skip_whitespace(value, index + 1)
+        if index < len(value) and value[index] == "}":
+            return index + 1
+        while True:
+            key_end = _json_scan_string(value, index)
+            index = _json_skip_whitespace(value, key_end)
+            if index >= len(value) or value[index] != ":":
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            index = _json_skip_value(value, index + 1, depth + 1)
+            index = _json_skip_whitespace(value, index)
+            if index >= len(value):
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            if value[index] == "}":
+                return index + 1
+            if value[index] != ",":
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            index = _json_skip_whitespace(value, index + 1)
+    if token == "[":
+        index = _json_skip_whitespace(value, index + 1)
+        if index < len(value) and value[index] == "]":
+            return index + 1
+        while True:
+            index = _json_skip_value(value, index, depth + 1)
+            index = _json_skip_whitespace(value, index)
+            if index >= len(value):
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            if value[index] == "]":
+                return index + 1
+            if value[index] != ",":
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            index = _json_skip_whitespace(value, index + 1)
+    for literal in ("true", "false", "null", "NaN", "Infinity", "-Infinity"):
+        if value.startswith(literal, index):
+            return index + len(literal)
+    match = _JSON_NUMBER_RE.match(value, index)
+    if match is not None:
+        return match.end()
+    raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+
+
+def _legacy_annotation_field_ranges(value: str) -> dict[str, tuple[int, int]]:
+    index = _json_skip_whitespace(value, 0)
+    if index >= len(value) or value[index] != "{":
+        raise H2IngestError("Legacy-Materialannotation besitzt kein Objektformat.")
+    index = _json_skip_whitespace(value, index + 1)
+    fields: dict[str, tuple[int, int]] = {}
+    if index < len(value) and value[index] == "}":
+        index += 1
+    else:
+        while True:
+            key_start = index
+            key_end = _json_scan_string(value, key_start)
+            key: str | None = None
+            if key_end - key_start <= 128:
+                try:
+                    decoded_key = json.loads(value[key_start:key_end])
+                except json.JSONDecodeError as exc:
+                    raise H2IngestError(
+                        "Legacy-Materialannotation enthält ungültiges JSON."
+                    ) from exc
+                if isinstance(decoded_key, str):
+                    key = decoded_key
+            index = _json_skip_whitespace(value, key_end)
+            if index >= len(value) or value[index] != ":":
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            value_start = _json_skip_whitespace(value, index + 1)
+            try:
+                value_end = _json_skip_value(value, value_start)
+            except RecursionError as exc:
+                raise H2IngestError(
+                    "Legacy-Materialannotation ist zu tief verschachtelt."
+                ) from exc
+            if key in _LEGACY_ANNOTATION_FIELDS:
+                fields[key] = (value_start, value_end)
+            index = _json_skip_whitespace(value, value_end)
+            if index >= len(value):
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            if value[index] == "}":
+                index += 1
+                break
+            if value[index] != ",":
+                raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+            index = _json_skip_whitespace(value, index + 1)
+    if _json_skip_whitespace(value, index) != len(value):
+        raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
+    return fields
+
+
+def _legacy_json_string(value: str, bounds: tuple[int, int] | None) -> str | None:
+    if bounds is None:
+        return None
+    start, end = bounds
+    if start >= end or value[start] != '"':
+        return None
+    try:
+        decoded = json.loads(value[start:end])
+        if not isinstance(decoded, str):
+            return None
+        decoded.encode("utf-8")
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise H2IngestError("Legacy-Materialannotation enthält ungültigen Text.") from exc
+    if len(_canonical_bytes(decoded)) > MAX_METADATA_JSON_BYTES:
+        raise H2IngestError(
+            "Legacy-Materialannotation überschreitet das sichere Projektionsbudget."
+        )
+    return decoded
+
+
+def _legacy_json_tags(value: str, bounds: tuple[int, int] | None) -> list[str] | None:
+    if bounds is None:
+        return None
+    start, end = bounds
+    if start >= end or value[start] != "[":
+        return None
+    index = _json_skip_whitespace(value, start + 1)
+    items: list[str] = []
+    canonical_bytes = 2
+    if index < end and value[index] == "]":
+        return items
+    while index < end:
+        if value[index] != '"':
+            return None
+        item_end = _json_scan_string(value, index)
+        if item_end > end:
+            return None
+        try:
+            item = json.loads(value[index:item_end])
+            if not isinstance(item, str):
+                return None
+            item.encode("utf-8")
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise H2IngestError("Legacy-Materialannotation enthält ungültigen Tagtext.") from exc
+        item_bytes = len(_canonical_bytes(item))
+        additional = item_bytes + (1 if items else 0)
+        if canonical_bytes + additional > MAX_METADATA_JSON_BYTES:
+            raise H2IngestError(
+                "Legacy-Materialannotation überschreitet das sichere Projektionsbudget."
+            )
+        canonical_bytes += additional
+        items.append(item)
+        index = _json_skip_whitespace(value, item_end)
+        if index >= end:
+            return None
+        if value[index] == "]":
+            return items if index + 1 == end else None
+        if value[index] != ",":
+            return None
+        index = _json_skip_whitespace(value, index + 1)
+    return None
+
+
+def _legacy_json_schema_version(
+    value: str, bounds: tuple[int, int] | None
+) -> int | None:
+    if bounds is None:
+        return None
+    start, end = bounds
+    token = value[start:end]
+    if len(token) > 32 or not re.fullmatch(r"-?(?:0|[1-9][0-9]*)", token):
+        return None
+    try:
+        decoded = json.loads(token)
+    except json.JSONDecodeError:
+        return None
+    return decoded if isinstance(decoded, int) and not isinstance(decoded, bool) else None
+
+
+def _read_legacy_annotations_projection(
+    path: pathlib.Path,
+) -> dict[str, Any]:
+    metadata = _lstat_regular(path, "Legacy-Materialannotation")
+    if (
+        metadata.st_size <= MAX_METADATA_JSON_BYTES
+        or metadata.st_size > MAX_LEGACY_ANNOTATIONS_JSON_BYTES
+    ):
+        raise H2IngestError("Legacy-Materialannotation liegt außerhalb des Migrationslimits.")
+    try:
+        value = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise H2IngestError("Legacy-Materialannotation ist nicht sicher lesbar.") from exc
+    fields = _legacy_annotation_field_ranges(value)
+
+    updated_at_bounds = fields.get("updated_at")
+    updated_at: str | None | int
+    if updated_at_bounds is None:
+        updated_at = None
+    elif value[updated_at_bounds[0] : updated_at_bounds[1]] == "null":
+        updated_at = None
+    else:
+        decoded_updated_at = _legacy_json_string(value, updated_at_bounds)
+        updated_at = decoded_updated_at if decoded_updated_at is not None else 0
+
+    markers_bounds = fields.get("markers")
+    markers_is_list = (
+        markers_bounds is not None
+        and markers_bounds[0] < markers_bounds[1]
+        and value[markers_bounds[0]] == "["
+    )
+    projection: dict[str, Any] = {
+        "schema_version": _legacy_json_schema_version(
+            value, fields.get("schema_version")
+        ),
+        "kind": _legacy_json_string(value, fields.get("kind")),
+        "material_id": _legacy_json_string(value, fields.get("material_id")),
+        "title": _legacy_json_string(value, fields.get("title")),
+        "note": _legacy_json_string(value, fields.get("note")),
+        "tags": _legacy_json_tags(value, fields.get("tags")),
+        "markers": [] if markers_is_list else None,
+        "updated_at": updated_at,
+    }
+    return projection
+
+
 def _library_item(
     manifest: dict[str, Any],
     annotations: dict[str, Any],
@@ -1311,9 +1604,8 @@ def migrate_legacy_manifests(
             os.chmod(annotations_path, 0o440)
             continue
 
-        legacy_annotations = _read_json_regular(
+        legacy_annotations = _read_legacy_annotations_projection(
             annotations_path,
-            max_bytes=MAX_LEGACY_ANNOTATIONS_JSON_BYTES,
         )
         annotations_digest = _sha256_path(annotations_path)
         annotations_control = _legacy_annotations_control_projection(

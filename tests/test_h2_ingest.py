@@ -164,6 +164,31 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(item["bwf"]["originator"], "ZOOM H2essential")
             self.assertNotIn("sha256", item)
 
+    def test_wav_rejects_chunk_id_accumulation_during_iteration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            scene = "170926_191401"
+            path = root / f"{scene}_FRONT.WAV"
+            original = write_h2_wav(path, scene=scene, role="FRONT")
+            data_offset = original.find(b"data")
+            self.assertGreater(data_offset, 12)
+            ancillary = _chunk(b"JUNK", b"") * 32
+            expanded = (
+                b"RIFF"
+                + struct.pack("<I", len(original) - 8 + len(ancillary))
+                + original[8:data_offset]
+                + ancillary
+                + original[data_offset:]
+            )
+            path.write_bytes(expanded)
+
+            with mock.patch.object(MODULE, "MAX_WAVE_CHUNK_IDS_JSON_BYTES", 48):
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "Chunk-Metadatenbudget",
+                ):
+                    MODULE.inspect_wav(path, scene, "FRONT")
+
     def test_scene_rejects_cumulative_manifest_metadata_before_full_serialization(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -597,6 +622,86 @@ class H2IngestTests(unittest.TestCase):
             second = MODULE.migrate_legacy_manifests(library)
             self.assertEqual(second["migrated"], 0)
             self.assertEqual(second["annotations_already_bound"], 1)
+
+    def test_legacy_annotation_migration_streams_dense_markers_without_materializing_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            dense_markers = b",".join([b"{}"] * 1800)
+            payload = (
+                b'{"kind":"audio_material_annotations","markers":['
+                + dense_markers
+                + b'],"material_id":"'
+                + result["material_id"].encode("ascii")
+                + b'","note":"Legacy note","schema_version":1,'
+                + b'"tags":["legacy"],"title":"Legacy title","updated_at":null}\n'
+            )
+            self.assertGreater(len(payload), 4096)
+            annotations_path.write_bytes(payload)
+            before = hashlib.sha256(payload).hexdigest()
+            real_loads = json.loads
+
+            def bounded_loads(value, *args, **kwargs):
+                self.assertLessEqual(len(value), 1024)
+                return real_loads(value, *args, **kwargs)
+
+            with (
+                mock.patch.object(MODULE, "MAX_METADATA_JSON_BYTES", 4096),
+                mock.patch.object(MODULE.json, "loads", side_effect=bounded_loads),
+            ):
+                migration = MODULE.migrate_legacy_manifests(library)
+
+            self.assertEqual(migration["annotations_migrated"], 1)
+            self.assertEqual(hashlib.sha256(annotations_path.read_bytes()).hexdigest(), before)
+            projected = MODULE._read_json_regular(
+                material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            )
+            self.assertEqual(projected["title"], "Legacy title")
+            self.assertEqual(projected["note"], "Legacy note")
+            self.assertEqual(projected["tags"], ["legacy"])
+
+    def test_legacy_annotation_stream_projection_rejects_invalid_marker_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "annotations.json"
+            padding = "x" * (MODULE.MAX_METADATA_JSON_BYTES + 1024)
+            path.write_text(
+                '{"schema_version":1,"kind":"audio_material_annotations",'
+                '"material_id":"aaaaaaaaaaaaaaaaaaaaaaaa","title":"","note":"'
+                + padding
+                + '","tags":[],"markers":[{},],"updated_at":null}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "ungültiges JSON",
+            ):
+                MODULE._read_legacy_annotations_projection(path)
+
+    def test_legacy_annotation_stream_projection_preserves_last_duplicate_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "annotations.json"
+            padding = "x" * (MODULE.MAX_METADATA_JSON_BYTES + 1024)
+            payload = (
+                '{"schema_version":1,"kind":"audio_material_annotations",'
+                '"material_id":"aaaaaaaaaaaaaaaaaaaaaaaa",'
+                '"title":"first","markers":{},"title":"last",'
+                '"note":"kept","tags":["a"],"markers":[],'
+                '"padding":"' + padding + '","updated_at":null}'
+            )
+            path.write_text(payload, encoding="utf-8")
+            projected = MODULE._read_legacy_annotations_projection(path)
+            reference = json.loads(payload)
+            self.assertEqual(projected["title"], reference["title"])
+            self.assertEqual(projected["markers"], reference["markers"])
+            self.assertEqual(projected["tags"], reference["tags"])
 
     def test_legacy_annotation_migration_recovers_partial_control_sidecar(self):
         with tempfile.TemporaryDirectory() as directory:
