@@ -3847,7 +3847,7 @@ async function postH2Action(payload) {
     });
   }
   if (state.remoteBridgeProjection === true) {
-    await ensureRemoteWhaleSession({ force: true });
+    await ensureRemoteWhaleSession();
   }
   if (remoteH2ActionsAllowed()) {
     return fetchJson("/bridge/v1/actions/h2", {

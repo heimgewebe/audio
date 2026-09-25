@@ -436,13 +436,14 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('payload?.operation === "import"', h2_router)
         self.assertIn("await h2ImportTimeoutMs(payload.scene)", h2_router)
         self.assertIn("await h2AnnotationTimeoutMs()", h2_router)
-        self.assertIn("await ensureRemoteWhaleSession({ force: true })", h2_router)
+        self.assertIn("await ensureRemoteWhaleSession()", h2_router)
+        self.assertNotIn("ensureRemoteWhaleSession({ force: true })", h2_router)
         self.assertLess(
             h2_router.index("await h2ImportTimeoutMs(payload.scene)"),
-            h2_router.index("await ensureRemoteWhaleSession({ force: true })"),
+            h2_router.index("await ensureRemoteWhaleSession()"),
         )
         self.assertLess(
-            h2_router.index("await ensureRemoteWhaleSession({ force: true })"),
+            h2_router.index("await ensureRemoteWhaleSession()"),
             h2_router.index("if (remoteH2ActionsAllowed())"),
         )
         self.assertNotIn("delete-source", h2_router)
@@ -1255,7 +1256,7 @@ async function postH2Action() {{
         )[0]
         self.assertIn("state.h2AnnotationDrafts.size > 0", blocked)
 
-    def test_remote_h2_post_refreshes_session_after_async_deadline_computation(self):
+    def test_remote_h2_post_rechecks_and_reuses_session_after_async_deadline(self):
         post = "async function postH2Action" + self.app.split(
             "async function postH2Action", 1
         )[1].split("\nasync function runH2Action", 1)[0]
@@ -1266,6 +1267,8 @@ const state = {{
   remoteWhaleSessionError: null,
 }};
 let fresh = true;
+let expireDuringDeadline = true;
+let issuedSessions = 0;
 const events = [];
 function localH2ActionsAllowed() {{
   events.push("local-check");
@@ -1277,18 +1280,22 @@ function remoteH2ActionsAllowed() {{
 }}
 async function h2ImportTimeoutMs() {{
   events.push("deadline-start");
-  fresh = false;
-  events.push("session-expired-during-deadline");
+  if (expireDuringDeadline) {{
+    fresh = false;
+    events.push("session-expired-during-deadline");
+  }}
   return 12345;
 }}
 async function h2AnnotationTimeoutMs() {{
   throw new Error("unexpected annotation budget");
 }}
 async function ensureRemoteWhaleSession({{ force = false }} = {{}}) {{
-  events.push("session-refresh:" + String(force));
-  if (!force) throw new Error("refresh must be forced");
+  events.push("session-check:" + String(force) + ":" + String(fresh));
+  if (!force && fresh) return true;
+  issuedSessions += 1;
   state.remoteWhaleSessionToken = "n".repeat(32);
   fresh = true;
+  events.push("session-issued:n");
   return true;
 }}
 async function fetchJson(url, options) {{
@@ -1301,8 +1308,10 @@ async function fetchJson(url, options) {{
 }}
 {post}
 (async () => {{
-  const result = await postH2Action({{ operation: "import", scene: "170926_191401" }});
-  process.stdout.write(JSON.stringify({{ events, result }}));
+  const first = await postH2Action({{ operation: "import", scene: "170926_191401" }});
+  expireDuringDeadline = false;
+  const second = await postH2Action({{ operation: "import", scene: "170926_191401" }});
+  process.stdout.write(JSON.stringify({{ events, first, second, issuedSessions }}));
 }})();
 """
         completed = subprocess.run(
@@ -1318,13 +1327,21 @@ async function fetchJson(url, options) {{
                 "deadline-start",
                 "session-expired-during-deadline",
                 "local-check",
-                "session-refresh:true",
+                "session-check:false:false",
+                "session-issued:n",
+                "remote-check:true:n",
+                "post:/bridge/v1/actions/h2:n",
+                "deadline-start",
+                "local-check",
+                "session-check:false:true",
                 "remote-check:true:n",
                 "post:/bridge/v1/actions/h2:n",
             ],
         )
-        self.assertEqual(result["result"]["timeoutMs"], 12345)
-        self.assertEqual(result["result"]["token"], "n" * 32)
+        self.assertEqual(result["issuedSessions"], 1)
+        self.assertEqual(result["first"]["timeoutMs"], 12345)
+        self.assertEqual(result["first"]["token"], "n" * 32)
+        self.assertEqual(result["second"]["token"], "n" * 32)
 
     def test_h2_audio_defers_native_media_load_until_explicit_interaction(self):
         helper = self.app.split("function appendH2Audio", 1)[1].split(
