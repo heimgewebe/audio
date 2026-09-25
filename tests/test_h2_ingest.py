@@ -589,6 +589,10 @@ class H2IngestTests(unittest.TestCase):
             control = MODULE._read_json_regular(control_path)
             before = manifest_path.stat()
             self.assertEqual(
+                control["legacy_manifest"]["ctime_ns"],
+                before.st_ctime_ns,
+            )
+            self.assertEqual(
                 control["legacy_manifest"]["device"],
                 before.st_dev,
             )
@@ -628,12 +632,93 @@ class H2IngestTests(unittest.TestCase):
             rebound_control = MODULE._read_json_regular(control_path)
             current = manifest_path.stat()
             self.assertEqual(
+                rebound_control["legacy_manifest"]["ctime_ns"],
+                current.st_ctime_ns,
+            )
+            self.assertEqual(
                 rebound_control["legacy_manifest"]["device"],
                 current.st_dev,
             )
             self.assertEqual(
                 rebound_control["legacy_manifest"]["inode"],
                 current.st_ino,
+            )
+            self.assertEqual(
+                rebound_control["legacy_manifest"]["sha256"],
+                hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                MODULE.library(library, projection="control")["count"],
+                1,
+            )
+
+    def test_legacy_manifest_sidecar_rejects_in_place_same_size_mtime_rewrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            manifest_path = material / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["legacy_padding"] = "x" * (
+                MODULE.MAX_METADATA_JSON_BYTES + 4096
+            )
+            oversized = MODULE._canonical_bytes(manifest) + b"\n"
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_bytes(oversized)
+            os.chmod(manifest_path, 0o440)
+
+            migration = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(migration["manifest_migrated"], 1)
+            control_path = material / MODULE.LEGACY_MANIFEST_CONTROL_NAME
+            before = manifest_path.stat()
+            control = MODULE._read_json_regular(control_path)
+            self.assertEqual(
+                control["legacy_manifest"]["ctime_ns"],
+                before.st_ctime_ns,
+            )
+
+            replacement = bytearray(manifest_path.read_bytes())
+            marker = b'"legacy_padding":"'
+            marker_offset = replacement.find(marker)
+            self.assertGreaterEqual(marker_offset, 0)
+            payload_offset = marker_offset + len(marker)
+            self.assertEqual(replacement[payload_offset], ord("x"))
+            replacement[payload_offset] = ord("y")
+
+            MODULE.time.sleep(0.01)
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_bytes(replacement)
+            os.utime(
+                manifest_path,
+                ns=(before.st_atime_ns, before.st_mtime_ns),
+            )
+            os.chmod(manifest_path, 0o440)
+            after = manifest_path.stat()
+            self.assertEqual(after.st_dev, before.st_dev)
+            self.assertEqual(after.st_ino, before.st_ino)
+            self.assertEqual(after.st_size, before.st_size)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+            self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
+
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "aktuelle, gebundene Control-Sidecar",
+            ):
+                MODULE.library(library, projection="control")
+
+            rebound = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(rebound["manifest_migrated"], 1)
+            current = manifest_path.stat()
+            rebound_control = MODULE._read_json_regular(control_path)
+            self.assertEqual(
+                rebound_control["legacy_manifest"]["ctime_ns"],
+                current.st_ctime_ns,
             )
             self.assertEqual(
                 rebound_control["legacy_manifest"]["sha256"],

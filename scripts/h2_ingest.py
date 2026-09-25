@@ -1649,6 +1649,7 @@ def _legacy_manifest_control_projection(
     legacy_sha256: str,
     legacy_bytes: int,
     legacy_mtime_ns: int,
+    legacy_ctime_ns: int,
     legacy_device: int,
     legacy_inode: int,
 ) -> dict[str, Any]:
@@ -1686,6 +1687,7 @@ def _legacy_manifest_control_projection(
         "sha256": legacy_sha256,
         "bytes": legacy_bytes,
         "mtime_ns": legacy_mtime_ns,
+        "ctime_ns": legacy_ctime_ns,
         "device": legacy_device,
         "inode": legacy_inode,
     }
@@ -1697,6 +1699,9 @@ def _legacy_manifest_control_projection(
         or isinstance(legacy_mtime_ns, bool)
         or not isinstance(legacy_mtime_ns, int)
         or legacy_mtime_ns < 0
+        or isinstance(legacy_ctime_ns, bool)
+        or not isinstance(legacy_ctime_ns, int)
+        or legacy_ctime_ns < 0
         or isinstance(legacy_device, bool)
         or not isinstance(legacy_device, int)
         or legacy_device < 0
@@ -1735,6 +1740,7 @@ def _manifest_from_legacy_control(
         or not isinstance(legacy, dict)
         or legacy.get("bytes") != manifest_metadata.st_size
         or legacy.get("mtime_ns") != manifest_metadata.st_mtime_ns
+        or legacy.get("ctime_ns") != manifest_metadata.st_ctime_ns
         or legacy.get("device") != manifest_metadata.st_dev
         or legacy.get("inode") != manifest_metadata.st_ino
         or not isinstance(legacy.get("sha256"), str)
@@ -1961,6 +1967,7 @@ def migrate_legacy_manifests(
                     legacy_sha256=digest,
                     legacy_bytes=manifest_metadata.st_size,
                     legacy_mtime_ns=manifest_metadata.st_mtime_ns,
+                    legacy_ctime_ns=manifest_metadata.st_ctime_ns,
                     legacy_device=manifest_metadata.st_dev,
                     legacy_inode=manifest_metadata.st_ino,
                 )
