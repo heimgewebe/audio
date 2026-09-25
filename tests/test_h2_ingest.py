@@ -676,6 +676,153 @@ class H2IngestTests(unittest.TestCase):
             ):
                 MODULE.migrate_legacy_manifests(library)
 
+    def test_durable_migration_survives_caller_timeout_via_release_bound_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            imported = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / imported["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = [
+                "x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)
+            ]
+            annotations_path.write_bytes(MODULE._canonical_bytes(annotations) + b"\n")
+            commit = "a" * 40
+            inactive = {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+            }
+
+            def launch(_root, _inventory):
+                MODULE._run_legacy_migration_worker(library)
+                return MODULE._legacy_migration_worker_unit(library)
+
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_durable_migration_release_commit",
+                    return_value=commit,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_legacy_migration_systemd_state",
+                    return_value=inactive,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_launch_legacy_migration_worker",
+                    side_effect=launch,
+                ) as launcher,
+            ):
+                first = MODULE.migrate_legacy_manifests_durable(library)
+                MODULE.annotate_material(
+                    imported["material_id"],
+                    title="Nach Migration",
+                    note="legitime mutable Änderung",
+                    tags=["edited"],
+                    library_root=library,
+                )
+                second = MODULE.migrate_legacy_manifests_durable(library)
+
+            self.assertEqual(first["annotations_migrated"], 1)
+            self.assertTrue(first["durable_worker"])
+            self.assertTrue(first["durable_receipt_reused"])
+            self.assertTrue(second["durable_receipt_reused"])
+            launcher.assert_called_once()
+            receipt = json.loads(
+                (library / MODULE.LEGACY_MIGRATION_RECEIPT_NAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(receipt["release_commit"], commit)
+            self.assertEqual(receipt["status"], "success")
+            self.assertRegex(receipt["postcondition_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_durable_worker_is_detached_bounded_and_uses_immutable_release_script(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            inventory = {
+                "library_root": str(root),
+                "material_count": 4,
+                "candidate_file_count": 2,
+                "candidate_bytes": 20 * 1024 * 1024,
+                "candidate_metadata_sha256": "0" * 64,
+            }
+            completed = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+            with mock.patch.object(
+                MODULE.subprocess,
+                "run",
+                return_value=completed,
+            ) as runner:
+                unit = MODULE._launch_legacy_migration_worker(root, inventory)
+
+            argv = runner.call_args.args[0]
+            self.assertEqual(argv[:5], [
+                "systemd-run",
+                "--user",
+                "--collect",
+                "--no-block",
+                "--quiet",
+            ])
+            self.assertIn(
+                f"--property=MemoryMax={MODULE.LEGACY_MIGRATION_WORKER_MEMORY_MAX_BYTES}",
+                argv,
+            )
+            self.assertIn(f"--property=ReadWritePaths={root}", argv)
+            self.assertIn("--property=ProtectSystem=strict", argv)
+            self.assertIn("--property=ProtectHome=read-only", argv)
+            self.assertIn("_migrate-legacy-manifests-worker", argv)
+            worker_index = argv.index("_migrate-legacy-manifests-worker")
+            script_path = pathlib.Path(argv[worker_index - 1])
+            self.assertTrue(script_path.is_absolute())
+            self.assertEqual(script_path, pathlib.Path(MODULE.__file__).resolve())
+            self.assertTrue(unit.endswith(".service"))
+
+    def test_migrate_legacy_cli_routes_through_durable_release_handoff(self):
+        expected = {
+            "schema_version": MODULE.SCHEMA_VERSION,
+            "kind": "audio_h2_legacy_manifest_migration",
+            "library_root": "/tmp/example",
+            "migrated": 0,
+            "already_bound": 0,
+            "compact": 0,
+            "manifest_migrated": 0,
+            "manifest_already_bound": 0,
+            "annotations_migrated": 0,
+            "annotations_already_bound": 0,
+            "annotations_compact": 0,
+            "read_only_originals": True,
+        }
+        with (
+            mock.patch.object(
+                MODULE,
+                "migrate_legacy_manifests_durable",
+                return_value=expected,
+            ) as durable,
+            mock.patch("builtins.print"),
+        ):
+            status = MODULE.main(
+                [
+                    "migrate-legacy-manifests",
+                    "--library-root",
+                    "/tmp/example",
+                ]
+            )
+        self.assertEqual(status, 0)
+        durable.assert_called_once_with(pathlib.Path("/tmp/example"))
+
     def test_metadata_limit_preserves_shared_service_memory_headroom(self):
         unit = (
             ROOT / "systemd" / "user" / "audio-control-ui-v1.service"

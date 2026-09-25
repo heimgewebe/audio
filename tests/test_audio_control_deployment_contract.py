@@ -108,6 +108,35 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
             read_write_paths(DEPLOY_UNIT_PATH),
         )
 
+    def test_ui_first_upgrade_schedules_release_bound_h2_migration_before_start(self):
+        ui = UI_UNIT_PATH.read_text(encoding="utf-8")
+        primary = (
+            "ExecStartPre=+/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/h2_ingest.py "
+            "migrate-legacy-manifests --library-root "
+            "%h/Music/Audio-Aufnahmen/H2-Material"
+        )
+        legacy = (
+            "ExecStartPre=+/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/h2_ingest.py "
+            "migrate-legacy-manifests --library-root "
+            "%h/Music/Audio-Material/H2"
+        )
+        prepare = (
+            "ExecStartPre=+/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/audio_control.py "
+            "prepare-runtime-state"
+        )
+        start = (
+            "ExecStart=/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/audio_control.py serve"
+        )
+        for command in (primary, legacy, prepare, start):
+            self.assertIn(command, ui)
+        self.assertLess(ui.index(primary), ui.index(legacy))
+        self.assertLess(ui.index(legacy), ui.index(prepare))
+        self.assertLess(ui.index(prepare), ui.index(start))
+
     def test_deploy_sandbox_allows_only_named_h2_migration_roots(self):
         paths = read_write_paths(DEPLOY_UNIT_PATH)
         self.assertIn("-%h/Music/Audio-Aufnahmen/H2-Material", paths)

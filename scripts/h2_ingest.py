@@ -22,8 +22,10 @@ import re
 import shutil
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, BinaryIO, Iterator
 
 SCHEMA_VERSION = 1
@@ -48,6 +50,14 @@ MAX_LEGACY_MANIFEST_JSON_BYTES = 144 * 1024 * 1024
 MAX_LEGACY_ANNOTATIONS_JSON_BYTES = 64 * 1024 * 1024
 LEGACY_MANIFEST_CONTROL_NAME = "manifest.control-v1.json"
 LEGACY_ANNOTATIONS_CONTROL_NAME = "annotations.control-v1.json"
+LEGACY_MIGRATION_RECEIPT_NAME = ".h2-legacy-migration-v1.json"
+LEGACY_MIGRATION_WORKER_MEMORY_MAX_BYTES = 512 * 1024 * 1024
+LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND = 512 * 1024
+LEGACY_MIGRATION_IO_PASSES = 2
+LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS = 60
+LEGACY_MIGRATION_PER_MATERIAL_SECONDS = 1
+LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS = 5 * 60
+RELEASE_MARKER_NAME = ".audio-control-release.json"
 CONTROL_SCAN_METADATA_BUDGET_BYTES_PER_FILE = MAX_BEXT_BYTES + 4096
 CONTROL_SCAN_PROJECTION = "control-v1"
 CONTROL_SCAN_BUDGET_PROJECTION = "control-budget-v1"
@@ -1300,6 +1310,449 @@ def _open_library_import_lock(library: pathlib.Path) -> int:
         raise
 
 
+def _legacy_migration_inventory(library_root: pathlib.Path) -> dict[str, Any]:
+    root = library_root.expanduser()
+    result: dict[str, Any] = {
+        "library_root": str(root),
+        "material_count": 0,
+        "candidate_file_count": 0,
+        "candidate_bytes": 0,
+        "candidate_metadata_sha256": hashlib.sha256(b"").hexdigest(),
+    }
+    if not root.exists() and not root.is_symlink():
+        return result
+    metadata = _lstat_directory(root, "Materialbibliothek")
+    if metadata.st_uid != os.getuid():
+        raise H2IngestError("Materialbibliothek gehört nicht dem aktuellen Benutzer.")
+
+    records: list[dict[str, Any]] = []
+    with os.scandir(root) as entries:
+        names = sorted(
+            entry.name
+            for entry in entries
+            if entry.is_dir(follow_symlinks=False)
+            and MATERIAL_ID_RE.fullmatch(entry.name) is not None
+        )
+    result["material_count"] = len(names)
+    for material_id in names:
+        directory = root / material_id
+        for name, maximum in (
+            ("manifest.json", MAX_LEGACY_MANIFEST_JSON_BYTES),
+            ("annotations.json", MAX_LEGACY_ANNOTATIONS_JSON_BYTES),
+        ):
+            item = directory / name
+            item_metadata = _lstat_regular(item, f"Legacy-{name}")
+            if item_metadata.st_size > maximum:
+                raise H2IngestError(
+                    f"Legacy-{name} überschreitet das sichere Migrationslimit."
+                )
+            if item_metadata.st_size <= MAX_METADATA_JSON_BYTES:
+                continue
+            result["candidate_file_count"] += 1
+            result["candidate_bytes"] += item_metadata.st_size
+            records.append(
+                {
+                    "material_id": material_id,
+                    "name": name,
+                    "bytes": item_metadata.st_size,
+                    "mtime_ns": item_metadata.st_mtime_ns,
+                    "device": item_metadata.st_dev,
+                    "inode": item_metadata.st_ino,
+                }
+            )
+    digest = hashlib.sha256()
+    for record in records:
+        digest.update(_canonical_bytes(record))
+        digest.update(b"\n")
+    result["candidate_metadata_sha256"] = digest.hexdigest()
+    return result
+
+
+def _legacy_migration_timeout_seconds(inventory: dict[str, Any]) -> int:
+    material_count = inventory.get("material_count")
+    candidate_file_count = inventory.get("candidate_file_count")
+    candidate_bytes = inventory.get("candidate_bytes")
+    if (
+        isinstance(material_count, bool)
+        or not isinstance(material_count, int)
+        or material_count < 0
+        or isinstance(candidate_file_count, bool)
+        or not isinstance(candidate_file_count, int)
+        or candidate_file_count < 0
+        or isinstance(candidate_bytes, bool)
+        or not isinstance(candidate_bytes, int)
+        or candidate_bytes < 0
+        or (candidate_file_count == 0) != (candidate_bytes == 0)
+    ):
+        raise H2IngestError("Legacy-Migrationsbudget ist ungültig.")
+    io_seconds = (
+        candidate_bytes * LEGACY_MIGRATION_IO_PASSES
+        + LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND
+        - 1
+    ) // LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND
+    return (
+        LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS
+        + material_count * LEGACY_MIGRATION_PER_MATERIAL_SECONDS
+        + io_seconds
+    )
+
+
+def _durable_migration_release_commit() -> str | None:
+    marker = pathlib.Path(__file__).resolve().parents[1] / RELEASE_MARKER_NAME
+    if not marker.exists() and not marker.is_symlink():
+        return None
+    payload = _read_json_regular(marker)
+    commit = payload.get("commit")
+    if (
+        payload.get("kind") != "audio_control_release"
+        or not isinstance(commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", commit) is None
+    ):
+        raise H2IngestError("Release-Bindung der Legacy-Migration ist ungültig.")
+    return commit
+
+
+def _legacy_migration_receipt_path(root: pathlib.Path) -> pathlib.Path:
+    return root / LEGACY_MIGRATION_RECEIPT_NAME
+
+
+def _legacy_migration_postcondition_sha256(
+    root: pathlib.Path,
+    expected_inventory: dict[str, Any],
+) -> str:
+    current = _legacy_migration_inventory(root)
+    for key in (
+        "material_count",
+        "candidate_file_count",
+        "candidate_bytes",
+        "candidate_metadata_sha256",
+    ):
+        if current.get(key) != expected_inventory.get(key):
+            raise H2IngestError(
+                "Legacy-Migrationsbestand änderte sich während der Migration."
+            )
+    digest = hashlib.sha256()
+    with os.scandir(root) as entries:
+        names = sorted(
+            entry.name
+            for entry in entries
+            if entry.is_dir(follow_symlinks=False)
+            and MATERIAL_ID_RE.fullmatch(entry.name) is not None
+        )
+    for material_id in names:
+        directory = root / material_id
+        for name, sidecar_name in (
+            ("manifest.json", LEGACY_MANIFEST_CONTROL_NAME),
+            ("annotations.json", LEGACY_ANNOTATIONS_CONTROL_NAME),
+        ):
+            metadata = _lstat_regular(directory / name, f"Legacy-{name}")
+            if metadata.st_size <= MAX_METADATA_JSON_BYTES:
+                continue
+            sidecar = directory / sidecar_name
+            sidecar_metadata = _lstat_regular(
+                sidecar, "Legacy-Migrations-Control-Sidecar"
+            )
+            if sidecar_metadata.st_size > MAX_METADATA_JSON_BYTES:
+                raise H2IngestError(
+                    "Legacy-Migrations-Control-Sidecar überschreitet das Größenlimit."
+                )
+            if name == "annotations.json":
+                control = _read_json_regular(sidecar)
+                immutable_control = {
+                    "schema_version": control.get("schema_version"),
+                    "kind": control.get("kind"),
+                    "material_id": control.get("material_id"),
+                    "legacy_annotations": control.get("legacy_annotations"),
+                    "legacy_markers_preserved": control.get(
+                        "legacy_markers_preserved"
+                    ),
+                }
+                sidecar_binding_sha256 = hashlib.sha256(
+                    _canonical_bytes(immutable_control)
+                ).hexdigest()
+            else:
+                sidecar_binding_sha256 = _sha256_path(sidecar)
+            record = {
+                "material_id": material_id,
+                "name": name,
+                "bytes": metadata.st_size,
+                "mtime_ns": metadata.st_mtime_ns,
+                "device": metadata.st_dev,
+                "inode": metadata.st_ino,
+                "sidecar_binding_sha256": sidecar_binding_sha256,
+            }
+            digest.update(_canonical_bytes(record))
+            digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _read_legacy_migration_receipt(root: pathlib.Path) -> dict[str, Any] | None:
+    path = _legacy_migration_receipt_path(root)
+    if not path.exists() and not path.is_symlink():
+        return None
+    return _read_json_regular(path)
+
+
+def _write_legacy_migration_receipt(root: pathlib.Path, value: dict[str, Any]) -> None:
+    path = _legacy_migration_receipt_path(root)
+    if path.exists() or path.is_symlink():
+        _write_json_replace(path, value, 0o600)
+    else:
+        _write_json_new(path, value, 0o600)
+
+
+def _durable_migration_receipt_result(
+    root: pathlib.Path,
+    *,
+    release_commit: str,
+    inventory: dict[str, Any],
+) -> dict[str, Any] | None:
+    receipt = _read_legacy_migration_receipt(root)
+    if receipt is None:
+        return None
+    receipt_commit = receipt.get("release_commit")
+    if isinstance(receipt_commit, str) and receipt_commit != release_commit:
+        return None
+    if (
+        receipt.get("schema_version") != SCHEMA_VERSION
+        or receipt.get("kind") != "audio_h2_legacy_migration_receipt"
+        or receipt_commit != release_commit
+        or receipt.get("library_root") != str(root)
+        or receipt.get("candidate_metadata_sha256")
+        != inventory.get("candidate_metadata_sha256")
+        or receipt.get("candidate_file_count") != inventory.get("candidate_file_count")
+        or receipt.get("candidate_bytes") != inventory.get("candidate_bytes")
+        or receipt.get("status") != "success"
+    ):
+        raise H2IngestError("Legacy-Migrationsbeleg ist ungültig.")
+    observed_postcondition = _legacy_migration_postcondition_sha256(root, inventory)
+    if receipt.get("postcondition_sha256") != observed_postcondition:
+        return None
+    result = receipt.get("result")
+    if (
+        not isinstance(result, dict)
+        or result.get("kind") != "audio_h2_legacy_manifest_migration"
+        or result.get("library_root") != str(root)
+    ):
+        raise H2IngestError("Legacy-Migrationsbeleg enthält kein gültiges Ergebnis.")
+    reused = dict(result)
+    reused["durable_worker"] = True
+    reused["durable_receipt_reused"] = True
+    reused["release_commit"] = release_commit
+    return reused
+
+
+def _legacy_migration_worker_unit(root: pathlib.Path) -> str:
+    token = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return f"audio-h2-legacy-migrate-v1-{token}.service"
+
+
+def _legacy_migration_systemd_state(unit: str) -> dict[str, str]:
+    try:
+        completed = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                unit,
+                "--no-pager",
+                "--property=LoadState",
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--property=ExecMainStatus",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=8,
+            check=False,
+            env={**os.environ, "LC_ALL": "C.UTF-8"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise H2IngestError("Legacy-Migrationsworker-Zustand ist nicht lesbar.") from exc
+    values: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    if not values:
+        values["LoadState"] = "not-found"
+        values["ActiveState"] = "inactive"
+        values["SubState"] = "dead"
+    return values
+
+
+def _launch_legacy_migration_worker(
+    root: pathlib.Path,
+    inventory: dict[str, Any],
+) -> str:
+    root = root.expanduser()
+    if not root.is_absolute():
+        raise H2IngestError("Durable Legacy-Migration benötigt einen absoluten Bibliothekspfad.")
+    script = pathlib.Path(__file__).resolve()
+    release = script.parents[1]
+    unit = _legacy_migration_worker_unit(root)
+    unit_name = unit.removesuffix(".service")
+    runtime_seconds = (
+        _legacy_migration_timeout_seconds(inventory)
+        + LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS
+    )
+    argv = [
+        "systemd-run",
+        "--user",
+        "--collect",
+        "--no-block",
+        "--quiet",
+        "--unit",
+        unit_name,
+        "--service-type=exec",
+        f"--property=RuntimeMaxSec={runtime_seconds}s",
+        "--property=TimeoutStopSec=10s",
+        "--property=KillMode=control-group",
+        "--property=LimitCORE=0",
+        "--property=NoNewPrivileges=yes",
+        "--property=PrivateTmp=yes",
+        "--property=ProtectSystem=strict",
+        "--property=ProtectHome=read-only",
+        f"--property=ReadWritePaths={root}",
+        "--property=ProtectControlGroups=yes",
+        "--property=ProtectKernelTunables=yes",
+        "--property=LockPersonality=yes",
+        "--property=RestrictSUIDSGID=yes",
+        "--property=RestrictAddressFamilies=AF_UNIX",
+        "--property=UMask=0077",
+        f"--property=MemoryMax={LEGACY_MIGRATION_WORKER_MEMORY_MAX_BYTES}",
+        "--property=CPUQuota=100%",
+        "--property=TasksMax=16",
+        f"--working-directory={release}",
+        "--setenv=LC_ALL=C.UTF-8",
+        "--",
+        sys.executable,
+        str(script),
+        "_migrate-legacy-manifests-worker",
+        "--library-root",
+        str(root),
+    ]
+    try:
+        completed = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+            check=False,
+            env={**os.environ, "LC_ALL": "C.UTF-8"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise H2IngestError("Legacy-Migrationsworker konnte nicht gestartet werden.") from exc
+    if completed.returncode != 0:
+        state = _legacy_migration_systemd_state(unit)
+        if state.get("ActiveState") not in {"active", "activating", "reloading"}:
+            detail = completed.stderr.strip()
+            if len(detail) > 300:
+                detail = detail[:300] + "…"
+            raise H2IngestError(
+                "Legacy-Migrationsworker konnte nicht gestartet werden"
+                + (f": {detail}" if detail else ".")
+            )
+    return unit
+
+
+def _run_legacy_migration_worker(
+    library_root: pathlib.Path,
+) -> dict[str, Any]:
+    root = library_root.expanduser()
+    release_commit = _durable_migration_release_commit()
+    if release_commit is None:
+        raise H2IngestError("Durable Legacy-Migration benötigt einen Releasebeleg.")
+    _lstat_directory(root, "Materialbibliothek")
+    descriptor = _open_library_import_lock(root)
+    try:
+        inventory = _legacy_migration_inventory(root)
+        result = migrate_legacy_manifests(root)
+        postcondition = _legacy_migration_postcondition_sha256(root, inventory)
+        receipt = {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "audio_h2_legacy_migration_receipt",
+            "status": "success",
+            "release_commit": release_commit,
+            "library_root": str(root),
+            "material_count": inventory["material_count"],
+            "candidate_file_count": inventory["candidate_file_count"],
+            "candidate_bytes": inventory["candidate_bytes"],
+            "candidate_metadata_sha256": inventory["candidate_metadata_sha256"],
+            "postcondition_sha256": postcondition,
+            "result": result,
+        }
+        _write_legacy_migration_receipt(root, receipt)
+    finally:
+        os.close(descriptor)
+    completed = dict(result)
+    completed["durable_worker"] = True
+    completed["durable_receipt_reused"] = False
+    completed["release_commit"] = release_commit
+    return completed
+
+
+def migrate_legacy_manifests_durable(
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    root = library_root.expanduser()
+    release_commit = _durable_migration_release_commit()
+    if release_commit is None:
+        return migrate_legacy_manifests(root)
+
+    inventory = _legacy_migration_inventory(root)
+    if inventory["candidate_file_count"] == 0:
+        return migrate_legacy_manifests(root)
+
+    receipt_result = _durable_migration_receipt_result(
+        root,
+        release_commit=release_commit,
+        inventory=inventory,
+    )
+    if receipt_result is not None:
+        return receipt_result
+
+    unit = _legacy_migration_worker_unit(root)
+    state = _legacy_migration_systemd_state(unit)
+    launched_for_current_release = False
+    if state.get("ActiveState") not in {"active", "activating", "reloading"}:
+        _launch_legacy_migration_worker(root, inventory)
+        launched_for_current_release = True
+
+    while True:
+        receipt_result = _durable_migration_receipt_result(
+            root,
+            release_commit=release_commit,
+            inventory=inventory,
+        )
+        if receipt_result is not None:
+            return receipt_result
+        state = _legacy_migration_systemd_state(unit)
+        if state.get("ActiveState") in {"active", "activating", "reloading"}:
+            time.sleep(0.25)
+            continue
+        if not launched_for_current_release:
+            _launch_legacy_migration_worker(root, inventory)
+            launched_for_current_release = True
+            time.sleep(0.05)
+            continue
+        receipt_result = _durable_migration_receipt_result(
+            root,
+            release_commit=release_commit,
+            inventory=inventory,
+        )
+        if receipt_result is not None:
+            return receipt_result
+        raise H2IngestError(
+            "Legacy-Migrationsworker endete ohne gültigen, releasegebundenen Abschlussbeleg."
+        )
+
+
 def import_scene(
     scene: str,
     *,
@@ -1987,6 +2440,15 @@ def _parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
         default=DEFAULT_LIBRARY_ROOT,
     )
+    worker_parser = sub.add_parser(
+        "_migrate-legacy-manifests-worker",
+        help=argparse.SUPPRESS,
+    )
+    worker_parser.add_argument(
+        "--library-root",
+        type=pathlib.Path,
+        required=True,
+    )
     return parser
 
 
@@ -2029,8 +2491,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.segment_index,
                 library_root=args.library_root,
             )
+        elif args.command == "migrate-legacy-manifests":
+            result = migrate_legacy_manifests_durable(args.library_root)
         else:
-            result = migrate_legacy_manifests(args.library_root)
+            result = _run_legacy_migration_worker(args.library_root)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except (H2IngestError, OSError, ValueError) as exc:
