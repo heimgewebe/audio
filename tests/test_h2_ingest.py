@@ -598,6 +598,96 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(second["migrated"], 0)
             self.assertEqual(second["annotations_already_bound"], 1)
 
+    def test_legacy_annotation_migration_recovers_partial_control_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["title"] = "Legacy title"
+            annotations["note"] = "Legacy note"
+            annotations["tags"] = ["legacy"]
+            annotations["markers"] = ["x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)]
+            oversized = MODULE._canonical_bytes(annotations) + b"\n"
+            annotations_path.write_bytes(oversized)
+            before = hashlib.sha256(oversized).hexdigest()
+
+            control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            control_path.write_bytes(b'{"schema_version":1,"kind":"audio_material_')
+
+            migration = MODULE.migrate_legacy_manifests(library)
+
+            self.assertEqual(migration["annotations_migrated"], 1)
+            self.assertEqual(migration["annotations_already_bound"], 0)
+            self.assertEqual(hashlib.sha256(annotations_path.read_bytes()).hexdigest(), before)
+            self.assertEqual(stat.S_IMODE(annotations_path.stat().st_mode), 0o440)
+            self.assertEqual(stat.S_IMODE(control_path.stat().st_mode), 0o600)
+            observed = MODULE._read_json_regular(control_path)
+            projected = MODULE._annotations_from_legacy_control(
+                observed,
+                result["material_id"],
+                annotations_metadata=annotations_path.stat(),
+            )
+            self.assertEqual(projected["title"], "Legacy title")
+            self.assertEqual(projected["note"], "Legacy note")
+            self.assertEqual(projected["tags"], ["legacy"])
+            self.assertEqual(projected["markers"], [])
+
+            second = MODULE.migrate_legacy_manifests(library)
+            self.assertEqual(second["annotations_migrated"], 0)
+            self.assertEqual(second["annotations_already_bound"], 1)
+            self.assertEqual(hashlib.sha256(annotations_path.read_bytes()).hexdigest(), before)
+
+    def test_legacy_annotation_migration_does_not_mask_control_sidecar_io_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = ["x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)]
+            annotations_path.write_bytes(MODULE._canonical_bytes(annotations) + b"\n")
+
+            control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            control_path.write_text("{}", encoding="utf-8")
+            real_read = MODULE._read_json_regular
+
+            def read_with_permission_failure(path, **kwargs):
+                if path == control_path:
+                    try:
+                        raise PermissionError("denied")
+                    except PermissionError as cause:
+                        raise MODULE.H2IngestError(
+                            "Metadatendatei ist nicht sicher lesbar."
+                        ) from cause
+                return real_read(path, **kwargs)
+
+            with mock.patch.object(
+                MODULE,
+                "_read_json_regular",
+                side_effect=read_with_permission_failure,
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "nicht sicher lesbar",
+                ):
+                    MODULE.migrate_legacy_manifests(library)
+
+            self.assertEqual(control_path.read_text(encoding="utf-8"), "{}")
+
     def test_legacy_annotation_binding_fails_closed_after_original_tamper(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

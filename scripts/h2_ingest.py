@@ -1289,19 +1289,24 @@ def migrate_legacy_manifests(
         annotations_control_path = directory / LEGACY_ANNOTATIONS_CONTROL_NAME
         annotations_bound = False
         if annotations_control_path.exists() or annotations_control_path.is_symlink():
-            annotations_control = _read_json_regular(annotations_control_path)
-            _annotations_from_legacy_control(
-                annotations_control,
-                material_id,
-                annotations_metadata=annotations_metadata,
-            )
-            binding = annotations_control["legacy_annotations"]
-            if _sha256_path(annotations_path) != binding["sha256"]:
-                raise H2IngestError(
-                    "Legacy-Materialannotation weicht vom gebundenen Migrationsbeleg ab."
+            try:
+                annotations_control = _read_json_regular(annotations_control_path)
+            except H2IngestError as exc:
+                if not isinstance(exc.__cause__, (UnicodeError, json.JSONDecodeError)):
+                    raise
+            else:
+                _annotations_from_legacy_control(
+                    annotations_control,
+                    material_id,
+                    annotations_metadata=annotations_metadata,
                 )
-            annotations_bound = True
-            result["annotations_already_bound"] += 1
+                binding = annotations_control["legacy_annotations"]
+                if _sha256_path(annotations_path) != binding["sha256"]:
+                    raise H2IngestError(
+                        "Legacy-Materialannotation weicht vom gebundenen Migrationsbeleg ab."
+                    )
+                annotations_bound = True
+                result["annotations_already_bound"] += 1
         if annotations_bound:
             os.chmod(annotations_path, 0o440)
             continue
