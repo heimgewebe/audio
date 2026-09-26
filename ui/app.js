@@ -5462,7 +5462,6 @@ function autoRefreshBlocked() {
     state.loading ||
     state.recordingActionPending ||
     state.h2ActionPending ||
-    state.h2AnnotationDrafts.size > 0 ||
     state.dauersongActionPending ||
     state.operatingModeActionPending ||
     state.whaleActionPending ||

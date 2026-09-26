@@ -2306,7 +2306,7 @@ class AudioControlTests(unittest.TestCase):
     def test_command_runner_bounds_timeout_and_captured_output(self):
         runner = MODULE.CommandRunner()
         started = time.monotonic()
-        with self.assertRaisesRegex(MODULE.ControlError, "Zeitlimit"):
+        with self.assertRaisesRegex(MODULE.CommandTimedOut, "Zeitlimit"):
             runner.run(
                 [sys.executable, "-c", "import time; time.sleep(5)"],
                 timeout=0.05,
@@ -2913,6 +2913,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("state.interactionUntil", policy)
         self.assertIn("state.recordingActionPending", policy)
         self.assertIn("state.h2ActionPending", policy)
+        self.assertNotIn("state.h2AnnotationDrafts.size", policy)
         self.assertIn("state.whaleActionPending", policy)
         self.assertIn("state.replayPlaying", policy)
         self.assertIn("recordingPlaybackActive()", policy)
@@ -4857,6 +4858,47 @@ class H2MaterialControlTests(unittest.TestCase):
         )
         self.assertEqual(timeout, expected)
         self.assertGreaterEqual(timeout, 300)
+
+    def test_h2_import_timeout_runs_lock_bound_staging_cleanup_before_returning_error(self):
+        class TimeoutImportRunner(self.Runner):
+            def run(self, argv, *, timeout):
+                command = argv[2] if len(argv) > 2 else ""
+                if command == "import":
+                    self.calls.append((tuple(argv), timeout))
+                    raise MODULE.CommandTimedOut(
+                        "Die lokale Audioabfrage hat das Zeitlimit erreicht."
+                    )
+                if command == "_cleanup-import-staging":
+                    self.calls.append((tuple(argv), timeout))
+                    return MODULE.CommandResult(
+                        tuple(argv),
+                        0,
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "kind": "audio_h2_import_staging_cleanup",
+                                "library_root": str(MODULE.STATIC_H2_LIBRARY_ROOT),
+                                "removed": 1,
+                            }
+                        ),
+                        "",
+                    )
+                return super().run(argv, timeout=timeout)
+
+        runner = TimeoutImportRunner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with self.assertRaisesRegex(MODULE.CommandTimedOut, "Zeitlimit"):
+            controller.perform_h2_action(
+                {"operation": "import", "scene": "170926_191401"}
+            )
+        commands = [call[0][2] for call in runner.calls]
+        self.assertEqual(commands[-2:], ["import", "_cleanup-import-staging"])
+        cleanup_call, cleanup_timeout = runner.calls[-1]
+        self.assertEqual(cleanup_call[-1], str(MODULE.STATIC_H2_LIBRARY_ROOT))
+        self.assertEqual(
+            cleanup_timeout,
+            MODULE.H2_STAGING_CLEANUP_TIMEOUT_SECONDS,
+        )
 
     def test_h2_media_and_import_timeouts_scale_with_bound_master_bytes(self):
         controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)

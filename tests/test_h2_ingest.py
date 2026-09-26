@@ -2046,6 +2046,37 @@ class H2IngestTests(unittest.TestCase):
             control,
         )
 
+    def test_json_new_is_atomic_no_clobber_and_cleans_failed_publish_temp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            target = root / "manifest.json"
+            payload = {"schema_version": 1, "kind": "test"}
+            with mock.patch.object(
+                MODULE.os,
+                "link",
+                side_effect=OSError("simulated publish failure"),
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "atomar und exklusiv",
+                ):
+                    MODULE._write_json_new(target, payload, 0o440)
+            self.assertFalse(target.exists())
+            self.assertFalse(
+                any(path.name.startswith(".metadata-new-") for path in root.iterdir())
+            )
+
+            MODULE._write_json_new(target, payload, 0o440)
+            before = target.read_bytes()
+            with self.assertRaisesRegex(MODULE.H2IngestError, "exklusiv"):
+                MODULE._write_json_new(
+                    target,
+                    {"schema_version": 1, "kind": "replacement"},
+                    0o440,
+                )
+            self.assertEqual(target.read_bytes(), before)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o440)
+
     def test_metadata_reader_rejects_oversized_json_before_reading(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "manifest.json"
@@ -2079,6 +2110,64 @@ class H2IngestTests(unittest.TestCase):
                     for path in entries
                 )
             )
+
+    def test_import_reaps_stale_staging_under_library_lock_before_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            library.mkdir(mode=0o700)
+            stale = library / f"{MODULE.IMPORT_STAGING_PREFIX}abandoned"
+            stale.mkdir(mode=0o700)
+            (stale / "partial.wav").write_bytes(b"x" * 1024)
+
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+
+            self.assertEqual(result["status"], "imported")
+            self.assertFalse(stale.exists())
+            self.assertFalse(
+                any(
+                    path.name.startswith(MODULE.IMPORT_STAGING_PREFIX)
+                    for path in library.iterdir()
+                )
+            )
+
+    def test_staging_cleanup_rejects_library_root_symlink_before_lock_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            outside = root / "outside"
+            outside.mkdir()
+            alias = root / "library-link"
+            alias.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(MODULE.H2IngestError):
+                MODULE.cleanup_import_staging(alias)
+            self.assertFalse((outside / ".h2-import.lock").exists())
+
+    def test_staging_cleanup_refuses_symlink_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            library = root / "library"
+            library.mkdir(mode=0o700)
+            outside = root / "outside"
+            outside.mkdir()
+            marker = outside / "keep"
+            marker.write_text("keep", encoding="utf-8")
+            (library / f"{MODULE.IMPORT_STAGING_PREFIX}alias").symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "nicht vertrauenswürdig",
+            ):
+                MODULE.cleanup_import_staging(library)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
 
     def test_repeat_import_preflights_hashes_without_copying_to_staging(self):
         with tempfile.TemporaryDirectory() as directory:

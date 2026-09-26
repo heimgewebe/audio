@@ -66,6 +66,7 @@ MAX_LEGACY_ANNOTATIONS_JSON_BYTES = 64 * 1024 * 1024
 LEGACY_MANIFEST_CONTROL_NAME = "manifest.control-v1.json"
 LEGACY_ANNOTATIONS_CONTROL_NAME = "annotations.control-v1.json"
 LEGACY_MIGRATION_RECEIPT_NAME = ".h2-legacy-migration-v1.json"
+IMPORT_STAGING_PREFIX = ".h2-staging-"
 LEGACY_MIGRATION_WORKER_MEMORY_MAX_BYTES = 512 * 1024 * 1024
 LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND = 512 * 1024
 LEGACY_MIGRATION_IO_PASSES = 3
@@ -854,21 +855,60 @@ def _copy_master(
 
 
 def _write_json_new(path: pathlib.Path, value: dict[str, Any], mode: int) -> None:
+    directory = path.parent
+    _lstat_directory(directory, "Metadatenverzeichnis")
+    if path.exists() or path.is_symlink():
+        raise H2IngestError("Metadatendatei kann nicht exklusiv angelegt werden.")
     payload = _canonical_bytes(value) + b"\n"
     if len(payload) > MAX_METADATA_JSON_BYTES:
         raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    fd: int | None = None
+    temporary: pathlib.Path | None = None
     try:
-        fd = os.open(path, flags, mode)
+        fd, temporary_name = tempfile.mkstemp(prefix=".metadata-new-", dir=directory)
+        temporary = pathlib.Path(temporary_name)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb", closefd=True) as handle:
+            fd = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Hard-link publication is same-filesystem, atomic and no-clobber:
+        # an existing final path fails instead of being overwritten.
+        os.link(temporary, path)
+        temporary.unlink()
+        temporary = None
+        parent_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
     except OSError as exc:
-        raise H2IngestError("Metadatendatei kann nicht exklusiv angelegt werden.") from exc
-    with os.fdopen(fd, "wb", closefd=True) as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(path, mode)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+        raise H2IngestError(
+            "Metadatendatei kann nicht atomar und exklusiv angelegt werden."
+        ) from exc
+    except Exception:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def _write_json_atomic_publish(
@@ -2231,6 +2271,73 @@ def _open_library_import_lock(library: pathlib.Path) -> int:
         raise
 
 
+def _cleanup_import_staging_locked(library: pathlib.Path) -> dict[str, Any]:
+    root = library.expanduser()
+    _lstat_directory(root, "Materialbibliothek")
+    names: list[str] = []
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if entry.name.startswith(IMPORT_STAGING_PREFIX):
+                names.append(entry.name)
+    removed = 0
+    for name in sorted(names):
+        staging = root / name
+        try:
+            metadata = staging.lstat()
+        except OSError as exc:
+            raise H2IngestError(
+                "H2-Stagingzustand änderte sich während der Bereinigung."
+            ) from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise H2IngestError(
+                "H2-Stagingzustand ist nicht vertrauenswürdig und wird nicht gelöscht."
+            )
+        try:
+            shutil.rmtree(staging)
+        except OSError as exc:
+            raise H2IngestError(
+                "H2-Stagingzustand konnte nicht sicher bereinigt werden."
+            ) from exc
+        removed += 1
+    if removed:
+        parent_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "audio_h2_import_staging_cleanup",
+        "library_root": str(root),
+        "removed": removed,
+    }
+
+
+def cleanup_import_staging(
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    root = library_root.expanduser()
+    if not root.exists() and not root.is_symlink():
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "kind": "audio_h2_import_staging_cleanup",
+            "library_root": str(root),
+            "removed": 0,
+        }
+    root_metadata = _lstat_directory(root, "Materialbibliothek")
+    if root_metadata.st_uid != os.getuid():
+        raise H2IngestError("Materialbibliothek gehört nicht dem aktuellen Benutzer.")
+    descriptor = _open_library_import_lock(root)
+    try:
+        return _cleanup_import_staging_locked(root)
+    finally:
+        os.close(descriptor)
+
+
 def _prepared_legacy_migration_inventory(
     library_root: pathlib.Path,
 ) -> dict[str, Any]:
@@ -2756,6 +2863,7 @@ def import_scene(
     library = _resolve_library_root(library_root, source)
     descriptor = _open_library_import_lock(library)
     try:
+        _cleanup_import_staging_locked(library)
         return _import_scene_locked(
             scene,
             source_root=source,
@@ -2840,7 +2948,7 @@ def _import_scene_locked(
     if inspect_scene(source, scene) != session:
         raise H2IngestError("H2-Session änderte sich zwischen Prüfung und Import.")
 
-    staging = pathlib.Path(tempfile.mkdtemp(prefix=".h2-staging-", dir=library))
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=IMPORT_STAGING_PREFIX, dir=library))
     os.chmod(staging, 0o700)
     try:
         master_dir = staging / "master"
@@ -3500,6 +3608,16 @@ def _parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--source-root", type=pathlib.Path, default=DEFAULT_SOURCE_ROOT)
     import_parser.add_argument("--library-root", type=pathlib.Path, default=DEFAULT_LIBRARY_ROOT)
 
+    cleanup_parser = sub.add_parser(
+        "_cleanup-import-staging",
+        help=argparse.SUPPRESS,
+    )
+    cleanup_parser.add_argument(
+        "--library-root",
+        type=pathlib.Path,
+        default=DEFAULT_LIBRARY_ROOT,
+    )
+
     library_parser = sub.add_parser("library")
     library_parser.add_argument("--library-root", type=pathlib.Path, default=DEFAULT_LIBRARY_ROOT)
     library_parser.add_argument(
@@ -3563,6 +3681,8 @@ def main(argv: list[str] | None = None) -> int:
                 source_root=args.source_root,
                 library_root=args.library_root,
             )
+        elif args.command == "_cleanup-import-staging":
+            result = cleanup_import_staging(args.library_root)
         elif args.command == "library":
             result = library(args.library_root, projection=args.projection)
         elif args.command == "verify":

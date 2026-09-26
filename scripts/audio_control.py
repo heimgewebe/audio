@@ -407,6 +407,7 @@ H2_SCAN_BUDGET_TIMEOUT_SECONDS = float(
     )
 )
 H2_IMPORT_IO_PASSES = 4
+H2_STAGING_CLEANUP_TIMEOUT_SECONDS = 30
 H2_MAX_TITLE_CHARS = 160
 H2_MAX_NOTE_CHARS = 2000
 H2_MAX_TAGS = 16
@@ -535,6 +536,10 @@ class OutputLimitExceeded(ControlError):
     """A bounded subprocess emitted more output than the service accepts."""
 
 
+class CommandTimedOut(ControlError):
+    """A bounded subprocess exceeded its wall-clock contract."""
+
+
 @dataclass(frozen=True)
 class CommandResult:
     argv: tuple[str, ...]
@@ -580,7 +585,7 @@ class CommandRunner:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._kill_process_group(process)
-                    raise ControlError(
+                    raise CommandTimedOut(
                         "Die lokale Audioabfrage hat das Zeitlimit erreicht."
                     )
                 for key, _mask in selector.select(timeout=min(remaining, 0.1)):
@@ -600,13 +605,13 @@ class CommandRunner:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self._kill_process_group(process)
-                raise ControlError(
+                raise CommandTimedOut(
                     "Die lokale Audioabfrage hat das Zeitlimit erreicht."
                 )
             returncode = process.wait(timeout=remaining)
         except subprocess.TimeoutExpired as error:
             self._kill_process_group(process)
-            raise ControlError(
+            raise CommandTimedOut(
                 "Die lokale Audioabfrage hat das Zeitlimit erreicht."
             ) from error
         finally:
@@ -3598,6 +3603,31 @@ class AudioControl:
             raise ControlError(safe_error_message(report, fallback))
         return report
 
+
+    def _cleanup_h2_import_staging(self) -> dict[str, Any]:
+        report = self._run_h2_command(
+            [
+                "_cleanup-import-staging",
+                "--library-root",
+                str(STATIC_H2_LIBRARY_ROOT),
+            ],
+            timeout=H2_STAGING_CLEANUP_TIMEOUT_SECONDS,
+            label="H2-Import-Bereinigung",
+            fallback="Abgebrochener H2-Import konnte nicht sicher bereinigt werden.",
+        )
+        removed = report.get("removed")
+        if (
+            report.get("schema_version") != 1
+            or report.get("kind") != "audio_h2_import_staging_cleanup"
+            or isinstance(removed, bool)
+            or not isinstance(removed, int)
+            or removed < 0
+        ):
+            raise ControlError(
+                "H2-Import-Bereinigung lieferte keinen gültigen Ergebnisbeleg."
+            )
+        return report
+
     @staticmethod
     def _validated_h2_annotation_text(
         value: Any,
@@ -4458,12 +4488,23 @@ class AudioControl:
         if not self._material_action_lock.acquire(blocking=False):
             raise ActionBusy("Eine andere H2-Materialaktion läuft bereits.")
         try:
-            report = self._run_h2_command(
-                command,
-                timeout=timeout,
-                label=label,
-                fallback=fallback,
-            )
+            try:
+                report = self._run_h2_command(
+                    command,
+                    timeout=timeout,
+                    label=label,
+                    fallback=fallback,
+                )
+            except (CommandTimedOut, OutputLimitExceeded) as error:
+                if operation == "import":
+                    try:
+                        self._cleanup_h2_import_staging()
+                    except ControlError as cleanup_error:
+                        raise ControlError(
+                            f"{error} Abgebrochene H2-Stagingdaten konnten nicht "
+                            "sicher bereinigt werden."
+                        ) from cleanup_error
+                raise
             expected_kind = (
                 "audio_h2_import_result"
                 if operation == "import"

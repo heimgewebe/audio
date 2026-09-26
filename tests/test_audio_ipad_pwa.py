@@ -1254,7 +1254,7 @@ async function postH2Action() {{
         blocked = self.app.split("function autoRefreshBlocked() {", 1)[1].split(
             "\n}", 1
         )[0]
-        self.assertIn("state.h2AnnotationDrafts.size > 0", blocked)
+        self.assertNotIn("state.h2AnnotationDrafts.size > 0", blocked)
 
     def test_remote_h2_post_rechecks_and_reuses_session_after_async_deadline(self):
         post = "async function postH2Action" + self.app.split(
