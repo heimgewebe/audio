@@ -5251,6 +5251,111 @@ class H2MaterialControlTests(unittest.TestCase):
         ):
             MODULE.AudioControl._validate_h2_library(invalid)
 
+    def test_h2_workspace_never_scans_remote_inbox(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with mock.patch.object(
+            controller,
+            "_h2_remote_transfer_roots",
+            side_effect=AssertionError("workspace touched remote inbox"),
+        ):
+            workspace = controller.h2_workspace()
+        self.assertEqual(workspace["kind"], "audio_h2_workspace")
+        self.assertNotIn("remote_inbox", workspace)
+
+    def test_h2_remote_inbox_projects_only_two_latest_safe_transfers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            transfer_times = (
+                ("old", 1_000_000_000),
+                ("middle", 2_000_000_000),
+                ("new", 3_000_000_000),
+            )
+            for name, mtime_ns in transfer_times:
+                transfer = inbox / name
+                transfer.mkdir(mode=0o700)
+                os.utime(transfer, ns=(mtime_ns, mtime_ns))
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                remote = controller.h2_remote_inbox()
+            projected = remote["inbox"]
+            self.assertEqual(projected["transfer_count"], 2)
+            self.assertEqual(projected["total_transfer_count"], 3)
+            self.assertTrue(projected["truncated"])
+            self.assertEqual(projected["count"], 2)
+            self.assertEqual(
+                [item["transfer_id"] for item in projected["sessions"]],
+                ["new", "middle"],
+            )
+            self.assertFalse(remote["source_delete_authorized"])
+
+    def test_h2_remote_transfer_identity_rejects_escape_symlink_and_world_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            outside = pathlib.Path(directory) / "outside"
+            outside.mkdir(mode=0o700)
+            (inbox / "linked").symlink_to(outside, target_is_directory=True)
+            unsafe = inbox / "unsafe"
+            unsafe.mkdir(mode=0o700)
+            unsafe.chmod(0o777)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                for transfer_id in ("../x", "x/y", ".", "..", "bad id"):
+                    with self.subTest(transfer_id=transfer_id), self.assertRaises(
+                        MODULE.ControlError
+                    ):
+                        MODULE.AudioControl._h2_remote_transfer_root(transfer_id)
+                for transfer_id in ("linked", "unsafe"):
+                    with self.subTest(transfer_id=transfer_id), self.assertRaisesRegex(
+                        MODULE.ControlError,
+                        "sichere lokale Identität",
+                    ):
+                        MODULE.AudioControl._h2_remote_transfer_root(transfer_id)
+
+    def test_h2_remote_import_uses_only_server_bound_transfer_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            inbox = base / "H2-Remote-Inbox"
+            transfer = inbox / "ipad-260926"
+            transfer.mkdir(parents=True, mode=0o700)
+            library = base / "library"
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            payload = {
+                "operation": "import",
+                "source": "remote-inbox",
+                "transfer_id": "ipad-260926",
+                "scene": "170926_191401",
+            }
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(
+                    MODULE,
+                    "_current_h2_library_root",
+                    return_value=library,
+                ),
+            ):
+                result = controller.perform_h2_action(payload)
+                import_call = next(
+                    call for call, _timeout in runner.calls if call[2] == "import"
+                )
+                self.assertEqual(
+                    import_call[import_call.index("--source-root") + 1],
+                    str(transfer),
+                )
+                self.assertEqual(result["source"], "remote-inbox")
+                self.assertEqual(result["transfer_id"], "ipad-260926")
+                self.assertEqual(result["library"]["kind"], "audio_h2_library")
+                self.assertNotIn("workspace", result)
+                before = len(runner.calls)
+                with self.assertRaises(MODULE.ControlError):
+                    controller.perform_h2_action(
+                        {**payload, "source_root": "/tmp/client-selected"}
+                    )
+                self.assertEqual(len(runner.calls), before)
+
     def test_h2_surface_is_task_named_and_has_no_delete_action(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         html = (ROOT / "ui" / "index.html").read_text()
@@ -5260,11 +5365,15 @@ class H2MaterialControlTests(unittest.TestCase):
             "BEHALTEN",
             "Was ist zu hören?",
             "Originale werden beim Archivieren nicht vom H2 gelöscht",
+            "Remote-Inbox lesen",
+            "Vom iPad oder Smartphone",
         ):
             self.assertIn(needle, html + javascript)
         self.assertIn('fetchJson("/api/v1/actions/h2"', javascript)
         self.assertIn("function h2ActionsAllowed()", javascript)
         self.assertIn('fetchJson("/bridge/v1/actions/h2"', javascript)
+        self.assertIn('fetchJson("/api/v1/h2/remote-inbox"', javascript)
+        self.assertIn("state.h2RemoteInboxLoading ||", javascript)
         self.assertIn('state.remoteActionScopes.includes("h2")', javascript)
         self.assertIn("h2_material_control", javascript)
         self.assertIn("note.maxLength = 2000", javascript)

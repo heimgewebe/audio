@@ -113,7 +113,9 @@
             "/api/v1/h2/source",
             "/api/v1/h2/source/budget",
             "/api/v1/h2/library",
-            "/api/v1/h2/library/budget"
+            "/api/v1/h2/library/budget",
+            "/api/v1/h2/remote-inbox",
+            "/api/v1/h2/remote-inbox/budget"
           ]
         },
         "snapshot_queries": {

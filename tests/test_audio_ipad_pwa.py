@@ -434,12 +434,14 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('/bridge/v1/actions/h2', h2_router)
         self.assertIn('"X-Audio-Bridge-Session"', h2_router)
         self.assertIn('payload?.operation === "import"', h2_router)
-        self.assertIn("await h2ImportTimeoutMs(payload.scene)", h2_router)
+        self.assertIn("await h2ImportTimeoutMs(", h2_router)
+        self.assertIn("payload.source || \"device\"", h2_router)
+        self.assertIn("payload.transfer_id || null", h2_router)
         self.assertIn("await h2AnnotationTimeoutMs()", h2_router)
         self.assertIn("await ensureRemoteWhaleSession()", h2_router)
         self.assertNotIn("ensureRemoteWhaleSession({ force: true })", h2_router)
         self.assertLess(
-            h2_router.index("await h2ImportTimeoutMs(payload.scene)"),
+            h2_router.index("await h2ImportTimeoutMs("),
             h2_router.index("await ensureRemoteWhaleSession()"),
         )
         self.assertLess(
@@ -477,14 +479,20 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
             h2_load,
         )
 
-        h2_timeout = self.app.split("async function h2ImportTimeoutMs(scene) {", 1)[1].split(
+        h2_timeout = self.app.split("async function h2ImportTimeoutMs(", 1)[1].split(
             "\n}\n\nasync function h2LibraryBudget", 1
         )[0]
-        self.assertIn("state.h2Workspace?.source?.sessions", h2_timeout)
+        self.assertIn('source = "device"', h2_timeout)
+        self.assertIn("transferId = null", h2_timeout)
+        self.assertIn('source === "remote-inbox"', h2_timeout)
+        self.assertIn("state.h2RemoteInbox?.inbox", h2_timeout)
+        self.assertIn("state.h2Workspace?.source", h2_timeout)
         self.assertIn("candidate?.scene === scene", h2_timeout)
+        self.assertIn("candidate?.transfer_id === transferId", h2_timeout)
         self.assertIn("session?.import_timeout_seconds", h2_timeout)
         self.assertIn("Number.isFinite(backendSeconds)", h2_timeout)
         self.assertIn("Math.ceil(backendSeconds * 1000)", h2_timeout)
+        self.assertIn("await h2RemoteInboxTimeoutMs()", h2_timeout)
         self.assertIn("await h2WorkspaceTimeoutMs()", h2_timeout)
 
         library_budget = self.app.split("async function h2LibraryBudget() {", 1)[1].split(
@@ -710,7 +718,7 @@ function renderH2Workspace() {{ renders += 1; }}
             "\nfunction renderLibrary", 1
         )[0]
         self.assertIn(
-            "refresh.disabled = state.h2ActionPending || state.h2WorkspaceLoading;",
+            "state.h2ActionPending || state.h2WorkspaceLoading || state.h2RemoteInboxLoading",
             renderer,
         )
 
@@ -1001,6 +1009,7 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             "    state.loading ||\n"
             "    state.recordingActionPending ||\n"
             "    state.h2ActionPending ||\n"
+            "    state.h2RemoteInboxLoading ||\n"
             "    state.dauersongActionPending ||\n"
             "    state.operatingModeActionPending ||\n"
             "    state.whaleActionPending ||\n"
