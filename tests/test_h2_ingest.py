@@ -1488,6 +1488,68 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(receipt["status"], "success")
             self.assertRegex(receipt["postcondition_sha256"], r"^[0-9a-f]{64}$")
 
+    def test_annotation_and_migration_preparation_hold_shared_library_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            imported = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            lock_path = library / ".h2-import.lock"
+            observed: list[str] = []
+
+            def assert_lock_held(label):
+                descriptor = os.open(lock_path, os.O_RDWR | os.O_CLOEXEC)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        MODULE.fcntl.flock(
+                            descriptor,
+                            MODULE.fcntl.LOCK_EX | MODULE.fcntl.LOCK_NB,
+                        )
+                finally:
+                    os.close(descriptor)
+                observed.append(label)
+
+            real_prepare = MODULE._prepare_legacy_migration_candidates
+
+            def prepare_while_locked(root_path):
+                assert_lock_held("migration")
+                return real_prepare(root_path)
+
+            with mock.patch.object(
+                MODULE,
+                "_prepare_legacy_migration_candidates",
+                side_effect=prepare_while_locked,
+            ):
+                inventory = MODULE._prepared_legacy_migration_inventory(library)
+
+            self.assertEqual(inventory["candidate_file_count"], 0)
+
+            real_annotate = MODULE._annotate_material_locked
+
+            def annotate_while_locked(*args, **kwargs):
+                assert_lock_held("annotation")
+                return real_annotate(*args, **kwargs)
+
+            with mock.patch.object(
+                MODULE,
+                "_annotate_material_locked",
+                side_effect=annotate_while_locked,
+            ):
+                updated = MODULE.annotate_material(
+                    imported["material_id"],
+                    title="serialisiert",
+                    note="",
+                    tags=[],
+                    library_root=library,
+                )
+
+            self.assertTrue(updated["changed"])
+            self.assertEqual(observed, ["migration", "annotation"])
+
     def test_durable_migration_receipt_rebinds_in_place_manifest_generation_change(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

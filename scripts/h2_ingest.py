@@ -1910,6 +1910,19 @@ def migrate_legacy_manifests(
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
 ) -> dict[str, Any]:
     root = library_root.expanduser()
+    if not root.exists() and not root.is_symlink():
+        return _migrate_legacy_manifests_locked(root)
+    descriptor = _open_library_import_lock(root)
+    try:
+        return _migrate_legacy_manifests_locked(root)
+    finally:
+        os.close(descriptor)
+
+
+def _migrate_legacy_manifests_locked(
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    root = library_root.expanduser()
     result = {
         "schema_version": SCHEMA_VERSION,
         "kind": "audio_h2_legacy_manifest_migration",
@@ -2142,6 +2155,20 @@ def _open_library_import_lock(library: pathlib.Path) -> int:
     except Exception:
         os.close(descriptor)
         raise
+
+
+def _prepared_legacy_migration_inventory(
+    library_root: pathlib.Path,
+) -> dict[str, Any]:
+    root = library_root.expanduser()
+    if not root.exists() and not root.is_symlink():
+        return _legacy_migration_inventory(root)
+    descriptor = _open_library_import_lock(root)
+    try:
+        _prepare_legacy_migration_candidates(root)
+        return _legacy_migration_inventory(root)
+    finally:
+        os.close(descriptor)
 
 
 def _legacy_migration_inventory(library_root: pathlib.Path) -> dict[str, Any]:
@@ -2517,7 +2544,7 @@ def _run_legacy_migration_worker(
     try:
         _prepare_legacy_migration_candidates(root)
         inventory = _legacy_migration_inventory(root)
-        result = migrate_legacy_manifests(root)
+        result = _migrate_legacy_manifests_locked(root)
         postcondition = _legacy_migration_postcondition_sha256(root, inventory)
         receipt = {
             "schema_version": SCHEMA_VERSION,
@@ -2554,8 +2581,7 @@ def launch_legacy_manifests_durable(
         result["launch_only"] = True
         return result
 
-    _prepare_legacy_migration_candidates(root)
-    inventory = _legacy_migration_inventory(root)
+    inventory = _prepared_legacy_migration_inventory(root)
     if inventory["candidate_file_count"] == 0:
         result = migrate_legacy_manifests(root)
         result["durable_worker"] = False
@@ -2596,8 +2622,7 @@ def migrate_legacy_manifests_durable(
     if release_commit is None:
         return migrate_legacy_manifests(root)
 
-    _prepare_legacy_migration_candidates(root)
-    inventory = _legacy_migration_inventory(root)
+    inventory = _prepared_legacy_migration_inventory(root)
     if inventory["candidate_file_count"] == 0:
         return migrate_legacy_manifests(root)
 
@@ -3120,6 +3145,28 @@ def _write_json_replace(path: pathlib.Path, value: dict[str, Any], mode: int) ->
 
 
 def annotate_material(
+    material_id: str,
+    *,
+    title: Any,
+    note: Any,
+    tags: Any,
+    library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
+) -> dict[str, Any]:
+    library = library_root.expanduser()
+    descriptor = _open_library_import_lock(library)
+    try:
+        return _annotate_material_locked(
+            material_id,
+            title=title,
+            note=note,
+            tags=tags,
+            library_root=library,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _annotate_material_locked(
     material_id: str,
     *,
     title: Any,
