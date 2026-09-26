@@ -1829,6 +1829,7 @@ def _legacy_annotations_control_projection(
         "sha256": legacy_sha256,
         "bytes": legacy_metadata.st_size,
         "mtime_ns": legacy_metadata.st_mtime_ns,
+        "ctime_ns": legacy_metadata.st_ctime_ns,
         "device": legacy_metadata.st_dev,
         "inode": legacy_metadata.st_ino,
     }
@@ -1869,6 +1870,7 @@ def _annotations_from_legacy_control(
         or not isinstance(legacy, dict)
         or legacy.get("bytes") != annotations_metadata.st_size
         or legacy.get("mtime_ns") != annotations_metadata.st_mtime_ns
+        or legacy.get("ctime_ns") != annotations_metadata.st_ctime_ns
         or legacy.get("device") != annotations_metadata.st_dev
         or legacy.get("inode") != annotations_metadata.st_ino
         or not isinstance(legacy.get("sha256"), str)
@@ -2002,26 +2004,65 @@ def migrate_legacy_manifests(
                 if not isinstance(exc.__cause__, (UnicodeError, json.JSONDecodeError)):
                     raise
             else:
-                _annotations_from_legacy_control(
-                    annotations_control,
-                    material_id,
-                    annotations_metadata=annotations_metadata,
-                )
-                binding = annotations_control["legacy_annotations"]
-                if _sha256_path(annotations_path) != binding["sha256"]:
-                    raise H2IngestError(
-                        "Legacy-Materialannotation weicht vom gebundenen Migrationsbeleg ab."
+                binding = annotations_control.get("legacy_annotations")
+                try:
+                    _annotations_from_legacy_control(
+                        annotations_control,
+                        material_id,
+                        annotations_metadata=annotations_metadata,
                     )
-                annotations_bound = True
-                result["annotations_already_bound"] += 1
+                except H2IngestError:
+                    if (
+                        not isinstance(binding, dict)
+                        or binding.get("bytes") != annotations_metadata.st_size
+                        or binding.get("mtime_ns") != annotations_metadata.st_mtime_ns
+                        or binding.get("device") != annotations_metadata.st_dev
+                        or binding.get("inode") != annotations_metadata.st_ino
+                        or not isinstance(binding.get("sha256"), str)
+                        or re.fullmatch(r"[0-9a-f]{64}", binding["sha256"]) is None
+                    ):
+                        raise
+                    if _sha256_path(annotations_path) != binding["sha256"]:
+                        raise H2IngestError(
+                            "Legacy-Materialannotation weicht vom gebundenen Migrationsbeleg ab."
+                        )
+                    # Controls from releases before the ctime binding can be
+                    # safely re-projected only while their byte digest still
+                    # matches the immutable legacy annotation file.
+                else:
+                    if _sha256_path(annotations_path) != binding["sha256"]:
+                        raise H2IngestError(
+                            "Legacy-Materialannotation weicht vom gebundenen Migrationsbeleg ab."
+                        )
+                    if stat.S_IMODE(annotations_metadata.st_mode) == 0o440:
+                        annotations_bound = True
+                        result["annotations_already_bound"] += 1
         if annotations_bound:
-            os.chmod(annotations_path, 0o440)
             continue
+
+        if stat.S_IMODE(annotations_metadata.st_mode) != 0o440:
+            os.chmod(annotations_path, 0o440)
+            annotations_metadata = _lstat_regular(
+                annotations_path,
+                "Materialannotation",
+            )
 
         legacy_annotations = _read_legacy_annotations_projection(
             annotations_path,
         )
         annotations_digest = _sha256_path(annotations_path)
+        observed_metadata = _lstat_regular(annotations_path, "Materialannotation")
+        if (
+            observed_metadata.st_size != annotations_metadata.st_size
+            or observed_metadata.st_mtime_ns != annotations_metadata.st_mtime_ns
+            or observed_metadata.st_ctime_ns != annotations_metadata.st_ctime_ns
+            or observed_metadata.st_dev != annotations_metadata.st_dev
+            or observed_metadata.st_ino != annotations_metadata.st_ino
+        ):
+            raise H2IngestError(
+                "Legacy-Materialannotation änderte sich während der Migration."
+            )
+        annotations_metadata = observed_metadata
         annotations_control = _legacy_annotations_control_projection(
             legacy_annotations,
             material_id,
@@ -2038,9 +2079,39 @@ def migrate_legacy_manifests(
             material_id,
             annotations_metadata=annotations_metadata,
         )
-        os.chmod(annotations_path, 0o440)
         result["annotations_migrated"] += 1
     return result
+
+
+def _prepare_legacy_migration_candidates(library_root: pathlib.Path) -> None:
+    root = library_root.expanduser()
+    if not root.exists() and not root.is_symlink():
+        return
+    metadata = _lstat_directory(root, "Materialbibliothek")
+    if metadata.st_uid != os.getuid():
+        raise H2IngestError("Materialbibliothek gehört nicht dem aktuellen Benutzer.")
+    with os.scandir(root) as entries:
+        names = sorted(
+            entry.name
+            for entry in entries
+            if entry.is_dir(follow_symlinks=False)
+            and MATERIAL_ID_RE.fullmatch(entry.name) is not None
+        )
+    for material_id in names:
+        annotations_path = root / material_id / "annotations.json"
+        annotations_metadata = _lstat_regular(
+            annotations_path,
+            "Legacy-annotations.json",
+        )
+        if annotations_metadata.st_size > MAX_LEGACY_ANNOTATIONS_JSON_BYTES:
+            raise H2IngestError(
+                "Legacy-annotations.json überschreitet das sichere Migrationslimit."
+            )
+        if (
+            annotations_metadata.st_size > MAX_METADATA_JSON_BYTES
+            and stat.S_IMODE(annotations_metadata.st_mode) != 0o440
+        ):
+            os.chmod(annotations_path, 0o440)
 
 
 def _control_library_material_count(root: pathlib.Path) -> int:
@@ -2119,6 +2190,7 @@ def _legacy_migration_inventory(library_root: pathlib.Path) -> dict[str, Any]:
                     "name": name,
                     "bytes": item_metadata.st_size,
                     "mtime_ns": item_metadata.st_mtime_ns,
+                    "ctime_ns": item_metadata.st_ctime_ns,
                     "device": item_metadata.st_dev,
                     "inode": item_metadata.st_ino,
                 }
@@ -2240,6 +2312,7 @@ def _legacy_migration_postcondition_sha256(
                 "name": name,
                 "bytes": metadata.st_size,
                 "mtime_ns": metadata.st_mtime_ns,
+                "ctime_ns": metadata.st_ctime_ns,
                 "device": metadata.st_dev,
                 "inode": metadata.st_ino,
                 "sidecar_binding_sha256": sidecar_binding_sha256,
@@ -2286,13 +2359,16 @@ def _durable_migration_receipt_result(
         or receipt.get("kind") != "audio_h2_legacy_migration_receipt"
         or receipt_commit != release_commit
         or receipt.get("library_root") != str(root)
-        or receipt.get("candidate_metadata_sha256")
-        != inventory.get("candidate_metadata_sha256")
-        or receipt.get("candidate_file_count") != inventory.get("candidate_file_count")
-        or receipt.get("candidate_bytes") != inventory.get("candidate_bytes")
         or receipt.get("status") != "success"
     ):
         raise H2IngestError("Legacy-Migrationsbeleg ist ungültig.")
+    if (
+        receipt.get("candidate_metadata_sha256")
+        != inventory.get("candidate_metadata_sha256")
+        or receipt.get("candidate_file_count") != inventory.get("candidate_file_count")
+        or receipt.get("candidate_bytes") != inventory.get("candidate_bytes")
+    ):
+        return None
     observed_postcondition = _legacy_migration_postcondition_sha256(root, inventory)
     if receipt.get("postcondition_sha256") != observed_postcondition:
         return None
@@ -2439,6 +2515,7 @@ def _run_legacy_migration_worker(
     _lstat_directory(root, "Materialbibliothek")
     descriptor = _open_library_import_lock(root)
     try:
+        _prepare_legacy_migration_candidates(root)
         inventory = _legacy_migration_inventory(root)
         result = migrate_legacy_manifests(root)
         postcondition = _legacy_migration_postcondition_sha256(root, inventory)
@@ -2477,6 +2554,7 @@ def launch_legacy_manifests_durable(
         result["launch_only"] = True
         return result
 
+    _prepare_legacy_migration_candidates(root)
     inventory = _legacy_migration_inventory(root)
     if inventory["candidate_file_count"] == 0:
         result = migrate_legacy_manifests(root)
@@ -2518,6 +2596,7 @@ def migrate_legacy_manifests_durable(
     if release_commit is None:
         return migrate_legacy_manifests(root)
 
+    _prepare_legacy_migration_candidates(root)
     inventory = _legacy_migration_inventory(root)
     if inventory["candidate_file_count"] == 0:
         return migrate_legacy_manifests(root)

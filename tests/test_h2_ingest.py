@@ -878,6 +878,10 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(control_path.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(annotations_path.stat().st_mode), 0o440)
             self.assertEqual(hashlib.sha256(annotations_path.read_bytes()).hexdigest(), before)
+            self.assertEqual(
+                MODULE._read_json_regular(control_path)["legacy_annotations"]["ctime_ns"],
+                annotations_path.stat().st_ctime_ns,
+            )
             preserved = json.loads(annotations_path.read_text(encoding="utf-8"))
             self.assertEqual(preserved["markers"], annotations["markers"])
 
@@ -1133,6 +1137,12 @@ class H2IngestTests(unittest.TestCase):
             annotations["markers"] = ["x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)]
             annotations_path.write_bytes(MODULE._canonical_bytes(annotations) + b"\n")
             MODULE.migrate_legacy_manifests(library)
+            control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            control = MODULE._read_json_regular(control_path)
+            self.assertEqual(
+                control["legacy_annotations"]["ctime_ns"],
+                annotations_path.stat().st_ctime_ns,
+            )
 
             before = annotations_path.stat()
             payload = bytearray(annotations_path.read_bytes())
@@ -1150,12 +1160,62 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(after.st_size, before.st_size)
             self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
             self.assertEqual(after.st_ino, before.st_ino)
+            self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
+
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "aktuelle, gebundene Control-Sidecar",
+            ):
+                MODULE.library(library, projection="control")
 
             with self.assertRaisesRegex(
                 MODULE.H2IngestError,
                 "gebundenen Migrationsbeleg",
             ):
                 MODULE.migrate_legacy_manifests(library)
+
+    def test_legacy_annotation_migration_upgrades_pre_ctime_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = [
+                "x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)
+            ]
+            annotations_path.write_bytes(MODULE._canonical_bytes(annotations) + b"\n")
+            MODULE.migrate_legacy_manifests(library)
+
+            control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            old_control = MODULE._read_json_regular(control_path)
+            old_control["legacy_annotations"].pop("ctime_ns")
+            control_path.write_bytes(MODULE._canonical_bytes(old_control) + b"\n")
+
+            rebound = MODULE.migrate_legacy_manifests(library)
+
+            self.assertEqual(rebound["annotations_migrated"], 1)
+            self.assertEqual(rebound["annotations_already_bound"], 0)
+            current = annotations_path.stat()
+            control = MODULE._read_json_regular(control_path)
+            self.assertEqual(
+                control["legacy_annotations"]["ctime_ns"],
+                current.st_ctime_ns,
+            )
+            self.assertEqual(
+                control["legacy_annotations"]["sha256"],
+                hashlib.sha256(annotations_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                MODULE.library(library, projection="control")["count"],
+                1,
+            )
 
     def test_legacy_annotation_migration_resumes_after_prior_material_progress(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1427,6 +1487,108 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(receipt["release_commit"], commit)
             self.assertEqual(receipt["status"], "success")
             self.assertRegex(receipt["postcondition_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_durable_migration_receipt_rebinds_in_place_manifest_generation_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            imported = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / imported["material_id"]
+            manifest_path = material / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["legacy_padding"] = "x" * (
+                MODULE.MAX_METADATA_JSON_BYTES + 4096
+            )
+            oversized = MODULE._canonical_bytes(manifest) + b"\n"
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_bytes(oversized)
+            os.chmod(manifest_path, 0o440)
+            commit = "c" * 40
+            inactive = {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+            }
+
+            def launch(_root, _inventory):
+                MODULE._run_legacy_migration_worker(library)
+                return MODULE._legacy_migration_worker_unit(library)
+
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_durable_migration_release_commit",
+                    return_value=commit,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_legacy_migration_systemd_state",
+                    return_value=inactive,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_launch_legacy_migration_worker",
+                    side_effect=launch,
+                ) as launcher,
+            ):
+                first = MODULE.migrate_legacy_manifests_durable(library)
+                first_receipt = MODULE._read_json_regular(
+                    library / MODULE.LEGACY_MIGRATION_RECEIPT_NAME
+                )
+                before = manifest_path.stat()
+                replacement = bytearray(manifest_path.read_bytes())
+                marker = b'"legacy_padding":"'
+                marker_offset = replacement.find(marker)
+                self.assertGreaterEqual(marker_offset, 0)
+                payload_offset = marker_offset + len(marker)
+                replacement[payload_offset] = ord("y")
+                MODULE.time.sleep(0.01)
+                os.chmod(manifest_path, 0o640)
+                manifest_path.write_bytes(replacement)
+                os.utime(
+                    manifest_path,
+                    ns=(before.st_atime_ns, before.st_mtime_ns),
+                )
+                os.chmod(manifest_path, 0o440)
+                after = manifest_path.stat()
+                self.assertEqual(after.st_dev, before.st_dev)
+                self.assertEqual(after.st_ino, before.st_ino)
+                self.assertEqual(after.st_size, before.st_size)
+                self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+                self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
+
+                second = MODULE.migrate_legacy_manifests_durable(library)
+
+            self.assertTrue(first["durable_receipt_reused"])
+            self.assertTrue(second["durable_receipt_reused"])
+            self.assertEqual(launcher.call_count, 2)
+            second_receipt = MODULE._read_json_regular(
+                library / MODULE.LEGACY_MIGRATION_RECEIPT_NAME
+            )
+            self.assertNotEqual(
+                first_receipt["candidate_metadata_sha256"],
+                second_receipt["candidate_metadata_sha256"],
+            )
+            rebound = MODULE._read_json_regular(
+                material / MODULE.LEGACY_MANIFEST_CONTROL_NAME
+            )
+            self.assertEqual(
+                rebound["legacy_manifest"]["ctime_ns"],
+                manifest_path.stat().st_ctime_ns,
+            )
+            self.assertEqual(
+                rebound["legacy_manifest"]["sha256"],
+                hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                MODULE.library(library, projection="control")["count"],
+                1,
+            )
 
     def test_durable_worker_is_detached_bounded_and_uses_immutable_release_script(self):
         with tempfile.TemporaryDirectory() as directory:
