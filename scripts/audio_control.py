@@ -342,10 +342,19 @@ def _select_h2_library_root(
     return primary
 
 
-STATIC_H2_LIBRARY_ROOT = _select_h2_library_root(
-    STATIC_H2_PRIMARY_LIBRARY_ROOT,
-    STATIC_H2_LEGACY_LIBRARY_ROOT,
-)
+# Keep module import and non-H2 repair/control paths reachable even when both
+# roots contain material. Authority selection is performed only at H2 use sites.
+STATIC_H2_LIBRARY_ROOT = STATIC_H2_PRIMARY_LIBRARY_ROOT
+
+
+def _current_h2_library_root() -> pathlib.Path:
+    try:
+        return _select_h2_library_root(
+            STATIC_H2_PRIMARY_LIBRARY_ROOT,
+            STATIC_H2_LEGACY_LIBRARY_ROOT,
+        )
+    except RuntimeError as exc:
+        raise ControlError(str(exc)) from exc
 STATIC_H2_SOURCE_ROOT = pathlib.Path("/media") / pathlib.Path.home().name / "ZOOM_H2E"
 STATIC_RECORDING_STATE_ROOT = (
     pathlib.Path.home() / ".local" / "state" / "audio" / "recordings-v1"
@@ -3609,7 +3618,7 @@ class AudioControl:
             [
                 "_cleanup-import-staging",
                 "--library-root",
-                str(STATIC_H2_LIBRARY_ROOT),
+                str(_current_h2_library_root()),
             ],
             timeout=H2_STAGING_CLEANUP_TIMEOUT_SECONDS,
             label="H2-Import-Bereinigung",
@@ -4153,7 +4162,7 @@ class AudioControl:
             [
                 "library",
                 "--library-root",
-                str(STATIC_H2_LIBRARY_ROOT),
+                str(_current_h2_library_root()),
                 "--projection",
                 "control",
             ],
@@ -4391,7 +4400,7 @@ class AudioControl:
                 material_id,
                 str(segment_index),
                 "--library-root",
-                str(STATIC_H2_LIBRARY_ROOT),
+                str(_current_h2_library_root()),
             ],
             timeout=self._h2_material_binding_timeout_for_bytes(
                 item["total_bytes"],
@@ -4402,7 +4411,7 @@ class AudioControl:
         self._validate_h2_media_binding(
             report,
             expected_kind="audio_h2_material_media_binding",
-            root=STATIC_H2_LIBRARY_ROOT,
+            root=_current_h2_library_root(),
         )
         return report
 
@@ -4423,7 +4432,7 @@ class AudioControl:
                 "--source-root",
                 str(STATIC_H2_SOURCE_ROOT),
                 "--library-root",
-                str(STATIC_H2_LIBRARY_ROOT),
+                str(_current_h2_library_root()),
             ]
             source_report, _scan_timeout = self._h2_control_scan()
             source_session = next(
@@ -4477,7 +4486,7 @@ class AudioControl:
                 "--tags-json="
                 + json.dumps(tags, ensure_ascii=False, separators=(",", ":")),
                 "--library-root",
-                str(STATIC_H2_LIBRARY_ROOT),
+                str(_current_h2_library_root()),
             ]
             timeout = self._h2_annotation_command_timeout()
             label = "H2-Metadaten"

@@ -144,7 +144,18 @@ def _default_library_root(
     return _select_library_root(primary, legacy)
 
 
-DEFAULT_LIBRARY_ROOT = _default_library_root(os.environ.get("AUDIO_MATERIAL_ROOT"))
+_MATERIAL_ROOT_OVERRIDE = os.environ.get("AUDIO_MATERIAL_ROOT")
+DEFAULT_LIBRARY_ROOT = (
+    pathlib.Path(_MATERIAL_ROOT_OVERRIDE).expanduser() / "H2"
+    if _MATERIAL_ROOT_OVERRIDE
+    else PRIMARY_LIBRARY_ROOT
+)
+
+
+def _effective_library_root(library_root: pathlib.Path) -> pathlib.Path:
+    if _MATERIAL_ROOT_OVERRIDE is None and library_root is DEFAULT_LIBRARY_ROOT:
+        return _select_library_root(PRIMARY_LIBRARY_ROOT, LEGACY_LIBRARY_ROOT)
+    return pathlib.Path(library_root).expanduser()
 
 
 class H2IngestError(RuntimeError):
@@ -239,7 +250,7 @@ def _resolve_source_root(path: pathlib.Path) -> pathlib.Path:
 
 
 def _resolve_library_root(path: pathlib.Path, source_root: pathlib.Path) -> pathlib.Path:
-    library = path.expanduser()
+    library = _effective_library_root(path)
     if not library.is_absolute():
         raise H2IngestError("Materialbibliothek muss absolut sein.")
     source_real = source_root.resolve(strict=True)
@@ -2084,7 +2095,7 @@ def _read_annotations(directory: pathlib.Path, material_id: str) -> dict[str, An
 def migrate_legacy_manifests(
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
 ) -> dict[str, Any]:
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     if not root.exists() and not root.is_symlink():
         return _migrate_legacy_manifests_locked(root)
     descriptor = _open_library_import_lock(root)
@@ -2097,7 +2108,7 @@ def migrate_legacy_manifests(
 def _migrate_legacy_manifests_locked(
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
 ) -> dict[str, Any]:
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     result = {
         "schema_version": SCHEMA_VERSION,
         "kind": "audio_h2_legacy_manifest_migration",
@@ -2185,6 +2196,7 @@ def _migrate_legacy_manifests_locked(
             )
         annotations_control_path = directory / LEGACY_ANNOTATIONS_CONTROL_NAME
         annotations_bound = False
+        pre_ctime_annotations: dict[str, Any] | None = None
         if annotations_control_path.exists() or annotations_control_path.is_symlink():
             try:
                 annotations_control = _read_json_regular(annotations_control_path)
@@ -2214,9 +2226,18 @@ def _migrate_legacy_manifests_locked(
                         raise H2IngestError(
                             "Legacy-Materialannotation weicht vom gebundenen Migrationsbeleg ab."
                         )
-                    # Controls from releases before the ctime binding can be
-                    # safely re-projected only while their byte digest still
-                    # matches the immutable legacy annotation file.
+                    compatible_control = dict(annotations_control)
+                    compatible_binding = dict(binding)
+                    compatible_binding["ctime_ns"] = annotations_metadata.st_ctime_ns
+                    compatible_control["legacy_annotations"] = compatible_binding
+                    pre_ctime_annotations = _annotations_from_legacy_control(
+                        compatible_control,
+                        material_id,
+                        annotations_metadata=annotations_metadata,
+                    )
+                    # Only the immutable legacy binding is upgraded. Mutable
+                    # title/note/tags/updated_at remain authoritative in the
+                    # existing control sidecar.
                 else:
                     if _sha256_path(annotations_path) != binding["sha256"]:
                         raise H2IngestError(
@@ -2257,6 +2278,9 @@ def _migrate_legacy_manifests_locked(
             legacy_sha256=annotations_digest,
             legacy_metadata=annotations_metadata,
         )
+        if pre_ctime_annotations is not None:
+            for field in ("title", "note", "tags", "updated_at"):
+                annotations_control[field] = pre_ctime_annotations[field]
         if annotations_control_path.exists() or annotations_control_path.is_symlink():
             _write_json_replace(annotations_control_path, annotations_control, 0o600)
         else:
@@ -2272,7 +2296,7 @@ def _migrate_legacy_manifests_locked(
 
 
 def _prepare_legacy_migration_candidates(library_root: pathlib.Path) -> None:
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     if not root.exists() and not root.is_symlink():
         return
     metadata = _lstat_directory(root, "Materialbibliothek")
@@ -2332,6 +2356,50 @@ def _open_library_import_lock(library: pathlib.Path) -> int:
         raise
 
 
+def _prepare_owned_staging_for_removal(staging: pathlib.Path) -> None:
+    master = staging / "master"
+    if not master.exists() and not master.is_symlink():
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(master, flags)
+    except OSError as exc:
+        raise H2IngestError(
+            "H2-Stagingzustand änderte sich während der Bereinigung."
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise H2IngestError(
+                "H2-Stagingzustand ist nicht vertrauenswürdig und wird nicht gelöscht."
+            )
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                child = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(child.st_mode):
+                    continue
+                if (
+                    not stat.S_ISREG(child.st_mode)
+                    or child.st_uid != os.getuid()
+                    or stat.S_IMODE(child.st_mode) & 0o022
+                ):
+                    raise H2IngestError(
+                        "H2-Stagingzustand ist nicht vertrauenswürdig und wird nicht gelöscht."
+                    )
+        os.fchmod(descriptor, 0o700)
+    except H2IngestError:
+        raise
+    except OSError as exc:
+        raise H2IngestError(
+            "H2-Stagingzustand konnte nicht sicher bereinigt werden."
+        ) from exc
+    finally:
+        os.close(descriptor)
+
 def _cleanup_import_staging_locked(library: pathlib.Path) -> dict[str, Any]:
     root = library.expanduser()
     _lstat_directory(root, "Materialbibliothek")
@@ -2357,6 +2425,7 @@ def _cleanup_import_staging_locked(library: pathlib.Path) -> dict[str, Any]:
             raise H2IngestError(
                 "H2-Stagingzustand ist nicht vertrauenswürdig und wird nicht gelöscht."
             )
+        _prepare_owned_staging_for_removal(staging)
         try:
             shutil.rmtree(staging)
         except OSError as exc:
@@ -2381,7 +2450,7 @@ def _cleanup_import_staging_locked(library: pathlib.Path) -> dict[str, Any]:
 def cleanup_import_staging(
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
 ) -> dict[str, Any]:
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     if not root.exists() and not root.is_symlink():
         return {
             "schema_version": SCHEMA_VERSION,
@@ -2402,7 +2471,7 @@ def cleanup_import_staging(
 def _prepared_legacy_migration_inventory(
     library_root: pathlib.Path,
 ) -> dict[str, Any]:
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     if not root.exists() and not root.is_symlink():
         return _legacy_migration_inventory(root)
     descriptor = _open_library_import_lock(root)
@@ -2414,7 +2483,7 @@ def _prepared_legacy_migration_inventory(
 
 
 def _legacy_migration_inventory(library_root: pathlib.Path) -> dict[str, Any]:
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     result: dict[str, Any] = {
         "library_root": str(root),
         "material_count": 0,
@@ -2797,7 +2866,7 @@ def _launch_legacy_migration_worker(
 def _run_legacy_migration_worker(
     library_root: pathlib.Path,
 ) -> dict[str, Any]:
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     release_commit = _durable_migration_release_commit()
     if release_commit is None:
         raise H2IngestError("Durable Legacy-Migration benötigt einen Releasebeleg.")
@@ -2835,7 +2904,7 @@ def launch_legacy_manifests_durable(
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
 ) -> dict[str, Any]:
     """Schedule oversized legacy migration without waiting for worker completion."""
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     release_commit = _durable_migration_release_commit()
     if release_commit is None:
         result = migrate_legacy_manifests(root)
@@ -2879,7 +2948,7 @@ def launch_legacy_manifests_durable(
 def migrate_legacy_manifests_durable(
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
 ) -> dict[str, Any]:
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     release_commit = _durable_migration_release_commit()
     if release_commit is None:
         return migrate_legacy_manifests(root)
@@ -3284,7 +3353,7 @@ def library(
 ) -> dict[str, Any]:
     if projection not in {"full", "control"}:
         raise H2IngestError("Unbekannte H2-Bibliotheksprojektion.")
-    root = library_root.expanduser()
+    root = _effective_library_root(library_root)
     result = {
         "schema_version": SCHEMA_VERSION,
         "kind": "audio_material_library",
@@ -3374,7 +3443,7 @@ def verify_material(
 ) -> dict[str, Any]:
     if not MATERIAL_ID_RE.fullmatch(material_id):
         raise H2IngestError("Ungültige Material-ID.")
-    directory = library_root.expanduser() / material_id
+    directory = _effective_library_root(library_root) / material_id
     _lstat_directory(directory, "Materialobjekt")
     manifest = _read_manifest(directory, material_id)
     if manifest.get("material_id") != material_id:
@@ -3495,7 +3564,7 @@ def annotate_material(
     tags: Any,
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
 ) -> dict[str, Any]:
-    library = library_root.expanduser()
+    library = _effective_library_root(library_root)
     descriptor = _open_library_import_lock(library)
     try:
         return _annotate_material_locked(
@@ -3519,7 +3588,7 @@ def _annotate_material_locked(
 ) -> dict[str, Any]:
     if not MATERIAL_ID_RE.fullmatch(material_id):
         raise H2IngestError("Ungültige Material-ID.")
-    directory = library_root.expanduser() / material_id
+    directory = _effective_library_root(library_root) / material_id
     _lstat_directory(directory, "Materialobjekt")
     manifest = _read_manifest(directory, material_id)
     annotations_path = directory / "annotations.json"
@@ -3629,7 +3698,7 @@ def material_media(
         raise H2IngestError("Ungültige Material-ID.")
     if isinstance(segment_index, bool) or not isinstance(segment_index, int) or segment_index < 0:
         raise H2IngestError("Ungültiger Materialsegmentindex.")
-    directory = library_root.expanduser() / material_id
+    directory = _effective_library_root(library_root) / material_id
     _lstat_directory(directory, "Materialobjekt")
     manifest = _read_manifest(directory, material_id)
     annotations = _read_annotations(directory, material_id)

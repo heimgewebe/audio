@@ -39,6 +39,8 @@ H2_LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND = 512 * 1024
 H2_LEGACY_MIGRATION_IO_PASSES = 3
 H2_LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS = 60
 H2_LEGACY_MIGRATION_PER_MATERIAL_SECONDS = 1
+H2_LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS = 5 * 60
+H2_LEGACY_MIGRATION_PARENT_MARGIN_SECONDS = 30
 H2_LEGACY_MIGRATION_NOTIFY_MARGIN_SECONDS = 5 * 60
 H2_MATERIAL_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 DEFAULT_REMOTE = "origin"
@@ -893,6 +895,8 @@ def h2_legacy_migration_timeout_seconds(budget: dict[str, Any]) -> float:
         H2_LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS
         + (material_count * H2_LEGACY_MIGRATION_PER_MATERIAL_SECONDS)
         + io_seconds
+        + H2_LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS
+        + H2_LEGACY_MIGRATION_PARENT_MARGIN_SECONDS
     )
 
 
@@ -933,22 +937,38 @@ def migrate_h2_legacy_manifests(release: pathlib.Path) -> list[dict[str, Any]]:
     script = release / "scripts" / "h2_ingest.py"
     receipts: list[dict[str, Any]] = []
     for root in H2_LIBRARY_ROOTS:
-        budget = h2_legacy_migration_budget(root)
-        timeout = h2_legacy_migration_timeout_seconds(budget)
-        extend_systemd_start_timeout(timeout)
-        receipt = run_command(
-            [
-                sys.executable,
-                str(script),
-                "migrate-legacy-manifests",
-                "--library-root",
-                str(root),
-            ],
-            cwd=release,
-            timeout=timeout,
-        ).receipt()
-        receipt["migration_budget"] = budget
-        receipt["timeout_seconds"] = timeout
+        try:
+            budget = h2_legacy_migration_budget(root)
+            timeout = h2_legacy_migration_timeout_seconds(budget)
+            extend_systemd_start_timeout(timeout)
+            result = run_command(
+                [
+                    sys.executable,
+                    str(script),
+                    "migrate-legacy-manifests",
+                    "--launch-only",
+                    "--library-root",
+                    str(root),
+                ],
+                cwd=release,
+                timeout=timeout,
+                check=False,
+            )
+            receipt = result.receipt()
+            receipt["status"] = "scheduled" if result.returncode == 0 else "degraded"
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip()
+                if detail:
+                    receipt["error"] = detail[-500:]
+            receipt["migration_budget"] = budget
+            receipt["timeout_seconds"] = timeout
+        except DeployError as exc:
+            receipt = {
+                "kind": "audio_h2_legacy_migration_degraded",
+                "library_root": str(root),
+                "status": "degraded",
+                "error": str(exc)[:500],
+            }
         receipts.append(receipt)
     return receipts
 

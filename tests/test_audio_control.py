@@ -4556,6 +4556,20 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertIn("-%h/Music/Audio-Material/H2", unit)
         self.assertNotIn(" %h/Music/Audio-Material ", unit)
 
+    def test_h2_root_conflict_is_lazy_until_h2_use(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            primary = base / "primary"
+            legacy = base / "legacy"
+            (primary / ("a" * 24)).mkdir(parents=True)
+            (legacy / ("b" * 24)).mkdir(parents=True)
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_PRIMARY_LIBRARY_ROOT", primary),
+                mock.patch.object(MODULE, "STATIC_H2_LEGACY_LIBRARY_ROOT", legacy),
+            ):
+                with self.assertRaisesRegex(MODULE.ControlError, "Primär- und Legacy-Root"):
+                    MODULE._current_h2_library_root()
+
     def test_managed_audio_control_rejects_custom_h2_material_root(self):
         with mock.patch.dict(
             os.environ,

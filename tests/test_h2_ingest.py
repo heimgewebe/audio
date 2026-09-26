@@ -156,6 +156,25 @@ class H2IngestTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Primär- und Legacy-Root"):
                 MODULE._select_library_root(primary, legacy)
 
+    def test_explicit_library_root_bypasses_automatic_split_brain_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            primary = base / "primary"
+            legacy = base / "legacy"
+            (primary / ("a" * 24)).mkdir(parents=True)
+            (legacy / ("b" * 24)).mkdir(parents=True)
+            with (
+                mock.patch.object(MODULE, "PRIMARY_LIBRARY_ROOT", primary),
+                mock.patch.object(MODULE, "LEGACY_LIBRARY_ROOT", legacy),
+                mock.patch.object(MODULE, "_MATERIAL_ROOT_OVERRIDE", None),
+                mock.patch.object(MODULE, "DEFAULT_LIBRARY_ROOT", primary),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Primär- und Legacy-Root"):
+                    MODULE._effective_library_root(MODULE.DEFAULT_LIBRARY_ROOT)
+                explicit = pathlib.Path(str(primary))
+                self.assertIsNot(explicit, MODULE.DEFAULT_LIBRARY_ROOT)
+                self.assertEqual(MODULE._effective_library_root(explicit), primary)
+
     def test_material_root_override_keeps_preceding_parent_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             configured = pathlib.Path(directory) / "Material"
@@ -1379,6 +1398,10 @@ class H2IngestTests(unittest.TestCase):
 
             control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
             old_control = MODULE._read_json_regular(control_path)
+            old_control["title"] = "keep title"
+            old_control["note"] = "keep note"
+            old_control["tags"] = ["keep-tag"]
+            old_control["updated_at"] = "2026-09-26T12:00:00+00:00"
             old_control["legacy_annotations"].pop("ctime_ns")
             control_path.write_bytes(MODULE._canonical_bytes(old_control) + b"\n")
 
@@ -1396,6 +1419,10 @@ class H2IngestTests(unittest.TestCase):
                 control["legacy_annotations"]["sha256"],
                 hashlib.sha256(annotations_path.read_bytes()).hexdigest(),
             )
+            self.assertEqual(control["title"], "keep title")
+            self.assertEqual(control["note"], "keep note")
+            self.assertEqual(control["tags"], ["keep-tag"])
+            self.assertEqual(control["updated_at"], "2026-09-26T12:00:00+00:00")
             self.assertEqual(
                 MODULE.library(library, projection="control")["count"],
                 1,
@@ -2271,7 +2298,12 @@ class H2IngestTests(unittest.TestCase):
             library.mkdir(mode=0o700)
             stale = library / f"{MODULE.IMPORT_STAGING_PREFIX}abandoned"
             stale.mkdir(mode=0o700)
-            (stale / "partial.wav").write_bytes(b"x" * 1024)
+            master = stale / "master"
+            master.mkdir(mode=0o700)
+            partial = master / "partial.wav"
+            partial.write_bytes(b"x" * 1024)
+            os.chmod(partial, 0o440)
+            os.chmod(master, 0o550)
 
             result = MODULE.import_scene(
                 "170926_191401",

@@ -111,13 +111,13 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
     def test_ui_first_upgrade_schedules_release_bound_h2_migration_before_start(self):
         ui = UI_UNIT_PATH.read_text(encoding="utf-8")
         primary = (
-            "ExecStartPre=+/usr/bin/python3 "
+            "ExecStartPre=-+/usr/bin/python3 "
             "%h/.local/share/audio-control-ui/current/scripts/h2_ingest.py "
             "migrate-legacy-manifests --launch-only --library-root "
             "%h/Music/Audio-Aufnahmen/H2-Material"
         )
         legacy = (
-            "ExecStartPre=+/usr/bin/python3 "
+            "ExecStartPre=-+/usr/bin/python3 "
             "%h/.local/share/audio-control-ui/current/scripts/h2_ingest.py "
             "migrate-legacy-manifests --launch-only --library-root "
             "%h/Music/Audio-Material/H2"

@@ -451,6 +451,7 @@ class AudioControlDeployTests(unittest.TestCase):
             self.assertTrue(
                 all(call[0][2] == "migrate-legacy-manifests" for call in observed)
             )
+            self.assertTrue(all("--launch-only" in call[0] for call in observed))
             self.assertTrue(all(call[1] == release for call in observed))
             self.assertEqual([call[2] for call in observed], expected_timeouts)
             self.assertEqual(extensions, expected_timeouts)
@@ -458,6 +459,40 @@ class AudioControlDeployTests(unittest.TestCase):
                 [receipt["migration_budget"] for receipt in receipts],
                 budgets,
             )
+
+    def test_h2_legacy_manifest_migration_degrades_without_aborting_deploy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = pathlib.Path(directory)
+            script = release / "scripts" / "h2_ingest.py"
+            script.parent.mkdir(parents=True)
+            script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            budget = {
+                "library_root": str(MODULE.H2_LIBRARY_ROOTS[1]),
+                "material_count": 1,
+                "candidate_file_count": 1,
+                "candidate_bytes": 3 * 1024 * 1024,
+            }
+            failed = MODULE.CommandResult(
+                (sys.executable, str(script)),
+                1,
+                "",
+                "broken legacy object",
+                0.01,
+            )
+            with (
+                mock.patch.object(MODULE, "h2_ingest_release_supported", return_value=True),
+                mock.patch.object(
+                    MODULE,
+                    "h2_legacy_migration_budget",
+                    side_effect=[MODULE.DeployError("unreadable manifest"), budget],
+                ),
+                mock.patch.object(MODULE, "extend_systemd_start_timeout", return_value=True),
+                mock.patch.object(MODULE, "run_command", return_value=failed),
+            ):
+                receipts = MODULE.migrate_h2_legacy_manifests(release)
+            self.assertEqual([item["status"] for item in receipts], ["degraded", "degraded"])
+            self.assertIn("unreadable manifest", receipts[0]["error"])
+            self.assertIn("broken legacy object", receipts[1]["error"])
 
     def test_h2_legacy_migration_budget_counts_candidate_bytes_without_reading_content(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -509,6 +544,8 @@ class AudioControlDeployTests(unittest.TestCase):
                 )
                 / MODULE.H2_LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND
             )
+            + MODULE.H2_LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS
+            + MODULE.H2_LEGACY_MIGRATION_PARENT_MARGIN_SECONDS
         )
         self.assertEqual(small, expected_small)
         large = MODULE.h2_legacy_migration_timeout_seconds(

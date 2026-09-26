@@ -18,8 +18,8 @@ EnvironmentFile=-%h/.config/audio-control-deploy.env
 # Optional nur, damit der erste Upgrade-Lauf vor ihrer Erzeugung starten kann.
 EnvironmentFile=-%h/.local/state/audio-control-deploy/runtime.env
 WorkingDirectory=%h/.local/share/audio-control-ui/current
-ExecStartPre=+/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/h2_ingest.py migrate-legacy-manifests --launch-only --library-root %h/Music/Audio-Aufnahmen/H2-Material
-ExecStartPre=+/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/h2_ingest.py migrate-legacy-manifests --launch-only --library-root %h/Music/Audio-Material/H2
+ExecStartPre=-+/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/h2_ingest.py migrate-legacy-manifests --launch-only --library-root %h/Music/Audio-Aufnahmen/H2-Material
+ExecStartPre=-+/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/h2_ingest.py migrate-legacy-manifests --launch-only --library-root %h/Music/Audio-Material/H2
 ExecStartPre=+/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py prepare-runtime-state
 ExecStart=/usr/bin/python3 %h/.local/share/audio-control-ui/current/scripts/audio_control.py serve --host 127.0.0.1 --port ${AUDIO_CONTROL_PORT}
 Restart=on-failure
