@@ -356,6 +356,9 @@ def _current_h2_library_root() -> pathlib.Path:
     except RuntimeError as exc:
         raise ControlError(str(exc)) from exc
 STATIC_H2_SOURCE_ROOT = pathlib.Path("/media") / pathlib.Path.home().name / "ZOOM_H2E"
+STATIC_H2_REMOTE_INBOX_ROOT = STATIC_RECORDING_OUTPUT_ROOT / "H2-Remote-Inbox"
+H2_REMOTE_TRANSFER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+H2_REMOTE_MAX_TRANSFERS = 2
 STATIC_RECORDING_STATE_ROOT = (
     pathlib.Path.home() / ".local" / "state" / "audio" / "recordings-v1"
 )
@@ -2462,6 +2465,9 @@ def prepare_runtime_state_bootstrap() -> dict[str, Any]:
     recording_output = _ensure_private_directory_chain(
         normalized[0][0], label=normalized[0][1]
     )
+    remote_h2_inbox = _ensure_private_directory_chain(
+        recording_output / "H2-Remote-Inbox", label="Remote-H2-Inbox-Root"
+    )
     recording_state = _ensure_private_directory_chain(
         normalized[1][0], label=normalized[1][1]
     )
@@ -2476,6 +2482,7 @@ def prepare_runtime_state_bootstrap() -> dict[str, Any]:
     )
     if (
         recording_output != STATIC_RECORDING_OUTPUT_ROOT
+        or remote_h2_inbox != STATIC_H2_REMOTE_INBOX_ROOT
         or recording_state != STATIC_RECORDING_STATE_ROOT
         or transition_state != STATIC_PROFILE_TRANSITION_STATE_ROOT
         or laboratory_state != STATIC_LABORATORY_STATE_ROOT
@@ -3916,12 +3923,15 @@ class AudioControl:
         ):
             raise ControlError("H2-Scanbudget ist nicht sicher bestimmbar.")
 
-    def _h2_scan_budget(self) -> tuple[dict[str, Any], float]:
+    def _h2_scan_budget_for_root(
+        self,
+        source_root: pathlib.Path,
+    ) -> tuple[dict[str, Any], float]:
         budget_report = self._run_h2_command(
             [
                 "scan",
                 "--source-root",
-                str(STATIC_H2_SOURCE_ROOT),
+                str(source_root),
                 "--projection",
                 "budget",
             ],
@@ -3939,6 +3949,9 @@ class AudioControl:
                 minimum=H2_METADATA_TIMEOUT_SECONDS,
             )
         return budget_report, scan_timeout
+
+    def _h2_scan_budget(self) -> tuple[dict[str, Any], float]:
+        return self._h2_scan_budget_for_root(STATIC_H2_SOURCE_ROOT)
 
     def h2_source_budget(self) -> dict[str, Any]:
         source_budget_available = True
@@ -3979,13 +3992,16 @@ class AudioControl:
             "source_mutated": False,
         }
 
-    def _h2_control_scan(self) -> tuple[dict[str, Any], float]:
-        _budget_report, scan_timeout = self._h2_scan_budget()
+    def _h2_control_scan_for_root(
+        self,
+        source_root: pathlib.Path,
+    ) -> tuple[dict[str, Any], float]:
+        _budget_report, scan_timeout = self._h2_scan_budget_for_root(source_root)
         report = self._run_h2_command(
             [
                 "scan",
                 "--source-root",
-                str(STATIC_H2_SOURCE_ROOT),
+                str(source_root),
                 "--projection",
                 "control",
             ],
@@ -3995,6 +4011,117 @@ class AudioControl:
         )
         self._validate_h2_scan(report)
         return report, scan_timeout
+
+    def _h2_control_scan(self) -> tuple[dict[str, Any], float]:
+        return self._h2_control_scan_for_root(STATIC_H2_SOURCE_ROOT)
+
+    @staticmethod
+    def _h2_remote_inbox_root_ready() -> bool:
+        root = STATIC_H2_REMOTE_INBOX_ROOT
+        try:
+            metadata = root.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            raise ControlError("Remote-H2-Inbox ist nicht sicher lesbar.") from error
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise ControlError("Remote-H2-Inbox besitzt keine sichere lokale Identität.")
+        return True
+
+    @classmethod
+    def _h2_remote_transfer_root(cls, transfer_id: str) -> pathlib.Path:
+        if (
+            not isinstance(transfer_id, str)
+            or H2_REMOTE_TRANSFER_ID_RE.fullmatch(transfer_id) is None
+        ):
+            raise ControlError("Remote-H2-Transfer-ID ist ungültig.")
+        if not cls._h2_remote_inbox_root_ready():
+            raise ControlError("Remote-H2-Inbox ist nicht eingerichtet.")
+        transfer = STATIC_H2_REMOTE_INBOX_ROOT / transfer_id
+        try:
+            metadata = transfer.lstat()
+        except OSError as error:
+            raise ControlError("Remote-H2-Transfer ist nicht lesbar.") from error
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise ControlError("Remote-H2-Transfer besitzt keine sichere lokale Identität.")
+        return transfer
+
+    @classmethod
+    def _h2_remote_transfer_roots(
+        cls,
+    ) -> tuple[list[tuple[str, pathlib.Path]], int, bool, list[str]]:
+        if not cls._h2_remote_inbox_root_ready():
+            return [], 0, False, []
+        valid: list[tuple[int, str, pathlib.Path]] = []
+        skipped: list[str] = []
+        try:
+            with os.scandir(STATIC_H2_REMOTE_INBOX_ROOT) as entries:
+                for entry in entries:
+                    if H2_REMOTE_TRANSFER_ID_RE.fullmatch(entry.name) is None:
+                        continue
+                    try:
+                        metadata = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        skipped.append(entry.name)
+                        continue
+                    if (
+                        not stat.S_ISDIR(metadata.st_mode)
+                        or metadata.st_uid != os.getuid()
+                        or stat.S_IMODE(metadata.st_mode) & 0o022
+                    ):
+                        skipped.append(entry.name)
+                        continue
+                    valid.append(
+                        (
+                            metadata.st_mtime_ns,
+                            entry.name,
+                            STATIC_H2_REMOTE_INBOX_ROOT / entry.name,
+                        )
+                    )
+        except OSError as error:
+            raise ControlError("Remote-H2-Inbox kann nicht aufgelistet werden.") from error
+        valid.sort(key=lambda item: (-item[0], item[1]))
+        total = len(valid)
+        selected = [
+            (name, path)
+            for _mtime_ns, name, path in valid[:H2_REMOTE_MAX_TRANSFERS]
+        ]
+        return (
+            selected,
+            total,
+            total > H2_REMOTE_MAX_TRANSFERS,
+            sorted(set(skipped)),
+        )
+
+    @classmethod
+    def _h2_remote_import_action_timeout_for_bytes(
+        cls,
+        byte_count: int,
+        *,
+        scan_timeout: float,
+    ) -> float:
+        import_work = cls._h2_timeout_for_bytes(
+            byte_count,
+            passes=H2_IMPORT_IO_PASSES,
+            minimum=300,
+        )
+        return float(
+            H2_SCAN_BUDGET_TIMEOUT_SECONDS
+            + scan_timeout
+            + import_work
+            + cls._h2_library_timeout()
+            + REQUEST_IO_TIMEOUT_SECONDS
+        )
 
     @staticmethod
     def _validate_h2_scan(report: dict[str, Any]) -> None:
@@ -4247,6 +4374,99 @@ class AudioControl:
             ],
         }
 
+    def h2_remote_inbox_budget(self) -> dict[str, Any]:
+        transfers, total, truncated, skipped = self._h2_remote_transfer_roots()
+        scan_timeouts: list[float] = []
+        budget_available = True
+        for _transfer_id, source_root in transfers:
+            try:
+                _budget, scan_timeout = self._h2_scan_budget_for_root(source_root)
+            except ControlError:
+                budget_available = False
+                scan_timeout = float(H2_METADATA_TIMEOUT_SECONDS)
+            scan_timeouts.append(scan_timeout)
+        inbox_timeout = float(
+            sum(
+                H2_SCAN_BUDGET_TIMEOUT_SECONDS + scan_timeout
+                for scan_timeout in scan_timeouts
+            )
+            + REQUEST_IO_TIMEOUT_SECONDS
+        )
+        return {
+            "schema_version": 1,
+            "kind": "audio_h2_remote_inbox_budget",
+            "inbox_timeout_seconds": max(
+                inbox_timeout,
+                float(REQUEST_IO_TIMEOUT_SECONDS),
+            ),
+            "transfer_count": len(transfers),
+            "total_transfer_count": total,
+            "truncated": truncated,
+            "skipped_unsafe_transfer_count": len(skipped),
+            "budget_available": budget_available,
+            "read_only": True,
+            "source_mutated": False,
+        }
+
+    def h2_remote_inbox(self) -> dict[str, Any]:
+        transfers, total, truncated, unsafe = self._h2_remote_transfer_roots()
+        sessions: list[dict[str, Any]] = []
+        skipped_invalid_transfers = list(unsafe)
+        skipped_invalid_sessions: list[dict[str, str]] = []
+        for transfer_id, source_root in transfers:
+            try:
+                report, scan_timeout = self._h2_control_scan_for_root(source_root)
+            except ControlError:
+                skipped_invalid_transfers.append(transfer_id)
+                continue
+            for scene in report["skipped_invalid_sessions"]:
+                skipped_invalid_sessions.append(
+                    {"transfer_id": transfer_id, "scene": scene}
+                )
+            for item in reversed(report["sessions"]):
+                sessions.append(
+                    {
+                        "transfer_id": transfer_id,
+                        "source_kind": "remote-inbox",
+                        "scene": item["scene"],
+                        "recorded_date": item["recorded_date"],
+                        "recorded_time": item["recorded_time"],
+                        "duration_seconds": item["duration_seconds"],
+                        "sample_rate_hz": item.get("sample_rate_hz"),
+                        "roles": item["roles"],
+                        "segment_count": item["segment_count"],
+                        "import_timeout_seconds": (
+                            self._h2_remote_import_action_timeout_for_bytes(
+                                item["total_bytes"],
+                                scan_timeout=scan_timeout,
+                            )
+                        ),
+                    }
+                )
+        result = {
+            "schema_version": 1,
+            "kind": "audio_h2_remote_inbox",
+            "inbox": {
+                "status": "ready" if transfers else "empty",
+                "count": len(sessions),
+                "transfer_count": len(transfers),
+                "total_transfer_count": total,
+                "truncated": truncated,
+                "skipped_invalid_transfers": sorted(
+                    set(skipped_invalid_transfers)
+                ),
+                "skipped_invalid_sessions": skipped_invalid_sessions,
+                "sessions": sessions,
+            },
+            "source_delete_authorized": False,
+        }
+        encoded = (
+            json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        if len(encoded) > MAX_H2_WORKSPACE_RESPONSE_BYTES:
+            raise ControlError("Remote-H2-Inbox überschreitet das sichere Antwortlimit.")
+        return result
+
     def h2_source(self) -> dict[str, Any]:
         source = {
             "schema_version": 1,
@@ -4418,7 +4638,19 @@ class AudioControl:
     def perform_h2_action(self, payload: dict[str, Any]) -> dict[str, Any]:
         operation = payload.get("operation")
         if operation == "import":
-            if set(payload) != {"operation", "scene"}:
+            if set(payload) == {"operation", "scene"}:
+                source_kind = "device"
+                transfer_id = None
+                source_root = STATIC_H2_SOURCE_ROOT
+            elif (
+                set(payload)
+                == {"operation", "source", "transfer_id", "scene"}
+                and payload.get("source") == "remote-inbox"
+            ):
+                source_kind = "remote-inbox"
+                transfer_id = payload.get("transfer_id")
+                source_root = self._h2_remote_transfer_root(transfer_id)
+            else:
                 raise ControlError("H2-Import enthält unbekannte oder fehlende Felder.")
             scene = payload.get("scene")
             if (
@@ -4430,11 +4662,11 @@ class AudioControl:
                 "import",
                 scene,
                 "--source-root",
-                str(STATIC_H2_SOURCE_ROOT),
+                str(source_root),
                 "--library-root",
                 str(_current_h2_library_root()),
             ]
-            source_report, _scan_timeout = self._h2_control_scan()
+            source_report, _scan_timeout = self._h2_control_scan_for_root(source_root)
             source_session = next(
                 (
                     item
@@ -4528,7 +4760,12 @@ class AudioControl:
                 "result": report,
             }
             if operation == "import":
-                response["workspace"] = self.h2_workspace()
+                if source_kind == "remote-inbox":
+                    response["source"] = source_kind
+                    response["transfer_id"] = transfer_id
+                    response["library"] = self.h2_library()
+                else:
+                    response["workspace"] = self.h2_workspace()
             else:
                 response["library"] = self.h2_library()
             return response
@@ -6771,6 +7008,48 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, source, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/h2/remote-inbox/budget":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Das Remote-H2-Inbox-Budget akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                budget = self.server.controller.h2_remote_inbox_budget()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_remote_inbox_budget_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, budget, head_only=head_only)
+            return
+        if parsed.path == f"/api/{API_VERSION}/h2/remote-inbox":
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Die Remote-H2-Inbox akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            try:
+                inbox = self.server.controller.h2_remote_inbox()
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_remote_inbox_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, inbox, head_only=head_only)
             return
         if parsed.path == f"/api/{API_VERSION}/h2/library/budget":
             if parsed.query:

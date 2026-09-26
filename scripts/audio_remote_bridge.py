@@ -60,6 +60,7 @@ RECORDING_LIBRARY_CATEGORIES = frozenset(
 H2_ACTION_OPERATIONS = frozenset({"import", "annotate"})
 RECORDING_SESSION_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 H2_SCENE_RE = re.compile(r"^[0-9]{6}_[0-9]{6}$")
+H2_TRANSFER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 H2_MATERIAL_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 REMOTE_TAILNET_HOST = "heim-pc.tail6dbb90.ts.net:9443"
 DEFAULT_HOST = "127.0.0.1"
@@ -83,6 +84,7 @@ RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
 H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS = 900.0
 H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS = 900.0
 H2_LIBRARY_BUDGET_BACKEND_TIMEOUT_SECONDS = 30.0
+H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS = 1800.0
 H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS = 15.0
 # H2 import and annotation outer deadlines are projected by the backend.
 # The bridge adds only a transport margin and does not duplicate size formulas.
@@ -154,6 +156,8 @@ FIXED_API_ROUTES = frozenset(
         "/api/v1/h2/source/budget",
         "/api/v1/h2/library",
         "/api/v1/h2/library/budget",
+        "/api/v1/h2/remote-inbox",
+        "/api/v1/h2/remote-inbox/budget",
     }
 )
 PROFILE_PLAN_RE = re.compile(r"^/api/v1/profiles/([^/]+)/plan$")
@@ -663,12 +667,32 @@ def validate_h2_action_payload(payload: bytes) -> dict[str, Any]:
     if operation not in H2_ACTION_OPERATIONS:
         raise RequestRejected("remote H2 operation is not allowlisted")
     if operation == "import":
-        if set(decoded) != {"operation", "scene"}:
+        if set(decoded) == {"operation", "scene"}:
+            scene = decoded.get("scene")
+            if not isinstance(scene, str) or H2_SCENE_RE.fullmatch(scene) is None:
+                raise RequestRejected("remote H2 scene is invalid")
+            return {"operation": "import", "scene": scene}
+        if (
+            set(decoded)
+            != {"operation", "source", "transfer_id", "scene"}
+            or decoded.get("source") != "remote-inbox"
+        ):
             raise RequestRejected("remote H2 import fields do not match the contract")
         scene = decoded.get("scene")
+        transfer_id = decoded.get("transfer_id")
         if not isinstance(scene, str) or H2_SCENE_RE.fullmatch(scene) is None:
             raise RequestRejected("remote H2 scene is invalid")
-        return {"operation": "import", "scene": scene}
+        if (
+            not isinstance(transfer_id, str)
+            or H2_TRANSFER_ID_RE.fullmatch(transfer_id) is None
+        ):
+            raise RequestRejected("remote H2 transfer id is invalid")
+        return {
+            "operation": "import",
+            "source": "remote-inbox",
+            "transfer_id": transfer_id,
+            "scene": scene,
+        }
 
     if set(decoded) != {"operation", "material_id", "title", "note", "tags"}:
         raise RequestRejected("remote H2 annotation fields do not match the contract")
@@ -859,9 +883,46 @@ def h2_annotation_backend_timeout_seconds() -> float:
     )
 
 
+def _read_backend_h2_remote_inbox_budget() -> dict[str, Any]:
+    status, _headers, payload, _redactions = read_backend_response(
+        "/api/v1/h2/remote-inbox/budget", None
+    )
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend remote H2 inbox budget is unavailable")
+    try:
+        budget = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend remote H2 inbox budget is invalid") from error
+    timeout = budget.get("inbox_timeout_seconds") if isinstance(budget, dict) else None
+    if (
+        not isinstance(budget, dict)
+        or budget.get("kind") != "audio_h2_remote_inbox_budget"
+        or budget.get("read_only") is not True
+        or budget.get("source_mutated") is not False
+        or isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise BackendFailure("backend remote H2 inbox budget is invalid")
+    return budget
+
+
+def h2_remote_inbox_backend_timeout_seconds() -> float:
+    budget = _read_backend_h2_remote_inbox_budget()
+    return (
+        float(budget["inbox_timeout_seconds"])
+        + H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS
+    )
+
+
 def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list[tuple[str, str]], bytes, int]:
     if target == "/api/v1/h2":
         backend_timeout_seconds = h2_workspace_backend_timeout_seconds()
+    elif target == "/api/v1/h2/remote-inbox":
+        backend_timeout_seconds = h2_remote_inbox_backend_timeout_seconds()
+    elif target == "/api/v1/h2/remote-inbox/budget":
+        backend_timeout_seconds = H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS
     elif target == "/api/v1/h2/budget":
         backend_timeout_seconds = H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS
     elif target == "/api/v1/h2/source":
@@ -899,7 +960,12 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
             raise BackendFailure("backend headers exceed bridge limit")
         response_limit = (
             MAX_H2_RESPONSE_BYTES
-            if target in {"/api/v1/h2", "/api/v1/h2/source", "/api/v1/h2/library"}
+            if target in {
+                "/api/v1/h2",
+                "/api/v1/h2/source",
+                "/api/v1/h2/library",
+                "/api/v1/h2/remote-inbox",
+            }
             else MAX_RESPONSE_BYTES
         )
         payload = response.read(response_limit + 1)
@@ -1032,19 +1098,59 @@ def h2_media_backend_timeout_seconds(target: str) -> float:
     return float(timeout)
 
 
-def h2_import_backend_timeout_seconds(scene: str) -> float:
+def _read_backend_h2_remote_inbox() -> dict[str, Any]:
+    status, _headers, payload, _redactions = read_backend_response(
+        "/api/v1/h2/remote-inbox", None
+    )
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend remote H2 inbox is unavailable for timeout binding")
+    try:
+        inbox = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend remote H2 inbox is invalid for timeout binding") from error
+    if (
+        not isinstance(inbox, dict)
+        or inbox.get("kind") != "audio_h2_remote_inbox"
+        or not isinstance(inbox.get("inbox"), dict)
+    ):
+        raise BackendFailure("backend remote H2 inbox is invalid for timeout binding")
+    return inbox
+
+
+def h2_import_backend_timeout_seconds(
+    scene: str,
+    *,
+    source: str = "device",
+    transfer_id: str | None = None,
+) -> float:
     if H2_SCENE_RE.fullmatch(scene) is None:
         raise RequestRejected("remote H2 scene is invalid")
-    workspace = _read_backend_h2_workspace()
-    source = workspace.get("source")
-    sessions = source.get("sessions") if isinstance(source, dict) else None
+    if source == "device":
+        workspace = _read_backend_h2_workspace()
+        container = workspace.get("source")
+    elif source == "remote-inbox":
+        if (
+            not isinstance(transfer_id, str)
+            or H2_TRANSFER_ID_RE.fullmatch(transfer_id) is None
+        ):
+            raise RequestRejected("remote H2 transfer id is invalid")
+        remote = _read_backend_h2_remote_inbox()
+        container = remote.get("inbox")
+    else:
+        raise RequestRejected("remote H2 import source is invalid")
+    sessions = container.get("sessions") if isinstance(container, dict) else None
     if not isinstance(sessions, list):
-        raise BackendFailure("backend H2 workspace has no import timeout projection")
+        raise BackendFailure("backend H2 source has no import timeout projection")
     session = next(
         (
             candidate
             for candidate in sessions
-            if isinstance(candidate, dict) and candidate.get("scene") == scene
+            if isinstance(candidate, dict)
+            and candidate.get("scene") == scene
+            and (
+                source != "remote-inbox"
+                or candidate.get("transfer_id") == transfer_id
+            )
         ),
         None,
     )
@@ -1353,7 +1459,11 @@ def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
         action, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     timeout = (
-        h2_import_backend_timeout_seconds(action["scene"])
+        h2_import_backend_timeout_seconds(
+            action["scene"],
+            source=action.get("source", "device"),
+            transfer_id=action.get("transfer_id"),
+        )
         if action.get("operation") == "import"
         else h2_annotation_backend_timeout_seconds()
     )
@@ -1390,14 +1500,27 @@ def write_backend_h2_action(action: dict[str, Any]) -> tuple[int, bytes, int]:
             ):
                 raise BackendFailure("backend H2 action lacks a bound readback")
             if action["operation"] == "import":
-                workspace = decoded.get("workspace")
-                if (
-                    not isinstance(workspace, dict)
-                    or workspace.get("kind") != "audio_h2_workspace"
-                ):
-                    raise BackendFailure(
-                        "backend H2 import lacks bound workspace readback"
-                    )
+                if action.get("source") == "remote-inbox":
+                    library = decoded.get("library")
+                    if (
+                        decoded.get("source") != "remote-inbox"
+                        or decoded.get("transfer_id") != action.get("transfer_id")
+                        or not isinstance(library, dict)
+                        or library.get("kind") != "audio_h2_library"
+                        or not isinstance(library.get("library"), dict)
+                    ):
+                        raise BackendFailure(
+                            "backend remote H2 import lacks bound library readback"
+                        )
+                else:
+                    workspace = decoded.get("workspace")
+                    if (
+                        not isinstance(workspace, dict)
+                        or workspace.get("kind") != "audio_h2_workspace"
+                    ):
+                        raise BackendFailure(
+                            "backend H2 import lacks bound workspace readback"
+                        )
             else:
                 library = decoded.get("library")
                 if (

@@ -145,3 +145,49 @@ v1 belegt noch nicht:
 - Freigabe zum Löschen der SD-Karten-Originale;
 
 Markerimport, kreative DAW-Übergabe, zweite Sicherung und eine spätere Löschfreigabe bleiben getrennte Ausbau- und Acceptance-Schritte. Neue Installationen legen den physischen H2-Materialroot bewusst unter den bereits gehärteten Audio-Aufnahmen-Schreibroot; bestehende Installationen mit dem vorherigen `Audio-Material/H2`-Root behalten genau diesen einen Root als Übergangspfad. Die Produktdomäne bleibt davon unabhängig „Material“.
+
+## Remote-H2-Inbox
+
+H2-Dateien, die unterwegs über ein iPad oder Smartphone angeliefert werden,
+landen nicht direkt in der Materialbibliothek und werden auch nicht durch die
+Audio-Remote-Bridge als Multi-GB-HTTP-Body transportiert. Die Audiozentrale
+stellt dafür den privaten lokalen Drop bereit:
+
+~~~
+~/Music/Audio-Aufnahmen/H2-Remote-Inbox/<transfer-id>/
+~~~
+
+prepare-runtime-state legt H2-Remote-Inbox als privaten Root an. Der eigentliche
+Netzwerktransport bleibt davon getrennt: SFTP, SMB oder ein späterer resumabler
+Transport können einen neuen transfer-id befüllen. Dieser Transport erhält
+dadurch keine Materialautorität und wird von diesem Vertrag nicht automatisch
+eingerichtet.
+
+Ein Transfer muss die H2-Quellstruktur erhalten, insbesondere
+ZOOM_H2essential.SYS und die Sessionordner. Die Audiozentrale erzeugt keinen
+Fake-Sentinel. Remote-Clients dürfen beim Import außerdem keinen freien
+Serverpfad übergeben; akzeptiert werden ausschließlich eine validierte
+transfer_id und scene.
+
+Die Oberfläche liest die Remote-Inbox nur auf expliziten Klick. Der normale
+8-Sekunden-Refresh des bestehenden H2-Arbeitsbereichs scannt sie nicht. Pro
+Readback werden höchstens die zwei zuletzt geänderten sicheren Transferordner
+geprüft. Für jede Session laufen dieselben H2-Scanner-, BWF-, Rollen-,
+Segment- und Größenprüfungen wie beim direkt angeschlossenen Recorder.
+
+Beim Archivieren bleibt h2_ingest.py import die einzige Autorität für
+master_set_sha256, content-addressierte material_id, Copy-Hash, Re-Hash, fsync
+und atomare Veröffentlichung. Ein erfolgreicher oder fehlgeschlagener Import
+löscht den Remote-Transfer nicht. Eine spätere Inbox-Bereinigung braucht einen
+eigenen verifizierten Vertrag.
+
+Der Zielpfad lautet damit:
+
+~~~
+H2 -> iPad/Smartphone -> Tailnet-Dateitransport -> H2-Remote-Inbox
+   -> bestehender H2-Ingest -> H2-Materialbibliothek
+~~~
+
+V1 behauptet für die Remote-Inbox ausdrücklich weder einen eingebauten
+Dateiserver noch Resume-Semantik des Transportes noch eine kryptografische
+Geräteattestierung des H2.
