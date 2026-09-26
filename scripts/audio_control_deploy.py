@@ -9,10 +9,12 @@ import fcntl
 import hashlib
 import http.client
 import json
+import math
 import os
 import pathlib
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -26,6 +28,21 @@ from typing import Any, BinaryIO, Callable, Iterable
 DEFAULT_SOURCE_REPO = pathlib.Path.home() / "repos" / "audio"
 DEFAULT_DEPLOY_ROOT = pathlib.Path.home() / ".local" / "share" / "audio-control-ui"
 DEFAULT_STATE_ROOT = pathlib.Path.home() / ".local" / "state" / "audio-control-deploy"
+H2_LIBRARY_ROOTS = (
+    pathlib.Path.home() / "Music" / "Audio-Aufnahmen" / "H2-Material",
+    pathlib.Path.home() / "Music" / "Audio-Material" / "H2",
+)
+H2_RUNTIME_METADATA_MAX_BYTES = 2 * 1024 * 1024
+H2_LEGACY_MANIFEST_MAX_BYTES = 144 * 1024 * 1024
+H2_LEGACY_ANNOTATIONS_MAX_BYTES = 64 * 1024 * 1024
+H2_LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND = 512 * 1024
+H2_LEGACY_MIGRATION_IO_PASSES = 3
+H2_LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS = 60
+H2_LEGACY_MIGRATION_PER_MATERIAL_SECONDS = 1
+H2_LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS = 5 * 60
+H2_LEGACY_MIGRATION_PARENT_MARGIN_SECONDS = 30
+H2_LEGACY_MIGRATION_NOTIFY_MARGIN_SECONDS = 5 * 60
+H2_MATERIAL_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 DEFAULT_REMOTE = "origin"
 DEFAULT_BRANCH = "main"
 DEFAULT_UNIT = "audio-control-ui-v1.service"
@@ -148,6 +165,10 @@ PWA_CRITICAL_RELEASE_FILES = (
     "ui/icon-512.png",
 )
 PWA_RELEASE_SENTINEL = "tests/test_audio_ipad_pwa.py"
+H2_INGEST_CRITICAL_RELEASE_FILES = (
+    "scripts/h2_ingest.py",
+    "tests/test_h2_ingest.py",
+)
 REMOTE_BRIDGE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_remote_bridge.py",
     "scripts/audio_remote_bridge_tailscale.py",
@@ -175,6 +196,7 @@ PROFILE_TRANSITION_CRITICAL_RELEASE_FILES = (
 
 BASE_CRITICAL_RELEASE_FILES = (
     "scripts/audio_control.py",
+    *H2_INGEST_CRITICAL_RELEASE_FILES,
     "scripts/dauersong_live.py",
     "inventory/dauersong-v9-legacy.v1.json",
     "systemd/user/grabowski-dauersong.service.d/zz-audio-control-v1.conf",
@@ -788,6 +810,169 @@ def extract_commit(repository: pathlib.Path, commit: str, destination: pathlib.P
         raise DeployError(f"git archive fehlgeschlagen: {stderr.strip()}")
 
 
+def h2_ingest_release_supported(release: pathlib.Path) -> bool:
+    control = release / "scripts" / "audio_control.py"
+    if control.is_symlink() or not control.is_file():
+        return False
+    try:
+        return b"h2_material_control" in control.read_bytes()
+    except OSError:
+        return False
+
+
+def h2_legacy_migration_budget(root: pathlib.Path) -> dict[str, Any]:
+    expanded = root.expanduser()
+    result = {
+        "library_root": str(expanded),
+        "material_count": 0,
+        "candidate_file_count": 0,
+        "candidate_bytes": 0,
+    }
+    if not expanded.exists() and not expanded.is_symlink():
+        return result
+    try:
+        root_metadata = expanded.lstat()
+    except OSError as exc:
+        raise DeployError("H2-Legacy-Bibliothek ist nicht lesbar.") from exc
+    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
+        raise DeployError("H2-Legacy-Bibliothek muss ein Verzeichnis ohne Symlink sein.")
+    with os.scandir(expanded) as entries:
+        for entry in entries:
+            if (
+                not H2_MATERIAL_ID_RE.fullmatch(entry.name)
+                or not entry.is_dir(follow_symlinks=False)
+            ):
+                continue
+            result["material_count"] += 1
+            directory = pathlib.Path(entry.path)
+            for name, migration_max_bytes in (
+                ("manifest.json", H2_LEGACY_MANIFEST_MAX_BYTES),
+                ("annotations.json", H2_LEGACY_ANNOTATIONS_MAX_BYTES),
+            ):
+                path = directory / name
+                try:
+                    metadata = path.lstat()
+                except OSError as exc:
+                    raise DeployError(
+                        f"H2-Legacy-Metadatei ist nicht lesbar: {path}"
+                    ) from exc
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                    raise DeployError(
+                        f"H2-Legacy-Metadatei ist nicht regulär: {path}"
+                    )
+                if metadata.st_size > migration_max_bytes:
+                    raise DeployError(
+                        f"H2-Legacy-Metadatei überschreitet das sichere Migrationslimit: {path}"
+                    )
+                if metadata.st_size > H2_RUNTIME_METADATA_MAX_BYTES:
+                    result["candidate_file_count"] += 1
+                    result["candidate_bytes"] += metadata.st_size
+    return result
+
+
+def h2_legacy_migration_timeout_seconds(budget: dict[str, Any]) -> float:
+    material_count = budget.get("material_count")
+    candidate_file_count = budget.get("candidate_file_count")
+    candidate_bytes = budget.get("candidate_bytes")
+    if (
+        isinstance(material_count, bool)
+        or not isinstance(material_count, int)
+        or material_count < 0
+        or isinstance(candidate_file_count, bool)
+        or not isinstance(candidate_file_count, int)
+        or candidate_file_count < 0
+        or isinstance(candidate_bytes, bool)
+        or not isinstance(candidate_bytes, int)
+        or candidate_bytes < 0
+        or (candidate_file_count == 0) != (candidate_bytes == 0)
+    ):
+        raise DeployError("H2-Legacy-Migrationsbudget ist ungültig.")
+    io_seconds = math.ceil(
+        (candidate_bytes * H2_LEGACY_MIGRATION_IO_PASSES)
+        / H2_LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND
+    )
+    return float(
+        H2_LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS
+        + (material_count * H2_LEGACY_MIGRATION_PER_MATERIAL_SECONDS)
+        + io_seconds
+        + H2_LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS
+        + H2_LEGACY_MIGRATION_PARENT_MARGIN_SECONDS
+    )
+
+
+def extend_systemd_start_timeout(timeout_seconds: float) -> bool:
+    notify_socket = os.environ.get("NOTIFY_SOCKET")
+    if not notify_socket:
+        return False
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise DeployError("Dynamisches systemd-Zeitbudget ist ungültig.")
+    address: str | bytes
+    if notify_socket.startswith("@"):
+        address = b"\0" + notify_socket[1:].encode()
+    else:
+        address = notify_socket
+    payload = (
+        "EXTEND_TIMEOUT_USEC="
+        f"{math.ceil((timeout_seconds + H2_LEGACY_MIGRATION_NOTIFY_MARGIN_SECONDS) * 1_000_000)}"
+    ).encode()
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        client.connect(address)
+        client.sendall(payload)
+    except OSError as exc:
+        raise DeployError("systemd-Starttimeout konnte nicht workload-basiert erweitert werden.") from exc
+    finally:
+        client.close()
+    return True
+
+
+def migrate_h2_legacy_manifests(release: pathlib.Path) -> list[dict[str, Any]]:
+    if not h2_ingest_release_supported(release):
+        return []
+    script = release / "scripts" / "h2_ingest.py"
+    receipts: list[dict[str, Any]] = []
+    for root in H2_LIBRARY_ROOTS:
+        try:
+            budget = h2_legacy_migration_budget(root)
+            timeout = h2_legacy_migration_timeout_seconds(budget)
+            extend_systemd_start_timeout(timeout)
+            result = run_command(
+                [
+                    sys.executable,
+                    str(script),
+                    "migrate-legacy-manifests",
+                    "--launch-only",
+                    "--library-root",
+                    str(root),
+                ],
+                cwd=release,
+                timeout=timeout,
+                check=False,
+            )
+            receipt = result.receipt()
+            receipt["status"] = "scheduled" if result.returncode == 0 else "degraded"
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip()
+                if detail:
+                    receipt["error"] = detail[-500:]
+            receipt["migration_budget"] = budget
+            receipt["timeout_seconds"] = timeout
+        except DeployError as exc:
+            receipt = {
+                "kind": "audio_h2_legacy_migration_degraded",
+                "library_root": str(root),
+                "status": "degraded",
+                "error": str(exc)[:500],
+            }
+        receipts.append(receipt)
+    return receipts
+
+
 def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
     required = [
         release / "scripts" / "audio_control.py",
@@ -816,6 +1001,14 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
         release / "tests" / "test_audio_ipad_pwa.py",
         release / "tests" / "test_audio_remote_bridge.py",
     ]
+    h2_ingest_supported = h2_ingest_release_supported(release)
+    if h2_ingest_supported:
+        required.extend(
+            [
+                release / "scripts" / "h2_ingest.py",
+                release / "tests" / "test_h2_ingest.py",
+            ]
+        )
     qbzd_qconnect_recovery_supported = (
         (release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL).is_file()
         and not (release / QBZD_QCONNECT_RECOVERY_RELEASE_SENTINEL).is_symlink()
@@ -900,6 +1093,14 @@ def validate_release(release: pathlib.Path) -> list[dict[str, Any]]:
             timeout=120,
         ),
     ]
+    if h2_ingest_supported:
+        checks.append(
+            run_command(
+                [sys.executable, "-m", "unittest", "tests/test_h2_ingest.py"],
+                cwd=release,
+                timeout=180,
+            )
+        )
     if qbzd_qconnect_recovery_supported:
         checks.extend(
             [
@@ -947,6 +1148,9 @@ def critical_release_paths(release: pathlib.Path) -> tuple[str, ...]:
     if not (release / PWA_RELEASE_SENTINEL).is_file():
         pwa_paths = set(PWA_CRITICAL_RELEASE_FILES)
         paths = [relative for relative in paths if relative not in pwa_paths]
+    if not h2_ingest_release_supported(release):
+        h2_paths = set(H2_INGEST_CRITICAL_RELEASE_FILES)
+        paths = [relative for relative in paths if relative not in h2_paths]
     if not (release / REMOTE_BRIDGE_RELEASE_SENTINEL).is_file():
         remote_bridge_paths = set(REMOTE_BRIDGE_CRITICAL_RELEASE_FILES)
         paths = [relative for relative in paths if relative not in remote_bridge_paths]
@@ -1520,18 +1724,22 @@ REMOTE_BRIDGE_EFFECT_SCOPE = [
     "whale:mode",
     "whale:stop",
     "recording:plan",
+    "recording:prepare",
     "recording:start",
     "recording:stop",
     "recording:recover",
     "recording:categorize",
     "recording:trash",
     "recording:restore",
+    "h2:import",
+    "h2:annotate",
 ]
 REMOTE_BRIDGE_EFFECT_EXCLUSIONS = [
     "profiles",
     "routing",
     "devices",
     "system",
+    "h2:delete-source",
 ]
 
 
@@ -1561,6 +1769,7 @@ def remote_bridge_health_error(marker: str, payload: Any) -> str | None:
         "session_route": "/bridge/v1/session",
         "action_route": "/bridge/v1/actions/whale",
         "recording_action_route": "/bridge/v1/actions/recording",
+        "h2_action_route": "/bridge/v1/actions/h2",
         "session_ttl_seconds": 900,
         "token_header": "X-Audio-Bridge-Session",
         "backend_token_exposed": False,
@@ -1860,6 +2069,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         runtime_environment: dict[str, Any] = {}
         runtime_environment_backup: dict[str, Any] | None = None
         service_receipts: list[dict[str, Any]] = []
+        h2_legacy_manifest_migration: list[dict[str, Any]] = []
         service_activation_attempted = False
         bridge_activation_receipts: list[dict[str, Any]] = []
         bridge_activity_after: dict[str, Any] | None = None
@@ -1929,6 +2139,8 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 changed or bridge_unit_updated
             )
             timer_updated = "systemd/user/audio-control-deploy.timer" in updated_sources
+            if h2_ingest_release_supported(release):
+                h2_legacy_manifest_migration = migrate_h2_legacy_manifests(release)
             restart_required = (
                 changed
                 or bool(runtime_environment.get("changed"))
@@ -2140,6 +2352,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "runtime_updates": runtime_updates,
             "runtime_environment": runtime_environment,
             "runtime_activation": runtime_activation,
+            "h2_legacy_manifest_migration": h2_legacy_manifest_migration,
             "service_commands": service_receipts,
             "qobuz_recovery": qobuz_recovery,
             "qbzd_qconnect_recovery": qbzd_qconnect_recovery,

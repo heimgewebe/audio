@@ -46,7 +46,7 @@ abgewiesen.
 
 ## Sicherheitsvertrag
 
-`scripts/audio-h2-ingest` besitzt vier Operationen:
+`scripts/audio-h2-ingest` besitzt zusätzlich zu den vier Kernoperationen Metadaten- und Medienbindungen für die Audiozentrale. Die Kernoperationen sind:
 
 - `scan`: read-only Erkennung der H2-Sessions;
 - `import <scene>`: byteidentische Archivierung genau einer Session;
@@ -79,7 +79,7 @@ H2-Quellpfads wird ausdrücklich abgewiesen.
 Standardziel:
 
 ```
-~/Music/Audio-Material/H2/<material-id>/
+~/Music/Audio-Aufnahmen/H2-Material/<material-id>/
 ├── manifest.json
 ├── annotations.json
 └── master/
@@ -88,6 +88,17 @@ Standardziel:
     ├── <scene>_REAR.WAV
     └── <scene>_MIX.WAV
 ```
+
+Für neue Installationen ist dieser Root autoritativ. Liegt im neuen Root noch
+kein Material, aber im unmittelbar vorherigen Standard
+`~/Music/Audio-Material/H2`, wird genau dieser bestehende Legacy-Root
+weiterverwendet. Liegen in beiden Roots Materialobjekte, wird die automatische
+Rootwahl fail-closed abgewiesen; es gibt keinen stillen Splitbrain-Pfad und
+keine automatische Verschiebung oder Löschung. Ein explizites
+`AUDIO_MATERIAL_ROOT` behält diesen historischen Material-Parent-Vertrag nur
+für die direkte Standalone-Nutzung von `h2_ingest.py`; der gehärtete
+Audio-Control-Dienst lehnt den Override ausdrücklich ab und schreibt nur in
+seinen Primär- bzw. Legacy-Root.
 
 `manifest.json` und die Master werden read-only veröffentlicht. Das Manifest
 bindet die Originaldateinamen, Rollen, SHA-256, Größen, Audioformat und
@@ -132,6 +143,5 @@ v1 belegt noch nicht:
 - Bitwig- oder Ardour-Übergabe;
 - Backup auf ein zweites physisches Medium;
 - Freigabe zum Löschen der SD-Karten-Originale;
-- Audiozentrale-UI für den Import.
 
-Diese Punkte sind getrennte Ausbau- und Acceptance-Schritte.
+Markerimport, kreative DAW-Übergabe, zweite Sicherung und eine spätere Löschfreigabe bleiben getrennte Ausbau- und Acceptance-Schritte. Neue Installationen legen den physischen H2-Materialroot bewusst unter den bereits gehärteten Audio-Aufnahmen-Schreibroot; bestehende Installationen mit dem vorherigen `Audio-Material/H2`-Root behalten genau diesen einen Root als Übergangspfad. Die Produktdomäne bleibt davon unabhängig „Material“.

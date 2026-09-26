@@ -2306,7 +2306,7 @@ class AudioControlTests(unittest.TestCase):
     def test_command_runner_bounds_timeout_and_captured_output(self):
         runner = MODULE.CommandRunner()
         started = time.monotonic()
-        with self.assertRaisesRegex(MODULE.ControlError, "Zeitlimit"):
+        with self.assertRaisesRegex(MODULE.CommandTimedOut, "Zeitlimit"):
             runner.run(
                 [sys.executable, "-c", "import time; time.sleep(5)"],
                 timeout=0.05,
@@ -2670,7 +2670,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/operating-mode"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 4)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 5)
 
     def test_static_surface_prioritizes_compact_functional_controls(self):
         html = (ROOT / "ui" / "index.html").read_text()
@@ -2912,10 +2912,12 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn("state.loading", policy)
         self.assertIn("state.interactionUntil", policy)
         self.assertIn("state.recordingActionPending", policy)
+        self.assertIn("state.h2ActionPending", policy)
+        self.assertNotIn("state.h2AnnotationDrafts.size", policy)
         self.assertIn("state.whaleActionPending", policy)
         self.assertIn("state.replayPlaying", policy)
         self.assertIn("recordingPlaybackActive()", policy)
-        self.assertIn('document.querySelectorAll("audio.recording-player")', javascript)
+        self.assertIn('document.querySelectorAll("audio.recording-player, audio.h2-audio")', javascript)
         self.assertIn("!audio.paused && !audio.ended", javascript)
         self.assertIn("runWhaleAction", javascript)
 
@@ -2934,7 +2936,7 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('fetchJson("/api/v1/actions/recording"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/whale"', javascript)
         self.assertIn('fetchJson("/api/v1/actions/operating-mode"', javascript)
-        self.assertEqual(javascript.count("/api/v1/actions/"), 4)
+        self.assertEqual(javascript.count("/api/v1/actions/"), 5)
         self.assertIn("state.replayPlaying", javascript)
         self.assertIn("stopReplay", javascript)
 
@@ -4279,6 +4281,56 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
                 self.assertIn(status, {403, 415})
         self.assertFalse(self.runner.whale_active)
 
+    def test_h2_request_budget_covers_ui_annotation_contract_without_broadening_other_actions(self):
+        payload = {
+            "operation": "annotate",
+            "material_id": "a" * 24,
+            "title": "😀" * 160,
+            "note": "😀" * 2000,
+            "tags": ["😀" * 48] * 16,
+        }
+        body = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        self.assertGreater(len(body), MODULE.MAX_REQUEST_BYTES)
+        self.assertLessEqual(len(body), MODULE.MAX_H2_REQUEST_BYTES)
+        result = {
+            "schema_version": 1,
+            "kind": "audio_control_h2_action_result",
+            "operation": "annotate",
+            "result": {"kind": "audio_material_annotation_result"},
+            "library": {
+                "kind": "audio_h2_library",
+                "library": {"count": 1, "items": []},
+            },
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": "http://127.0.0.1:8765",
+            "X-Audio-Control-Token": "memory-token",
+        }
+        with mock.patch.object(
+            self.controller, "perform_h2_action", return_value=result
+        ) as perform:
+            status, _response_headers, response = self.request(
+                "POST",
+                "/api/v1/actions/h2",
+                body=body,
+                headers=headers,
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(response)["kind"], "audio_control_h2_action_result")
+        perform.assert_called_once_with(payload)
+
+        status, _response_headers, response = self.request(
+            "POST",
+            "/api/v1/actions/whale",
+            body=body,
+            headers=headers,
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(json.loads(response)["error"]["code"], "invalid_content_length")
+
     def test_header_and_request_line_limits_fail_closed(self):
         oversized_header = (
             b"GET /api/v1/health HTTP/1.1\r\n"
@@ -4335,6 +4387,890 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
                     "audio_control_error",
                 )
         self.assertFalse(self.runner.whale_active)
+
+
+class H2MaterialControlTests(unittest.TestCase):
+    class Runner:
+        def __init__(
+            self,
+            *,
+            sessions=None,
+            skipped_invalid_sessions=None,
+            library_items=None,
+            budget_error=False,
+        ):
+            self.calls = []
+            self.sessions = sessions
+            self.skipped_invalid_sessions = list(skipped_invalid_sessions or [])
+            self.library_items = list(library_items or [])
+            self.budget_error = budget_error
+
+        def run(self, argv, *, timeout):
+            self.calls.append((tuple(argv), timeout))
+            command = argv[2] if len(argv) > 2 else ""
+            if command == "scan":
+                projection = (
+                    argv[argv.index("--projection") + 1]
+                    if "--projection" in argv
+                    else "full"
+                )
+                if projection == "budget":
+                    if self.budget_error:
+                        return MODULE.CommandResult(tuple(argv), 1, "{}", "")
+                    if self.sessions is None:
+                        budget_sessions = 1
+                        candidate_files = 3
+                        total_candidate_bytes = 3 * 1_048_576
+                    else:
+                        budget_sessions = len(self.sessions) + len(
+                            self.skipped_invalid_sessions
+                        )
+                        total_candidate_bytes = sum(
+                            item.get("total_bytes", 0)
+                            for item in self.sessions
+                            if isinstance(item, dict)
+                        )
+                        candidate_files = (
+                            sum(
+                                max(1, len(item.get("roles", [])))
+                                * max(1, item.get("segment_count", 1))
+                                for item in self.sessions
+                                if isinstance(item, dict)
+                            )
+                            if total_candidate_bytes > 0
+                            else 0
+                        )
+                    report = {
+                        "schema_version": 1,
+                        "kind": "audio_h2_source_scan_budget",
+                        "projection": "control-budget-v1",
+                        "read_only": True,
+                        "source_mutated": False,
+                        "matching_session_count": budget_sessions,
+                        "candidate_file_count": candidate_files,
+                        "total_candidate_bytes": total_candidate_bytes,
+                    }
+                    return MODULE.CommandResult(
+                        tuple(argv), 0, json.dumps(report), ""
+                    )
+                report = {
+                    "schema_version": 1,
+                    "kind": "audio_h2_source_scan",
+                    "projection": "control-v1",
+                    "read_only": True,
+                    "source_mutated": False,
+                    "count": 1,
+                    "device": {"model": "ZOOM H2essential"},
+                    "sessions": [
+                        {
+                            "scene": "170926_191401",
+                            "recorded_date": "2026-09-17",
+                            "recorded_time": "19:14:01",
+                            "duration_seconds": 21.5,
+                            "sample_rate_hz": 44100,
+                            "roles": ["front", "rear", "mix"],
+                            "segment_count": 1,
+                            "total_bytes": 3 * 1_048_576,
+                            "max_file_bytes": 1_048_576,
+                            "files": [
+                                {
+                                    "name": "170926_191401_FRONT.WAV",
+                                    "role": "front",
+                                    "segment_index": 0,
+                                    "bytes": 1_048_576,
+                                },
+                                {
+                                    "name": "170926_191401_REAR.WAV",
+                                    "role": "rear",
+                                    "segment_index": 0,
+                                    "bytes": 1_048_576,
+                                },
+                                {
+                                    "name": "170926_191401_MIX.WAV",
+                                    "role": "mix",
+                                    "segment_index": 0,
+                                    "bytes": 1_048_576,
+                                },
+                            ],
+                        }
+                    ],
+                    "skipped_invalid_sessions": self.skipped_invalid_sessions,
+                }
+                if self.sessions is not None:
+                    report["sessions"] = list(self.sessions)
+                    report["count"] = len(report["sessions"])
+            elif command == "library":
+                report = {
+                    "schema_version": 1,
+                    "kind": "audio_material_library",
+                    "projection": "control-v1",
+                    "read_only": True,
+                    "count": len(self.library_items),
+                    "total_count": len(self.library_items),
+                    "truncated": False,
+                    "items": self.library_items,
+                }
+            elif command == "import":
+                report = {
+                    "schema_version": 1,
+                    "kind": "audio_h2_import_result",
+                    "status": "imported",
+                    "material_id": "a" * 24,
+                }
+            elif command == "annotate":
+                report = {
+                    "schema_version": 1,
+                    "kind": "audio_material_annotation_result",
+                    "material_id": "a" * 24,
+                    "changed": True,
+                    "annotations": {},
+                }
+            else:
+                report = {}
+            return MODULE.CommandResult(tuple(argv), 0, json.dumps(report), "")
+
+    def test_h2_material_root_uses_one_primary_or_legacy_path(self):
+        self.assertEqual(
+            MODULE.STATIC_H2_LIBRARY_ROOT,
+            MODULE.STATIC_H2_PRIMARY_LIBRARY_ROOT,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            primary = base / "Audio-Aufnahmen" / "H2-Material"
+            legacy = base / "Audio-Material" / "H2"
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), primary)
+            legacy.mkdir(parents=True)
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), primary)
+            primary.mkdir(parents=True)
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), primary)
+
+            (legacy / ("a" * 24)).mkdir()
+            self.assertEqual(MODULE._select_h2_library_root(primary, legacy), legacy)
+
+            (primary / ("b" * 24)).mkdir()
+            with self.assertRaisesRegex(RuntimeError, "Primär- und Legacy-Root"):
+                MODULE._select_h2_library_root(primary, legacy)
+
+        unit = (ROOT / "systemd" / "user" / "audio-control-ui-v1.service").read_text()
+        self.assertIn("%h/Music/Audio-Aufnahmen", unit)
+        self.assertIn("-%h/Music/Audio-Material/H2", unit)
+        self.assertNotIn(" %h/Music/Audio-Material ", unit)
+
+    def test_h2_root_conflict_is_lazy_until_h2_use(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            primary = base / "primary"
+            legacy = base / "legacy"
+            (primary / ("a" * 24)).mkdir(parents=True)
+            (legacy / ("b" * 24)).mkdir(parents=True)
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_PRIMARY_LIBRARY_ROOT", primary),
+                mock.patch.object(MODULE, "STATIC_H2_LEGACY_LIBRARY_ROOT", legacy),
+            ):
+                with self.assertRaisesRegex(MODULE.ControlError, "Primär- und Legacy-Root"):
+                    MODULE._current_h2_library_root()
+
+    def test_managed_audio_control_rejects_custom_h2_material_root(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AUDIO_MATERIAL_ROOT": "/tmp/custom-material"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(
+                MODULE.ControlError,
+                "AUDIO_MATERIAL_ROOT.*nicht unterstützt",
+            ):
+                MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+
+    def test_h2_workspace_budget_projects_dynamic_workspace_and_annotation_bounds(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        budget = controller.h2_workspace_budget()
+        expected_scan_timeout = controller._h2_timeout_for_bytes(
+            3 * 1_048_576,
+            passes=1,
+            minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+        )
+        expected_workspace = controller._h2_workspace_timeout_for_scan(
+            expected_scan_timeout
+        )
+        self.assertEqual(budget["kind"], "audio_h2_workspace_budget")
+        self.assertTrue(budget["read_only"])
+        self.assertFalse(budget["source_mutated"])
+        self.assertEqual(budget["workspace_timeout_seconds"], expected_workspace)
+        self.assertEqual(
+            budget["annotation_timeout_seconds"],
+            controller.h2_library_budget()["annotation_timeout_seconds"],
+        )
+        self.assertEqual(len(runner.calls), 1)
+        call, timeout = runner.calls[0]
+        self.assertEqual(call[2], "scan")
+        self.assertIn("budget", call)
+        self.assertEqual(timeout, MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS)
+
+    def test_h2_workspace_budget_keeps_archive_reachable_without_source(self):
+        archived = {
+            "material_id": "a" * 24,
+            "source": {
+                "scene": "170926_191401",
+                "recorded_date": "2026-09-17",
+                "recorded_time": "19:14:01",
+            },
+            "imported_at": "2026-09-17T19:15:00+00:00",
+            "annotations": {"title": "Archiv", "note": "", "tags": []},
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": 1_048_576,
+            "max_file_bytes": 1_048_576,
+        }
+        runner = self.Runner(
+            library_items=[archived],
+            budget_error=True,
+        )
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        budget = controller.h2_workspace_budget()
+        expected_workspace = controller._h2_workspace_timeout_for_scan(
+            float(MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        )
+        self.assertFalse(budget["source_budget_available"])
+        self.assertEqual(budget["workspace_timeout_seconds"], expected_workspace)
+        self.assertEqual(
+            budget["annotation_timeout_seconds"],
+            controller.h2_library_budget()["annotation_timeout_seconds"],
+        )
+
+        workspace = controller.h2_workspace()
+        self.assertEqual(workspace["source"]["status"], "unavailable")
+        self.assertEqual(workspace["source"]["count"], 0)
+        self.assertEqual(workspace["library"]["count"], 1)
+        self.assertEqual(
+            workspace["library"]["items"][0]["material_id"],
+            archived["material_id"],
+        )
+
+    def test_h2_workspace_combined_projection_stays_under_bridge_cap(self):
+        tags = ["😀" * 47 + chr(0x1F600 + index) for index in range(16)]
+        source_sessions = [
+            {
+                "scene": f"{index:06d}_235959",
+                "recorded_date": "9999-12-31",
+                "recorded_time": "23:59:59",
+                "duration_seconds": 1.7976931348623157e308,
+                "sample_rate_hz": 96000,
+                "roles": ["front", "rear", "mix"],
+                "segment_count": 192,
+                "total_bytes": (2**63 - 1) * 192,
+                "max_file_bytes": 2**63 - 1,
+            }
+            for index in range(2048)
+        ]
+        library_items = [
+            {
+                "material_id": f"{index:024x}",
+                "source": {
+                    "scene": f"{index:06d}_235959",
+                    "recorded_date": "9999-12-31",
+                    "recorded_time": "23:59:59",
+                },
+                "imported_at": "x" * 64,
+                "annotations": {
+                    "title": "😀" * 160,
+                    "note": "😀" * 2000,
+                    "tags": tags,
+                },
+                "roles": ["front", "rear", "mix"],
+                "segment_count": 192,
+                "total_bytes": (2**63 - 1) * 192,
+                "max_file_bytes": 2**63 - 1,
+            }
+            for index in range(80)
+        ]
+        controller = MODULE.AudioControl(
+            runner=self.Runner(
+                sessions=source_sessions,
+                library_items=library_items,
+            ),
+            telemetry=None,
+        )
+        workspace = controller.h2_workspace()
+        encoded = (
+            json.dumps(
+                workspace,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        self.assertEqual(len(workspace["source"]["sessions"]), 2048)
+        self.assertEqual(len(workspace["library"]["items"]), 80)
+        self.assertGreater(len(encoded), 1_048_576)
+        self.assertLessEqual(
+            len(encoded),
+            MODULE.MAX_H2_WORKSPACE_RESPONSE_BYTES,
+        )
+
+    def test_h2_source_projection_never_reads_persistent_library(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with mock.patch.object(
+            controller,
+            "_h2_library_projection",
+            side_effect=AssertionError("source projection touched library"),
+        ):
+            source = controller.h2_source()
+        self.assertEqual(source["kind"], "audio_h2_source")
+        self.assertEqual(source["source"]["status"], "ready")
+        self.assertEqual(source["source"]["count"], 1)
+        self.assertFalse(any(call[0][2] == "library" for call in runner.calls))
+
+    def test_h2_workspace_projects_source_and_empty_archive(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        workspace = controller.h2_workspace()
+        self.assertEqual(workspace["kind"], "audio_h2_workspace")
+        self.assertEqual(workspace["source"]["status"], "ready")
+        self.assertEqual(workspace["source"]["count"], 1)
+        self.assertEqual(workspace["source"]["skipped_invalid_sessions"], [])
+        self.assertEqual(workspace["library"]["count"], 0)
+        library_call, library_timeout = next(
+            (call, timeout) for call, timeout in runner.calls if call[2] == "library"
+        )
+        self.assertEqual(library_timeout, controller._h2_library_timeout())
+        self.assertEqual(
+            library_timeout,
+            controller._h2_timeout_for_bytes(
+                MODULE.H2_MAX_CONTROL_LIBRARY_ITEMS
+                * 2
+                * MODULE.H2_MAX_METADATA_JSON_BYTES,
+                passes=1,
+                minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+            ),
+        )
+        self.assertGreater(library_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        self.assertIn("--projection", library_call)
+        self.assertIn("control", library_call)
+        self.assertFalse(workspace["source_delete_authorized"])
+        session = workspace["source"]["sessions"][0]
+        self.assertEqual(session["scene"], "170926_191401")
+        self.assertEqual(
+            session["audio_url"],
+            "/api/v1/h2/source/170926_191401/audio/0",
+        )
+        expected_scan_timeout = controller._h2_timeout_for_bytes(
+            3 * 1_048_576,
+            passes=1,
+            minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            session["media_timeout_seconds"],
+            controller._h2_source_media_outer_timeout_for_bytes(
+                1_048_576,
+                scan_timeout=expected_scan_timeout,
+            ),
+        )
+        self.assertEqual(
+            session["import_timeout_seconds"],
+            controller._h2_import_action_timeout_for_bytes(
+                3 * 1_048_576,
+                scan_timeout=expected_scan_timeout,
+            ),
+        )
+
+    def test_h2_workspace_surfaces_invalid_only_source_without_claiming_empty(self):
+        controller = MODULE.AudioControl(
+            runner=self.Runner(
+                sessions=[],
+                skipped_invalid_sessions=["170926_191402"],
+            ),
+            telemetry=None,
+        )
+        workspace = controller.h2_workspace()
+        self.assertEqual(workspace["source"]["status"], "ready")
+        self.assertEqual(workspace["source"]["count"], 0)
+        self.assertEqual(
+            workspace["source"]["skipped_invalid_sessions"],
+            ["170926_191402"],
+        )
+
+    def test_h2_workspace_never_suppresses_import_by_scene_name_alone(self):
+        archived = {
+            "material_id": "a" * 24,
+            "source": {
+                "scene": "170926_191401",
+                "recorded_date": "2026-09-17",
+                "recorded_time": "19:14:01",
+            },
+            "annotations": {
+                "title": "",
+                "note": "",
+                "tags": [],
+            },
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": 1_048_576,
+            "max_file_bytes": 1_048_576,
+        }
+        controller = MODULE.AudioControl(
+            runner=self.Runner(library_items=[archived]),
+            telemetry=None,
+        )
+        workspace = controller.h2_workspace()
+        session = workspace["source"]["sessions"][0]
+        material = workspace["library"]["items"][0]
+        self.assertEqual(session["scene"], archived["source"]["scene"])
+        self.assertNotIn("already_imported", session)
+        self.assertEqual(workspace["library"]["count"], 1)
+        self.assertGreater(material["media_timeout_seconds"], 120)
+
+    def test_h2_import_uses_material_lock_not_global_audio_action_lock(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        controller._action_lock.acquire()
+        try:
+            with mock.patch.object(
+                controller,
+                "h2_workspace",
+                return_value={
+                    "schema_version": 1,
+                    "kind": "audio_h2_workspace",
+                    "source": {"status": "ready", "count": 0, "sessions": []},
+                    "library": {"count": 1, "items": []},
+                    "source_delete_authorized": False,
+                    "creative_handoff_authorized": False,
+                },
+            ):
+                result = controller.perform_h2_action(
+                    {"operation": "import", "scene": "170926_191401"}
+                )
+        finally:
+            controller._action_lock.release()
+        self.assertEqual(result["operation"], "import")
+        budget_call, budget_timeout = runner.calls[0]
+        self.assertEqual(budget_call[2], "scan")
+        self.assertIn("--projection", budget_call)
+        self.assertIn("budget", budget_call)
+        self.assertEqual(budget_timeout, MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS)
+        scan_call, scan_timeout = runner.calls[1]
+        self.assertEqual(scan_call[2], "scan")
+        self.assertIn("--projection", scan_call)
+        self.assertIn("control", scan_call)
+        expected_scan_timeout = controller._h2_timeout_for_bytes(
+            3 * 1_048_576,
+            passes=1,
+            minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(scan_timeout, expected_scan_timeout)
+        self.assertGreater(scan_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        call, timeout = runner.calls[2]
+        self.assertEqual(pathlib.Path(call[1]).name, "h2_ingest.py")
+        self.assertIn("import", call)
+        self.assertIn(str(MODULE.STATIC_H2_LIBRARY_ROOT), call)
+        expected = controller._h2_timeout_for_bytes(
+            3 * 1_048_576,
+            passes=MODULE.H2_IMPORT_IO_PASSES,
+            minimum=300,
+        )
+        self.assertEqual(timeout, expected)
+        self.assertGreaterEqual(timeout, 300)
+
+    def test_h2_import_timeout_runs_lock_bound_staging_cleanup_before_returning_error(self):
+        class TimeoutImportRunner(self.Runner):
+            def run(self, argv, *, timeout):
+                command = argv[2] if len(argv) > 2 else ""
+                if command == "import":
+                    self.calls.append((tuple(argv), timeout))
+                    raise MODULE.CommandTimedOut(
+                        "Die lokale Audioabfrage hat das Zeitlimit erreicht."
+                    )
+                if command == "_cleanup-import-staging":
+                    self.calls.append((tuple(argv), timeout))
+                    return MODULE.CommandResult(
+                        tuple(argv),
+                        0,
+                        json.dumps(
+                            {
+                                "schema_version": 1,
+                                "kind": "audio_h2_import_staging_cleanup",
+                                "library_root": str(MODULE.STATIC_H2_LIBRARY_ROOT),
+                                "removed": 1,
+                            }
+                        ),
+                        "",
+                    )
+                return super().run(argv, timeout=timeout)
+
+        runner = TimeoutImportRunner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with self.assertRaisesRegex(MODULE.CommandTimedOut, "Zeitlimit"):
+            controller.perform_h2_action(
+                {"operation": "import", "scene": "170926_191401"}
+            )
+        commands = [call[0][2] for call in runner.calls]
+        self.assertEqual(commands[-2:], ["import", "_cleanup-import-staging"])
+        cleanup_call, cleanup_timeout = runner.calls[-1]
+        self.assertEqual(cleanup_call[-1], str(MODULE.STATIC_H2_LIBRARY_ROOT))
+        self.assertEqual(
+            cleanup_timeout,
+            MODULE.H2_STAGING_CLEANUP_TIMEOUT_SECONDS,
+        )
+
+    def test_h2_media_and_import_timeouts_scale_with_bound_master_bytes(self):
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        two_gib = 2 * 1024 * 1024 * 1024
+        source_session = {
+            "scene": "170926_191401",
+            "recorded_date": "2026-09-17",
+            "recorded_time": "19:14:01",
+            "duration_seconds": 21.5,
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": two_gib,
+            "max_file_bytes": two_gib,
+        }
+        library_item = {
+            "material_id": "a" * 24,
+            "source": {
+                "scene": "170926_191401",
+                "recorded_date": "2026-09-17",
+                "recorded_time": "19:14:01",
+            },
+            "annotations": {"title": "", "note": "", "tags": []},
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": two_gib,
+            "max_file_bytes": two_gib,
+        }
+        observed = []
+
+        def fake_run(arguments, *, timeout, label, fallback):
+            observed.append((tuple(arguments), timeout))
+            if arguments[0] == "scan":
+                projection = arguments[arguments.index("--projection") + 1]
+                if projection == "budget":
+                    return {
+                        "schema_version": 1,
+                        "kind": "audio_h2_source_scan_budget",
+                        "projection": "control-budget-v1",
+                        "read_only": True,
+                        "source_mutated": False,
+                        "matching_session_count": 1,
+                        "candidate_file_count": 1,
+                        "total_candidate_bytes": two_gib,
+                    }
+                return {
+                    "schema_version": 1,
+                    "kind": "audio_h2_source_scan",
+                    "projection": "control-v1",
+                    "read_only": True,
+                    "source_mutated": False,
+                    "count": 1,
+                    "sessions": [source_session],
+                    "skipped_invalid_sessions": [],
+                }
+            if arguments[0] == "library":
+                return {
+                    "schema_version": 1,
+                    "kind": "audio_material_library",
+                    "projection": "control-v1",
+                    "read_only": True,
+                    "count": 1,
+                    "total_count": 1,
+                    "truncated": False,
+                    "items": [library_item],
+                }
+            if arguments[0] == "source-media":
+                return {"schema_version": 1, "kind": "audio_h2_source_media_binding"}
+            return {"schema_version": 1, "kind": "audio_h2_material_media_binding"}
+
+        with (
+            mock.patch.object(controller, "_run_h2_command", side_effect=fake_run),
+            mock.patch.object(controller, "_validate_h2_media_binding"),
+        ):
+            controller.verified_h2_source_media("170926_191401", 0)
+            controller.verified_h2_material_media("a" * 24, 0)
+
+        control_scan_timeout = next(
+            timeout
+            for arguments, timeout in observed
+            if arguments[0] == "scan"
+            and arguments[arguments.index("--projection") + 1] == "control"
+        )
+        source_timeout = next(
+            timeout for arguments, timeout in observed if arguments[0] == "source-media"
+        )
+        material_timeout = next(
+            timeout for arguments, timeout in observed if arguments[0] == "material-media"
+        )
+        self.assertGreater(control_scan_timeout, MODULE.H2_METADATA_TIMEOUT_SECONDS)
+        self.assertEqual(
+            control_scan_timeout,
+            controller._h2_timeout_for_bytes(
+                two_gib,
+                passes=1,
+                minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+            ),
+        )
+        self.assertGreater(source_timeout, 60)
+        self.assertGreater(material_timeout, 120)
+        self.assertEqual(
+            source_timeout,
+            controller._h2_source_media_binding_timeout_for_bytes(
+                two_gib,
+                scan_timeout=control_scan_timeout,
+            ),
+        )
+        self.assertEqual(
+            material_timeout,
+            controller._h2_material_binding_timeout_for_bytes(two_gib),
+        )
+
+        workspace_controller = MODULE.AudioControl(
+            runner=self.Runner(
+                sessions=[source_session],
+                library_items=[library_item],
+            ),
+            telemetry=None,
+        )
+        workspace = workspace_controller.h2_workspace()
+        source_projection = workspace["source"]["sessions"][0]
+        source_outer = source_projection["media_timeout_seconds"]
+        import_outer = source_projection["import_timeout_seconds"]
+        material_outer = workspace["library"]["items"][0]["media_timeout_seconds"]
+        expected_scan_timeout = controller._h2_timeout_for_bytes(
+            two_gib,
+            passes=1,
+            minimum=MODULE.H2_METADATA_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            source_outer,
+            controller._h2_source_media_outer_timeout_for_bytes(
+                two_gib,
+                scan_timeout=expected_scan_timeout,
+            ),
+        )
+        self.assertEqual(
+            material_outer,
+            controller._h2_material_media_outer_timeout_for_bytes(
+                two_gib,
+                max_file_bytes=two_gib,
+            ),
+        )
+        self.assertEqual(
+            import_outer,
+            controller._h2_import_action_timeout_for_bytes(
+                two_gib,
+                scan_timeout=expected_scan_timeout,
+            ),
+        )
+        self.assertGreater(source_outer, source_timeout)
+        self.assertGreater(material_outer, material_timeout)
+        self.assertGreater(
+            import_outer,
+            controller._h2_timeout_for_bytes(
+                two_gib,
+                passes=MODULE.H2_IMPORT_IO_PASSES,
+                minimum=300,
+            ),
+        )
+
+    def test_h2_annotation_rejects_unencodable_or_control_text_before_subprocess(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        invalid_payloads = (
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "nul\x00title",
+                "note": "",
+                "tags": [],
+            },
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "\ud800",
+                "note": "",
+                "tags": [],
+            },
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "",
+                "note": "",
+                "tags": ["bad\x00tag"],
+            },
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                before = len(runner.calls)
+                with self.assertRaises(MODULE.ControlError):
+                    controller.perform_h2_action(payload)
+                self.assertEqual(len(runner.calls), before)
+
+    def test_h2_annotation_budget_and_readback_never_scan_source(self):
+        material = {
+            "material_id": "a" * 24,
+            "source": {
+                "scene": "170926_191401",
+                "recorded_date": "2026-09-17",
+                "recorded_time": "19:14:01",
+            },
+            "imported_at": "2026-09-17T19:15:00+00:00",
+            "annotations": {"title": "", "note": "", "tags": []},
+            "roles": ["mix"],
+            "segment_count": 1,
+            "total_bytes": 1_048_576,
+            "max_file_bytes": 1_048_576,
+        }
+        runner = self.Runner(library_items=[material], budget_error=True)
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+
+        budget = controller.h2_library_budget()
+        self.assertEqual(budget["kind"], "audio_h2_library_budget")
+        self.assertGreater(budget["annotation_timeout_seconds"], 0)
+        self.assertEqual(runner.calls, [])
+
+        result = controller.perform_h2_action(
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "Archiv",
+                "note": "Quelle darf dafür nicht gelesen werden.",
+                "tags": ["archiv"],
+            }
+        )
+        commands = [call[0][2] for call in runner.calls]
+        self.assertEqual(commands, ["annotate", "library"])
+        self.assertNotIn("scan", commands)
+        self.assertNotIn("workspace", result)
+        self.assertEqual(result["library"]["kind"], "audio_h2_library")
+        self.assertEqual(result["library"]["library"]["count"], 1)
+
+    def test_h2_annotation_normalizes_before_argv(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with mock.patch.object(
+            controller,
+            "h2_library",
+            return_value={
+                "schema_version": 1,
+                "kind": "audio_h2_library",
+                "library": {"count": 1, "items": []},
+            },
+        ):
+            controller.perform_h2_action(
+                {
+                    "operation": "annotate",
+                    "material_id": "a" * 24,
+                    "title": "  Titel  ",
+                    "note": "\nNotiz\t",
+                    "tags": [" Metall ", "metall", "", " Raum "],
+                }
+            )
+        call, _timeout = runner.calls[0]
+        self.assertIn("--title=Titel", call)
+        self.assertIn("--note=Notiz", call)
+        self.assertIn('--tags-json=["Metall","Raum"]', call)
+
+    def test_h2_annotation_argv_binds_leading_dashes_as_values(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with mock.patch.object(
+            controller,
+            "h2_library",
+            return_value={
+                "schema_version": 1,
+                "kind": "audio_h2_library",
+                "library": {"count": 1, "items": []},
+            },
+        ):
+            controller.perform_h2_action(
+                {
+                    "operation": "annotate",
+                    "material_id": "a" * 24,
+                    "title": "- draft",
+                    "note": "- note",
+                    "tags": ["- tag"],
+                }
+            )
+        call, timeout = runner.calls[0]
+        self.assertIn("--title=- draft", call)
+        self.assertIn("--note=- note", call)
+        self.assertIn('--tags-json=["- tag"]', call)
+        self.assertNotIn("- draft", call)
+        self.assertNotIn("- note", call)
+        self.assertEqual(
+            timeout,
+            controller._h2_annotation_command_timeout(),
+        )
+
+    def test_h2_library_accepts_only_bounded_migration_pending_projection(self):
+        report = {
+            "schema_version": 1,
+            "kind": "audio_material_library",
+            "projection": "control-v1",
+            "read_only": True,
+            "items": [],
+            "count": 0,
+            "total_count": 1,
+            "projected_count": 1,
+            "truncated": False,
+            "migration_pending": [
+                {
+                    "material_id": "a" * 24,
+                    "status": "migration_required",
+                    "metadata": ["manifest.json"],
+                }
+            ],
+            "migration_pending_count": 1,
+        }
+        MODULE.AudioControl._validate_h2_library(report)
+
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        with mock.patch.object(
+            controller,
+            "_h2_library_report",
+            return_value=report,
+        ):
+            projected = controller._h2_library_projection()
+        self.assertEqual(projected["count"], 0)
+        self.assertEqual(projected["projected_count"], 1)
+        self.assertEqual(projected["migration_pending_count"], 1)
+        self.assertEqual(projected["migration_pending"], report["migration_pending"])
+
+        invalid = dict(report)
+        invalid["migration_pending"] = [
+            {
+                "material_id": "a" * 24,
+                "status": "migration_required",
+                "metadata": ["master.wav"],
+            }
+        ]
+        with self.assertRaisesRegex(
+            MODULE.ControlError,
+            "Migrationshinweis",
+        ):
+            MODULE.AudioControl._validate_h2_library(invalid)
+
+    def test_h2_surface_is_task_named_and_has_no_delete_action(self):
+        javascript = (ROOT / "ui" / "app.js").read_text()
+        html = (ROOT / "ui" / "index.html").read_text()
+        for needle in (
+            "Neue H2-Aufnahmen",
+            "Mein Klangmaterial",
+            "BEHALTEN",
+            "Was ist zu hören?",
+            "Originale werden beim Archivieren nicht vom H2 gelöscht",
+        ):
+            self.assertIn(needle, html + javascript)
+        self.assertIn('fetchJson("/api/v1/actions/h2"', javascript)
+        self.assertIn("function h2ActionsAllowed()", javascript)
+        self.assertIn('fetchJson("/bridge/v1/actions/h2"', javascript)
+        self.assertIn('state.remoteActionScopes.includes("h2")', javascript)
+        self.assertIn("h2_material_control", javascript)
+        self.assertIn("note.maxLength = 2000", javascript)
+        self.assertNotIn('operation: "delete"', javascript)
+        self.assertNotIn('operation: "source-delete"', javascript)
+
 
 
 class TelemetryTruthSeparationTests(unittest.TestCase):

@@ -80,6 +80,7 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
             read_write_paths(UI_UNIT_PATH),
             {
                 "%h/Music/Audio-Aufnahmen",
+                "-%h/Music/Audio-Material/H2",
                 "%h/.local/state/audio/recordings-v1",
                 "%h/.local/state/audio/profile-transitions-v1",
                 "%h/.local/state/audio/laboratory",
@@ -106,6 +107,44 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
             "%h/.local/state/audio/profile-transitions-v1",
             read_write_paths(DEPLOY_UNIT_PATH),
         )
+
+    def test_ui_first_upgrade_schedules_release_bound_h2_migration_before_start(self):
+        ui = UI_UNIT_PATH.read_text(encoding="utf-8")
+        primary = (
+            "ExecStartPre=-+/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/h2_ingest.py "
+            "migrate-legacy-manifests --launch-only --library-root "
+            "%h/Music/Audio-Aufnahmen/H2-Material"
+        )
+        legacy = (
+            "ExecStartPre=-+/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/h2_ingest.py "
+            "migrate-legacy-manifests --launch-only --library-root "
+            "%h/Music/Audio-Material/H2"
+        )
+        prepare = (
+            "ExecStartPre=+/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/audio_control.py "
+            "prepare-runtime-state"
+        )
+        start = (
+            "ExecStart=/usr/bin/python3 "
+            "%h/.local/share/audio-control-ui/current/scripts/audio_control.py serve"
+        )
+        for command in (primary, legacy, prepare, start):
+            self.assertIn(command, ui)
+        self.assertLess(ui.index(primary), ui.index(legacy))
+        self.assertLess(ui.index(legacy), ui.index(prepare))
+        self.assertLess(ui.index(prepare), ui.index(start))
+        self.assertNotIn("migrate-legacy-manifests --library-root", ui)
+
+    def test_deploy_sandbox_allows_only_named_h2_migration_roots(self):
+        paths = read_write_paths(DEPLOY_UNIT_PATH)
+        self.assertIn("-%h/Music/Audio-Aufnahmen/H2-Material", paths)
+        self.assertIn("-%h/Music/Audio-Material/H2", paths)
+        self.assertNotIn("%h/Music", paths)
+        self.assertNotIn("%h/Music/Audio-Aufnahmen", paths)
+        self.assertNotIn("%h/Music/Audio-Material", paths)
 
     def test_level_observer_is_pipewire_only_and_coupled_to_the_ui_lifecycle(self):
         self.assertEqual(address_families(LEVEL_OBSERVER_UNIT_PATH), {"AF_UNIX"})

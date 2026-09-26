@@ -130,7 +130,7 @@ class AudioRecorderUXTests(unittest.TestCase):
 
     def test_global_player_reuses_existing_playback_and_refresh_contracts(self):
         self.assertIn("function recordingPlaybackActive()", self.app)
-        self.assertIn('document.querySelectorAll("audio.recording-player")', self.app)
+        self.assertIn('document.querySelectorAll("audio.recording-player, audio.h2-audio")', self.app)
         self.assertIn("function clearGlobalTakePlayer({ restoreFocus = false } = {})", self.app)
         self.assertIn('byId("global-take-player-close").addEventListener', self.app)
         self.assertIn('byId("global-take-player-audio").setAttribute("aria-label"', self.app)

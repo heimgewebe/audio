@@ -17,6 +17,7 @@ import json
 import pathlib
 import re
 import struct
+import subprocess
 import sys
 import threading
 import unittest
@@ -280,6 +281,7 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('bridgeMarker === "read-only-v1"', self.app)
         self.assertIn('bridgeMarker === "whale-action-v1"', self.app)
         self.assertIn('bridgeMarker === "recording-action-v1"', self.app)
+        self.assertIn('bridgeMarker === "h2-action-v1"', self.app)
         self.assertIn('response.headers.get("X-Audio-Remote-Effects") === "whale-v1"', self.app)
         self.assertIn('fetchJson("/bridge/v1/session"', self.app)
         session_loader = self.app.split('fetchJson("/bridge/v1/session"', 1)[1].split("});", 1)[0]
@@ -287,10 +289,12 @@ class RuntimeModeTests(unittest.TestCase):
         self.assertIn('body: "{}"', session_loader)
         self.assertIn('fetchJson("/bridge/v1/actions/whale"', self.app)
         self.assertIn('fetchJson("/bridge/v1/actions/recording"', self.app)
+        self.assertIn('fetchJson("/bridge/v1/actions/h2"', self.app)
         self.assertIn('fetchJson("/api/v1/recordings"', self.app)
+        self.assertIn('fetchJson("/api/v1/h2"', self.app)
         self.assertIn("audio.src = item.audio_url", self.app)
         self.assertIn('"X-Audio-Bridge-Session": state.remoteWhaleSessionToken', self.app)
-        self.assertIn("Recorderaktionen dürfen wirken", self.app)
+        self.assertIn("H2-Materialaktionen dürfen wirken", self.app)
 
     def test_local_mode_denies_native_hardware_authority_in_the_surface(self):
         for token in ("MOTU", "ALSA", "PipeWire", "Roland"):
@@ -339,6 +343,7 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('bridgeMarker === "read-only-v1"', fetch_block)
         self.assertIn('bridgeMarker === "whale-action-v1"', fetch_block)
         self.assertIn('bridgeMarker === "recording-action-v1"', fetch_block)
+        self.assertIn('bridgeMarker === "h2-action-v1"', fetch_block)
         self.assertIn("state.remoteBridgeProjection = true;", fetch_block)
         self.assertIn('response.headers.get("X-Audio-Remote-Effects") === "whale-v1"', fetch_block)
         self.assertIn("state.remoteWhaleActionObserved = true;", fetch_block)
@@ -407,6 +412,459 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('/api/v1/actions/recording', recorder_router)
         self.assertIn('/bridge/v1/actions/recording', recorder_router)
         self.assertIn('"X-Audio-Bridge-Session"', recorder_router)
+
+        local_h2_gate = self.app.split("function localH2ActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("directLoopbackControlOrigin() &&", local_h2_gate)
+        self.assertIn("h2_material_control === true", local_h2_gate)
+        self.assertIn("action_token.length >= 16", local_h2_gate)
+
+        remote_h2_gate = self.app.split("function remoteH2ActionsAllowed() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("remoteWhaleSessionFresh()", remote_h2_gate)
+        self.assertIn('state.remoteActionScopes.includes("h2")', remote_h2_gate)
+        self.assertNotIn("action_token", remote_h2_gate)
+
+        h2_router = self.app.split("async function postH2Action(payload) {", 1)[1].split(
+            "\nasync function runH2Action", 1
+        )[0]
+        self.assertIn('/api/v1/actions/h2', h2_router)
+        self.assertIn('/bridge/v1/actions/h2', h2_router)
+        self.assertIn('"X-Audio-Bridge-Session"', h2_router)
+        self.assertIn('payload?.operation === "import"', h2_router)
+        self.assertIn("await h2ImportTimeoutMs(payload.scene)", h2_router)
+        self.assertIn("await h2AnnotationTimeoutMs()", h2_router)
+        self.assertIn("await ensureRemoteWhaleSession()", h2_router)
+        self.assertNotIn("ensureRemoteWhaleSession({ force: true })", h2_router)
+        self.assertLess(
+            h2_router.index("await h2ImportTimeoutMs(payload.scene)"),
+            h2_router.index("await ensureRemoteWhaleSession()"),
+        )
+        self.assertLess(
+            h2_router.index("await ensureRemoteWhaleSession()"),
+            h2_router.index("if (remoteH2ActionsAllowed())"),
+        )
+        self.assertNotIn("delete-source", h2_router)
+
+        h2_budget = self.app.split("async function h2WorkspaceBudget() {", 1)[1].split(
+            "\n}\n\nasync function h2WorkspaceTimeoutMs", 1
+        )[0]
+        self.assertIn('fetchJson("/api/v1/h2/budget"', h2_budget)
+        self.assertIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", h2_budget)
+        self.assertIn('budget?.kind !== "audio_h2_workspace_budget"', h2_budget)
+        self.assertIn("budget?.read_only !== true", h2_budget)
+        self.assertIn("budget?.source_mutated !== false", h2_budget)
+        self.assertIn("budget?.workspace_timeout_seconds", h2_budget)
+        self.assertIn("budget?.annotation_timeout_seconds", h2_budget)
+
+        workspace_timeout = self.app.split("async function h2WorkspaceTimeoutMs() {", 1)[1].split(
+            "\n}\n\nasync function loadH2Workspace", 1
+        )[0]
+        self.assertIn("await h2WorkspaceBudget()", workspace_timeout)
+        self.assertIn("budget.workspace_timeout_seconds * 1000", workspace_timeout)
+        self.assertIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", workspace_timeout)
+        self.assertIn("H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS", workspace_timeout)
+
+        h2_load = self.app.split("async function loadH2Workspace", 1)[1].split(
+            "\nasync function h2ImportTimeoutMs", 1
+        )[0]
+        self.assertIn("const timeoutMs = await h2WorkspaceTimeoutMs();", h2_load)
+        self.assertIn('fetchJson("/api/v1/h2", { timeoutMs })', h2_load)
+        self.assertIn(
+            "activitySequence !== state.h2ActivitySequence || !backendAllowed()",
+            h2_load,
+        )
+
+        h2_timeout = self.app.split("async function h2ImportTimeoutMs(scene) {", 1)[1].split(
+            "\n}\n\nasync function h2LibraryBudget", 1
+        )[0]
+        self.assertIn("state.h2Workspace?.source?.sessions", h2_timeout)
+        self.assertIn("candidate?.scene === scene", h2_timeout)
+        self.assertIn("session?.import_timeout_seconds", h2_timeout)
+        self.assertIn("Number.isFinite(backendSeconds)", h2_timeout)
+        self.assertIn("Math.ceil(backendSeconds * 1000)", h2_timeout)
+        self.assertIn("await h2WorkspaceTimeoutMs()", h2_timeout)
+
+        library_budget = self.app.split("async function h2LibraryBudget() {", 1)[1].split(
+            "\n}\n\nasync function h2AnnotationTimeoutMs", 1
+        )[0]
+        self.assertIn('fetchJson("/api/v1/h2/library/budget"', library_budget)
+        self.assertIn("H2_LIBRARY_BUDGET_TIMEOUT_MS", library_budget)
+        self.assertIn('budget?.kind !== "audio_h2_library_budget"', library_budget)
+        self.assertIn("budget?.library_timeout_seconds", library_budget)
+        self.assertIn("budget?.annotation_timeout_seconds", library_budget)
+
+        annotate_timeout = self.app.split("async function h2AnnotationTimeoutMs() {", 1)[1].split(
+            "\n}\n\nasync function postH2Action", 1
+        )[0]
+        self.assertIn("await h2LibraryBudget()", annotate_timeout)
+        self.assertIn("budget.annotation_timeout_seconds * 1000", annotate_timeout)
+        self.assertIn("H2_LIBRARY_BUDGET_TIMEOUT_MS", annotate_timeout)
+        self.assertNotIn("H2_WORKSPACE_BUDGET_TIMEOUT_MS", annotate_timeout)
+        self.assertIn("H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS", annotate_timeout)
+
+        self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;", self.app)
+        self.assertIn("const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;", self.app)
+        self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
+        h2_render = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn("library.total_count", h2_render)
+        self.assertIn("library.truncated === true", h2_render)
+        self.assertIn('" von " + String(libraryTotal)', h2_render)
+
+        self.assertIn("const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;", self.app)
+        self.assertNotIn("H2_WORKSPACE_TIMEOUT_MS", self.app)
+        self.assertNotIn("H2_ANNOTATE_TIMEOUT_MS", self.app)
+        self.assertNotIn("H2_IMPORT_UI_TIMEOUT_MARGIN_MS", self.app)
+        deadline = self.app.split("function startAbortDeadline", 1)[1].split(
+            "\nasync function fetchJson", 1
+        )[0]
+        self.assertIn("performance.now() + timeoutMs", deadline)
+        self.assertIn("Math.min(remaining, MAX_BROWSER_TIMER_DELAY_MS)", deadline)
+        self.assertIn("controller.abort();", deadline)
+        fetch_json = self.app.split("async function fetchJson", 1)[1].split(
+            "\nfunction showNotice", 1
+        )[0]
+        self.assertIn("startAbortDeadline(controller, timeoutMs)", fetch_json)
+        self.assertGreaterEqual(
+            fetch_json.count("if (cancelTimeout !== null) cancelTimeout();"),
+            2,
+        )
+
+    def test_fetch_json_chains_timer_safe_abort_deadlines(self):
+        helper = "function startAbortDeadline" + self.app.split(
+            "function startAbortDeadline", 1
+        )[1].split("\nasync function fetchJson", 1)[0]
+        harness = f"""
+const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;
+{helper}
+let now = 1000;
+Object.defineProperty(globalThis, "performance", {{
+  configurable: true,
+  value: {{ now: () => now }},
+}});
+const pending = [];
+const cleared = [];
+global.window = {{
+  setTimeout(fn, delay) {{
+    pending.push({{ fn, delay }});
+    return pending.length;
+  }},
+  clearTimeout(id) {{
+    cleared.push(id);
+  }},
+}};
+function controller() {{
+  return {{
+    signal: {{ aborted: false }},
+    abort() {{ this.signal.aborted = true; }},
+  }};
+}}
+
+const start = now;
+const longController = controller();
+const longTimeout = 2147483647 + 5000;
+const cancelLong = startAbortDeadline(longController, longTimeout);
+if (
+  pending.length !== 1 ||
+  pending[0].delay !== MAX_BROWSER_TIMER_DELAY_MS ||
+  longController.signal.aborted
+) {{
+  throw new Error("large deadline was not split into a timer-safe first chunk");
+}}
+now += pending[0].delay;
+pending[0].fn();
+if (
+  pending.length !== 2 ||
+  pending[1].delay <= 0 ||
+  pending[1].delay > MAX_BROWSER_TIMER_DELAY_MS ||
+  longController.signal.aborted
+) {{
+  throw new Error("large deadline did not chain its remaining interval");
+}}
+now = start + longTimeout;
+pending[1].fn();
+if (!longController.signal.aborted) {{
+  throw new Error("large deadline did not abort at the true deadline");
+}}
+cancelLong();
+
+const shortController = controller();
+const shortStart = pending.length;
+const cancelShort = startAbortDeadline(shortController, 5000);
+if (
+  pending.length !== shortStart + 1 ||
+  pending[shortStart].delay !== 5000 ||
+  shortController.signal.aborted
+) {{
+  throw new Error("ordinary timeout no longer uses one unchanged timer");
+}}
+cancelShort();
+if (!cleared.includes(shortStart + 1)) {{
+  throw new Error("ordinary timeout cancellation did not clear its timer");
+}}
+
+process.stdout.write(JSON.stringify({{
+  firstChunk: pending[0].delay,
+  secondChunk: pending[1].delay,
+  longAborted: longController.signal.aborted,
+  shortDelay: pending[shortStart].delay,
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["firstChunk"], 2_147_000_000)
+        self.assertGreater(result["secondChunk"], 0)
+        self.assertLessEqual(result["secondChunk"], 2_147_000_000)
+        self.assertIs(result["longAborted"], True)
+        self.assertEqual(result["shortDelay"], 5000)
+
+    def test_h2_scan_never_blocks_core_snapshot_render_or_recorder_controls(self):
+        refresh = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(
+            "\n}\n\nfunction renderAuthority", 1
+        )[0]
+        self.assertIn("await loadRecordingLibrary({ render: false });", refresh)
+        self.assertIn("setLoading(false);", refresh)
+        self.assertIn("renderAll();", refresh)
+        self.assertIn("await loadH2Workspace({ render: true });", refresh)
+        self.assertNotIn("await loadH2Workspace({ render: false });", refresh)
+        self.assertLess(
+            refresh.index("setLoading(false);"),
+            refresh.index("renderAll();"),
+        )
+        self.assertLess(
+            refresh.index("renderAll();"),
+            refresh.index("await loadH2Workspace({ render: true });"),
+        )
+
+    def test_h2_workspace_load_has_independent_single_flight_gate(self):
+        self.assertIn("h2WorkspaceLoadGeneration: 0", self.app)
+        self.assertIn("h2WorkspaceLoading: false", self.app)
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
+        self.assertIn("state.h2WorkspaceLoading", loader)
+        self.assertIn("state.h2ActionPending", loader)
+        self.assertIn("const loadGeneration = ++state.h2WorkspaceLoadGeneration;", loader)
+        self.assertIn("finally {", loader)
+        self.assertIn("loadGeneration === state.h2WorkspaceLoadGeneration", loader)
+        self.assertIn("state.h2WorkspaceLoading = false;", loader)
+
+        harness = f"""
+const state = {{
+  h2WorkspaceLoadGeneration: 0,
+  h2WorkspaceLoading: false,
+  h2ActivitySequence: 0,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+}};
+let fetchCalls = 0;
+let timeoutCalls = 0;
+let renders = 0;
+let resolveFetch;
+function backendAllowed() {{ return true; }}
+async function h2WorkspaceTimeoutMs() {{ timeoutCalls += 1; return 1000; }}
+function fetchJson() {{
+  fetchCalls += 1;
+  return new Promise((resolve) => {{ resolveFetch = resolve; }});
+}}
+function renderH2Workspace() {{ renders += 1; }}
+{loader}
+(async () => {{
+  const first = loadH2Workspace({{ render: true }});
+  const second = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  if (fetchCalls !== 1 || timeoutCalls !== 1 || state.h2WorkspaceLoadGeneration !== 1 || state.h2WorkspaceLoading !== true) {{
+    throw new Error("H2 single-flight gate did not suppress the duplicate load");
+  }}
+  resolveFetch({{ kind: "audio_h2_workspace" }});
+  await first;
+  await second;
+  if (state.h2WorkspaceLoading !== false || renders !== 1) {{
+    throw new Error("H2 single-flight gate did not release after completion");
+  }}
+  process.stdout.write(JSON.stringify({{ fetchCalls, timeoutCalls, renders }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {"fetchCalls": 1, "timeoutCalls": 1, "renders": 1},
+        )
+
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn(
+            "refresh.disabled = state.h2ActionPending || state.h2WorkspaceLoading;",
+            renderer,
+        )
+
+    def test_h2_workspace_load_does_not_supersede_pending_action(self):
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
+
+        harness = f"""
+const state = {{
+  h2WorkspaceLoadGeneration: 4,
+  h2WorkspaceLoading: false,
+  h2ActionPending: true,
+  h2ActivitySequence: 7,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+}};
+let timeoutCalls = 0;
+let fetchCalls = 0;
+let renders = 0;
+function backendAllowed() {{ return true; }}
+async function h2WorkspaceTimeoutMs() {{ timeoutCalls += 1; return 1000; }}
+async function fetchJson() {{ fetchCalls += 1; return {{ kind: "audio_h2_workspace" }}; }}
+function renderH2Workspace() {{ renders += 1; }}
+{loader}
+(async () => {{
+  await loadH2Workspace({{ render: true }});
+  if (
+    state.h2ActivitySequence !== 7 ||
+    state.h2WorkspaceLoadGeneration !== 4 ||
+    state.h2WorkspaceLoading !== false ||
+    timeoutCalls !== 0 ||
+    fetchCalls !== 0 ||
+    renders !== 0
+  ) {{
+    throw new Error("pending H2 action was superseded by workspace refresh");
+  }}
+  process.stdout.write(JSON.stringify({{
+    activitySequence: state.h2ActivitySequence,
+    loadGeneration: state.h2WorkspaceLoadGeneration,
+    timeoutCalls,
+    fetchCalls,
+    renders,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "activitySequence": 7,
+                "loadGeneration": 4,
+                "timeoutCalls": 0,
+                "fetchCalls": 0,
+                "renders": 0,
+            },
+        )
+
+    def test_h2_workspace_load_gate_restarts_after_authority_invalidation(self):
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
+        stop = self.app.split("function stopRemoteActivity() {", 1)[1].split(
+            "\n}\n\nfunction applyRuntimeMode", 1
+        )[0]
+        self.assertIn("state.h2WorkspaceLoadGeneration += 1;", stop)
+        self.assertIn("state.h2WorkspaceLoading = false;", stop)
+
+        harness = f"""
+const state = {{
+  h2WorkspaceLoadGeneration: 0,
+  h2WorkspaceLoading: false,
+  h2ActivitySequence: 0,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+}};
+let allowed = true;
+let fetchCalls = 0;
+let timeoutCalls = 0;
+let renders = 0;
+const resolvers = [];
+function backendAllowed() {{ return allowed; }}
+async function h2WorkspaceTimeoutMs() {{ timeoutCalls += 1; return 1000; }}
+function fetchJson() {{
+  fetchCalls += 1;
+  return new Promise((resolve) => resolvers.push(resolve));
+}}
+function renderH2Workspace() {{ renders += 1; }}
+{loader}
+(async () => {{
+  const first = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  if (fetchCalls !== 1 || state.h2WorkspaceLoading !== true) {{
+    throw new Error("first H2 load did not start");
+  }}
+
+  allowed = false;
+  state.h2ActivitySequence += 1;
+  state.h2WorkspaceLoadGeneration += 1;
+  state.h2WorkspaceLoading = false;
+
+  allowed = true;
+  const second = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  if (fetchCalls !== 2 || state.h2WorkspaceLoading !== true) {{
+    throw new Error("replacement H2 load was blocked by stale single-flight state");
+  }}
+
+  resolvers[0]({{ kind: "audio_h2_workspace", marker: "stale" }});
+  await first;
+  if (state.h2WorkspaceLoading !== true) {{
+    throw new Error("stale H2 finally cleared the replacement load gate");
+  }}
+
+  resolvers[1]({{ kind: "audio_h2_workspace", marker: "fresh" }});
+  await second;
+  if (
+    state.h2WorkspaceLoading !== false ||
+    state.h2Workspace?.marker !== "fresh" ||
+    renders !== 1
+  ) {{
+    throw new Error("replacement H2 load did not become authoritative");
+  }}
+
+  process.stdout.write(JSON.stringify({{
+    fetchCalls,
+    timeoutCalls,
+    renders,
+    marker: state.h2Workspace?.marker,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "fetchCalls": 2,
+                "timeoutCalls": 2,
+                "renders": 1,
+                "marker": "fresh",
+            },
+        )
 
     def test_performance_hint_never_blocks_planning_or_substitutes_for_a_plan(self):
         controls = self.app.split("function renderRecordingControls(", 1)[1].split(
@@ -542,6 +1000,7 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             "  if (\n"
             "    state.loading ||\n"
             "    state.recordingActionPending ||\n"
+            "    state.h2ActionPending ||\n"
             "    state.dauersongActionPending ||\n"
             "    state.operatingModeActionPending ||\n"
             "    state.whaleActionPending ||\n"
@@ -578,9 +1037,364 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             'html[data-runtime-mode="local-device"] .depth-panel:not(.runtime-mode-panel)',
             styles,
         )
-        self.assertIn("function stopRemoteActivity()", self.app)
-        self.assertIn("state.snapshot = null;", self.app)
+        stop = self.app.split("function stopRemoteActivity() {", 1)[1].split(
+            "\n}\n\nfunction applyRuntimeMode", 1
+        )[0]
+        self.assertIn("state.snapshot = null;", stop)
+        self.assertIn("state.h2ActivitySequence += 1;", stop)
+        self.assertIn("state.h2Workspace = null;", stop)
+        self.assertIn("state.h2ActionPending = false;", stop)
+        self.assertIn('document.querySelectorAll("audio.h2-audio")', stop)
+        self.assertIn("audio.pause();", stop)
+        self.assertIn('audio.removeAttribute("src");', stop)
+        self.assertIn("audio.load();", stop)
+        self.assertIn("renderH2Workspace({ force: true });", stop)
         self.assertIn('byId("local-device-boundary").hidden = backendAllowed();', self.app)
+
+    def test_h2_invalid_sessions_render_as_warning_without_new_source_status(self):
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn("source.skipped_invalid_sessions", renderer)
+        self.assertIn('source.status === "ready"', renderer)
+        self.assertNotIn('source.status === "warning"', renderer)
+        self.assertIn('" nicht sicher lesbar"', renderer)
+        self.assertIn("Keine gültige Aufnahme verfügbar.", renderer)
+
+    def test_h2_annotation_drafts_survive_refresh_rebuilds_until_successful_save(self):
+        self.assertIn("h2AnnotationDrafts: new Map()", self.app)
+        helpers = self.app.split("function h2AnnotationDraftValues", 1)[1].split(
+            "\nasync function h2WorkspaceBudget", 1
+        )[0]
+        helpers = "function h2AnnotationDraftValues" + helpers
+        harness = f"""
+const state = {{ h2AnnotationDrafts: new Map() }};
+{helpers}
+const form = {{ dataset: {{}} }};
+const title = {{ value: "Entwurf" }};
+const note = {{ value: "ungespeichert" }};
+const tags = {{ value: "roh, klang" }};
+rememberH2AnnotationDraft("a".repeat(24), form, title, note, tags);
+const draft = h2AnnotationDraftValues(
+  "a".repeat(24),
+  {{ title: "Server", note: "alt", tags: ["server"] }},
+);
+state.h2AnnotationDrafts.delete("a".repeat(24));
+const saved = h2AnnotationDraftValues(
+  "a".repeat(24),
+  {{ title: "Server neu", note: "gespeichert", tags: ["server"] }},
+);
+process.stdout.write(JSON.stringify({{
+  draft,
+  dirty: form.dataset.dirty,
+  saved,
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["draft"],
+            {"title": "Entwurf", "note": "ungespeichert", "tags": "roh, klang"},
+        )
+        self.assertEqual(result["dirty"], "true")
+        self.assertEqual(
+            result["saved"],
+            {"title": "Server neu", "note": "gespeichert", "tags": "server"},
+        )
+
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn('document.activeElement?.closest(".h2-annotation-form")', renderer)
+        self.assertIn("h2AnnotationDraftValues(item.material_id, annotations)", renderer)
+        self.assertGreaterEqual(renderer.count('addEventListener("input", rememberDraft)'), 3)
+        self.assertNotIn("already_imported", renderer)
+        self.assertIn('"auf H2"', renderer)
+        self.assertIn('element("button", "primary-button", "BEHALTEN")', renderer)
+
+        action = self.app.split("async function runH2Action", 1)[1].split(
+            "\nfunction h2DisplayTimestamp", 1
+        )[0]
+        self.assertIn("state.h2AnnotationDrafts.delete(payload.material_id);", action)
+        self.assertIn('result.result?.status === "already-imported"', action)
+        self.assertNotIn("actionSucceeded", action)
+        self.assertIn('force: payload.operation === "annotate"', action)
+        self.assertNotIn('force: payload.operation === "annotate" && actionSucceeded', action)
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        save_handler = renderer.split('save.addEventListener("click"', 1)[1].split(
+            "form.append", 1
+        )[0]
+        for control in ("title", "note", "tags", "save"):
+            self.assertIn(f"{control}.disabled = true;", save_handler)
+        self.assertLess(
+            save_handler.index("title.disabled = true;"),
+            save_handler.index("runH2Action(payload);"),
+        )
+        finally_block = action.split("} finally {", 1)[1]
+        self.assertIn(
+            "if (activitySequence === state.h2ActivitySequence)",
+            finally_block,
+        )
+        self.assertLess(
+            finally_block.index("if (activitySequence === state.h2ActivitySequence)"),
+            finally_block.index("state.h2ActionPending = false;"),
+        )
+
+        runnable_action = "async function runH2Action" + self.app.split(
+            "async function runH2Action", 1
+        )[1].split("\nfunction h2DisplayTimestamp", 1)[0]
+        harness = f"""
+const materialId = "a".repeat(24);
+const state = {{
+  h2ActionPending: false,
+  h2ActivitySequence: 0,
+  h2AnnotationDrafts: new Map([[materialId, {{
+    title: "Entwurf",
+    note: "bleibt",
+    tags: "roh",
+  }}]]),
+  h2Workspace: {{
+    kind: "audio_h2_workspace",
+    source: {{ marker: "source-preserved" }},
+    library: {{ count: 1, items: [] }},
+  }},
+  h2WorkspaceError: null,
+}};
+let attempts = 0;
+const renders = [];
+function backendAllowed() {{ return true; }}
+function showNotice() {{}}
+function renderH2Workspace(options = {{}}) {{
+  renders.push({{
+    force: options.force === true,
+    pending: state.h2ActionPending,
+    draftPresent: state.h2AnnotationDrafts.has(materialId),
+  }});
+}}
+async function postH2Action() {{
+  attempts += 1;
+  if (attempts === 1) throw new Error("save failed");
+  return {{
+    kind: "audio_control_h2_action_result",
+    library: {{
+      kind: "audio_h2_library",
+      library: {{ count: 1, items: [{{ material_id: materialId }}] }},
+    }},
+    result: {{ status: "annotated" }},
+  }};
+}}
+{runnable_action}
+(async () => {{
+  const payload = {{
+    operation: "annotate",
+    material_id: materialId,
+    title: "Entwurf",
+    note: "bleibt",
+    tags: ["roh"],
+  }};
+  await runH2Action(payload);
+  const failed = {{
+    pending: state.h2ActionPending,
+    draftPresent: state.h2AnnotationDrafts.has(materialId),
+    render: renders.at(-1),
+  }};
+  await runH2Action(payload);
+  const succeeded = {{
+    attempts,
+    pending: state.h2ActionPending,
+    draftPresent: state.h2AnnotationDrafts.has(materialId),
+    sourceMarker: state.h2Workspace?.source?.marker,
+    libraryCount: state.h2Workspace?.library?.count,
+    render: renders.at(-1),
+  }};
+  process.stdout.write(JSON.stringify({{ failed, succeeded }}));
+}})();
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        retry = json.loads(completed.stdout)
+        self.assertEqual(
+            retry["failed"],
+            {
+                "pending": False,
+                "draftPresent": True,
+                "render": {"force": True, "pending": False, "draftPresent": True},
+            },
+        )
+        self.assertEqual(retry["succeeded"]["attempts"], 2)
+        self.assertFalse(retry["succeeded"]["pending"])
+        self.assertFalse(retry["succeeded"]["draftPresent"])
+        self.assertEqual(retry["succeeded"]["sourceMarker"], "source-preserved")
+        self.assertEqual(retry["succeeded"]["libraryCount"], 1)
+        self.assertTrue(retry["succeeded"]["render"]["force"])
+
+        renderer = self.app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        self.assertIn(
+            'if (!force && document.activeElement?.closest(".h2-annotation-form")) return;',
+            renderer,
+        )
+        self.assertIn(
+            "save.disabled = state.h2ActionPending || !h2ActionsAllowed();",
+            renderer,
+        )
+
+        blocked = self.app.split("function autoRefreshBlocked() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertNotIn("state.h2AnnotationDrafts.size > 0", blocked)
+
+    def test_remote_h2_post_rechecks_and_reuses_session_after_async_deadline(self):
+        post = "async function postH2Action" + self.app.split(
+            "async function postH2Action", 1
+        )[1].split("\nasync function runH2Action", 1)[0]
+        harness = f"""
+const state = {{
+  remoteBridgeProjection: true,
+  remoteWhaleSessionToken: "o".repeat(32),
+  remoteWhaleSessionError: null,
+}};
+let fresh = true;
+let expireDuringDeadline = true;
+let issuedSessions = 0;
+const events = [];
+function localH2ActionsAllowed() {{
+  events.push("local-check");
+  return false;
+}}
+function remoteH2ActionsAllowed() {{
+  events.push("remote-check:" + String(fresh) + ":" + state.remoteWhaleSessionToken[0]);
+  return fresh;
+}}
+async function h2ImportTimeoutMs() {{
+  events.push("deadline-start");
+  if (expireDuringDeadline) {{
+    fresh = false;
+    events.push("session-expired-during-deadline");
+  }}
+  return 12345;
+}}
+async function h2AnnotationTimeoutMs() {{
+  throw new Error("unexpected annotation budget");
+}}
+async function ensureRemoteWhaleSession({{ force = false }} = {{}}) {{
+  events.push("session-check:" + String(force) + ":" + String(fresh));
+  if (!force && fresh) return true;
+  issuedSessions += 1;
+  state.remoteWhaleSessionToken = "n".repeat(32);
+  fresh = true;
+  events.push("session-issued:n");
+  return true;
+}}
+async function fetchJson(url, options) {{
+  events.push("post:" + url + ":" + options.headers["X-Audio-Bridge-Session"][0]);
+  return {{
+    kind: "ok",
+    timeoutMs: options.timeoutMs,
+    token: options.headers["X-Audio-Bridge-Session"],
+  }};
+}}
+{post}
+(async () => {{
+  const first = await postH2Action({{ operation: "import", scene: "170926_191401" }});
+  expireDuringDeadline = false;
+  const second = await postH2Action({{ operation: "import", scene: "170926_191401" }});
+  process.stdout.write(JSON.stringify({{ events, first, second, issuedSessions }}));
+}})();
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["events"],
+            [
+                "deadline-start",
+                "session-expired-during-deadline",
+                "local-check",
+                "session-check:false:false",
+                "session-issued:n",
+                "remote-check:true:n",
+                "post:/bridge/v1/actions/h2:n",
+                "deadline-start",
+                "local-check",
+                "session-check:false:true",
+                "remote-check:true:n",
+                "post:/bridge/v1/actions/h2:n",
+            ],
+        )
+        self.assertEqual(result["issuedSessions"], 1)
+        self.assertEqual(result["first"]["timeoutMs"], 12345)
+        self.assertEqual(result["first"]["token"], "n" * 32)
+        self.assertEqual(result["second"]["token"], "n" * 32)
+
+    def test_h2_pending_migration_cards_expose_no_media_or_mutation_authority(self):
+        app = read("app.js")
+        self.assertIn(
+            "const migrationPending = Array.isArray(library.migration_pending)",
+            app,
+        )
+        start = app.index("for (const pending of migrationPending)")
+        end = app.index("for (const item of items)", start)
+        pending_block = app[start:end]
+        self.assertIn("Archiv · Migration erforderlich", pending_block)
+        self.assertIn(
+            "Bis zum gültigen Migrationsbeleg bleiben Wiedergabe und Bearbeitung dieses Materials gesperrt.",
+            pending_block,
+        )
+        self.assertNotIn("appendH2Audio", pending_block)
+        self.assertNotIn("runH2Action", pending_block)
+        self.assertNotIn("primary-button", pending_block)
+
+    def test_h2_audio_defers_native_media_load_until_explicit_interaction(self):
+        helper = self.app.split("function appendH2Audio", 1)[1].split(
+            "\nfunction renderH2Workspace", 1
+        )[0]
+        self.assertIn('audio.preload = "none";', helper)
+        initial = helper.split('if (total > 1) {', 1)[0]
+        self.assertNotIn("audio.src =", initial.split("const activateSource", 1)[0])
+        self.assertIn('audio.addEventListener("pointerdown", activateSource)', helper)
+        self.assertIn('event.key === "Enter" || event.key === " "', helper)
+        self.assertIn('audio.removeAttribute("src");', helper)
+        segment_change = helper.split('segmentSelect.addEventListener("change"', 1)[1]
+        self.assertNotIn("audio.src =", segment_change)
+
+    def test_h2_async_results_are_invalidated_when_backend_authority_changes(self):
+        load = self.app.split("async function loadH2Workspace", 1)[1].split(
+            "\nasync function postH2Action", 1
+        )[0]
+        self.assertIn("const activitySequence = ++state.h2ActivitySequence;", load)
+        self.assertGreaterEqual(
+            load.count(
+                "activitySequence !== state.h2ActivitySequence || !backendAllowed()"
+            ),
+            2,
+        )
+        action = self.app.split("async function runH2Action", 1)[1].split(
+            "\nfunction h2DisplayTimestamp", 1
+        )[0]
+        self.assertIn("const activitySequence = ++state.h2ActivitySequence;", action)
+        self.assertGreaterEqual(
+            action.count(
+                "activitySequence !== state.h2ActivitySequence || !backendAllowed()"
+            ),
+            2,
+        )
 
 
 class ServiceWorkerTests(unittest.TestCase):

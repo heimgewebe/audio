@@ -7,6 +7,7 @@ import http.client
 import importlib.util
 import json
 import pathlib
+import re
 import sys
 import tempfile
 import threading
@@ -56,17 +57,20 @@ class ContractTests(unittest.TestCase):
                 "whale:mode",
                 "whale:stop",
                 "recording:plan",
+                "recording:prepare",
                 "recording:start",
                 "recording:stop",
                 "recording:recover",
                 "recording:categorize",
                 "recording:trash",
                 "recording:restore",
+                "h2:import",
+                "h2:annotate",
             ],
         )
         self.assertEqual(
             contract["bridge"]["effect_exclusions"],
-            ["profiles", "routing", "devices", "system"],
+            ["profiles", "routing", "devices", "system", "h2:delete-source"],
         )
         self.assertIs(contract["bridge"]["backend_remote_exposure"], False)
         for name, value in contract["runtime_acceptance"].items():
@@ -122,6 +126,17 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(remote_action["action_route"], MODULE.REMOTE_WHALE_ACTION_ROUTE)
         self.assertEqual(
             remote_action["recording_action_route"], MODULE.REMOTE_RECORDING_ACTION_ROUTE
+        )
+        self.assertEqual(remote_action["h2_action_route"], MODULE.REMOTE_H2_ACTION_ROUTE)
+        self.assertEqual(remote_action["h2_max_body_bytes"], MODULE.MAX_H2_ACTION_BODY_BYTES)
+        self.assertEqual(set(remote_action["h2_operations"]), MODULE.H2_ACTION_OPERATIONS)
+        self.assertEqual(
+            contract["bridge"]["h2_source_media_pattern"],
+            "/api/v1/h2/source/{scene}/audio/{segment_index}",
+        )
+        self.assertEqual(
+            contract["bridge"]["h2_material_media_pattern"],
+            "/api/v1/h2/material/{material_id}/audio/{segment_index}",
         )
         self.assertEqual(remote_action["tailnet_host"], MODULE.REMOTE_TAILNET_HOST)
         self.assertEqual(remote_action["session_header"], MODULE.REMOTE_ACTION_TOKEN_HEADER)
@@ -234,6 +249,29 @@ class TargetValidationTests(unittest.TestCase):
             ),
             ("/api/v1/recordings/0123456789abcdef01234567/midi", True),
         )
+        self.assertEqual(MODULE.validate_request_target("/api/v1/h2"), ("/api/v1/h2", True))
+        self.assertEqual(
+            MODULE.validate_request_target("/api/v1/h2/budget"),
+            ("/api/v1/h2/budget", True),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target("/api/v1/h2/library"),
+            ("/api/v1/h2/library", True),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target("/api/v1/h2/library/budget"),
+            ("/api/v1/h2/library/budget", True),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target("/api/v1/h2/source/170926_191401/audio/0"),
+            ("/api/v1/h2/source/170926_191401/audio/0", True),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target(
+                "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/12"
+            ),
+            ("/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/12", True),
+        )
 
     def test_unknown_queries_and_separator_bypasses_fail_closed(self):
         rejected = (
@@ -247,6 +285,10 @@ class TargetValidationTests(unittest.TestCase):
             "/api/v1/recordings/0123456789abcdef01234567/audio?x=1",
             "/api/v1/recordings/0123456789abcdef0123456g/audio",
             "/api/v1/recordings/%2e%2e/audio",
+            "/api/v1/h2/source/bad/audio/0",
+            "/api/v1/h2/source/170926_191401/audio/1000",
+            "/api/v1/h2/material/nothex/audio/0",
+            "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0?download=1",
             "http://example.invalid/app.js",
         )
         for target in rejected:
@@ -323,6 +365,51 @@ class TargetValidationTests(unittest.TestCase):
         for payload in rejected:
             with self.subTest(payload=payload), self.assertRaises(MODULE.RequestRejected):
                 MODULE.validate_recording_action_payload(json.dumps(payload).encode())
+
+    def test_h2_payload_validation_is_exact_and_fail_closed(self):
+        imported = {"operation": "import", "scene": "170926_191401"}
+        self.assertEqual(
+            MODULE.validate_h2_action_payload(json.dumps(imported).encode()),
+            imported,
+        )
+        annotated = {
+            "operation": "annotate",
+            "material_id": "a" * 24,
+            "title": "Metallgeländer",
+            "note": "kurzer Impuls",
+            "tags": ["Metall", "perkussiv"],
+        }
+        self.assertEqual(
+            MODULE.validate_h2_action_payload(json.dumps(annotated).encode()),
+            annotated,
+        )
+        maximal = {
+            "operation": "annotate",
+            "material_id": "a" * 24,
+            "title": "😀" * 160,
+            "note": "😀" * 2000,
+            "tags": ["😀" * 48] * 16,
+        }
+        maximal_body = json.dumps(
+            maximal, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        self.assertGreater(len(maximal_body), 4096)
+        self.assertLessEqual(len(maximal_body), MODULE.MAX_H2_ACTION_BODY_BYTES)
+        self.assertEqual(MODULE.validate_h2_action_payload(maximal_body), maximal)
+        rejected = (
+            {"operation": "import", "scene": "../x"},
+            {"operation": "import", "scene": "170926_191401", "delete": True},
+            {"operation": "delete-source", "scene": "170926_191401"},
+            {**annotated, "material_id": "bad"},
+            {**annotated, "title": "x" * 161},
+            {**annotated, "title": "\ud800"},
+            {**annotated, "note": "x" * 2001},
+            {**annotated, "tags": ["x"] * 17},
+            {**annotated, "tags": ["\ud800"]},
+        )
+        for payload in rejected:
+            with self.subTest(payload=payload), self.assertRaises(MODULE.RequestRejected):
+                MODULE.validate_h2_action_payload(json.dumps(payload).encode())
 
     def test_configuration_is_fixed_loopback_only(self):
         MODULE.validate_configuration("127.0.0.1", 8766, "127.0.0.1", 8765)
@@ -404,7 +491,11 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                     "snapshot": {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "capabilities": {
+                            "whale_control": True,
+                            "recording_control": True,
+                            "h2_material_control": True,
+                        },
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -444,7 +535,11 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                     "snapshot": {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "capabilities": {
+                            "whale_control": True,
+                            "recording_control": True,
+                            "h2_material_control": True,
+                        },
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -455,6 +550,29 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                             "status": "running" if operation == "start" else "completed",
                         },
                     },
+                }
+            response = json.dumps(result, sort_keys=True).encode("utf-8")
+        elif self.path == "/api/v1/actions/h2":
+            action = json.loads(body.decode("utf-8"))
+            status = 200
+            result = {
+                "kind": "audio_control_h2_action_result",
+                "operation": action["operation"],
+            }
+            if action["operation"] == "import":
+                result["workspace"] = {
+                    "schema_version": 1,
+                    "kind": "audio_h2_workspace",
+                    "source": {"status": "ready", "count": 1, "sessions": []},
+                    "library": {"count": 1, "items": []},
+                    "source_delete_authorized": False,
+                    "creative_handoff_authorized": False,
+                }
+            else:
+                result["library"] = {
+                    "schema_version": 1,
+                    "kind": "audio_h2_library",
+                    "library": {"count": 1, "items": []},
                 }
             response = json.dumps(result, sort_keys=True).encode("utf-8")
         else:
@@ -493,7 +611,11 @@ class BridgeHTTPTests(unittest.TestCase):
                     {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "capabilities": {
+                            "whale_control": True,
+                            "recording_control": True,
+                            "h2_material_control": True,
+                        },
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -511,7 +633,11 @@ class BridgeHTTPTests(unittest.TestCase):
                     {
                         "kind": "audio_control_snapshot",
                         "schema_version": 1,
-                        "capabilities": {"whale_control": True, "recording_control": True},
+                        "capabilities": {
+                            "whale_control": True,
+                            "recording_control": True,
+                            "h2_material_control": True,
+                        },
                         "service": {
                             "action_token": "local-secret-value",
                             "authority": "local-backend",
@@ -574,6 +700,149 @@ class BridgeHTTPTests(unittest.TestCase):
                     ("Content-Range", "bytes 0-3/16"),
                 ],
                 b"MThd",
+            ),
+            "/api/v1/h2/budget": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_workspace_budget",
+                        "workspace_timeout_seconds": 180.0,
+                        "annotation_timeout_seconds": 240.0,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/source/budget": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_source_budget",
+                        "source_timeout_seconds": 180.0,
+                        "source_budget_available": True,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/source": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_source",
+                        "source": {
+                            "status": "ready",
+                            "count": 1,
+                            "sessions": [
+                                {
+                                    "scene": "170926_191401",
+                                    "segment_count": 1,
+                                    "audio_url": "/api/v1/h2/source/170926_191401/audio/0",
+                                    "media_timeout_seconds": 180.0,
+                                    "import_timeout_seconds": 480.0,
+                                }
+                            ],
+                        },
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/library/budget": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_library_budget",
+                        "library_timeout_seconds": 210.0,
+                        "annotation_timeout_seconds": 240.0,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/library": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_library",
+                        "library": {
+                            "count": 1,
+                            "items": [
+                                {
+                                    "material_id": "a" * 24,
+                                    "segment_count": 1,
+                                    "audio_url": "/api/v1/h2/material/" + "a" * 24 + "/audio/0",
+                                    "media_timeout_seconds": 240.0,
+                                }
+                            ],
+                        },
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_workspace",
+                        "source": {
+                            "status": "ready",
+                            "count": 1,
+                            "sessions": [
+                                {
+                                    "scene": "170926_191401",
+                                    "segment_count": 1,
+                                    "audio_url": "/api/v1/h2/source/170926_191401/audio/0",
+                                    "media_timeout_seconds": 180.0,
+                                    "import_timeout_seconds": 480.0,
+                                }
+                            ],
+                        },
+                        "library": {
+                            "count": 1,
+                            "items": [
+                                {
+                                    "material_id": "a" * 24,
+                                    "segment_count": 1,
+                                    "audio_url": "/api/v1/h2/material/" + "a" * 24 + "/audio/0",
+                                    "media_timeout_seconds": 240.0,
+                                }
+                            ],
+                        },
+                        "source_delete_authorized": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/source/170926_191401/audio/0": (
+                206,
+                [
+                    ("Content-Type", "audio/wav"),
+                    ("Cache-Control", "no-cache"),
+                    ("ETag", '"h2-source"'),
+                    ("Accept-Ranges", "bytes"),
+                    ("Content-Range", "bytes 0-3/16"),
+                ],
+                b"RIFF",
+            ),
+            "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0": (
+                206,
+                [
+                    ("Content-Type", "audio/wav"),
+                    ("Cache-Control", "no-cache"),
+                    ("ETag", '"h2-material"'),
+                    ("Accept-Ranges", "bytes"),
+                    ("Content-Range", "bytes 0-3/16"),
+                ],
+                b"RIFF",
             ),
             "/app.js": (
                 200,
@@ -819,7 +1088,7 @@ class BridgeHTTPTests(unittest.TestCase):
         )
         session = json.loads(payload)
         self.assertEqual(session["kind"], "audio_remote_bridge_session")
-        self.assertEqual(session["effect_scope"], ["whale", "recording"])
+        self.assertEqual(session["effect_scope"], ["whale", "recording", "h2"])
         self.assertEqual(
             set(session["allowed_operations"]["whale"]), {"start", "mode", "stop"}
         )
@@ -827,6 +1096,7 @@ class BridgeHTTPTests(unittest.TestCase):
             set(session["allowed_operations"]["recording"]),
             {"plan", "prepare", "start", "stop", "recover", "categorize", "trash", "restore"},
         )
+        self.assertEqual(set(session["allowed_operations"]["h2"]), {"import", "annotate"})
         self.assertNotIn("action_token", session)
         self.assertGreaterEqual(len(session["session_token"]), 32)
         return session["session_token"]
@@ -985,6 +1255,461 @@ class BridgeHTTPTests(unittest.TestCase):
             45 + 30 + 30,
         )
 
+    def test_h2_media_bridge_uses_finite_backend_projected_timeout(self):
+        observed: list[float | None] = []
+
+        class TimeoutProbeConnection:
+            def __init__(self, _host, _port, *, timeout):
+                observed.append(timeout)
+
+            def putrequest(self, *_args, **_kwargs):
+                raise TimeoutError
+
+            def close(self):
+                return None
+
+        for path in (
+            "/api/v1/h2/source/170926_191401/audio/0",
+            "/api/v1/h2/material/" + "a" * 24 + "/audio/0",
+        ):
+            with self.subTest(path=path):
+                observed.clear()
+                with (
+                    mock.patch.object(
+                        MODULE,
+                        "h2_media_backend_timeout_seconds",
+                        return_value=987.0,
+                    ),
+                    mock.patch.object(
+                        MODULE.http.client, "HTTPConnection", TimeoutProbeConnection
+                    ),
+                ):
+                    with self.assertRaises(MODULE.BackendFailure):
+                        MODULE.stream_backend_recording_artifact(
+                            mock.Mock(), path, {}, head_only=False
+                        )
+                self.assertEqual(observed, [987.0])
+
+    def test_h2_media_timeout_uses_source_or_library_specific_projection(self):
+        source_projection = {
+            "kind": "audio_h2_source",
+            "source": {
+                "sessions": [
+                    {
+                        "scene": "170926_191401",
+                        "segment_count": 2,
+                        "media_timeout_seconds": 321.0,
+                    }
+                ]
+            },
+        }
+        library = {
+            "kind": "audio_h2_library",
+            "library": {
+                "items": [
+                    {
+                        "material_id": "a" * 24,
+                        "segment_count": 3,
+                        "media_timeout_seconds": 654.0,
+                    }
+                ]
+            },
+        }
+
+        def readback(target, _headers):
+            if target == "/api/v1/h2/source":
+                payload = source_projection
+            elif target == "/api/v1/h2/library":
+                payload = library
+            else:
+                raise AssertionError(f"unexpected H2 timeout readback: {target}")
+            return 200, [], json.dumps(payload).encode("utf-8"), 0
+
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            side_effect=readback,
+        ) as observed:
+            self.assertEqual(
+                MODULE.h2_media_backend_timeout_seconds(
+                    "/api/v1/h2/source/170926_191401/audio/1"
+                ),
+                321.0,
+            )
+            self.assertEqual(
+                MODULE.h2_media_backend_timeout_seconds(
+                    "/api/v1/h2/material/" + "a" * 24 + "/audio/2"
+                ),
+                654.0,
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in observed.call_args_list],
+            ["/api/v1/h2/source", "/api/v1/h2/library"],
+        )
+
+        source_projection["source"]["sessions"][0]["media_timeout_seconds"] = None
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(source_projection).encode("utf-8"), 0),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.h2_media_backend_timeout_seconds(
+                    "/api/v1/h2/source/170926_191401/audio/0"
+                )
+
+    def test_h2_import_timeout_is_read_from_current_workspace_projection(self):
+        workspace = {
+            "kind": "audio_h2_workspace",
+            "source": {
+                "sessions": [
+                    {
+                        "scene": "170926_191401",
+                        "import_timeout_seconds": 777.0,
+                    }
+                ]
+            },
+            "library": {"items": []},
+        }
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(workspace).encode("utf-8"), 0),
+        ) as readback:
+            self.assertEqual(
+                MODULE.h2_import_backend_timeout_seconds("170926_191401"),
+                777.0,
+            )
+        readback.assert_called_once_with("/api/v1/h2", None)
+
+        workspace["source"]["sessions"][0]["import_timeout_seconds"] = None
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(workspace).encode("utf-8"), 0),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.h2_import_backend_timeout_seconds("170926_191401")
+
+    def test_h2_workspace_response_uses_bounded_h2_specific_byte_budget(self):
+        payload = json.dumps(
+            {
+                "kind": "audio_h2_workspace",
+                "padding": "x" * (MODULE.MAX_RESPONSE_BYTES + 4096),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertGreater(len(payload), MODULE.MAX_RESPONSE_BYTES)
+        self.assertLess(len(payload), MODULE.MAX_H2_RESPONSE_BYTES)
+
+        class Response:
+            status = 200
+
+            def getheaders(self):
+                return [("Content-Type", "application/json; charset=utf-8")]
+
+            def read(self, size):
+                return payload[:size]
+
+        class Connection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def putrequest(self, *_args, **_kwargs):
+                pass
+
+            def putheader(self, *_args, **_kwargs):
+                pass
+
+            def endheaders(self, *_args, **_kwargs):
+                pass
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_workspace_backend_timeout_seconds",
+                return_value=120.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", Connection),
+        ):
+            status, _headers, forwarded, _redactions = MODULE.read_backend_response(
+                "/api/v1/h2", None
+            )
+        self.assertEqual(status, 200)
+        self.assertGreater(len(forwarded), MODULE.MAX_RESPONSE_BYTES)
+
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", Connection):
+            with self.assertRaisesRegex(
+                MODULE.BackendFailure, "response exceeds bridge limit"
+            ):
+                MODULE.read_backend_response("/api/v1/snapshot", None)
+
+    def test_h2_action_response_uses_same_h2_specific_byte_budget(self):
+        result = {
+            "kind": "audio_control_h2_action_result",
+            "operation": "annotate",
+            "library": {
+                "kind": "audio_h2_library",
+                "library": {
+                    "count": 1,
+                    "items": [],
+                    "padding": "x" * (MODULE.MAX_RESPONSE_BYTES + 4096),
+                },
+            },
+        }
+        payload = json.dumps(result, separators=(",", ":")).encode("utf-8")
+        self.assertGreater(len(payload), MODULE.MAX_RESPONSE_BYTES)
+        self.assertLess(len(payload), MODULE.MAX_H2_RESPONSE_BYTES)
+
+        class Response:
+            status = 200
+
+            def getheaders(self):
+                return [("Content-Type", "application/json; charset=utf-8")]
+
+            def read(self, size):
+                return payload[:size]
+
+        class Connection:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def putrequest(self, *_args, **_kwargs):
+                pass
+
+            def putheader(self, *_args, **_kwargs):
+                pass
+
+            def endheaders(self, *_args, **_kwargs):
+                pass
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        with (
+            mock.patch.object(
+                MODULE, "read_backend_action_token", return_value="x" * 32
+            ),
+            mock.patch.object(
+                MODULE, "h2_annotation_backend_timeout_seconds", return_value=120.0
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", Connection),
+        ):
+            status, forwarded, _redactions = MODULE.write_backend_h2_action(
+                {
+                    "operation": "annotate",
+                    "material_id": "a" * 24,
+                    "title": "",
+                    "note": "",
+                    "tags": [],
+                }
+            )
+        self.assertEqual(status, 200)
+        self.assertGreater(len(forwarded), MODULE.MAX_RESPONSE_BYTES)
+
+    def test_h2_workspace_and_action_timeouts_cover_backend_contract(self):
+        workspace_budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_workspace_budget",
+            "workspace_timeout_seconds": 333.0,
+            "annotation_timeout_seconds": 444.0,
+            "read_only": True,
+            "source_mutated": False,
+        }
+        source_budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_source_budget",
+            "source_timeout_seconds": 111.0,
+            "source_budget_available": True,
+            "read_only": True,
+            "source_mutated": False,
+        }
+        library_budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_library_budget",
+            "library_timeout_seconds": 222.0,
+            "annotation_timeout_seconds": 444.0,
+            "read_only": True,
+            "source_mutated": False,
+        }
+
+        def budget_readback(target, _headers):
+            if target == "/api/v1/h2/budget":
+                payload = workspace_budget
+            elif target == "/api/v1/h2/source/budget":
+                payload = source_budget
+            elif target == "/api/v1/h2/library/budget":
+                payload = library_budget
+            else:
+                raise AssertionError(f"unexpected budget target: {target}")
+            return 200, [], json.dumps(payload).encode("utf-8"), 0
+
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            side_effect=budget_readback,
+        ) as readback:
+            self.assertEqual(
+                MODULE.h2_workspace_backend_timeout_seconds(),
+                333.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+            self.assertEqual(
+                MODULE.h2_source_backend_timeout_seconds(),
+                111.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+            self.assertEqual(
+                MODULE.h2_library_backend_timeout_seconds(),
+                222.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+            self.assertEqual(
+                MODULE.h2_annotation_backend_timeout_seconds(),
+                444.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+        self.assertEqual(
+            [call.args[0] for call in readback.call_args_list],
+            [
+                "/api/v1/h2/budget",
+                "/api/v1/h2/source/budget",
+                "/api/v1/h2/library/budget",
+                "/api/v1/h2/library/budget",
+            ],
+        )
+
+        invalid = dict(library_budget)
+        invalid["annotation_timeout_seconds"] = None
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(invalid).encode("utf-8"), 0),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.h2_annotation_backend_timeout_seconds()
+
+        observed: list[float | None] = []
+
+        class TimeoutProbeConnection:
+            def __init__(self, _host, _port, *, timeout):
+                observed.append(timeout)
+
+            def putrequest(self, *_args, **_kwargs):
+                raise TimeoutError
+
+            def close(self):
+                return None
+
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/budget", {})
+        self.assertEqual(
+            observed,
+            [MODULE.H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/source/budget", {})
+        self.assertEqual(
+            observed,
+            [MODULE.H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/library/budget", {})
+        self.assertEqual(
+            observed,
+            [MODULE.H2_LIBRARY_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_workspace_backend_timeout_seconds",
+                return_value=987.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2", {})
+        self.assertEqual(observed, [987.0])
+
+        observed.clear()
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_source_backend_timeout_seconds",
+                return_value=765.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/source", {})
+        self.assertEqual(observed, [765.0])
+
+        observed.clear()
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_library_backend_timeout_seconds",
+                return_value=876.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/library", {})
+        self.assertEqual(observed, [876.0])
+
+        observed.clear()
+        with (
+            mock.patch.object(MODULE, "read_backend_action_token", return_value="x" * 32),
+            mock.patch.object(
+                MODULE,
+                "h2_import_backend_timeout_seconds",
+                return_value=987.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.write_backend_h2_action(
+                    {"operation": "import", "scene": "170926_191401"}
+                )
+        self.assertEqual(observed, [987.0])
+
+        observed.clear()
+        with (
+            mock.patch.object(MODULE, "read_backend_action_token", return_value="x" * 32),
+            mock.patch.object(
+                MODULE,
+                "h2_annotation_backend_timeout_seconds",
+                return_value=654.0,
+            ),
+            mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.write_backend_h2_action(
+                    {
+                        "operation": "annotate",
+                        "material_id": "a" * 24,
+                        "title": "",
+                        "note": "",
+                        "tags": [],
+                    }
+                )
+        self.assertEqual(observed, [654.0])
+
     def test_recording_prepare_timeout_covers_full_path_convergence_budget(self):
         self.assertEqual(
             MODULE.recording_backend_timeout_seconds("plan"),
@@ -1124,6 +1849,182 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(len(FakeBackendHandler.records), before)
 
+    def test_remote_h2_uses_separate_material_effect_lock(self):
+        token = self.issue_remote_session()
+        headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        body = json.dumps(
+            {"operation": "import", "scene": "170926_191401"}
+        ).encode("utf-8")
+
+        before = len(FakeBackendHandler.records)
+        self.assertTrue(self.bridge._action_lock.acquire(blocking=False))
+        try:
+            status, _response_headers, _payload = self.request(
+                "POST",
+                MODULE.REMOTE_H2_ACTION_ROUTE,
+                headers=headers,
+                body=body,
+            )
+        finally:
+            self.bridge._action_lock.release()
+        self.assertEqual(status, 200)
+        self.assertGreater(len(FakeBackendHandler.records), before)
+
+        self.assertTrue(self.bridge._material_action_lock.acquire(blocking=False))
+        try:
+            recording_before = len(FakeBackendHandler.records)
+            recording_status, _response_headers, _payload = self.request(
+                "POST",
+                MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+                headers=headers,
+                body=json.dumps(
+                    {
+                        "operation": "plan",
+                        "mode": "voice",
+                        "name": "while-h2-locked.wav",
+                        "maximum_seconds": 60,
+                    }
+                ).encode("utf-8"),
+            )
+            self.assertEqual(recording_status, 200)
+            self.assertGreater(len(FakeBackendHandler.records), recording_before)
+
+            h2_before = len(FakeBackendHandler.records)
+            h2_status, _response_headers, _payload = self.request(
+                "POST",
+                MODULE.REMOTE_H2_ACTION_ROUTE,
+                headers=headers,
+                body=body,
+            )
+        finally:
+            self.bridge._material_action_lock.release()
+        self.assertEqual(h2_status, 409)
+        self.assertEqual(len(FakeBackendHandler.records), h2_before)
+
+    def test_remote_h2_rejects_unencodable_annotation_before_backend_dispatch(self):
+        token = self.issue_remote_session()
+        headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        before = len(FakeBackendHandler.records)
+        body = (
+            '{"operation":"annotate","material_id":"'
+            + ("a" * 24)
+            + '","title":"\\ud800","note":"","tags":[]}'
+        ).encode("ascii")
+        status, _response_headers, _payload = self.request(
+            "POST",
+            MODULE.REMOTE_H2_ACTION_ROUTE,
+            headers=headers,
+            body=body,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(len(FakeBackendHandler.records), before)
+
+    def test_remote_h2_workspace_media_and_actions_are_scoped_without_delete_authority(self):
+        status, headers, payload = self.request("GET", "/api/v1/h2")
+        self.assertEqual(status, 200)
+        workspace = json.loads(payload)
+        self.assertEqual(workspace["kind"], "audio_h2_workspace")
+        self.assertIs(workspace["source_delete_authorized"], False)
+        self.assertEqual(headers["X-Audio-Remote-Bridge"], "read-only-v1")
+
+        for path in (
+            "/api/v1/h2/source/170926_191401/audio/0",
+            "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0",
+        ):
+            with self.subTest(path=path):
+                status, media_headers, media = self.request(
+                    "GET", path, headers={"Range": "bytes=0-3"}
+                )
+                self.assertEqual(status, 206)
+                self.assertEqual(media, b"RIFF")
+                self.assertEqual(media_headers["Content-Type"], "audio/wav")
+                self.assertEqual(media_headers["Content-Range"], "bytes 0-3/16")
+
+        token = self.issue_remote_session()
+        action_headers = {
+            **self.remote_headers(),
+            "Origin": f"https://{MODULE.REMOTE_TAILNET_HOST}",
+            "Content-Type": "application/json",
+            MODULE.REMOTE_ACTION_TOKEN_HEADER: token,
+        }
+        for action in (
+            {"operation": "import", "scene": "170926_191401"},
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "Metallgeländer",
+                "note": "erste Zeile\nzweite Zeile\tDetail",
+                "tags": ["Metall"],
+            },
+            {
+                "operation": "annotate",
+                "material_id": "a" * 24,
+                "title": "😀" * 160,
+                "note": "😀" * 2000,
+                "tags": ["😀" * 48] * 16,
+            },
+        ):
+            with self.subTest(action=action):
+                before = len(FakeBackendHandler.records)
+                status, response_headers, response_payload = self.request(
+                    "POST",
+                    MODULE.REMOTE_H2_ACTION_ROUTE,
+                    headers=action_headers,
+                    body=json.dumps(
+                        action, ensure_ascii=False, separators=(",", ":")
+                    ).encode("utf-8"),
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    response_headers["X-Audio-Remote-Bridge"],
+                    MODULE.BRIDGE_H2_ACTION_HEADER,
+                )
+                self.assertEqual(
+                    response_headers[MODULE.REMOTE_EFFECTS_HEADER],
+                    MODULE.REMOTE_H2_EFFECTS_VALUE,
+                )
+                decoded = json.loads(response_payload)
+                self.assertEqual(decoded["kind"], "audio_control_h2_action_result")
+                self.assertEqual(decoded["operation"], action["operation"])
+                records = FakeBackendHandler.records[before:]
+                expected_methods = (
+                    ["GET", "GET", "GET", "POST"]
+                    if action["operation"] == "import"
+                    else ["GET", "GET", "POST"]
+                )
+                self.assertEqual(
+                    [record["method"] for record in records],
+                    expected_methods,
+                )
+                self.assertEqual(records[-1]["path"], "/api/v1/actions/h2")
+                self.assertEqual(json.loads(records[-1]["body"]), action)
+                self.assertLessEqual(
+                    len(records[-1]["body"]),
+                    MODULE.MAX_H2_ACTION_BODY_BYTES,
+                )
+
+        before = len(FakeBackendHandler.records)
+        status, _headers, _payload = self.request(
+            "POST",
+            MODULE.REMOTE_H2_ACTION_ROUTE,
+            headers=action_headers,
+            body=json.dumps(
+                {"operation": "delete-source", "scene": "170926_191401"}
+            ).encode(),
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(len(FakeBackendHandler.records), before)
+
     def test_bridge_health_is_local_contract_truth_only(self):
         status, headers, payload = self.request("GET", "/bridge/v1/health")
         self.assertEqual(status, 200)
@@ -1139,18 +2040,26 @@ class BridgeHTTPTests(unittest.TestCase):
                 "whale:mode",
                 "whale:stop",
                 "recording:plan",
+                "recording:prepare",
                 "recording:start",
                 "recording:stop",
                 "recording:recover",
                 "recording:categorize",
                 "recording:trash",
                 "recording:restore",
+                "h2:import",
+                "h2:annotate",
             ],
         )
         self.assertNotIn("recording", health["effect_exclusions"])
+        self.assertIn("h2:delete-source", health["effect_exclusions"])
         self.assertEqual(
             health["remote_action"]["recording_action_route"],
             MODULE.REMOTE_RECORDING_ACTION_ROUTE,
+        )
+        self.assertEqual(
+            health["remote_action"]["h2_action_route"],
+            MODULE.REMOTE_H2_ACTION_ROUTE,
         )
         self.assertIs(health["remote_action"]["backend_token_exposed"], False)
         self.assertIs(health["remote_action"]["tailscale_identity_required"], True)

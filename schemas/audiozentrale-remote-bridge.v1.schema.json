@@ -59,6 +59,8 @@
         "snapshot_queries",
         "profile_plan_pattern",
         "recording_media_pattern",
+        "h2_material_media_pattern",
+        "h2_source_media_pattern",
         "request_header_forward",
         "backend_headers_synthesized",
         "response_header_forward",
@@ -105,7 +107,13 @@
             "/api/v1/telemetry",
             "/api/v1/replay",
             "/api/v1/whale/lesson",
-            "/api/v1/recordings"
+            "/api/v1/recordings",
+            "/api/v1/h2",
+            "/api/v1/h2/budget",
+            "/api/v1/h2/source",
+            "/api/v1/h2/source/budget",
+            "/api/v1/h2/library",
+            "/api/v1/h2/library/budget"
           ]
         },
         "snapshot_queries": {
@@ -193,12 +201,15 @@
             "whale:mode",
             "whale:stop",
             "recording:plan",
+            "recording:prepare",
             "recording:start",
             "recording:stop",
             "recording:recover",
             "recording:categorize",
             "recording:trash",
-            "recording:restore"
+            "recording:restore",
+            "h2:import",
+            "h2:annotate"
           ]
         },
         "effect_exclusions": {
@@ -206,7 +217,8 @@
             "profiles",
             "routing",
             "devices",
-            "system"
+            "system",
+            "h2:delete-source"
           ]
         },
         "remote_action": {
@@ -234,7 +246,12 @@
             "recording_operations",
             "recording_modes",
             "recording_action_response_marker",
-            "recording_effects_value"
+            "recording_effects_value",
+            "h2_action_route",
+            "h2_max_body_bytes",
+            "h2_operations",
+            "h2_action_response_marker",
+            "h2_effects_value"
           ],
           "properties": {
             "session_route": {
@@ -303,6 +320,7 @@
             "recording_operations": {
               "const": [
                 "plan",
+                "prepare",
                 "start",
                 "stop",
                 "recover",
@@ -322,6 +340,24 @@
             },
             "recording_effects_value": {
               "const": "recording-v1"
+            },
+            "h2_action_route": {
+              "const": "/bridge/v1/actions/h2"
+            },
+            "h2_max_body_bytes": {
+              "const": 16384
+            },
+            "h2_operations": {
+              "const": [
+                "import",
+                "annotate"
+              ]
+            },
+            "h2_action_response_marker": {
+              "const": "h2-action-v1"
+            },
+            "h2_effects_value": {
+              "const": "h2-material-v1"
             }
           }
         },
@@ -330,6 +366,12 @@
         },
         "backend_remote_exposure": {
           "const": false
+        },
+        "h2_source_media_pattern": {
+          "const": "/api/v1/h2/source/{scene}/audio/{segment_index}"
+        },
+        "h2_material_media_pattern": {
+          "const": "/api/v1/h2/material/{material_id}/audio/{segment_index}"
         }
       }
     },

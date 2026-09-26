@@ -224,6 +224,21 @@
         </section>
 
         <section class="view" id="view-material" data-view="material" hidden>
+          <article class="depth-panel h2-panel" id="h2-material-workspace" data-zone="library" data-depth-panel data-workspace-panel data-focus-title="H2-Klangmaterial" data-focus-summary="Neue H2-Aufnahmen anhören, unverändert archivieren und mit Titel, Notiz und Tags wiederfinden.">
+            <header class="depth-heading"><div><p class="eyebrow">Field Recording</p><h2>Neue H2-Aufnahmen</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
+            <p class="callout h2-status" id="h2-status">H2 wird gelesen.</p>
+            <section class="h2-section" aria-labelledby="h2-inbox-title">
+              <div class="section-heading compact"><div><p class="eyebrow">Vom Recorder</p><h3 id="h2-inbox-title">Neue Aufnahmen</h3></div><button class="secondary-button" id="h2-refresh" type="button">H2 neu lesen</button></div>
+              <div class="h2-grid" id="h2-inbox" aria-live="polite"></div>
+            </section>
+            <section class="h2-section" aria-labelledby="h2-archive-title">
+              <div class="section-heading compact"><div><p class="eyebrow">Behalten</p><h3 id="h2-archive-title">Mein Klangmaterial</h3></div></div>
+              <p class="library-delete-note">Originale werden beim Archivieren nicht vom H2 gelöscht. Eine Löschfreigabe gibt es erst nach verifizierter zweiter Sicherung.</p>
+              <div class="h2-grid" id="h2-library" aria-live="polite"></div>
+            </section>
+            <div class="depth-detail" hidden><p class="callout">Masterdateien bleiben unverändert. Titel, Notiz und Tags liegen getrennt daneben. Kreative Übergaben an Bitwig oder Ardour werden erst nach eigener Abnahme freigeschaltet.</p></div>
+          </article>
+
           <article class="depth-panel" id="material-library" data-zone="library" data-depth-panel data-workspace-panel data-focus-title="Bibliothek" data-focus-summary="Takes bleiben unveränderlich; Kategorien und Papierkorb sind getrennte Bibliotheksmetadaten.">
             <header class="depth-heading"><div><p class="eyebrow">Aufnahmen und Klänge</p><h2>Bibliothek</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
             <div class="library-toolbar" aria-label="Aufnahmen sortieren und filtern">

@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "4158715fbf2c2fe1c6112e34f4ac99db0930a438ef83ad81aee1ef45a2becba8"
+    "sha256": "868183262767c6d584d9f2b748840e0fe7b072a8d2544f1e5732883801409f1a"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -39,7 +39,13 @@
       "/api/v1/telemetry",
       "/api/v1/replay",
       "/api/v1/whale/lesson",
-      "/api/v1/recordings"
+      "/api/v1/recordings",
+      "/api/v1/h2",
+      "/api/v1/h2/budget",
+      "/api/v1/h2/source",
+      "/api/v1/h2/source/budget",
+      "/api/v1/h2/library",
+      "/api/v1/h2/library/budget"
     ],
     "snapshot_queries": [
       "",
@@ -88,18 +94,22 @@
       "whale:mode",
       "whale:stop",
       "recording:plan",
+      "recording:prepare",
       "recording:start",
       "recording:stop",
       "recording:recover",
       "recording:categorize",
       "recording:trash",
-      "recording:restore"
+      "recording:restore",
+      "h2:import",
+      "h2:annotate"
     ],
     "effect_exclusions": [
       "profiles",
       "routing",
       "devices",
-      "system"
+      "system",
+      "h2:delete-source"
     ],
     "remote_action": {
       "session_route": "/bridge/v1/session",
@@ -131,6 +141,7 @@
       "recording_max_body_bytes": 1024,
       "recording_operations": [
         "plan",
+        "prepare",
         "start",
         "stop",
         "recover",
@@ -143,8 +154,18 @@
         "piano-vocal"
       ],
       "recording_action_response_marker": "recording-action-v1",
-      "recording_effects_value": "recording-v1"
-    }
+      "recording_effects_value": "recording-v1",
+      "h2_action_route": "/bridge/v1/actions/h2",
+      "h2_max_body_bytes": 16384,
+      "h2_operations": [
+        "import",
+        "annotate"
+      ],
+      "h2_action_response_marker": "h2-action-v1",
+      "h2_effects_value": "h2-material-v1"
+    },
+    "h2_source_media_pattern": "/api/v1/h2/source/{scene}/audio/{segment_index}",
+    "h2_material_media_pattern": "/api/v1/h2/material/{material_id}/audio/{segment_index}"
   },
   "tailscale_serve": {
     "tool": "tailscale serve",

@@ -5,14 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+NotifyAccess=main
 EnvironmentFile=-%h/.config/audio-control-deploy.env
 ExecStart=/usr/bin/python3 %h/.local/libexec/audio-control-deploy.py sync
-TimeoutStartSec=5min
+TimeoutStartSec=15min
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/share/audio-control-ui %h/.local/state/audio-control-deploy %h/.local/libexec %h/.config/systemd/user
+ReadWritePaths=%h/.local/share/audio-control-ui %h/.local/state/audio-control-deploy %h/.local/libexec %h/.config/systemd/user -%h/Music/Audio-Aufnahmen/H2-Material -%h/Music/Audio-Material/H2
 ProtectControlGroups=yes
 ProtectKernelTunables=yes
 LockPersonality=yes
