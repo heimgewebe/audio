@@ -108,6 +108,32 @@ def make_source(
     return source
 
 
+def assert_control_migration_pending(
+    testcase: unittest.TestCase,
+    library: pathlib.Path,
+    material_id: str,
+    metadata: list[str],
+) -> None:
+    report = MODULE.library(library, projection="control")
+    testcase.assertEqual(report["count"], 0)
+    testcase.assertEqual(report["total_count"], 1)
+    testcase.assertEqual(report["projected_count"], 1)
+    testcase.assertFalse(report["truncated"])
+    testcase.assertEqual(report["migration_pending_count"], 1)
+    testcase.assertEqual(
+        report["migration_pending"],
+        [
+            {
+                "material_id": material_id,
+                "status": "migration_required",
+                "metadata": metadata,
+            }
+        ],
+    )
+    with testcase.assertRaises(MODULE.H2IngestError):
+        MODULE.library(library)
+
+
 class H2IngestTests(unittest.TestCase):
     def test_library_root_prefers_primary_and_falls_back_only_to_legacy_material(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -524,11 +550,12 @@ class H2IngestTests(unittest.TestCase):
             os.chmod(manifest_path, 0o440)
             before = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
-            with self.assertRaisesRegex(
-                MODULE.H2IngestError,
-                "Control-Sidecar|sicher lesbar|nicht lesbar",
-            ):
-                MODULE.library(library, projection="control")
+            assert_control_migration_pending(
+                self,
+                library,
+                result["material_id"],
+                ['manifest.json'],
+            )
 
             migration = MODULE.migrate_legacy_manifests(library)
             self.assertEqual(migration["migrated"], 1)
@@ -621,11 +648,12 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
             self.assertNotEqual(after.st_ino, before.st_ino)
 
-            with self.assertRaisesRegex(
-                MODULE.H2IngestError,
-                "aktuelle, gebundene Control-Sidecar",
-            ):
-                MODULE.library(library, projection="control")
+            assert_control_migration_pending(
+                self,
+                library,
+                result["material_id"],
+                ['manifest.json'],
+            )
 
             rebound = MODULE.migrate_legacy_manifests(library)
             self.assertEqual(rebound["manifest_migrated"], 1)
@@ -706,11 +734,12 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
             self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
 
-            with self.assertRaisesRegex(
-                MODULE.H2IngestError,
-                "aktuelle, gebundene Control-Sidecar",
-            ):
-                MODULE.library(library, projection="control")
+            assert_control_migration_pending(
+                self,
+                library,
+                result["material_id"],
+                ['manifest.json'],
+            )
 
             rebound = MODULE.migrate_legacy_manifests(library)
             self.assertEqual(rebound["manifest_migrated"], 1)
@@ -758,6 +787,24 @@ class H2IngestTests(unittest.TestCase):
             before = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             real_loads = json.loads
 
+            with (
+                mock.patch.object(MODULE, "MAX_METADATA_JSON_BYTES", 8192),
+                mock.patch.object(
+                    pathlib.Path,
+                    "read_text",
+                    side_effect=AssertionError(
+                        "legacy manifest projection must not materialize the whole file"
+                    ),
+                ),
+            ):
+                direct_projection = MODULE._read_legacy_manifest_projection(
+                    manifest_path
+                )
+            self.assertEqual(
+                direct_projection["masters"][0]["audio"],
+                expected_audio,
+            )
+
             def bounded_loads(value, *args, **kwargs):
                 self.assertLessEqual(len(value), 8192)
                 return real_loads(value, *args, **kwargs)
@@ -783,6 +830,28 @@ class H2IngestTests(unittest.TestCase):
                 library_root=library,
             )
             self.assertEqual(media["duration_seconds"], expected_duration)
+
+    def test_legacy_manifest_projection_rejects_invalid_utf8_in_skipped_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            manifest_path = library / result["material_id"] / "manifest.json"
+            raw = manifest_path.read_bytes().rstrip()
+            payload = raw[:-1] + b',"legacy_padding":"\xff"}\n'
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_bytes(payload)
+            os.chmod(manifest_path, 0o440)
+            with (
+                mock.patch.object(MODULE, "MAX_METADATA_JSON_BYTES", 128),
+                self.assertRaisesRegex(MODULE.H2IngestError, "nicht sicher lesbar"),
+            ):
+                MODULE._read_legacy_manifest_projection(manifest_path)
 
     def test_legacy_manifest_stream_projection_rejects_invalid_skipped_json(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -858,11 +927,12 @@ class H2IngestTests(unittest.TestCase):
             annotations_path.write_bytes(oversized)
             before = hashlib.sha256(oversized).hexdigest()
 
-            with self.assertRaisesRegex(
-                MODULE.H2IngestError,
-                "Control-Sidecar|Größenlimit|nicht lesbar",
-            ):
-                MODULE.library(library, projection="control")
+            assert_control_migration_pending(
+                self,
+                library,
+                result["material_id"],
+                ['annotations.json'],
+            )
 
             migration = MODULE.migrate_legacy_manifests(library)
             self.assertEqual(
@@ -1090,6 +1160,52 @@ class H2IngestTests(unittest.TestCase):
 
             self.assertEqual(control_path.read_text(encoding="utf-8"), "{}")
 
+    def test_control_library_does_not_mask_legacy_sidecar_io_error_as_pending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            result = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / result["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = [
+                "x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)
+            ]
+            annotations_path.write_bytes(
+                MODULE._canonical_bytes(annotations) + b"\n"
+            )
+            MODULE.migrate_legacy_manifests(library)
+            control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            real_read = MODULE._read_json_regular
+
+            def fail_control_read(path, **kwargs):
+                if path == control_path:
+                    try:
+                        raise PermissionError("denied")
+                    except PermissionError as cause:
+                        raise MODULE.H2IngestError(
+                            "Metadatendatei ist nicht sicher lesbar."
+                        ) from cause
+                return real_read(path, **kwargs)
+
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_read_json_regular",
+                    side_effect=fail_control_read,
+                ),
+                self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "nicht sicher lesbar",
+                ),
+            ):
+                MODULE.library(library, projection="control")
+
     def test_legacy_annotation_binding_fails_closed_after_original_tamper(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1110,11 +1226,12 @@ class H2IngestTests(unittest.TestCase):
             os.chmod(annotations_path, 0o600)
             annotations_path.write_bytes(annotations_path.read_bytes() + b" ")
             os.chmod(annotations_path, 0o440)
-            with self.assertRaisesRegex(
-                MODULE.H2IngestError,
-                "aktuelle, gebundene Control-Sidecar",
-            ):
-                MODULE.library(library, projection="control")
+            assert_control_migration_pending(
+                self,
+                library,
+                result["material_id"],
+                ['annotations.json'],
+            )
             with self.assertRaisesRegex(
                 MODULE.H2IngestError,
                 "aktuelle, gebundene Control-Sidecar",
@@ -1162,11 +1279,12 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(after.st_ino, before.st_ino)
             self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
 
-            with self.assertRaisesRegex(
-                MODULE.H2IngestError,
-                "aktuelle, gebundene Control-Sidecar",
-            ):
-                MODULE.library(library, projection="control")
+            assert_control_migration_pending(
+                self,
+                library,
+                result["material_id"],
+                ['annotations.json'],
+            )
 
             with self.assertRaisesRegex(
                 MODULE.H2IngestError,
@@ -1488,6 +1606,83 @@ class H2IngestTests(unittest.TestCase):
             self.assertEqual(receipt["status"], "success")
             self.assertRegex(receipt["postcondition_sha256"], r"^[0-9a-f]{64}$")
 
+    def test_durable_receipt_survives_compact_import_between_handoff_and_worker_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            second_scene = "180926_191401"
+            second_session = source / second_scene
+            second_session.mkdir()
+            write_h2_wav(
+                second_session / f"{second_scene}_FRONT.WAV",
+                scene=second_scene,
+                role="FRONT",
+            )
+            library = root / "library"
+            imported = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / imported["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+            annotations["markers"] = [
+                "x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)
+            ]
+            annotations_path.write_bytes(
+                MODULE._canonical_bytes(annotations) + b"\n"
+            )
+            commit = "d" * 40
+            inactive = {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+            }
+            compact_imports = []
+
+            def launch(_root, initial_inventory):
+                self.assertEqual(initial_inventory["material_count"], 1)
+                compact_imports.append(
+                    MODULE.import_scene(
+                        second_scene,
+                        source_root=source,
+                        library_root=library,
+                    )
+                )
+                MODULE._run_legacy_migration_worker(library)
+                return MODULE._legacy_migration_worker_unit(library)
+
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_durable_migration_release_commit",
+                    return_value=commit,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_legacy_migration_systemd_state",
+                    return_value=inactive,
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_launch_legacy_migration_worker",
+                    side_effect=launch,
+                ) as launcher,
+            ):
+                result = MODULE.migrate_legacy_manifests_durable(library)
+
+            launcher.assert_called_once()
+            self.assertEqual(len(compact_imports), 1)
+            self.assertTrue(result["durable_receipt_reused"])
+            receipt = MODULE._read_json_regular(
+                library / MODULE.LEGACY_MIGRATION_RECEIPT_NAME
+            )
+            self.assertEqual(receipt["material_count"], 2)
+            projected = MODULE.library(library, projection="control")
+            self.assertEqual(projected["count"], 2)
+            self.assertEqual(projected["migration_pending_count"], 0)
+
     def test_annotation_and_migration_preparation_hold_shared_library_lock(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1651,6 +1846,30 @@ class H2IngestTests(unittest.TestCase):
                 MODULE.library(library, projection="control")["count"],
                 1,
             )
+
+    def test_legacy_migration_timeout_accounts_for_three_full_file_passes(self):
+        inventory = {
+            "library_root": "/tmp/example",
+            "material_count": 2,
+            "candidate_file_count": 1,
+            "candidate_bytes": 4 * 1024 * 1024,
+            "candidate_metadata_sha256": "0" * 64,
+        }
+        expected_io_seconds = (
+            inventory["candidate_bytes"] * 3
+            + MODULE.LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND
+            - 1
+        ) // MODULE.LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND
+        expected = (
+            MODULE.LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS
+            + inventory["material_count"] * MODULE.LEGACY_MIGRATION_PER_MATERIAL_SECONDS
+            + expected_io_seconds
+        )
+        self.assertEqual(MODULE.LEGACY_MIGRATION_IO_PASSES, 3)
+        self.assertEqual(
+            MODULE._legacy_migration_timeout_seconds(inventory),
+            expected,
+        )
 
     def test_durable_worker_is_detached_bounded_and_uses_immutable_release_script(self):
         with tempfile.TemporaryDirectory() as directory:

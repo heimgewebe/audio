@@ -1343,6 +1343,24 @@ async function fetchJson(url, options) {{
         self.assertEqual(result["first"]["token"], "n" * 32)
         self.assertEqual(result["second"]["token"], "n" * 32)
 
+    def test_h2_pending_migration_cards_expose_no_media_or_mutation_authority(self):
+        app = read("app.js")
+        self.assertIn(
+            "const migrationPending = Array.isArray(library.migration_pending)",
+            app,
+        )
+        start = app.index("for (const pending of migrationPending)")
+        end = app.index("for (const item of items)", start)
+        pending_block = app[start:end]
+        self.assertIn("Archiv · Migration erforderlich", pending_block)
+        self.assertIn(
+            "Bis zum gültigen Migrationsbeleg bleiben Wiedergabe und Bearbeitung dieses Materials gesperrt.",
+            pending_block,
+        )
+        self.assertNotIn("appendH2Audio", pending_block)
+        self.assertNotIn("runH2Action", pending_block)
+        self.assertNotIn("primary-button", pending_block)
+
     def test_h2_audio_defers_native_media_load_until_explicit_interaction(self):
         helper = self.app.split("function appendH2Audio", 1)[1].split(
             "\nfunction renderH2Workspace", 1

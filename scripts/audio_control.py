@@ -4002,22 +4002,63 @@ class AudioControl:
 
     @staticmethod
     def _validate_h2_library(report: dict[str, Any]) -> None:
+        items = report.get("items")
+        migration_pending = report.get("migration_pending", [])
+        count = report.get("count")
+        pending_count = report.get(
+            "migration_pending_count",
+            len(migration_pending) if isinstance(migration_pending, list) else -1,
+        )
+        projected_count = report.get(
+            "projected_count",
+            (
+                len(items) + len(migration_pending)
+                if isinstance(items, list) and isinstance(migration_pending, list)
+                else -1
+            ),
+        )
+        total_count = report.get("total_count")
         if (
             report.get("schema_version") != 1
             or report.get("kind") != "audio_material_library"
             or report.get("projection") != "control-v1"
             or report.get("read_only") is not True
-            or not isinstance(report.get("items"), list)
-            or report.get("count") != len(report["items"])
-            or isinstance(report.get("total_count"), bool)
-            or not isinstance(report.get("total_count"), int)
-            or report["total_count"] < report["count"]
+            or not isinstance(items, list)
+            or count != len(items)
+            or not isinstance(migration_pending, list)
+            or isinstance(pending_count, bool)
+            or not isinstance(pending_count, int)
+            or pending_count != len(migration_pending)
+            or isinstance(projected_count, bool)
+            or not isinstance(projected_count, int)
+            or projected_count != len(items) + len(migration_pending)
+            or projected_count > H2_MAX_CONTROL_LIBRARY_ITEMS
+            or isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < projected_count
             or not isinstance(report.get("truncated"), bool)
-            or report["truncated"] is not (report["total_count"] > report["count"])
-            or report["count"] > H2_MAX_CONTROL_LIBRARY_ITEMS
+            or report["truncated"] is not (total_count > projected_count)
         ):
             raise ControlError("H2-Materialbibliothek ist nicht sicher lesbar.")
-        for item in report["items"]:
+        for pending in migration_pending:
+            metadata = pending.get("metadata") if isinstance(pending, dict) else None
+            if (
+                not isinstance(pending, dict)
+                or not isinstance(pending.get("material_id"), str)
+                or re.fullmatch(r"[0-9a-f]{24}", pending["material_id"]) is None
+                or pending.get("status") != "migration_required"
+                or not isinstance(metadata, list)
+                or not metadata
+                or len(metadata) != len(set(metadata))
+                or not all(
+                    name in {"manifest.json", "annotations.json"}
+                    for name in metadata
+                )
+            ):
+                raise ControlError(
+                    "H2-Materialbibliothek enthält einen ungültigen Migrationshinweis."
+                )
+        for item in items:
             annotations = item.get("annotations") if isinstance(item, dict) else None
             source = item.get("source") if isinstance(item, dict) else None
             roles = item.get("roles") if isinstance(item, dict) else None
@@ -4114,10 +4155,14 @@ class AudioControl:
                     ),
                 }
             )
+        migration_pending = list(library_report.get("migration_pending", []))
         return {
             "count": len(items),
             "total_count": library_report["total_count"],
+            "projected_count": len(items) + len(migration_pending),
             "truncated": library_report["truncated"],
+            "migration_pending": migration_pending,
+            "migration_pending_count": len(migration_pending),
             "items": items,
         }
 

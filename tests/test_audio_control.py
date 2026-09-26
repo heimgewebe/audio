@@ -5147,6 +5147,54 @@ class H2MaterialControlTests(unittest.TestCase):
             controller._h2_annotation_command_timeout(),
         )
 
+    def test_h2_library_accepts_only_bounded_migration_pending_projection(self):
+        report = {
+            "schema_version": 1,
+            "kind": "audio_material_library",
+            "projection": "control-v1",
+            "read_only": True,
+            "items": [],
+            "count": 0,
+            "total_count": 1,
+            "projected_count": 1,
+            "truncated": False,
+            "migration_pending": [
+                {
+                    "material_id": "a" * 24,
+                    "status": "migration_required",
+                    "metadata": ["manifest.json"],
+                }
+            ],
+            "migration_pending_count": 1,
+        }
+        MODULE.AudioControl._validate_h2_library(report)
+
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        with mock.patch.object(
+            controller,
+            "_h2_library_report",
+            return_value=report,
+        ):
+            projected = controller._h2_library_projection()
+        self.assertEqual(projected["count"], 0)
+        self.assertEqual(projected["projected_count"], 1)
+        self.assertEqual(projected["migration_pending_count"], 1)
+        self.assertEqual(projected["migration_pending"], report["migration_pending"])
+
+        invalid = dict(report)
+        invalid["migration_pending"] = [
+            {
+                "material_id": "a" * 24,
+                "status": "migration_required",
+                "metadata": ["master.wav"],
+            }
+        ]
+        with self.assertRaisesRegex(
+            MODULE.ControlError,
+            "Migrationshinweis",
+        ):
+            MODULE.AudioControl._validate_h2_library(invalid)
+
     def test_h2_surface_is_task_named_and_has_no_delete_action(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         html = (ROOT / "ui" / "index.html").read_text()

@@ -11,12 +11,14 @@ immutable manifest plus separate mutable annotations.
 from __future__ import annotations
 
 import argparse
+import codecs
 import heapq
 import datetime as dt
 import fcntl
 import hashlib
 import json
 import math
+import mmap
 import os
 import pathlib
 import re
@@ -66,7 +68,7 @@ LEGACY_ANNOTATIONS_CONTROL_NAME = "annotations.control-v1.json"
 LEGACY_MIGRATION_RECEIPT_NAME = ".h2-legacy-migration-v1.json"
 LEGACY_MIGRATION_WORKER_MEMORY_MAX_BYTES = 512 * 1024 * 1024
 LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND = 512 * 1024
-LEGACY_MIGRATION_IO_PASSES = 2
+LEGACY_MIGRATION_IO_PASSES = 3
 LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS = 60
 LEGACY_MIGRATION_PER_MATERIAL_SECONDS = 1
 LEGACY_MIGRATION_RUNTIME_MARGIN_SECONDS = 5 * 60
@@ -949,9 +951,6 @@ def _read_json_regular(
     return value
 
 
-_JSON_NUMBER_RE = re.compile(
-    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
-)
 _JSON_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 _LEGACY_ANNOTATION_FIELDS = frozenset(
     {
@@ -1001,6 +1000,70 @@ _LEGACY_MANIFEST_AUDIO_FIELDS = frozenset(
     }
 )
 MAX_LEGACY_PROJECTION_SCALAR_JSON_BYTES = 64 * 1024
+
+
+def _validate_utf8_stream(handle: BinaryIO) -> None:
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    while True:
+        chunk = handle.read(COPY_CHUNK_BYTES)
+        if not chunk:
+            break
+        decoder.decode(chunk, final=False)
+    decoder.decode(b"", final=True)
+
+
+class _LegacyJsonView:
+    """Byte-backed UTF-8 JSON view that avoids materializing legacy files."""
+
+    def __init__(self, mapped: mmap.mmap):
+        self._mapped = mapped
+
+    def __len__(self) -> int:
+        return len(self._mapped)
+
+    def __getitem__(self, key: int | slice) -> str:
+        if isinstance(key, slice):
+            if key.step not in (None, 1):
+                raise ValueError("Legacy-JSON-Slices mit Schrittweite sind nicht erlaubt.")
+            return self._mapped[key].decode("utf-8")
+        return chr(self._mapped[key])
+
+    def startswith(self, prefix: str, start: int = 0) -> bool:
+        encoded = prefix.encode("ascii")
+        return self._mapped[start : start + len(encoded)] == encoded
+
+
+def _json_scan_number(value: Any, index: int) -> int | None:
+    end = index
+    if end < len(value) and value[end] == "-":
+        end += 1
+    if end >= len(value):
+        return None
+    if value[end] == "0":
+        end += 1
+    elif "1" <= value[end] <= "9":
+        end += 1
+        while end < len(value) and "0" <= value[end] <= "9":
+            end += 1
+    else:
+        return None
+    if end < len(value) and value[end] == ".":
+        end += 1
+        fraction_start = end
+        while end < len(value) and "0" <= value[end] <= "9":
+            end += 1
+        if end == fraction_start:
+            return None
+    if end < len(value) and value[end] in "eE":
+        end += 1
+        if end < len(value) and value[end] in "+-":
+            end += 1
+        exponent_start = end
+        while end < len(value) and "0" <= value[end] <= "9":
+            end += 1
+        if end == exponent_start:
+            return None
+    return end
 
 
 def _json_skip_whitespace(value: str, index: int) -> int:
@@ -1087,9 +1150,9 @@ def _json_skip_value(value: str, index: int, depth: int = 0) -> int:
     for literal in ("true", "false", "null", "NaN", "Infinity", "-Infinity"):
         if value.startswith(literal, index):
             return index + len(literal)
-    match = _JSON_NUMBER_RE.match(value, index)
-    if match is not None:
-        return match.end()
+    number_end = _json_scan_number(value, index)
+    if number_end is not None:
+        return number_end
     raise H2IngestError("Legacy-Materialannotation enthält ungültiges JSON.")
 
 
@@ -1481,31 +1544,35 @@ def _read_legacy_manifest_projection(
             "Legacy-Materialmanifest liegt außerhalb des Migrationslimits."
         )
     try:
-        value = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
+        with path.open("rb") as handle:
+            _validate_utf8_stream(handle)
+            handle.seek(0)
+            with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                value = _LegacyJsonView(mapped)
+                fields = _legacy_manifest_field_ranges(value)
+                return {
+                    "schema_version": _legacy_json_schema_version(
+                        value, fields.get("schema_version")
+                    ),
+                    "kind": _legacy_manifest_json_string(value, fields.get("kind")),
+                    "material_id": _legacy_manifest_json_string(
+                        value, fields.get("material_id")
+                    ),
+                    "source": _legacy_manifest_source_projection(
+                        value, fields.get("source")
+                    ),
+                    "imported_at": _legacy_manifest_json_string(
+                        value, fields.get("imported_at")
+                    ),
+                    "master_set_sha256": _legacy_manifest_json_string(
+                        value, fields.get("master_set_sha256")
+                    ),
+                    "masters": _legacy_manifest_masters_projection(
+                        value, fields.get("masters")
+                    ),
+                }
+    except (OSError, UnicodeError, ValueError) as exc:
         raise H2IngestError("Legacy-Materialmanifest ist nicht sicher lesbar.") from exc
-    fields = _legacy_manifest_field_ranges(value)
-    return {
-        "schema_version": _legacy_json_schema_version(
-            value, fields.get("schema_version")
-        ),
-        "kind": _legacy_manifest_json_string(value, fields.get("kind")),
-        "material_id": _legacy_manifest_json_string(
-            value, fields.get("material_id")
-        ),
-        "source": _legacy_manifest_source_projection(
-            value, fields.get("source")
-        ),
-        "imported_at": _legacy_manifest_json_string(
-            value, fields.get("imported_at")
-        ),
-        "master_set_sha256": _legacy_manifest_json_string(
-            value, fields.get("master_set_sha256")
-        ),
-        "masters": _legacy_manifest_masters_projection(
-            value, fields.get("masters")
-        ),
-    }
 
 
 def _read_legacy_annotations_projection(
@@ -1518,40 +1585,47 @@ def _read_legacy_annotations_projection(
     ):
         raise H2IngestError("Legacy-Materialannotation liegt außerhalb des Migrationslimits.")
     try:
-        value = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
+        with path.open("rb") as handle:
+            _validate_utf8_stream(handle)
+            handle.seek(0)
+            with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                value = _LegacyJsonView(mapped)
+                fields = _legacy_annotation_field_ranges(value)
+
+                updated_at_bounds = fields.get("updated_at")
+                updated_at: str | None | int
+                if updated_at_bounds is None:
+                    updated_at = None
+                elif value[updated_at_bounds[0] : updated_at_bounds[1]] == "null":
+                    updated_at = None
+                else:
+                    decoded_updated_at = _legacy_json_string(value, updated_at_bounds)
+                    updated_at = (
+                        decoded_updated_at if decoded_updated_at is not None else 0
+                    )
+
+                markers_bounds = fields.get("markers")
+                markers_is_list = (
+                    markers_bounds is not None
+                    and markers_bounds[0] < markers_bounds[1]
+                    and value[markers_bounds[0]] == "["
+                )
+                return {
+                    "schema_version": _legacy_json_schema_version(
+                        value, fields.get("schema_version")
+                    ),
+                    "kind": _legacy_json_string(value, fields.get("kind")),
+                    "material_id": _legacy_json_string(
+                        value, fields.get("material_id")
+                    ),
+                    "title": _legacy_json_string(value, fields.get("title")),
+                    "note": _legacy_json_string(value, fields.get("note")),
+                    "tags": _legacy_json_tags(value, fields.get("tags")),
+                    "markers": [] if markers_is_list else None,
+                    "updated_at": updated_at,
+                }
+    except (OSError, UnicodeError, ValueError) as exc:
         raise H2IngestError("Legacy-Materialannotation ist nicht sicher lesbar.") from exc
-    fields = _legacy_annotation_field_ranges(value)
-
-    updated_at_bounds = fields.get("updated_at")
-    updated_at: str | None | int
-    if updated_at_bounds is None:
-        updated_at = None
-    elif value[updated_at_bounds[0] : updated_at_bounds[1]] == "null":
-        updated_at = None
-    else:
-        decoded_updated_at = _legacy_json_string(value, updated_at_bounds)
-        updated_at = decoded_updated_at if decoded_updated_at is not None else 0
-
-    markers_bounds = fields.get("markers")
-    markers_is_list = (
-        markers_bounds is not None
-        and markers_bounds[0] < markers_bounds[1]
-        and value[markers_bounds[0]] == "["
-    )
-    projection: dict[str, Any] = {
-        "schema_version": _legacy_json_schema_version(
-            value, fields.get("schema_version")
-        ),
-        "kind": _legacy_json_string(value, fields.get("kind")),
-        "material_id": _legacy_json_string(value, fields.get("material_id")),
-        "title": _legacy_json_string(value, fields.get("title")),
-        "note": _legacy_json_string(value, fields.get("note")),
-        "tags": _legacy_json_tags(value, fields.get("tags")),
-        "markers": [] if markers_is_list else None,
-        "updated_at": updated_at,
-    }
-    return projection
 
 
 def _library_item(
@@ -2283,8 +2357,10 @@ def _legacy_migration_postcondition_sha256(
     expected_inventory: dict[str, Any],
 ) -> str:
     current = _legacy_migration_inventory(root)
+    # Only oversized migration candidates define the durable migration
+    # generation. Compact imports may legitimately appear while a detached
+    # worker is running and must not invalidate an otherwise exact receipt.
     for key in (
-        "material_count",
         "candidate_file_count",
         "candidate_bytes",
         "candidate_metadata_sha256",
@@ -2949,6 +3025,71 @@ def _control_library_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _legacy_migration_pending_control_item(
+    directory: pathlib.Path,
+    material_id: str,
+) -> dict[str, Any] | None:
+    pending: list[str] = []
+    for name, maximum, sidecar_name in (
+        ("manifest.json", MAX_LEGACY_MANIFEST_JSON_BYTES, LEGACY_MANIFEST_CONTROL_NAME),
+        (
+            "annotations.json",
+            MAX_LEGACY_ANNOTATIONS_JSON_BYTES,
+            LEGACY_ANNOTATIONS_CONTROL_NAME,
+        ),
+    ):
+        metadata = _lstat_regular(directory / name, f"Legacy-{name}")
+        if metadata.st_size > maximum:
+            raise H2IngestError(
+                f"Legacy-{name} überschreitet das sichere Migrationslimit."
+            )
+        if metadata.st_size <= MAX_METADATA_JSON_BYTES:
+            continue
+        control_path = directory / sidecar_name
+        try:
+            control_metadata = control_path.lstat()
+        except FileNotFoundError:
+            pending.append(name)
+            continue
+        except OSError as exc:
+            raise H2IngestError(
+                "Legacy-Control-Sidecar ist nicht sicher lesbar."
+            ) from exc
+        if stat.S_ISLNK(control_metadata.st_mode) or not stat.S_ISREG(
+            control_metadata.st_mode
+        ):
+            raise H2IngestError(
+                "Legacy-Control-Sidecar muss eine normale Datei ohne Symlink sein."
+            )
+        try:
+            control = _read_json_regular(control_path)
+            if name == "manifest.json":
+                _manifest_from_legacy_control(
+                    control,
+                    material_id,
+                    manifest_metadata=metadata,
+                )
+            else:
+                _annotations_from_legacy_control(
+                    control,
+                    material_id,
+                    annotations_metadata=metadata,
+                )
+        except H2IngestError as exc:
+            if isinstance(exc.__cause__, OSError) and not isinstance(
+                exc.__cause__, FileNotFoundError
+            ):
+                raise
+            pending.append(name)
+    if not pending:
+        return None
+    return {
+        "material_id": material_id,
+        "status": "migration_required",
+        "metadata": pending,
+    }
+
+
 def library(
     library_root: pathlib.Path = DEFAULT_LIBRARY_ROOT,
     *,
@@ -2969,7 +3110,10 @@ def library(
             {
                 "projection": CONTROL_LIBRARY_PROJECTION,
                 "total_count": 0,
+                "projected_count": 0,
                 "truncated": False,
+                "migration_pending": [],
+                "migration_pending_count": 0,
             }
         )
     if not root.exists() and not root.is_symlink():
@@ -2980,6 +3124,7 @@ def library(
     if projection == "control":
         recent_candidates: list[tuple[int, str]] = []
         observed_items = 0
+        migration_pending: list[dict[str, Any]] = []
         with os.scandir(root) as entries:
             for entry in entries:
                 if (
@@ -3001,12 +3146,23 @@ def library(
                     heapq.heapreplace(recent_candidates, candidate)
         for _manifest_mtime_ns, name in recent_candidates:
             directory = root / name
-            manifest = _read_manifest(directory, name)
-            annotations = _read_annotations(directory, name)
-            item = _library_item(manifest, annotations, name)
+            try:
+                manifest = _read_manifest(directory, name)
+                annotations = _read_annotations(directory, name)
+                item = _library_item(manifest, annotations, name)
+            except H2IngestError:
+                pending = _legacy_migration_pending_control_item(directory, name)
+                if pending is None:
+                    raise
+                migration_pending.append(pending)
+                continue
             items.append(_control_library_item(item))
+        migration_pending.sort(key=lambda item: item["material_id"])
         result["total_count"] = observed_items
-        result["truncated"] = observed_items > len(items)
+        result["migration_pending"] = migration_pending
+        result["migration_pending_count"] = len(migration_pending)
+        result["projected_count"] = len(items) + len(migration_pending)
+        result["truncated"] = observed_items > result["projected_count"]
     else:
         with os.scandir(root) as entries:
             for entry in entries:

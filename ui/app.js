@@ -3998,12 +3998,23 @@ function renderH2Workspace({ force = false } = {}) {
     : [];
   const library = workspace.library || {};
   const items = Array.isArray(library.items) ? library.items : [];
+  const migrationPending = Array.isArray(library.migration_pending)
+    ? library.migration_pending
+    : [];
+  const libraryProjected = items.length + migrationPending.length;
   const libraryTotal =
-    Number.isInteger(library.total_count) && library.total_count >= items.length
+    Number.isInteger(library.total_count) && library.total_count >= libraryProjected
       ? library.total_count
-      : items.length;
-  const librarySummary =
-    library.truncated === true
+      : libraryProjected;
+  const librarySummary = migrationPending.length
+    ? String(items.length) +
+      " bereit · " +
+      String(migrationPending.length) +
+      " Migration offen" +
+      (library.truncated === true
+        ? " · " + String(libraryProjected) + " von " + String(libraryTotal) + " angezeigt"
+        : "")
+    : library.truncated === true
       ? String(items.length) + " von " + String(libraryTotal)
       : String(items.length);
   const sourceReadable = source.status === "ready";
@@ -4069,6 +4080,27 @@ function renderH2Workspace({ force = false } = {}) {
   inbox.replaceChildren(...sourceCards);
 
   const archiveCards = [];
+  for (const pending of migrationPending) {
+    const card = element("article", "h2-card h2-empty");
+    const metadata = Array.isArray(pending?.metadata) ? pending.metadata : [];
+    appendText(card, "p", "eyebrow", "Archiv · Migration erforderlich");
+    appendText(card, "h3", "", pending?.material_id || "Legacy-Material");
+    appendText(
+      card,
+      "p",
+      "h2-meta",
+      metadata.length
+        ? "Noch nicht gebunden: " + metadata.join(" + ")
+        : "Legacy-Metadaten werden noch sicher gebunden.",
+    );
+    appendText(
+      card,
+      "small",
+      "h2-safety-note",
+      "Bis zum gültigen Migrationsbeleg bleiben Wiedergabe und Bearbeitung dieses Materials gesperrt.",
+    );
+    archiveCards.push(card);
+  }
   for (const item of items) {
     const card = element("article", "h2-card h2-material-card");
     card.dataset.materialId = item.material_id;

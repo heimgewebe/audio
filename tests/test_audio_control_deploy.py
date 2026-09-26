@@ -490,13 +490,27 @@ class AudioControlDeployTests(unittest.TestCase):
                 MODULE.h2_legacy_migration_budget(root)
 
     def test_h2_legacy_migration_timeout_scales_with_archive_size_and_count(self):
+        self.assertEqual(MODULE.H2_LEGACY_MIGRATION_IO_PASSES, 3)
+        small_budget = {
+            "material_count": 1,
+            "candidate_file_count": 1,
+            "candidate_bytes": 3 * 1024 * 1024,
+        }
         small = MODULE.h2_legacy_migration_timeout_seconds(
-            {
-                "material_count": 1,
-                "candidate_file_count": 1,
-                "candidate_bytes": 3 * 1024 * 1024,
-            }
+            small_budget
         )
+        expected_small = float(
+            MODULE.H2_LEGACY_MIGRATION_BASE_TIMEOUT_SECONDS
+            + MODULE.H2_LEGACY_MIGRATION_PER_MATERIAL_SECONDS
+            + MODULE.math.ceil(
+                (
+                    small_budget["candidate_bytes"]
+                    * MODULE.H2_LEGACY_MIGRATION_IO_PASSES
+                )
+                / MODULE.H2_LEGACY_MIGRATION_MIN_IO_BYTES_PER_SECOND
+            )
+        )
+        self.assertEqual(small, expected_small)
         large = MODULE.h2_legacy_migration_timeout_seconds(
             {
                 "material_count": 7,
