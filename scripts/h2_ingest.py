@@ -1572,25 +1572,75 @@ def _legacy_manifest_masters_projection(
     return None
 
 
+def _open_legacy_projection_generation(
+    path: pathlib.Path,
+    *,
+    description: str,
+    maximum_bytes: int,
+) -> tuple[int, os.stat_result]:
+    lexical = _lstat_regular(path, description)
+    if (
+        lexical.st_size <= MAX_METADATA_JSON_BYTES
+        or lexical.st_size > maximum_bytes
+    ):
+        raise H2IngestError(f"{description} liegt außerhalb des Migrationslimits.")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise H2IngestError(
+            f"{description} kann nicht generationstreu geöffnet werden."
+        ) from exc
+    opened = os.fstat(fd)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_dev != lexical.st_dev
+        or opened.st_ino != lexical.st_ino
+        or opened.st_size != lexical.st_size
+        or opened.st_mtime_ns != lexical.st_mtime_ns
+        or opened.st_ctime_ns != lexical.st_ctime_ns
+        or opened.st_size <= MAX_METADATA_JSON_BYTES
+        or opened.st_size > maximum_bytes
+    ):
+        os.close(fd)
+        raise H2IngestError(f"{description} änderte seine Identität beim Öffnen.")
+    return fd, opened
+
+
+def _assert_legacy_projection_generation(
+    opened: os.stat_result,
+    finished: os.stat_result,
+    *,
+    description: str,
+) -> None:
+    if (
+        finished.st_dev != opened.st_dev
+        or finished.st_ino != opened.st_ino
+        or finished.st_size != opened.st_size
+        or finished.st_mtime_ns != opened.st_mtime_ns
+        or finished.st_ctime_ns != opened.st_ctime_ns
+    ):
+        raise H2IngestError(
+            f"{description} änderte sich während der Migrationsprojektion."
+        )
+
+
 def _read_legacy_manifest_projection(
     path: pathlib.Path,
 ) -> dict[str, Any]:
-    metadata = _lstat_regular(path, "Legacy-Materialmanifest")
-    if (
-        metadata.st_size <= MAX_METADATA_JSON_BYTES
-        or metadata.st_size > MAX_LEGACY_MANIFEST_JSON_BYTES
-    ):
-        raise H2IngestError(
-            "Legacy-Materialmanifest liegt außerhalb des Migrationslimits."
-        )
+    fd, opened = _open_legacy_projection_generation(
+        path,
+        description="Legacy-Materialmanifest",
+        maximum_bytes=MAX_LEGACY_MANIFEST_JSON_BYTES,
+    )
     try:
-        with path.open("rb") as handle:
+        with os.fdopen(fd, "rb", closefd=True) as handle:
             _validate_utf8_stream(handle)
             handle.seek(0)
             with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
                 value = _LegacyJsonView(mapped)
                 fields = _legacy_manifest_field_ranges(value)
-                return {
+                result = {
                     "schema_version": _legacy_json_schema_version(
                         value, fields.get("schema_version")
                     ),
@@ -1611,6 +1661,12 @@ def _read_legacy_manifest_projection(
                         value, fields.get("masters")
                     ),
                 }
+            _assert_legacy_projection_generation(
+                opened,
+                os.fstat(handle.fileno()),
+                description="Legacy-Materialmanifest",
+            )
+            return result
     except (OSError, UnicodeError, ValueError) as exc:
         raise H2IngestError("Legacy-Materialmanifest ist nicht sicher lesbar.") from exc
 
@@ -1618,14 +1674,13 @@ def _read_legacy_manifest_projection(
 def _read_legacy_annotations_projection(
     path: pathlib.Path,
 ) -> dict[str, Any]:
-    metadata = _lstat_regular(path, "Legacy-Materialannotation")
-    if (
-        metadata.st_size <= MAX_METADATA_JSON_BYTES
-        or metadata.st_size > MAX_LEGACY_ANNOTATIONS_JSON_BYTES
-    ):
-        raise H2IngestError("Legacy-Materialannotation liegt außerhalb des Migrationslimits.")
+    fd, opened = _open_legacy_projection_generation(
+        path,
+        description="Legacy-Materialannotation",
+        maximum_bytes=MAX_LEGACY_ANNOTATIONS_JSON_BYTES,
+    )
     try:
-        with path.open("rb") as handle:
+        with os.fdopen(fd, "rb", closefd=True) as handle:
             _validate_utf8_stream(handle)
             handle.seek(0)
             with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
@@ -1650,7 +1705,7 @@ def _read_legacy_annotations_projection(
                     and markers_bounds[0] < markers_bounds[1]
                     and value[markers_bounds[0]] == "["
                 )
-                return {
+                result = {
                     "schema_version": _legacy_json_schema_version(
                         value, fields.get("schema_version")
                     ),
@@ -1664,6 +1719,12 @@ def _read_legacy_annotations_projection(
                     "markers": [] if markers_is_list else None,
                     "updated_at": updated_at,
                 }
+            _assert_legacy_projection_generation(
+                opened,
+                os.fstat(handle.fileno()),
+                description="Legacy-Materialannotation",
+            )
+            return result
     except (OSError, UnicodeError, ValueError) as exc:
         raise H2IngestError("Legacy-Materialannotation ist nicht sicher lesbar.") from exc
 
@@ -2462,7 +2523,9 @@ def _legacy_migration_receipt_path(root: pathlib.Path) -> pathlib.Path:
 def _legacy_migration_postcondition_sha256(
     root: pathlib.Path,
     expected_inventory: dict[str, Any],
-) -> str:
+    *,
+    missing_manifest_sidecar_is_cache_miss: bool = False,
+) -> str | None:
     current = _legacy_migration_inventory(root)
     # Only oversized migration candidates define the durable migration
     # generation. Compact imports may legitimately appear while a detached
@@ -2494,9 +2557,18 @@ def _legacy_migration_postcondition_sha256(
             if metadata.st_size <= MAX_METADATA_JSON_BYTES:
                 continue
             sidecar = directory / sidecar_name
-            sidecar_metadata = _lstat_regular(
-                sidecar, "Legacy-Migrations-Control-Sidecar"
-            )
+            try:
+                sidecar_metadata = _lstat_regular(
+                    sidecar, "Legacy-Migrations-Control-Sidecar"
+                )
+            except H2IngestError as exc:
+                if (
+                    missing_manifest_sidecar_is_cache_miss
+                    and name == "manifest.json"
+                    and isinstance(exc.__cause__, FileNotFoundError)
+                ):
+                    return None
+                raise
             if sidecar_metadata.st_size > MAX_METADATA_JSON_BYTES:
                 raise H2IngestError(
                     "Legacy-Migrations-Control-Sidecar überschreitet das Größenlimit."
@@ -2579,8 +2651,15 @@ def _durable_migration_receipt_result(
         or receipt.get("candidate_bytes") != inventory.get("candidate_bytes")
     ):
         return None
-    observed_postcondition = _legacy_migration_postcondition_sha256(root, inventory)
-    if receipt.get("postcondition_sha256") != observed_postcondition:
+    observed_postcondition = _legacy_migration_postcondition_sha256(
+        root,
+        inventory,
+        missing_manifest_sidecar_is_cache_miss=True,
+    )
+    if (
+        observed_postcondition is None
+        or receipt.get("postcondition_sha256") != observed_postcondition
+    ):
         return None
     result = receipt.get("result")
     if (

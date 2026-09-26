@@ -831,6 +831,72 @@ class H2IngestTests(unittest.TestCase):
             )
             self.assertEqual(media["duration_seconds"], expected_duration)
 
+    def test_legacy_manifest_projection_rejects_replacement_between_lstat_and_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            with path.open("wb") as handle:
+                handle.truncate(MODULE.MAX_METADATA_JSON_BYTES + 1)
+            real_lstat = MODULE._lstat_regular
+            replaced = False
+
+            def lstat_then_replace(candidate, description):
+                nonlocal replaced
+                metadata = real_lstat(candidate, description)
+                if candidate == path and not replaced:
+                    replacement = path.with_name("replacement.json")
+                    with replacement.open("wb") as handle:
+                        handle.truncate(MODULE.MAX_LEGACY_MANIFEST_JSON_BYTES + 1)
+                    os.replace(replacement, path)
+                    replaced = True
+                return metadata
+
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_lstat_regular",
+                    side_effect=lstat_then_replace,
+                ),
+                self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "änderte seine Identität beim Öffnen",
+                ),
+            ):
+                MODULE._read_legacy_manifest_projection(path)
+
+    def test_legacy_annotations_projection_rejects_symlink_swap_before_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            path = root / "annotations.json"
+            target = root / "replacement.json"
+            with path.open("wb") as handle:
+                handle.truncate(MODULE.MAX_METADATA_JSON_BYTES + 1)
+            with target.open("wb") as handle:
+                handle.truncate(MODULE.MAX_METADATA_JSON_BYTES + 1)
+            real_lstat = MODULE._lstat_regular
+            replaced = False
+
+            def lstat_then_symlink(candidate, description):
+                nonlocal replaced
+                metadata = real_lstat(candidate, description)
+                if candidate == path and not replaced:
+                    path.unlink()
+                    path.symlink_to(target)
+                    replaced = True
+                return metadata
+
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_lstat_regular",
+                    side_effect=lstat_then_symlink,
+                ),
+                self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "generationstreu geöffnet",
+                ),
+            ):
+                MODULE._read_legacy_annotations_projection(path)
+
     def test_legacy_manifest_projection_rejects_invalid_utf8_in_skipped_field(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1536,6 +1602,92 @@ class H2IngestTests(unittest.TestCase):
                     "nicht sicher lesbar",
                 ):
                     MODULE._read_legacy_migration_receipt(root)
+
+    def test_durable_receipt_missing_manifest_sidecar_is_regenerable_cache_miss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            imported = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / imported["material_id"]
+            manifest_path = material / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["legacy_padding"] = "x" * (
+                MODULE.MAX_METADATA_JSON_BYTES + 4096
+            )
+            os.chmod(manifest_path, 0o640)
+            manifest_path.write_bytes(MODULE._canonical_bytes(manifest) + b"\n")
+            os.chmod(manifest_path, 0o440)
+            commit = "e" * 40
+
+            with mock.patch.object(
+                MODULE,
+                "_durable_migration_release_commit",
+                return_value=commit,
+            ):
+                MODULE._run_legacy_migration_worker(library)
+
+            control_path = material / MODULE.LEGACY_MANIFEST_CONTROL_NAME
+            self.assertTrue(control_path.is_file())
+            control_path.unlink()
+            inventory = MODULE._legacy_migration_inventory(library)
+
+            self.assertIsNone(
+                MODULE._durable_migration_receipt_result(
+                    library,
+                    release_commit=commit,
+                    inventory=inventory,
+                )
+            )
+
+    def test_durable_receipt_missing_annotation_sidecar_remains_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = make_source(root, roles=("FRONT",))
+            library = root / "library"
+            imported = MODULE.import_scene(
+                "170926_191401",
+                source_root=source,
+                library_root=library,
+            )
+            material = library / imported["material_id"]
+            annotations_path = material / "annotations.json"
+            annotations = json.loads(
+                annotations_path.read_text(encoding="utf-8")
+            )
+            annotations["markers"] = [
+                "x" * (MODULE.MAX_METADATA_JSON_BYTES + 4096)
+            ]
+            annotations_path.write_bytes(
+                MODULE._canonical_bytes(annotations) + b"\n"
+            )
+            commit = "f" * 40
+
+            with mock.patch.object(
+                MODULE,
+                "_durable_migration_release_commit",
+                return_value=commit,
+            ):
+                MODULE._run_legacy_migration_worker(library)
+
+            control_path = material / MODULE.LEGACY_ANNOTATIONS_CONTROL_NAME
+            self.assertTrue(control_path.is_file())
+            control_path.unlink()
+            inventory = MODULE._legacy_migration_inventory(library)
+
+            with self.assertRaisesRegex(
+                MODULE.H2IngestError,
+                "Control-Sidecar.*nicht lesbar",
+            ):
+                MODULE._durable_migration_receipt_result(
+                    library,
+                    release_commit=commit,
+                    inventory=inventory,
+                )
 
     def test_durable_migration_survives_caller_timeout_via_release_bound_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
