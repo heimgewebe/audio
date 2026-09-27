@@ -1342,6 +1342,58 @@ async function fetchJson() {{
             },
         )
 
+    def test_remote_inbox_loading_status_survives_cached_inbox_render(self):
+        renderer = "function renderH2RemoteInbox" + self.app.split(
+            "function renderH2RemoteInbox", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const nodes = {{
+  "h2-remote-inbox": {{
+    children: [],
+    replaceChildren(...children) {{ this.children = children; }},
+  }},
+  "h2-remote-status": {{ textContent: "" }},
+  "h2-remote-refresh": {{ disabled: false }},
+}};
+const state = {{
+  h2RemoteInboxLoading: true,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxError: null,
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [],
+      skipped_invalid_transfers: [],
+      skipped_invalid_sessions: [],
+      transfer_count: 1,
+      total_transfer_count: 1,
+      truncated: false,
+    }},
+  }},
+}};
+function byId(id) {{ return nodes[id] || null; }}
+function element(tag, className) {{ return {{ tag, className, textContent: "" }}; }}
+{renderer}
+renderH2RemoteInbox();
+process.stdout.write(JSON.stringify({{
+  status: nodes["h2-remote-status"].textContent,
+  refreshDisabled: nodes["h2-remote-refresh"].disabled,
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "status": "Remote-Inbox wird gelesen.",
+                "refreshDisabled": True,
+            },
+        )
+
     def test_remote_inbox_scan_does_not_block_core_snapshot_refresh(self):
         refresh = "async function refreshSnapshot" + self.app.split(
             "async function refreshSnapshot", 1

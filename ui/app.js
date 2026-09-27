@@ -4153,23 +4153,25 @@ function renderH2RemoteInbox() {
   const invalidSessions = Array.isArray(inbox.skipped_invalid_sessions)
     ? inbox.skipped_invalid_sessions
     : [];
-  status.textContent =
-    String(sessions.length) +
-    " Remote-Aufnahmen in " +
-    String(inbox.transfer_count || 0) +
-    " geprüften Transfers" +
-    (inbox.truncated === true
-      ? " · nur die " +
-        String(inbox.transfer_count || 0) +
-        " neuesten von " +
-        String(inbox.total_transfer_count || 0) +
-        " Transfers gelesen"
-      : "") +
-    (invalidTransfers.length || invalidSessions.length
-      ? " · " +
-        String(invalidTransfers.length + invalidSessions.length) +
-        " Einträge nicht sicher lesbar"
-      : "");
+  if (!state.h2RemoteInboxLoading) {
+    status.textContent =
+      String(sessions.length) +
+      " Remote-Aufnahmen in " +
+      String(inbox.transfer_count || 0) +
+      " geprüften Transfers" +
+      (inbox.truncated === true
+        ? " · nur die " +
+          String(inbox.transfer_count || 0) +
+          " neuesten von " +
+          String(inbox.total_transfer_count || 0) +
+          " Transfers gelesen"
+        : "") +
+      (invalidTransfers.length || invalidSessions.length
+        ? " · " +
+          String(invalidTransfers.length + invalidSessions.length) +
+          " Einträge nicht sicher lesbar"
+        : "");
+  }
 
   const cards = [];
   for (const session of sessions) {
