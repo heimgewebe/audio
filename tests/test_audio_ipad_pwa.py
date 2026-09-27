@@ -1014,7 +1014,6 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
             "    state.loading ||\n"
             "    state.recordingActionPending ||\n"
             "    state.h2ActionPending ||\n"
-            "    state.h2RemoteInboxLoading ||\n"
             "    state.dauersongActionPending ||\n"
             "    state.operatingModeActionPending ||\n"
             "    state.whaleActionPending ||\n"
@@ -1269,6 +1268,76 @@ async function postH2Action() {{
             "\n}", 1
         )[0]
         self.assertNotIn("state.h2AnnotationDrafts.size > 0", blocked)
+        self.assertNotIn("state.h2RemoteInboxLoading", blocked)
+
+        refresh_guard = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(
+            "setLoading(true);", 1
+        )[0]
+        self.assertNotIn("state.h2RemoteInboxLoading", refresh_guard)
+        loader_guard = self.app.split("async function loadH2Workspace", 1)[1].split(
+            "state.h2WorkspaceLoading = true;", 1
+        )[0]
+        self.assertIn("state.h2RemoteInboxLoading", loader_guard)
+
+    def test_remote_inbox_scan_does_not_block_core_snapshot_refresh(self):
+        refresh = "async function refreshSnapshot" + self.app.split(
+            "async function refreshSnapshot", 1
+        )[1].split("\nfunction renderAuthority", 1)[0]
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2RemoteInboxBudget", 1)[0]
+        harness = f"""
+const state = {{
+  loading: false,
+  recordingActionPending: false,
+  h2ActionPending: false,
+  h2RemoteInboxLoading: true,
+  dauersongActionPending: false,
+  operatingModeActionPending: false,
+  whaleActionPending: false,
+  remoteBridgeProjection: false,
+  h2WorkspaceLoading: false,
+  h2WorkspaceLoadGeneration: 0,
+  h2ActivitySequence: 0,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+}};
+const events = [];
+function backendAllowed() {{ return true; }}
+function setLoading(value) {{ state.loading = value; events.push("loading:" + String(value)); }}
+async function fetchJson(url) {{ events.push("fetch:" + url); return {{ kind: "audio_control_snapshot" }}; }}
+function clearNotice() {{ events.push("clear"); }}
+async function ensureRemoteWhaleSession() {{ throw new Error("unexpected remote session"); }}
+async function loadRecordingLibrary(options) {{ events.push("recordings:" + String(options.render)); }}
+function renderAll() {{ events.push("render"); }}
+async function h2WorkspaceTimeoutMs() {{ throw new Error("H2 workspace must stay mutually blocked"); }}
+function renderH2Workspace() {{ events.push("h2-render"); }}
+function showNotice(message) {{ throw new Error(message); }}
+function renderAuthority() {{ events.push("authority"); }}
+{loader}
+{refresh}
+(async () => {{
+  await refreshSnapshot(false);
+  process.stdout.write(JSON.stringify({{
+    events,
+    workspaceGeneration: state.h2WorkspaceLoadGeneration,
+    workspaceLoading: state.h2WorkspaceLoading,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertIn("fetch:/api/v1/snapshot", result["events"])
+        self.assertIn("recordings:false", result["events"])
+        self.assertIn("render", result["events"])
+        self.assertEqual(result["workspaceGeneration"], 0)
+        self.assertFalse(result["workspaceLoading"])
+        self.assertNotIn("h2-render", result["events"])
 
     def test_remote_h2_import_succeeds_without_cached_workspace_and_refreshes(self):
         runnable_action = "async function runH2Action" + self.app.split(
@@ -1567,9 +1636,9 @@ class ServiceWorkerTests(unittest.TestCase):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
         self.assertEqual(
             contract["service_worker"]["cache_name"],
-            "audiozentrale-app-shell-v7",
+            "audiozentrale-app-shell-v8",
         )
-        self.assertIn('const CACHE_NAME = `${CACHE_PREFIX}v7`;', self.worker)
+        self.assertIn('const CACHE_NAME = `${CACHE_PREFIX}v8`;', self.worker)
 
     def test_registration_happens_only_in_secure_contexts(self):
         block = self.app.split("function registerServiceWorker() {", 1)[1].split(

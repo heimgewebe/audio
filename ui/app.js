@@ -1066,7 +1066,6 @@ async function refreshSnapshot(force = false) {
     state.loading ||
     state.recordingActionPending ||
     state.h2ActionPending ||
-    state.h2RemoteInboxLoading ||
     state.dauersongActionPending ||
     state.operatingModeActionPending ||
     state.whaleActionPending ||
@@ -5719,7 +5718,6 @@ function autoRefreshBlocked() {
     state.loading ||
     state.recordingActionPending ||
     state.h2ActionPending ||
-    state.h2RemoteInboxLoading ||
     state.dauersongActionPending ||
     state.operatingModeActionPending ||
     state.whaleActionPending ||
