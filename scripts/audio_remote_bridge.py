@@ -168,6 +168,10 @@ H2_SOURCE_MEDIA_RE = re.compile(
 H2_MATERIAL_MEDIA_RE = re.compile(
     r"^/api/v1/h2/material/([0-9a-f]{24})/audio/([0-9]{1,3})$"
 )
+H2_REMOTE_IMPORT_BUDGET_RE = re.compile(
+    r"^/api/v1/h2/remote-inbox/import-budget/"
+    r"([A-Za-z0-9][A-Za-z0-9._-]{0,63})/([0-9]{6}_[0-9]{6})$"
+)
 PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 FORBIDDEN_ENCODED_PATH_RE = re.compile(r"%(?:2f|5c)", re.IGNORECASE)
 SENSITIVE_KEY_TERMS = (
@@ -921,7 +925,10 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         backend_timeout_seconds = h2_workspace_backend_timeout_seconds()
     elif target == "/api/v1/h2/remote-inbox":
         backend_timeout_seconds = h2_remote_inbox_backend_timeout_seconds()
-    elif target == "/api/v1/h2/remote-inbox/budget":
+    elif (
+        target == "/api/v1/h2/remote-inbox/budget"
+        or H2_REMOTE_IMPORT_BUDGET_RE.fullmatch(target) is not None
+    ):
         backend_timeout_seconds = H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS
     elif target == "/api/v1/h2/budget":
         backend_timeout_seconds = H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS
@@ -1098,23 +1105,43 @@ def h2_media_backend_timeout_seconds(target: str) -> float:
     return float(timeout)
 
 
-def _read_backend_h2_remote_inbox() -> dict[str, Any]:
-    status, _headers, payload, _redactions = read_backend_response(
-        "/api/v1/h2/remote-inbox", None
+def _read_backend_h2_remote_import_budget(
+    transfer_id: str,
+    scene: str,
+) -> dict[str, Any]:
+    target = (
+        f"/api/v1/h2/remote-inbox/import-budget/{transfer_id}/{scene}"
     )
+    status, _headers, payload, _redactions = read_backend_response(target, None)
     if status != HTTPStatus.OK:
-        raise BackendFailure("backend remote H2 inbox is unavailable for timeout binding")
+        raise BackendFailure(
+            "backend remote H2 import budget is unavailable"
+        )
     try:
-        inbox = json.loads(payload.decode("utf-8"))
+        budget = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BackendFailure("backend remote H2 inbox is invalid for timeout binding") from error
+        raise BackendFailure(
+            "backend remote H2 import budget is invalid"
+        ) from error
+    timeout = budget.get("import_timeout_seconds") if isinstance(budget, dict) else None
     if (
-        not isinstance(inbox, dict)
-        or inbox.get("kind") != "audio_h2_remote_inbox"
-        or not isinstance(inbox.get("inbox"), dict)
+        not isinstance(budget, dict)
+        or budget.get("schema_version") != 1
+        or budget.get("kind") != "audio_h2_remote_import_budget"
+        or budget.get("source") != "remote-inbox"
+        or budget.get("transfer_id") != transfer_id
+        or budget.get("scene") != scene
+        or budget.get("read_only") is not True
+        or budget.get("source_mutated") is not False
+        or isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
     ):
-        raise BackendFailure("backend remote H2 inbox is invalid for timeout binding")
-    return inbox
+        raise BackendFailure(
+            "backend remote H2 import budget is invalid"
+        )
+    return budget
 
 
 def h2_import_backend_timeout_seconds(
@@ -1134,8 +1161,8 @@ def h2_import_backend_timeout_seconds(
             or H2_TRANSFER_ID_RE.fullmatch(transfer_id) is None
         ):
             raise RequestRejected("remote H2 transfer id is invalid")
-        remote = _read_backend_h2_remote_inbox()
-        container = remote.get("inbox")
+        budget = _read_backend_h2_remote_import_budget(transfer_id, scene)
+        return float(budget["import_timeout_seconds"])
     else:
         raise RequestRejected("remote H2 import source is invalid")
     sessions = container.get("sessions") if isinstance(container, dict) else None
@@ -1147,10 +1174,6 @@ def h2_import_backend_timeout_seconds(
             for candidate in sessions
             if isinstance(candidate, dict)
             and candidate.get("scene") == scene
-            and (
-                source != "remote-inbox"
-                or candidate.get("transfer_id") == transfer_id
-            )
         ),
         None,
     )

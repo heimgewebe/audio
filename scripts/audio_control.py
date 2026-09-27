@@ -394,6 +394,10 @@ H2_SOURCE_MEDIA_PATH_RE = re.compile(
 H2_MATERIAL_MEDIA_PATH_RE = re.compile(
     rf"^/api/{API_VERSION}/h2/material/([0-9a-f]{{24}})/audio/([0-9]{{1,3}})$"
 )
+H2_REMOTE_IMPORT_BUDGET_PATH_RE = re.compile(
+    rf"^/api/{API_VERSION}/h2/remote-inbox/import-budget/"
+    r"([A-Za-z0-9][A-Za-z0-9._-]{0,63})/([0-9]{6}_[0-9]{6})$"
+)
 MAX_DEPLOY_RECEIPT_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 4096
 MAX_H2_REQUEST_BYTES = 16_384
@@ -4408,6 +4412,39 @@ class AudioControl:
             "source_mutated": False,
         }
 
+    def h2_remote_import_budget(
+        self,
+        transfer_id: str,
+        scene: str,
+    ) -> dict[str, Any]:
+        if (
+            not isinstance(scene, str)
+            or re.fullmatch(r"[0-9]{6}_[0-9]{6}", scene) is None
+        ):
+            raise ControlError("Ungültige Remote-H2-Szene.")
+        source_root = self._h2_remote_transfer_root(transfer_id)
+        budget_report, scan_timeout = self._h2_scan_budget_for_root(source_root)
+        total_candidate_bytes = budget_report["total_candidate_bytes"]
+        if total_candidate_bytes <= 0:
+            raise ControlError(
+                "Remote-H2-Transfer enthält kein importierbares Material."
+            )
+        return {
+            "schema_version": 1,
+            "kind": "audio_h2_remote_import_budget",
+            "source": "remote-inbox",
+            "transfer_id": transfer_id,
+            "scene": scene,
+            "import_timeout_seconds": (
+                self._h2_remote_import_action_timeout_for_bytes(
+                    total_candidate_bytes,
+                    scan_timeout=scan_timeout,
+                )
+            ),
+            "read_only": True,
+            "source_mutated": False,
+        }
+
     def h2_remote_inbox(self) -> dict[str, Any]:
         transfers, total, truncated, unsafe = self._h2_remote_transfer_roots()
         sessions: list[dict[str, Any]] = []
@@ -7008,6 +7045,34 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, source, head_only=head_only)
+            return
+        remote_import_budget = H2_REMOTE_IMPORT_BUDGET_PATH_RE.fullmatch(
+            parsed.path
+        )
+        if remote_import_budget is not None:
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Das Remote-H2-Importbudget akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            transfer_id, scene = remote_import_budget.groups()
+            try:
+                budget = self.server.controller.h2_remote_import_budget(
+                    transfer_id,
+                    scene,
+                )
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_remote_import_budget_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, budget, head_only=head_only)
             return
         if parsed.path == f"/api/{API_VERSION}/h2/remote-inbox/budget":
             if parsed.query:

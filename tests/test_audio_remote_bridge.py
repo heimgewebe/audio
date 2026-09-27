@@ -297,6 +297,7 @@ class TargetValidationTests(unittest.TestCase):
             "/api/v1/h2/source/170926_191401/audio/1000",
             "/api/v1/h2/material/nothex/audio/0",
             "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0?download=1",
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401",
             "http://example.invalid/app.js",
         )
         for target in rejected:
@@ -840,6 +841,22 @@ class BridgeHTTPTests(unittest.TestCase):
                         "truncated": False,
                         "skipped_unsafe_transfer_count": 0,
                         "budget_available": True,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_remote_import_budget",
+                        "source": "remote-inbox",
+                        "transfer_id": "ipad-260926",
+                        "scene": "170926_191401",
+                        "import_timeout_seconds": 480.0,
                         "read_only": True,
                         "source_mutated": False,
                     }
@@ -1484,23 +1501,21 @@ class BridgeHTTPTests(unittest.TestCase):
             with self.assertRaises(MODULE.BackendFailure):
                 MODULE.h2_import_backend_timeout_seconds("170926_191401")
 
-    def test_h2_remote_import_timeout_is_bound_to_current_remote_inbox(self):
-        remote = {
-            "kind": "audio_h2_remote_inbox",
-            "inbox": {
-                "sessions": [
-                    {
-                        "transfer_id": "ipad-260926",
-                        "scene": "170926_191401",
-                        "import_timeout_seconds": 888.0,
-                    }
-                ]
-            },
+    def test_h2_remote_import_timeout_is_bound_to_requested_transfer(self):
+        budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_remote_import_budget",
+            "source": "remote-inbox",
+            "transfer_id": "ipad-260926",
+            "scene": "170926_191401",
+            "import_timeout_seconds": 888.0,
+            "read_only": True,
+            "source_mutated": False,
         }
         with mock.patch.object(
             MODULE,
             "read_backend_response",
-            return_value=(200, [], json.dumps(remote).encode("utf-8"), 0),
+            return_value=(200, [], json.dumps(budget).encode("utf-8"), 0),
         ) as readback:
             self.assertEqual(
                 MODULE.h2_import_backend_timeout_seconds(
@@ -1510,7 +1525,24 @@ class BridgeHTTPTests(unittest.TestCase):
                 ),
                 888.0,
             )
-        readback.assert_called_once_with("/api/v1/h2/remote-inbox", None)
+        readback.assert_called_once_with(
+            "/api/v1/h2/remote-inbox/import-budget/"
+            "ipad-260926/170926_191401",
+            None,
+        )
+
+        mismatched = {**budget, "transfer_id": "newer"}
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(mismatched).encode("utf-8"), 0),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.h2_import_backend_timeout_seconds(
+                    "170926_191401",
+                    source="remote-inbox",
+                    transfer_id="ipad-260926",
+                )
 
     def test_h2_workspace_response_uses_bounded_h2_specific_byte_budget(self):
         payload = json.dumps(
@@ -2131,11 +2163,14 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(decoded["kind"], "audio_control_h2_action_result")
                 self.assertEqual(decoded["operation"], action["operation"])
                 records = FakeBackendHandler.records[before:]
-                expected_methods = (
-                    ["GET", "GET", "GET", "POST"]
-                    if action["operation"] == "import"
-                    else ["GET", "GET", "POST"]
-                )
+                if action["operation"] == "import":
+                    expected_methods = (
+                        ["GET", "GET", "POST"]
+                        if action.get("source") == "remote-inbox"
+                        else ["GET", "GET", "GET", "POST"]
+                    )
+                else:
+                    expected_methods = ["GET", "GET", "POST"]
                 self.assertEqual(
                     [record["method"] for record in records],
                     expected_methods,

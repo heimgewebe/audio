@@ -5291,6 +5291,62 @@ class H2MaterialControlTests(unittest.TestCase):
             )
             self.assertFalse(remote["source_delete_authorized"])
 
+    def test_h2_remote_import_budget_addresses_transfer_outside_projection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            transfer_times = (
+                ("old", 1_000_000_000),
+                ("middle", 2_000_000_000),
+                ("new", 3_000_000_000),
+            )
+            for name, mtime_ns in transfer_times:
+                transfer = inbox / name
+                transfer.mkdir(mode=0o700)
+                os.utime(transfer, ns=(mtime_ns, mtime_ns))
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                projected = controller.h2_remote_inbox()["inbox"]
+                budget = controller.h2_remote_import_budget(
+                    "old",
+                    "170926_191401",
+                )
+            self.assertNotIn(
+                "old",
+                [item["transfer_id"] for item in projected["sessions"]],
+            )
+            self.assertEqual(
+                budget,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_h2_remote_import_budget",
+                    "source": "remote-inbox",
+                    "transfer_id": "old",
+                    "scene": "170926_191401",
+                    "import_timeout_seconds": budget["import_timeout_seconds"],
+                    "read_only": True,
+                    "source_mutated": False,
+                },
+            )
+            self.assertGreater(budget["import_timeout_seconds"], 0)
+            budget_scan = runner.calls[-1][0]
+            self.assertEqual(budget_scan[2], "scan")
+            self.assertEqual(
+                budget_scan[budget_scan.index("--source-root") + 1],
+                str(inbox / "old"),
+            )
+            self.assertEqual(
+                budget_scan[budget_scan.index("--projection") + 1],
+                "budget",
+            )
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                with self.assertRaises(MODULE.ControlError):
+                    controller.h2_remote_import_budget(
+                        "old",
+                        "../bad",
+                    )
+
     def test_h2_remote_transfer_identity_rejects_escape_symlink_and_world_write(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
