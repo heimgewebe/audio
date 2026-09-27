@@ -1265,6 +1265,92 @@ async function postH2Action() {{
         )[0]
         self.assertNotIn("state.h2AnnotationDrafts.size > 0", blocked)
 
+    def test_remote_h2_import_succeeds_without_cached_workspace_and_refreshes(self):
+        runnable_action = "async function runH2Action" + self.app.split(
+            "async function runH2Action", 1
+        )[1].split("\nfunction h2DisplayTimestamp", 1)[0]
+        harness = f"""
+const state = {{
+  h2ActionPending: false,
+  h2ActivitySequence: 0,
+  h2AnnotationDrafts: new Map(),
+  h2Workspace: null,
+  h2WorkspaceError: "vorheriger Workspace-Fehler",
+}};
+const notices = [];
+const renders = [];
+const refreshes = [];
+function backendAllowed() {{ return true; }}
+function renderH2Workspace(options = {{}}) {{
+  renders.push({{
+    pending: state.h2ActionPending,
+    force: options.force === true,
+  }});
+}}
+function showNotice(message, type = "error") {{
+  notices.push({{ message, type }});
+}}
+async function postH2Action(payload) {{
+  return {{
+    kind: "audio_control_h2_action_result",
+    source: "remote-inbox",
+    transfer_id: payload.transfer_id,
+    library: {{
+      kind: "audio_h2_library",
+      library: {{ count: 1, items: [{{ material_id: "a".repeat(24) }}] }},
+    }},
+    result: {{ status: "imported" }},
+  }};
+}}
+function loadH2Workspace() {{
+  refreshes.push({{
+    pending: state.h2ActionPending,
+    workspace: state.h2Workspace,
+  }});
+}}
+{runnable_action}
+(async () => {{
+  await runH2Action({{
+    operation: "import",
+    source: "remote-inbox",
+    transfer_id: "ipad-260927",
+    scene: "170926_191401",
+  }});
+  process.stdout.write(JSON.stringify({{
+    pending: state.h2ActionPending,
+    workspace: state.h2Workspace,
+    workspaceError: state.h2WorkspaceError,
+    notices,
+    renders,
+    refreshes,
+  }}));
+}})();
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertFalse(result["pending"])
+        self.assertIsNone(result["workspace"])
+        self.assertIsNone(result["workspaceError"])
+        self.assertEqual(
+            result["refreshes"],
+            [{"pending": False, "workspace": None}],
+        )
+        self.assertEqual(
+            result["notices"],
+            [
+                {
+                    "message": "Remote-Aufnahme sicher archiviert. Die Inbox bleibt unverändert.",
+                    "type": "success",
+                }
+            ],
+        )
+        self.assertEqual(result["renders"], [{"pending": True, "force": False}])
+
     def test_remote_h2_post_rechecks_and_reuses_session_after_async_deadline(self):
         post = "async function postH2Action" + self.app.split(
             "async function postH2Action", 1

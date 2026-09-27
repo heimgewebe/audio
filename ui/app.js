@@ -3978,6 +3978,7 @@ async function postH2Action(payload) {
 async function runH2Action(payload) {
   if (state.h2ActionPending) return;
   const activitySequence = ++state.h2ActivitySequence;
+  let refreshWorkspaceAfterRemoteImport = false;
   state.h2ActionPending = true;
   renderH2Workspace();
   try {
@@ -3992,15 +3993,18 @@ async function runH2Action(payload) {
           result.source !== "remote-inbox" ||
           result.transfer_id !== payload.transfer_id ||
           result.library?.kind !== "audio_h2_library" ||
-          !result.library?.library ||
-          state.h2Workspace?.kind !== "audio_h2_workspace"
+          !result.library?.library
         ) {
           throw new Error("Remote-H2-Import lieferte keine aktuelle Bibliothek.");
         }
-        state.h2Workspace = {
-          ...state.h2Workspace,
-          library: result.library.library,
-        };
+        if (state.h2Workspace?.kind === "audio_h2_workspace") {
+          state.h2Workspace = {
+            ...state.h2Workspace,
+            library: result.library.library,
+          };
+        } else {
+          refreshWorkspaceAfterRemoteImport = true;
+        }
       } else {
         if (result.workspace?.kind !== "audio_h2_workspace") {
           throw new Error("H2-Import lieferte keinen aktuellen Arbeitsbereich.");
@@ -4045,9 +4049,13 @@ async function runH2Action(payload) {
     if (activitySequence === state.h2ActivitySequence) {
       state.h2ActionPending = false;
       if (backendAllowed()) {
-        renderH2Workspace({
-          force: payload.operation === "annotate",
-        });
+        if (refreshWorkspaceAfterRemoteImport) {
+          loadH2Workspace();
+        } else {
+          renderH2Workspace({
+            force: payload.operation === "annotate",
+          });
+        }
       }
     }
   }
