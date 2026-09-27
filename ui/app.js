@@ -4159,6 +4159,7 @@ function renderH2RemoteInbox() {
     inbox.skipped_invalid_transfer_count >= 0
       ? inbox.skipped_invalid_transfer_count
       : invalidTransfers.length;
+  const enumerationComplete = inbox.enumeration_complete !== false;
   if (!state.h2RemoteInboxLoading) {
     status.textContent =
       String(sessions.length) +
@@ -4166,14 +4167,17 @@ function renderH2RemoteInbox() {
       String(inbox.transfer_count || 0) +
       " geprüften Transfers" +
       (inbox.truncated === true
-        ? " · nur die " +
-          String(inbox.transfer_count || 0) +
-          " neuesten von " +
-          String(inbox.total_transfer_count || 0) +
-          " Transfers gelesen"
+        ? enumerationComplete
+          ? " · nur die " +
+            String(inbox.transfer_count || 0) +
+            " neuesten von " +
+            String(inbox.total_transfer_count || 0) +
+            " Transfers gelesen"
+          : " · Inbox-Auflistung begrenzt; Transferzahlen sind Mindestwerte"
         : "") +
       (invalidTransferCount || invalidSessions.length
         ? " · " +
+          (enumerationComplete ? "" : "mindestens ") +
           String(invalidTransferCount + invalidSessions.length) +
           " Einträge nicht sicher lesbar"
         : "");

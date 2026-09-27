@@ -195,6 +195,28 @@ class RemoteH2BudgetTests(unittest.TestCase):
                 ):
                     reader(*args)
 
+    def test_remote_h2_budget_timeouts_cover_backend_scan_contract(self):
+        self.assertGreaterEqual(
+            MODULE.H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            1861.0,
+        )
+        self.assertGreaterEqual(
+            MODULE.H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            1861.0,
+        )
+        self.assertGreaterEqual(
+            MODULE.H2_REMOTE_TRANSFER_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            1861.0,
+        )
+        self.assertGreaterEqual(
+            MODULE.H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            2 * 1861.0,
+        )
+        self.assertEqual(
+            MODULE.H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            2 * MODULE.H2_REMOTE_TRANSFER_BUDGET_BACKEND_TIMEOUT_SECONDS,
+        )
+
     def test_remote_h2_import_budget_timeout_rejects_invalid_target(self):
         with self.assertRaisesRegex(
             MODULE.RequestRejected,
@@ -1919,6 +1941,27 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(
             observed,
             [MODULE.H2_LIBRARY_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/remote-inbox/budget", {})
+        self.assertEqual(
+            observed,
+            [MODULE.H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response(
+                    "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+                    {},
+                )
+        self.assertEqual(
+            observed,
+            [MODULE.H2_REMOTE_TRANSFER_BUDGET_BACKEND_TIMEOUT_SECONDS],
         )
 
         observed.clear()

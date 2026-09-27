@@ -1443,6 +1443,58 @@ process.stdout.write(nodes["h2-remote-status"].textContent);
         )
         self.assertIn("5 Einträge nicht sicher lesbar", completed.stdout)
 
+    def test_remote_inbox_status_marks_incomplete_root_enumeration(self):
+        renderer = "function renderH2RemoteInbox" + self.app.split(
+            "function renderH2RemoteInbox", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const nodes = {{
+  "h2-remote-inbox": {{ replaceChildren() {{}} }},
+  "h2-remote-status": {{ textContent: "" }},
+  "h2-remote-refresh": {{ disabled: false }},
+}};
+const state = {{
+  h2RemoteInboxLoading: false,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxError: null,
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [],
+      skipped_invalid_transfers: ["unsafe"],
+      skipped_invalid_transfer_count: 1,
+      skipped_invalid_sessions: [],
+      transfer_count: 2,
+      total_transfer_count: 3,
+      truncated: true,
+      enumeration_complete: false,
+      counts_exact: false,
+    }},
+  }},
+}};
+function byId(id) {{ return nodes[id] || null; }}
+function element(tag, className, textContent = "") {{
+  return {{
+    tag, className, textContent, children: [],
+    append(...children) {{ this.children.push(...children); }},
+    setAttribute() {{}},
+  }};
+}}
+{renderer}
+renderH2RemoteInbox();
+process.stdout.write(nodes["h2-remote-status"].textContent);
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("Inbox-Auflistung begrenzt", completed.stdout)
+        self.assertIn("Transferzahlen sind Mindestwerte", completed.stdout)
+        self.assertIn("mindestens 1 Einträge nicht sicher lesbar", completed.stdout)
+        self.assertNotIn("neuesten von", completed.stdout)
+
     def test_remote_inbox_import_buttons_disable_during_either_h2_scan(self):
         workspace_loader = "async function loadH2Workspace" + self.app.split(
             "async function loadH2Workspace", 1

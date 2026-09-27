@@ -359,6 +359,7 @@ STATIC_H2_SOURCE_ROOT = pathlib.Path("/media") / pathlib.Path.home().name / "ZOO
 STATIC_H2_REMOTE_INBOX_ROOT = STATIC_RECORDING_OUTPUT_ROOT / "H2-Remote-Inbox"
 H2_REMOTE_TRANSFER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 H2_REMOTE_MAX_TRANSFERS = 2
+H2_REMOTE_MAX_ROOT_ENTRIES = 4096
 H2_REMOTE_MAX_SKIPPED_TRANSFER_IDS = 32
 H2_REMOTE_MAX_FUTURE_MTIME_SKEW_SECONDS = 300
 STATIC_RECORDING_STATE_ROOT = (
@@ -4079,13 +4080,14 @@ class AudioControl:
     @classmethod
     def _h2_remote_transfer_roots(
         cls,
-    ) -> tuple[list[tuple[str, pathlib.Path]], int, bool, list[str], int]:
+    ) -> tuple[list[tuple[str, pathlib.Path]], int, bool, list[str], int, bool]:
         if not cls._h2_remote_inbox_root_ready():
-            return [], 0, False, [], 0
+            return [], 0, False, [], 0, True
         newest: list[tuple[int, str, pathlib.Path]] = []
         skipped: list[str] = []
         total = 0
         skipped_total = 0
+        enumeration_complete = True
 
         def remember_skipped(name: str) -> None:
             nonlocal skipped_total
@@ -4096,7 +4098,10 @@ class AudioControl:
 
         try:
             with os.scandir(STATIC_H2_REMOTE_INBOX_ROOT) as entries:
-                for entry in entries:
+                for entry_index, entry in enumerate(entries, start=1):
+                    if entry_index > H2_REMOTE_MAX_ROOT_ENTRIES:
+                        enumeration_complete = False
+                        break
                     if H2_REMOTE_TRANSFER_ID_RE.fullmatch(entry.name) is None:
                         continue
                     try:
@@ -4135,9 +4140,10 @@ class AudioControl:
         return (
             selected,
             total,
-            total > H2_REMOTE_MAX_TRANSFERS,
+            (not enumeration_complete) or total > H2_REMOTE_MAX_TRANSFERS,
             skipped,
             skipped_total,
+            enumeration_complete,
         )
 
     @classmethod
@@ -4412,7 +4418,14 @@ class AudioControl:
         }
 
     def h2_remote_inbox_budget(self) -> dict[str, Any]:
-        transfers, total, truncated, skipped, skipped_total = self._h2_remote_transfer_roots()
+        (
+            transfers,
+            total,
+            truncated,
+            skipped,
+            skipped_total,
+            enumeration_complete,
+        ) = self._h2_remote_transfer_roots()
         scan_timeouts: list[float] = []
         budget_available = True
         for _transfer_id, source_root in transfers:
@@ -4439,6 +4452,8 @@ class AudioControl:
             "transfer_count": len(transfers),
             "total_transfer_count": total,
             "truncated": truncated,
+            "enumeration_complete": enumeration_complete,
+            "counts_exact": enumeration_complete,
             "skipped_unsafe_transfer_count": skipped_total,
             "budget_available": budget_available,
             "read_only": True,
@@ -4502,7 +4517,14 @@ class AudioControl:
         }
 
     def h2_remote_inbox(self) -> dict[str, Any]:
-        transfers, total, truncated, unsafe, unsafe_total = self._h2_remote_transfer_roots()
+        (
+            transfers,
+            total,
+            truncated,
+            unsafe,
+            unsafe_total,
+            enumeration_complete,
+        ) = self._h2_remote_transfer_roots()
         sessions: list[dict[str, Any]] = []
         skipped_invalid_transfers = list(unsafe)
         skipped_invalid_transfer_count = unsafe_total
@@ -4548,11 +4570,19 @@ class AudioControl:
             "schema_version": 1,
             "kind": "audio_h2_remote_inbox",
             "inbox": {
-                "status": "ready" if transfers else "empty",
+                "status": (
+                    "partial"
+                    if not enumeration_complete
+                    else "ready"
+                    if transfers
+                    else "empty"
+                ),
                 "count": len(sessions),
                 "transfer_count": len(transfers),
                 "total_transfer_count": total,
                 "truncated": truncated,
+                "enumeration_complete": enumeration_complete,
+                "counts_exact": enumeration_complete,
                 "skipped_invalid_transfers": sorted(
                     invalid_transfer_diagnostics
                 ),

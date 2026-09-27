@@ -81,10 +81,19 @@ RECORDING_PREPARE_BACKEND_TIMEOUT_SECONDS = 270.0
 # H2 media verification and the second pre-header generation hash are covered
 # by finite size-derived budgets projected by the backend. The bridge consumes
 # those budgets rather than maintaining duplicate size formulas.
-H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS = 900.0
-H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS = 900.0
+# The backend's bounded raw-entry scan contract currently permits one scan
+# to run for up to 1861 s. Keep the bridge above that bound without copying
+# the backend's entry arithmetic into this transport layer.
+H2_SCAN_BUDGET_BACKEND_TIMEOUT_SECONDS = 1900.0
+H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS = H2_SCAN_BUDGET_BACKEND_TIMEOUT_SECONDS
+H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS = H2_SCAN_BUDGET_BACKEND_TIMEOUT_SECONDS
 H2_LIBRARY_BUDGET_BACKEND_TIMEOUT_SECONDS = 30.0
-H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS = 1800.0
+H2_REMOTE_TRANSFER_BUDGET_BACKEND_TIMEOUT_SECONDS = (
+    H2_SCAN_BUDGET_BACKEND_TIMEOUT_SECONDS
+)
+H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS = (
+    2 * H2_SCAN_BUDGET_BACKEND_TIMEOUT_SECONDS
+)
 H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS = 15.0
 # H2 import and annotation outer deadlines are projected by the backend.
 # The bridge adds only a transport margin and does not duplicate size formulas.
@@ -974,11 +983,10 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         backend_timeout_seconds = h2_workspace_backend_timeout_seconds()
     elif target == "/api/v1/h2/remote-inbox":
         backend_timeout_seconds = h2_remote_inbox_backend_timeout_seconds()
-    elif (
-        target == "/api/v1/h2/remote-inbox/budget"
-        or H2_REMOTE_TRANSFER_BUDGET_RE.fullmatch(target) is not None
-    ):
+    elif target == "/api/v1/h2/remote-inbox/budget":
         backend_timeout_seconds = H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS
+    elif H2_REMOTE_TRANSFER_BUDGET_RE.fullmatch(target) is not None:
+        backend_timeout_seconds = H2_REMOTE_TRANSFER_BUDGET_BACKEND_TIMEOUT_SECONDS
     elif H2_REMOTE_IMPORT_BUDGET_RE.fullmatch(target) is not None:
         backend_timeout_seconds = h2_remote_import_budget_backend_timeout_seconds(
             target

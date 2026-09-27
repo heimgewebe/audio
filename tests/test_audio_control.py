@@ -5369,6 +5369,53 @@ class H2MaterialControlTests(unittest.TestCase):
                 ["transfer-5", "transfer-4"],
             )
 
+    def test_h2_remote_inbox_bounds_root_work_without_locking_whole_inbox(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            for index in range(6):
+                (inbox / f"transfer-{index}").mkdir(mode=0o700)
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(MODULE, "H2_REMOTE_MAX_ROOT_ENTRIES", 3),
+            ):
+                budget = controller.h2_remote_inbox_budget()
+                projected = controller.h2_remote_inbox()["inbox"]
+            self.assertFalse(budget["enumeration_complete"])
+            self.assertFalse(budget["counts_exact"])
+            self.assertTrue(budget["truncated"])
+            self.assertEqual(budget["total_transfer_count"], 3)
+            self.assertFalse(projected["enumeration_complete"])
+            self.assertFalse(projected["counts_exact"])
+            self.assertEqual(projected["status"], "partial")
+            self.assertTrue(projected["truncated"])
+            self.assertEqual(projected["total_transfer_count"], 3)
+            self.assertEqual(projected["transfer_count"], 2)
+
+    def test_h2_remote_direct_budget_survives_zero_projection_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            transfer = inbox / "known-transfer"
+            transfer.mkdir(mode=0o700)
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(MODULE, "H2_REMOTE_MAX_ROOT_ENTRIES", 0),
+            ):
+                projected = controller.h2_remote_inbox()["inbox"]
+                budget = controller.h2_remote_import_budget(
+                    "known-transfer",
+                    "170926_191401",
+                )
+            self.assertFalse(projected["enumeration_complete"])
+            self.assertEqual(projected["transfer_count"], 0)
+            self.assertEqual(budget["transfer_id"], "known-transfer")
+            self.assertEqual(budget["scene"], "170926_191401")
+
     def test_h2_remote_inbox_bounds_unsafe_ids_but_keeps_exact_count(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
