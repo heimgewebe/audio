@@ -2264,6 +2264,57 @@ class H2IngestTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.H2IngestError, "Größenlimit"):
                 MODULE._read_json_regular(path)
 
+    def test_metadata_reader_rejects_generation_swap_after_lstat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            replacement = pathlib.Path(directory) / "replacement.json"
+            path.write_text('{"kind":"original"}', encoding="utf-8")
+            replacement.write_text('{"kind":"replacement"}', encoding="utf-8")
+            real_lstat = MODULE._lstat_regular
+
+            def swap_after_lstat(target, description):
+                metadata = real_lstat(target, description)
+                target.unlink()
+                replacement.replace(target)
+                return metadata
+
+            with (
+                mock.patch.object(MODULE, "_lstat_regular", side_effect=swap_after_lstat),
+                self.assertRaisesRegex(MODULE.H2IngestError, "Identität"),
+            ):
+                MODULE._read_json_regular(path)
+
+    def test_metadata_reader_bounds_growth_on_open_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            path.write_text('{"kind":"small"}', encoding="utf-8")
+            real_fdopen = MODULE.os.fdopen
+
+            class GrowingReader:
+                def __init__(self, handle):
+                    self.handle = handle
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    self.handle.close()
+
+                def read(self, maximum):
+                    return b"x" * maximum
+
+                def fileno(self):
+                    return self.handle.fileno()
+
+            def growing_fdopen(fd, mode, closefd=True):
+                return GrowingReader(real_fdopen(fd, mode, closefd=closefd))
+
+            with (
+                mock.patch.object(MODULE.os, "fdopen", side_effect=growing_fdopen),
+                self.assertRaisesRegex(MODULE.H2IngestError, "Größenlimit"),
+            ):
+                MODULE._read_json_regular(path, max_bytes=32)
+
     def test_import_rejects_oversized_manifest_before_publication(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

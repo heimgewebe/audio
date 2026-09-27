@@ -985,17 +985,61 @@ def _read_json_regular(
     *,
     max_bytes: int = MAX_METADATA_JSON_BYTES,
 ) -> dict[str, Any]:
-    metadata = _lstat_regular(path, "Metadatendatei")
-    if (
-        isinstance(max_bytes, bool)
-        or not isinstance(max_bytes, int)
-        or max_bytes <= 0
-        or metadata.st_size > max_bytes
-    ):
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+    lexical = _lstat_regular(path, "Metadatendatei")
+    if lexical.st_size > max_bytes:
+        raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise H2IngestError("Metadatendatei ist nicht sicher lesbar.") from exc
+
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != lexical.st_dev
+            or opened.st_ino != lexical.st_ino
+            or opened.st_size != lexical.st_size
+            or opened.st_mtime_ns != lexical.st_mtime_ns
+            or opened.st_ctime_ns != lexical.st_ctime_ns
+        ):
+            raise H2IngestError("Metadatendatei änderte ihre Identität beim Öffnen.")
+        if opened.st_size > max_bytes:
+            raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+        with os.fdopen(fd, "rb", closefd=True) as handle:
+            fd = -1
+            raw = handle.read(max_bytes + 1)
+            finished = os.fstat(handle.fileno())
+        if len(raw) > max_bytes:
+            raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+        if (
+            len(raw) != opened.st_size
+            or finished.st_dev != opened.st_dev
+            or finished.st_ino != opened.st_ino
+            or finished.st_size != opened.st_size
+            or finished.st_mtime_ns != opened.st_mtime_ns
+            or finished.st_ctime_ns != opened.st_ctime_ns
+        ):
+            raise H2IngestError("Metadatendatei änderte sich während des Lesens.")
+    except H2IngestError:
+        raise
+    except OSError as exc:
+        raise H2IngestError("Metadatendatei ist nicht sicher lesbar.") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise H2IngestError("Metadatendatei ist nicht sicher lesbar.") from exc
     if not isinstance(value, dict):
         raise H2IngestError("Metadatendatei besitzt kein Objektformat.")
