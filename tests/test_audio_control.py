@@ -5507,6 +5507,59 @@ class H2MaterialControlTests(unittest.TestCase):
                         "../bad",
                     )
 
+    def test_h2_device_import_timeout_covers_pre_scan_import_and_workspace_readback(self):
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        byte_count = 8 * 1024 * 1024 * 1024
+        scan_timeout = 321.0
+        import_work = controller._h2_timeout_for_bytes(
+            byte_count,
+            passes=MODULE.H2_IMPORT_IO_PASSES,
+            minimum=300,
+        )
+        post_workspace = controller._h2_workspace_timeout_for_scan(scan_timeout)
+        expected = (
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS
+            + scan_timeout
+            + import_work
+            + post_workspace
+        )
+        projected = controller._h2_import_action_timeout_for_bytes(
+            byte_count,
+            scan_timeout=scan_timeout,
+        )
+        self.assertEqual(projected, expected)
+        self.assertGreater(
+            projected,
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS + scan_timeout + import_work,
+        )
+
+    def test_h2_remote_import_timeout_covers_pre_scan_import_and_library_readback(self):
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        byte_count = 8 * 1024 * 1024 * 1024
+        scan_timeout = 321.0
+        import_work = controller._h2_timeout_for_bytes(
+            byte_count,
+            passes=MODULE.H2_IMPORT_IO_PASSES,
+            minimum=300,
+        )
+        post_library = controller._h2_library_timeout()
+        expected = (
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS
+            + scan_timeout
+            + import_work
+            + post_library
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS
+        )
+        projected = controller._h2_remote_import_action_timeout_for_bytes(
+            byte_count,
+            scan_timeout=scan_timeout,
+        )
+        self.assertEqual(projected, expected)
+        self.assertGreater(
+            projected,
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS + scan_timeout + import_work,
+        )
+
     def test_h2_remote_import_budget_rejects_missing_valid_scene(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = pathlib.Path(directory) / "H2-Remote-Inbox"

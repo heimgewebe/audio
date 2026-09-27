@@ -479,24 +479,41 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
             h2_load,
         )
 
+        remote_transfer_budget = self.app.split(
+            "async function h2RemoteTransferBudget(", 1
+        )[1].split("\n}\n\nfunction h2RemoteImportBudgetTimeoutMs", 1)[0]
+        self.assertIn("/api/v1/h2/remote-inbox/transfer-budget/", remote_transfer_budget)
+        self.assertIn("H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS", remote_transfer_budget)
+        self.assertIn('budget?.kind !== "audio_h2_remote_transfer_budget"', remote_transfer_budget)
+        self.assertIn("budget?.transfer_id !== transferId", remote_transfer_budget)
+        self.assertIn("budget?.import_budget_timeout_seconds", remote_transfer_budget)
+
+        remote_import_budget = self.app.split(
+            "async function h2RemoteImportBudget(", 1
+        )[1].split("\n}\n\nasync function h2ImportTimeoutMs", 1)[0]
+        self.assertIn("/api/v1/h2/remote-inbox/import-budget/", remote_import_budget)
+        self.assertIn("h2RemoteImportBudgetTimeoutMs(transferBudget)", remote_import_budget)
+        self.assertIn('budget?.kind !== "audio_h2_remote_import_budget"', remote_import_budget)
+        self.assertIn("budget?.transfer_id !== transferId", remote_import_budget)
+        self.assertIn("budget?.scene !== scene", remote_import_budget)
+        self.assertIn("budget?.import_timeout_seconds", remote_import_budget)
+
         h2_timeout = self.app.split("async function h2ImportTimeoutMs(", 1)[1].split(
             "\n}\n\nasync function h2LibraryBudget", 1
         )[0]
         self.assertIn('source = "device"', h2_timeout)
         self.assertIn("transferId = null", h2_timeout)
         self.assertIn('source === "remote-inbox"', h2_timeout)
-        self.assertIn("state.h2RemoteInbox?.inbox", h2_timeout)
-        self.assertIn("state.h2Workspace?.source", h2_timeout)
+        self.assertIn("await h2RemoteTransferBudget(transferId)", h2_timeout)
+        self.assertIn("h2RemoteImportBudgetTimeoutMs(transferBudget)", h2_timeout)
+        self.assertIn("await h2RemoteImportBudget(", h2_timeout)
+        self.assertIn("importBudget.import_timeout_seconds", h2_timeout)
+        self.assertNotIn("state.h2RemoteInbox?.inbox", h2_timeout)
+        self.assertIn("state.h2Workspace.source.sessions", h2_timeout)
         self.assertIn("candidate?.scene === scene", h2_timeout)
-        self.assertIn("candidate?.transfer_id === transferId", h2_timeout)
         self.assertIn("session?.import_timeout_seconds", h2_timeout)
-        self.assertIn("session?.import_budget_timeout_seconds", h2_timeout)
         self.assertIn("Number.isFinite(backendSeconds)", h2_timeout)
         self.assertIn("Math.ceil(backendSeconds * 1000)", h2_timeout)
-        self.assertIn("Number.isFinite(importBudgetSeconds)", h2_timeout)
-        self.assertIn("Math.ceil(importBudgetSeconds * 1000)", h2_timeout)
-        self.assertIn("H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS", h2_timeout)
-        self.assertNotIn("await h2RemoteInboxTimeoutMs()", h2_timeout)
         self.assertIn("await h2WorkspaceTimeoutMs()", h2_timeout)
 
         library_budget = self.app.split("async function h2LibraryBudget() {", 1)[1].split(
@@ -519,7 +536,8 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
 
         self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;", self.app)
         self.assertIn("const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;", self.app)
-        self.assertIn("const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1830000;", self.app)
+        self.assertIn("const H2_REMOTE_INBOX_BUDGET_TIMEOUT_MS = 3815000;", self.app)
+        self.assertIn("const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1915000;", self.app)
         self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
         h2_render = self.app.split("function renderH2Workspace", 1)[1].split(
             "\nfunction renderLibrary", 1
@@ -1815,17 +1833,19 @@ async function fetchJson(url, options) {{
         self.assertEqual(result["first"]["token"], "n" * 32)
         self.assertEqual(result["second"]["token"], "n" * 32)
 
-    def test_remote_h2_import_deadline_uses_requested_transfer_preflight(self):
-        timeout_function = (
-            "async function h2ImportTimeoutMs("
-            + self.app.split("async function h2ImportTimeoutMs(", 1)[1].split(
+    def test_remote_h2_import_deadline_refreshes_exact_transfer_and_scene_budget(self):
+        timeout_chain = (
+            "async function h2RemoteTransferBudget("
+            + self.app.split("async function h2RemoteTransferBudget(", 1)[1].split(
                 "\n}\n\nasync function h2LibraryBudget", 1
             )[0]
             + "\n}"
         )
         harness = f"""
-const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1830000;
+const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1915000;
+const H2_REMOTE_INBOX_UI_TIMEOUT_MARGIN_MS = 15000;
 const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
+const requests = [];
 const state = {{
   h2RemoteInbox: {{
     inbox: {{
@@ -1839,20 +1859,44 @@ const state = {{
   }},
   h2Workspace: {{ source: {{ sessions: [] }} }},
 }};
-async function h2RemoteInboxTimeoutMs() {{
-  throw new Error("global inbox timeout must not be consulted");
+async function fetchJson(url, options = {{}}) {{
+  requests.push({{ url, timeoutMs: options.timeoutMs }});
+  if (url === "/api/v1/h2/remote-inbox/transfer-budget/old-transfer") {{
+    return {{
+      schema_version: 1,
+      kind: "audio_h2_remote_transfer_budget",
+      source: "remote-inbox",
+      transfer_id: "old-transfer",
+      import_budget_timeout_seconds: 2000,
+      read_only: true,
+      source_mutated: false,
+    }};
+  }}
+  if (url === "/api/v1/h2/remote-inbox/import-budget/old-transfer/170926_191401") {{
+    return {{
+      schema_version: 1,
+      kind: "audio_h2_remote_import_budget",
+      source: "remote-inbox",
+      transfer_id: "old-transfer",
+      scene: "170926_191401",
+      import_timeout_seconds: 900,
+      read_only: true,
+      source_mutated: false,
+    }};
+  }}
+  throw new Error("unexpected request " + url);
 }}
 async function h2WorkspaceTimeoutMs() {{
-  return 123000;
+  throw new Error("device workspace timeout must not be consulted");
 }}
-{timeout_function}
+{timeout_chain}
 (async () => {{
   const timeoutMs = await h2ImportTimeoutMs(
     "170926_191401",
     "remote-inbox",
     "old-transfer",
   );
-  process.stdout.write(JSON.stringify({{ timeoutMs }}));
+  process.stdout.write(JSON.stringify({{ timeoutMs, requests }}));
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
         completed = subprocess.run(
@@ -1861,9 +1905,23 @@ async function h2WorkspaceTimeoutMs() {{
             capture_output=True,
             text=True,
         )
+        result = json.loads(completed.stdout)
         self.assertEqual(
-            json.loads(completed.stdout)["timeoutMs"],
-            480000 + 1807000 + 1830000 + 15000,
+            result["requests"],
+            [
+                {
+                    "url": "/api/v1/h2/remote-inbox/transfer-budget/old-transfer",
+                    "timeoutMs": 1915000,
+                },
+                {
+                    "url": "/api/v1/h2/remote-inbox/import-budget/old-transfer/170926_191401",
+                    "timeoutMs": 2000000 + 1915000 + 15000,
+                },
+            ],
+        )
+        self.assertEqual(
+            result["timeoutMs"],
+            900000 + 2000000 + 1915000 + 15000 + 15000,
         )
 
     def test_h2_pending_migration_cards_expose_no_media_or_mutation_authority(self):

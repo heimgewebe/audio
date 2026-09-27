@@ -215,8 +215,10 @@ const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category
 const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
 const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;
 const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;
-const H2_REMOTE_INBOX_BUDGET_TIMEOUT_MS = 1830000;
-const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1830000;
+// Bootstrap budget reads cannot derive their own deadline. Keep them above
+// the bridge's bounded one-transfer (1900 s) and two-transfer (3800 s) scans.
+const H2_REMOTE_INBOX_BUDGET_TIMEOUT_MS = 3815000;
+const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1915000;
 const H2_REMOTE_INBOX_UI_TIMEOUT_MARGIN_MS = 15000;
 const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
 const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;
@@ -3870,23 +3872,101 @@ async function loadH2RemoteInbox({ render = true } = {}) {
   if (render) renderH2RemoteInbox();
 }
 
+async function h2RemoteTransferBudget(transferId) {
+  const budget = await fetchJson(
+    "/api/v1/h2/remote-inbox/transfer-budget/" +
+      encodeURIComponent(transferId),
+    { timeoutMs: H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS },
+  );
+  const importBudgetSeconds = budget?.import_budget_timeout_seconds;
+  if (
+    budget?.schema_version !== 1 ||
+    budget?.kind !== "audio_h2_remote_transfer_budget" ||
+    budget?.source !== "remote-inbox" ||
+    budget?.transfer_id !== transferId ||
+    budget?.read_only !== true ||
+    budget?.source_mutated !== false ||
+    typeof importBudgetSeconds !== "number" ||
+    !Number.isFinite(importBudgetSeconds) ||
+    importBudgetSeconds <= 0
+  ) {
+    throw new Error("Remote-H2-Transfer besitzt kein gültiges Preflight-Zeitbudget.");
+  }
+  return budget;
+}
+
+function h2RemoteImportBudgetTimeoutMs(transferBudget) {
+  const importBudgetSeconds = transferBudget?.import_budget_timeout_seconds;
+  if (
+    typeof importBudgetSeconds !== "number" ||
+    !Number.isFinite(importBudgetSeconds) ||
+    importBudgetSeconds <= 0
+  ) {
+    throw new Error("Remote-H2-Import besitzt kein gültiges Preflight-Zeitbudget.");
+  }
+  return (
+    Math.ceil(importBudgetSeconds * 1000) +
+    H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS +
+    H2_REMOTE_INBOX_UI_TIMEOUT_MARGIN_MS
+  );
+}
+
+async function h2RemoteImportBudget(transferId, scene, transferBudget) {
+  const budget = await fetchJson(
+    "/api/v1/h2/remote-inbox/import-budget/" +
+      encodeURIComponent(transferId) +
+      "/" +
+      encodeURIComponent(scene),
+    { timeoutMs: h2RemoteImportBudgetTimeoutMs(transferBudget) },
+  );
+  const importSeconds = budget?.import_timeout_seconds;
+  if (
+    budget?.schema_version !== 1 ||
+    budget?.kind !== "audio_h2_remote_import_budget" ||
+    budget?.source !== "remote-inbox" ||
+    budget?.transfer_id !== transferId ||
+    budget?.scene !== scene ||
+    budget?.read_only !== true ||
+    budget?.source_mutated !== false ||
+    typeof importSeconds !== "number" ||
+    !Number.isFinite(importSeconds) ||
+    importSeconds <= 0
+  ) {
+    throw new Error("Remote-H2-Import besitzt kein gültiges Aktionszeitbudget.");
+  }
+  return budget;
+}
+
 async function h2ImportTimeoutMs(
   scene,
   source = "device",
   transferId = null,
 ) {
-  const container =
-    source === "remote-inbox"
-      ? state.h2RemoteInbox?.inbox
-      : state.h2Workspace?.source;
-  const sessions = Array.isArray(container?.sessions) ? container.sessions : [];
-  const session = sessions.find(
-    (candidate) =>
-      candidate?.scene === scene &&
-      (source !== "remote-inbox" || candidate?.transfer_id === transferId),
-  );
+  if (source === "remote-inbox") {
+    if (typeof transferId !== "string" || transferId.length === 0) {
+      throw new Error("Remote-H2-Import besitzt keine gültige Transfer-ID.");
+    }
+    const transferBudget = await h2RemoteTransferBudget(transferId);
+    const preReadMs = h2RemoteImportBudgetTimeoutMs(transferBudget);
+    const importBudget = await h2RemoteImportBudget(
+      transferId,
+      scene,
+      transferBudget,
+    );
+    return (
+      Math.ceil(importBudget.import_timeout_seconds * 1000) +
+      preReadMs +
+      H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS
+    );
+  }
+  if (source !== "device") {
+    throw new Error("H2-Importquelle ist ungültig.");
+  }
+  const sessions = Array.isArray(state.h2Workspace?.source?.sessions)
+    ? state.h2Workspace.source.sessions
+    : [];
+  const session = sessions.find((candidate) => candidate?.scene === scene);
   const backendSeconds = session?.import_timeout_seconds;
-  const importBudgetSeconds = session?.import_budget_timeout_seconds;
   if (
     typeof backendSeconds !== "number" ||
     !Number.isFinite(backendSeconds) ||
@@ -3894,22 +3974,9 @@ async function h2ImportTimeoutMs(
   ) {
     throw new Error("H2-Import besitzt kein gültiges Zeitbudget.");
   }
-  if (
-    source === "remote-inbox" &&
-    (typeof importBudgetSeconds !== "number" ||
-      !Number.isFinite(importBudgetSeconds) ||
-      importBudgetSeconds <= 0)
-  ) {
-    throw new Error("Remote-H2-Import besitzt kein gültiges Preflight-Zeitbudget.");
-  }
-  const preReadMs =
-    source === "remote-inbox"
-      ? Math.ceil(importBudgetSeconds * 1000) +
-        H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS
-      : await h2WorkspaceTimeoutMs();
   return (
     Math.ceil(backendSeconds * 1000) +
-    preReadMs +
+    (await h2WorkspaceTimeoutMs()) +
     H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS
   );
 }

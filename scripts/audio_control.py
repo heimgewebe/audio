@@ -3850,6 +3850,8 @@ class AudioControl:
         *,
         scan_timeout: float,
     ) -> float:
+        # Complete local action bound: fresh budget/control scan, import work,
+        # then the post-import workspace readback (source scan + library).
         import_work = cls._h2_timeout_for_bytes(
             byte_count,
             passes=H2_IMPORT_IO_PASSES,
@@ -4153,6 +4155,8 @@ class AudioControl:
         *,
         scan_timeout: float,
     ) -> float:
+        # Complete remote action bound: fresh budget/control scan, import work,
+        # then the post-import library readback returned to the caller.
         import_work = cls._h2_timeout_for_bytes(
             byte_count,
             passes=H2_IMPORT_IO_PASSES,
