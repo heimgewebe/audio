@@ -5311,6 +5311,21 @@ class H2MaterialControlTests(unittest.TestCase):
             )
             self.assertFalse(remote["source_delete_authorized"])
 
+    def test_h2_remote_inbox_rejects_excess_top_level_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            for index in range(4):
+                (inbox / f"transfer-{index}").mkdir(mode=0o700)
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(MODULE, "H2_REMOTE_MAX_ROOT_ENTRIES", 3),
+                self.assertRaisesRegex(MODULE.ControlError, "zu viele Einträge"),
+            ):
+                controller.h2_remote_inbox()
+
     def test_h2_remote_import_budget_addresses_transfer_outside_projection(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = pathlib.Path(directory) / "H2-Remote-Inbox"

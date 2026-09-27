@@ -359,6 +359,7 @@ STATIC_H2_SOURCE_ROOT = pathlib.Path("/media") / pathlib.Path.home().name / "ZOO
 STATIC_H2_REMOTE_INBOX_ROOT = STATIC_RECORDING_OUTPUT_ROOT / "H2-Remote-Inbox"
 H2_REMOTE_TRANSFER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 H2_REMOTE_MAX_TRANSFERS = 2
+H2_REMOTE_MAX_ROOT_ENTRIES = 256
 STATIC_RECORDING_STATE_ROOT = (
     pathlib.Path.home() / ".local" / "state" / "audio" / "recordings-v1"
 )
@@ -4074,7 +4075,9 @@ class AudioControl:
         skipped: list[str] = []
         try:
             with os.scandir(STATIC_H2_REMOTE_INBOX_ROOT) as entries:
-                for entry in entries:
+                for entry_index, entry in enumerate(entries, start=1):
+                    if entry_index > H2_REMOTE_MAX_ROOT_ENTRIES:
+                        raise ControlError("Remote-H2-Inbox enthält zu viele Einträge.")
                     if H2_REMOTE_TRANSFER_ID_RE.fullmatch(entry.name) is None:
                         continue
                     try:
