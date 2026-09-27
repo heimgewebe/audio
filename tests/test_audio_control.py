@@ -4108,6 +4108,26 @@ class AudioControlHTTPTests(unittest.TestCase):
         self.assertEqual(json.loads(payload)["error"]["code"], "invalid_query")
         self.assertEqual(self.runner.calls, before)
 
+    def test_remote_h2_endpoints_reject_query_strings(self):
+        before = list(self.runner.calls)
+        targets = (
+            "/api/v1/h2/remote-inbox",
+            "/api/v1/h2/remote-inbox/budget",
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401",
+        )
+        for target in targets:
+            with self.subTest(target=target):
+                status, _headers, payload = self.request(
+                    "GET", target + "?unexpected=1"
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(
+                    json.loads(payload)["error"]["code"],
+                    "invalid_query",
+                )
+        self.assertEqual(self.runner.calls, before)
+
 
 class AudioControlInMemoryHTTPTests(unittest.TestCase):
     def setUp(self):
@@ -5356,6 +5376,43 @@ class H2MaterialControlTests(unittest.TestCase):
                         "old",
                         "../bad",
                     )
+
+    def test_h2_remote_import_budget_rejects_missing_valid_scene(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            transfer = inbox / "ipad-260926"
+            transfer.mkdir(parents=True, mode=0o700)
+            controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+            report = {
+                "sessions": [
+                    {
+                        "scene": "170926_191400",
+                        "total_bytes": 1024,
+                    }
+                ]
+            }
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(
+                    controller,
+                    "_h2_control_scan_for_root",
+                    return_value=(report, 123.0),
+                ) as control_scan,
+                mock.patch.object(
+                    controller,
+                    "_h2_remote_import_action_timeout_for_bytes",
+                ) as timeout_for_bytes,
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.ControlError,
+                    "Remote-H2-Szene ist nicht importierbar",
+                ):
+                    controller.h2_remote_import_budget(
+                        "ipad-260926",
+                        "170926_191401",
+                    )
+            control_scan.assert_called_once_with(transfer)
+            timeout_for_bytes.assert_not_called()
 
     def test_h2_remote_import_budget_uses_requested_scene_actual_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

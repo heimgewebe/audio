@@ -146,6 +146,65 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(set(contract["runtime_acceptance"]), set(MODULE.ACCEPTANCE_KEYS))
 
 
+class RemoteH2BudgetTests(unittest.TestCase):
+    def test_remote_h2_budget_readbacks_fail_closed(self):
+        readers = (
+            (
+                "inbox",
+                MODULE._read_backend_h2_remote_inbox_budget,
+                (),
+            ),
+            (
+                "transfer",
+                MODULE._read_backend_h2_remote_transfer_budget,
+                ("ipad-260926",),
+            ),
+            (
+                "import",
+                MODULE._read_backend_h2_remote_import_budget,
+                ("ipad-260926", "170926_191401"),
+            ),
+        )
+        failures = (
+            (
+                "non-200",
+                (503, [], b"{}", 0),
+                "unavailable",
+            ),
+            (
+                "malformed-json",
+                (200, [], b"{", 0),
+                "invalid",
+            ),
+            (
+                "invalid-schema",
+                (200, [], b"{}", 0),
+                "invalid",
+            ),
+        )
+        for reader_name, reader, args in readers:
+            for failure_name, response, message in failures:
+                with (
+                    self.subTest(reader=reader_name, failure=failure_name),
+                    mock.patch.object(
+                        MODULE,
+                        "read_backend_response",
+                        return_value=response,
+                    ),
+                    self.assertRaisesRegex(MODULE.BackendFailure, message),
+                ):
+                    reader(*args)
+
+    def test_remote_h2_import_budget_timeout_rejects_invalid_target(self):
+        with self.assertRaisesRegex(
+            MODULE.RequestRejected,
+            "remote H2 import budget target is invalid",
+        ):
+            MODULE.h2_remote_import_budget_backend_timeout_seconds(
+                "/api/v1/h2/remote-inbox/import-budget/ipad-260926"
+            )
+
+
 class RuntimeAcceptanceTests(unittest.TestCase):
     def write_state(self, path: pathlib.Path, *, now: int, values: dict[str, bool] | None = None, expires_offset: int = 3600) -> None:
         acceptance = MODULE.runtime_acceptance_defaults() if values is None else dict(values)
