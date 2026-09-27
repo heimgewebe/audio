@@ -5,7 +5,7 @@
   "status": "runtime-evidence-gated",
   "schema_binding": {
     "path": "schemas/audiozentrale-remote-bridge.v1.schema.json",
-    "sha256": "b7a18571985bf037df9e304dace539d8322e069b145b9ffe83257730595f14f1"
+    "sha256": "ac29b45d538546a76b5c1d8c5c3643785bb070e9334c57c39d080a21ee6354fe"
   },
   "bridge": {
     "listen_host": "127.0.0.1",
@@ -166,6 +166,8 @@
       "h2_action_response_marker": "h2-action-v1",
       "h2_effects_value": "h2-material-v1"
     },
+    "h2_remote_transfer_budget_pattern": "/api/v1/h2/remote-inbox/transfer-budget/{transfer_id}",
+    "h2_remote_import_budget_pattern": "/api/v1/h2/remote-inbox/import-budget/{transfer_id}/{scene}",
     "h2_source_media_pattern": "/api/v1/h2/source/{scene}/audio/{segment_index}",
     "h2_material_media_pattern": "/api/v1/h2/material/{material_id}/audio/{segment_index}"
   },

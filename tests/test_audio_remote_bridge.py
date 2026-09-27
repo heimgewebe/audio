@@ -131,6 +131,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(remote_action["h2_max_body_bytes"], MODULE.MAX_H2_ACTION_BODY_BYTES)
         self.assertEqual(set(remote_action["h2_operations"]), MODULE.H2_ACTION_OPERATIONS)
         self.assertEqual(
+            contract["bridge"]["h2_remote_transfer_budget_pattern"],
+            "/api/v1/h2/remote-inbox/transfer-budget/{transfer_id}",
+        )
+        self.assertEqual(
+            contract["bridge"]["h2_remote_import_budget_pattern"],
+            "/api/v1/h2/remote-inbox/import-budget/{transfer_id}/{scene}",
+        )
+        self.assertEqual(
             contract["bridge"]["h2_source_media_pattern"],
             "/api/v1/h2/source/{scene}/audio/{segment_index}",
         )

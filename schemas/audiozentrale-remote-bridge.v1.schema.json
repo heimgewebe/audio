@@ -59,6 +59,8 @@
         "snapshot_queries",
         "profile_plan_pattern",
         "recording_media_pattern",
+        "h2_remote_transfer_budget_pattern",
+        "h2_remote_import_budget_pattern",
         "h2_material_media_pattern",
         "h2_source_media_pattern",
         "request_header_forward",
@@ -368,6 +370,12 @@
         },
         "backend_remote_exposure": {
           "const": false
+        },
+        "h2_remote_transfer_budget_pattern": {
+          "const": "/api/v1/h2/remote-inbox/transfer-budget/{transfer_id}"
+        },
+        "h2_remote_import_budget_pattern": {
+          "const": "/api/v1/h2/remote-inbox/import-budget/{transfer_id}/{scene}"
         },
         "h2_source_media_pattern": {
           "const": "/api/v1/h2/source/{scene}/audio/{segment_index}"
