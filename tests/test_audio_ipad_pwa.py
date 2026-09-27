@@ -1279,6 +1279,69 @@ async function postH2Action() {{
         )[0]
         self.assertIn("state.h2RemoteInboxLoading", loader_guard)
 
+    def test_remote_inbox_renders_loading_state_before_budget_scan_completes(self):
+        loader = "async function loadH2RemoteInbox" + self.app.split(
+            "async function loadH2RemoteInbox", 1
+        )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
+        harness = f"""
+const state = {{
+  h2RemoteInboxLoading: false,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxLoadGeneration: 0,
+  h2RemoteInbox: null,
+  h2RemoteInboxError: null,
+}};
+const renders = [];
+let releaseBudget;
+function backendAllowed() {{ return true; }}
+function renderH2RemoteInbox() {{
+  renders.push({{ loading: state.h2RemoteInboxLoading }});
+}}
+async function h2RemoteInboxTimeoutMs() {{
+  return await new Promise((resolve) => {{ releaseBudget = resolve; }});
+}}
+async function fetchJson() {{
+  return {{ kind: "audio_h2_remote_inbox", inbox: {{ sessions: [] }} }};
+}}
+{loader}
+(async () => {{
+  const pending = loadH2RemoteInbox();
+  await Promise.resolve();
+  const during = {{
+    loading: state.h2RemoteInboxLoading,
+    renders: [...renders],
+  }};
+  releaseBudget(1000);
+  await pending;
+  process.stdout.write(JSON.stringify({{
+    during,
+    after: {{
+      loading: state.h2RemoteInboxLoading,
+      renders,
+    }},
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["during"],
+            {"loading": True, "renders": [{"loading": True}]},
+        )
+        self.assertEqual(
+            result["after"],
+            {
+                "loading": False,
+                "renders": [{"loading": True}, {"loading": False}],
+            },
+        )
+
     def test_remote_inbox_scan_does_not_block_core_snapshot_refresh(self):
         refresh = "async function refreshSnapshot" + self.app.split(
             "async function refreshSnapshot", 1

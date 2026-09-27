@@ -3836,6 +3836,7 @@ async function loadH2RemoteInbox({ render = true } = {}) {
   ) return;
   state.h2RemoteInboxLoading = true;
   const loadGeneration = ++state.h2RemoteInboxLoadGeneration;
+  if (render) renderH2RemoteInbox();
   try {
     const timeoutMs = await h2RemoteInboxTimeoutMs();
     if (
