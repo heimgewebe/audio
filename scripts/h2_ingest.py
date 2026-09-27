@@ -46,7 +46,9 @@ ALLOWED_SAMPLE_RATES = frozenset({44_100, 48_000, 96_000})
 COPY_CHUNK_BYTES = 1024 * 1024
 MAX_BEXT_BYTES = 128 * 1024
 MAX_SESSION_FILES = 192
+MAX_SESSION_DIRECTORY_ENTRIES = MAX_SESSION_FILES * 2
 MAX_CONTROL_SCAN_SESSIONS = 2048
+MAX_CONTROL_SCAN_ROOT_ENTRIES = MAX_CONTROL_SCAN_SESSIONS * 2
 MAX_CONTROL_LIBRARY_ITEMS = 80
 MAX_METADATA_JSON_BYTES = 2 * 1024 * 1024
 MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES = 64 * 1024
@@ -543,8 +545,14 @@ def inspect_scene(source_root: pathlib.Path, scene: str) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     seen_segments: set[tuple[str, int]] = set()
     manifest_master_metadata_bytes = 2  # JSON list brackets.
+    observed_entries = 0
     with os.scandir(session_dir) as entries:
         for entry in entries:
+            observed_entries += 1
+            if observed_entries > MAX_SESSION_DIRECTORY_ENTRIES:
+                raise H2IngestError(
+                    "H2-Session überschreitet das Verzeichniseintragslimit."
+                )
             if entry.name.startswith("."):
                 continue
             if not entry.is_file(follow_symlinks=False):
@@ -692,8 +700,14 @@ def _control_scan_budget(source: pathlib.Path) -> dict[str, Any]:
     matching_session_count = 0
     candidate_file_count = 0
     total_candidate_bytes = 0
+    observed_source_entries = 0
     with os.scandir(source) as entries:
         for entry in entries:
+            observed_source_entries += 1
+            if observed_source_entries > MAX_CONTROL_SCAN_ROOT_ENTRIES:
+                raise H2IngestError(
+                    "H2-Control-Scan überschreitet das Quellverzeichnis-Eintragslimit."
+                )
             if not entry.is_dir(follow_symlinks=False):
                 continue
             if not SCENE_RE.fullmatch(entry.name):
@@ -704,8 +718,15 @@ def _control_scan_budget(source: pathlib.Path) -> dict[str, Any]:
                     "H2-Control-Scan überschreitet das Session-Limit."
                 )
             session_candidate_count = 0
+            observed_session_entries = 0
             with os.scandir(entry.path) as session_entries:
                 for candidate in session_entries:
+                    observed_session_entries += 1
+                    if observed_session_entries > MAX_SESSION_DIRECTORY_ENTRIES:
+                        raise H2IngestError(
+                            "H2-Control-Scan überschreitet das "
+                            "Verzeichniseintragslimit pro Session."
+                        )
                     if candidate.name.startswith("."):
                         continue
                     match = ROLE_RE.fullmatch(candidate.name)
@@ -745,8 +766,16 @@ def scan(
     sessions: list[dict[str, Any]] = []
     skipped: list[str] = []
     observed_scenes = 0
+    observed_source_entries = 0
     with os.scandir(source) as entries:
         for entry in entries:
+            if projection == "control":
+                observed_source_entries += 1
+                if observed_source_entries > MAX_CONTROL_SCAN_ROOT_ENTRIES:
+                    raise H2IngestError(
+                        "H2-Control-Scan überschreitet das "
+                        "Quellverzeichnis-Eintragslimit."
+                    )
             if not entry.is_dir(follow_symlinks=False):
                 continue
             if not SCENE_RE.fullmatch(entry.name):

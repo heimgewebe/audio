@@ -431,6 +431,40 @@ class H2IngestTests(unittest.TestCase):
                 ):
                     MODULE.scan(source, projection=projection)
 
+    def test_control_scan_bounds_all_root_entries_before_name_filtering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory), roles=("FRONT",))
+            for projection in ("control", "budget"):
+                with (
+                    self.subTest(projection=projection),
+                    mock.patch.object(MODULE, "MAX_CONTROL_SCAN_ROOT_ENTRIES", 1),
+                    self.assertRaisesRegex(
+                        MODULE.H2IngestError,
+                        "Quellverzeichnis-Eintragslimit",
+                    ),
+                ):
+                    MODULE.scan(source, projection=projection)
+
+    def test_control_scan_bounds_hidden_session_entries_before_name_filtering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory), roles=("FRONT",))
+            scene = "170926_191401"
+            (source / scene / ".ignored").write_text("ignored", encoding="utf-8")
+            with mock.patch.object(MODULE, "MAX_SESSION_DIRECTORY_ENTRIES", 1):
+                control = MODULE.scan(source, projection="control")
+                self.assertEqual(control["count"], 0)
+                self.assertEqual(control["skipped_invalid_sessions"], [scene])
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "Verzeichniseintragslimit",
+                ):
+                    MODULE.scan(source, projection="budget")
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "Verzeichniseintragslimit",
+                ):
+                    MODULE.inspect_scene(source, scene)
+
     def test_scan_reports_invalid_matching_session_instead_of_claiming_it(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

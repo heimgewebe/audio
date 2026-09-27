@@ -359,7 +359,7 @@ STATIC_H2_SOURCE_ROOT = pathlib.Path("/media") / pathlib.Path.home().name / "ZOO
 STATIC_H2_REMOTE_INBOX_ROOT = STATIC_RECORDING_OUTPUT_ROOT / "H2-Remote-Inbox"
 H2_REMOTE_TRANSFER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 H2_REMOTE_MAX_TRANSFERS = 2
-H2_REMOTE_MAX_ROOT_ENTRIES = 256
+H2_REMOTE_MAX_SKIPPED_TRANSFER_IDS = 32
 STATIC_RECORDING_STATE_ROOT = (
     pathlib.Path.home() / ".local" / "state" / "audio" / "recordings-v1"
 )
@@ -4068,50 +4068,59 @@ class AudioControl:
     @classmethod
     def _h2_remote_transfer_roots(
         cls,
-    ) -> tuple[list[tuple[str, pathlib.Path]], int, bool, list[str]]:
+    ) -> tuple[list[tuple[str, pathlib.Path]], int, bool, list[str], int]:
         if not cls._h2_remote_inbox_root_ready():
-            return [], 0, False, []
-        valid: list[tuple[int, str, pathlib.Path]] = []
+            return [], 0, False, [], 0
+        newest: list[tuple[int, str, pathlib.Path]] = []
         skipped: list[str] = []
+        total = 0
+        skipped_total = 0
+
+        def remember_skipped(name: str) -> None:
+            nonlocal skipped_total
+            skipped_total += 1
+            skipped.append(name)
+            skipped.sort()
+            if len(skipped) > H2_REMOTE_MAX_SKIPPED_TRANSFER_IDS:
+                skipped.pop()
+
         try:
             with os.scandir(STATIC_H2_REMOTE_INBOX_ROOT) as entries:
-                for entry_index, entry in enumerate(entries, start=1):
-                    if entry_index > H2_REMOTE_MAX_ROOT_ENTRIES:
-                        raise ControlError("Remote-H2-Inbox enthält zu viele Einträge.")
+                for entry in entries:
                     if H2_REMOTE_TRANSFER_ID_RE.fullmatch(entry.name) is None:
                         continue
                     try:
                         metadata = entry.stat(follow_symlinks=False)
                     except OSError:
-                        skipped.append(entry.name)
+                        remember_skipped(entry.name)
                         continue
                     if (
                         not stat.S_ISDIR(metadata.st_mode)
                         or metadata.st_uid != os.getuid()
                         or stat.S_IMODE(metadata.st_mode) & 0o022
                     ):
-                        skipped.append(entry.name)
+                        remember_skipped(entry.name)
                         continue
-                    valid.append(
+                    total += 1
+                    newest.append(
                         (
                             metadata.st_mtime_ns,
                             entry.name,
                             STATIC_H2_REMOTE_INBOX_ROOT / entry.name,
                         )
                     )
+                    newest.sort(key=lambda item: (-item[0], item[1]))
+                    if len(newest) > H2_REMOTE_MAX_TRANSFERS:
+                        newest.pop()
         except OSError as error:
             raise ControlError("Remote-H2-Inbox kann nicht aufgelistet werden.") from error
-        valid.sort(key=lambda item: (-item[0], item[1]))
-        total = len(valid)
-        selected = [
-            (name, path)
-            for _mtime_ns, name, path in valid[:H2_REMOTE_MAX_TRANSFERS]
-        ]
+        selected = [(name, path) for _mtime_ns, name, path in newest]
         return (
             selected,
             total,
             total > H2_REMOTE_MAX_TRANSFERS,
-            sorted(set(skipped)),
+            skipped,
+            skipped_total,
         )
 
     @classmethod
@@ -4386,7 +4395,7 @@ class AudioControl:
         }
 
     def h2_remote_inbox_budget(self) -> dict[str, Any]:
-        transfers, total, truncated, skipped = self._h2_remote_transfer_roots()
+        transfers, total, truncated, skipped, skipped_total = self._h2_remote_transfer_roots()
         scan_timeouts: list[float] = []
         budget_available = True
         for _transfer_id, source_root in transfers:
@@ -4413,7 +4422,7 @@ class AudioControl:
             "transfer_count": len(transfers),
             "total_transfer_count": total,
             "truncated": truncated,
-            "skipped_unsafe_transfer_count": len(skipped),
+            "skipped_unsafe_transfer_count": skipped_total,
             "budget_available": budget_available,
             "read_only": True,
             "source_mutated": False,
@@ -4476,15 +4485,17 @@ class AudioControl:
         }
 
     def h2_remote_inbox(self) -> dict[str, Any]:
-        transfers, total, truncated, unsafe = self._h2_remote_transfer_roots()
+        transfers, total, truncated, unsafe, unsafe_total = self._h2_remote_transfer_roots()
         sessions: list[dict[str, Any]] = []
         skipped_invalid_transfers = list(unsafe)
+        skipped_invalid_transfer_count = unsafe_total
         skipped_invalid_sessions: list[dict[str, str]] = []
         for transfer_id, source_root in transfers:
             try:
                 report, scan_timeout = self._h2_control_scan_for_root(source_root)
             except ControlError:
                 skipped_invalid_transfers.append(transfer_id)
+                skipped_invalid_transfer_count += 1
                 continue
             for scene in report["skipped_invalid_sessions"]:
                 skipped_invalid_sessions.append(
@@ -4525,6 +4536,7 @@ class AudioControl:
                 "skipped_invalid_transfers": sorted(
                     set(skipped_invalid_transfers)
                 ),
+                "skipped_invalid_transfer_count": skipped_invalid_transfer_count,
                 "skipped_invalid_sessions": skipped_invalid_sessions,
                 "sessions": sessions,
             },

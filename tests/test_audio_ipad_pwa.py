@@ -1396,6 +1396,53 @@ process.stdout.write(JSON.stringify({{
             },
         )
 
+    def test_remote_inbox_status_uses_exact_bounded_invalid_transfer_count(self):
+        renderer = "function renderH2RemoteInbox" + self.app.split(
+            "function renderH2RemoteInbox", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const nodes = {{
+  "h2-remote-inbox": {{ replaceChildren() {{}} }},
+  "h2-remote-status": {{ textContent: "" }},
+  "h2-remote-refresh": {{ disabled: false }},
+}};
+const state = {{
+  h2RemoteInboxLoading: false,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxError: null,
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [],
+      skipped_invalid_transfers: ["unsafe-0", "unsafe-1"],
+      skipped_invalid_transfer_count: 5,
+      skipped_invalid_sessions: [],
+      transfer_count: 0,
+      total_transfer_count: 0,
+      truncated: false,
+    }},
+  }},
+}};
+function byId(id) {{ return nodes[id] || null; }}
+function element(tag, className, textContent = "") {{
+  return {{
+    tag, className, textContent, children: [],
+    append(...children) {{ this.children.push(...children); }},
+    setAttribute() {{}},
+  }};
+}}
+{renderer}
+renderH2RemoteInbox();
+process.stdout.write(nodes["h2-remote-status"].textContent);
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("5 Einträge nicht sicher lesbar", completed.stdout)
+
     def test_remote_inbox_import_buttons_disable_during_either_h2_scan(self):
         workspace_loader = "async function loadH2Workspace" + self.app.split(
             "async function loadH2Workspace", 1

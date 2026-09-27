@@ -5311,20 +5311,49 @@ class H2MaterialControlTests(unittest.TestCase):
             )
             self.assertFalse(remote["source_delete_authorized"])
 
-    def test_h2_remote_inbox_rejects_excess_top_level_entries(self):
+    def test_h2_remote_inbox_streams_large_root_without_entry_count_dos(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
             inbox.mkdir(mode=0o700)
-            for index in range(4):
-                (inbox / f"transfer-{index}").mkdir(mode=0o700)
+            for index in range(6):
+                transfer = inbox / f"transfer-{index}"
+                transfer.mkdir(mode=0o700)
+                mtime_ns = (index + 1) * 1_000_000_000
+                os.utime(transfer, ns=(mtime_ns, mtime_ns))
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                projected = controller.h2_remote_inbox()["inbox"]
+            self.assertEqual(projected["transfer_count"], 2)
+            self.assertEqual(projected["total_transfer_count"], 6)
+            self.assertTrue(projected["truncated"])
+            self.assertEqual(
+                [item["transfer_id"] for item in projected["sessions"]],
+                ["transfer-5", "transfer-4"],
+            )
+
+    def test_h2_remote_inbox_bounds_unsafe_ids_but_keeps_exact_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            for index in range(5):
+                transfer = inbox / f"unsafe-{index}"
+                transfer.mkdir(mode=0o700)
+                transfer.chmod(0o777)
             runner = self.Runner()
             controller = MODULE.AudioControl(runner=runner, telemetry=None)
             with (
                 mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
-                mock.patch.object(MODULE, "H2_REMOTE_MAX_ROOT_ENTRIES", 3),
-                self.assertRaisesRegex(MODULE.ControlError, "zu viele Einträge"),
+                mock.patch.object(MODULE, "H2_REMOTE_MAX_SKIPPED_TRANSFER_IDS", 2),
             ):
-                controller.h2_remote_inbox()
+                budget = controller.h2_remote_inbox_budget()
+                projected = controller.h2_remote_inbox()["inbox"]
+            self.assertEqual(budget["skipped_unsafe_transfer_count"], 5)
+            self.assertEqual(projected["skipped_invalid_transfer_count"], 5)
+            self.assertEqual(
+                projected["skipped_invalid_transfers"],
+                ["unsafe-0", "unsafe-1"],
+            )
 
     def test_h2_remote_import_budget_addresses_transfer_outside_projection(self):
         with tempfile.TemporaryDirectory() as directory:

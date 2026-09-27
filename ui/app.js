@@ -4154,6 +4154,11 @@ function renderH2RemoteInbox() {
   const invalidSessions = Array.isArray(inbox.skipped_invalid_sessions)
     ? inbox.skipped_invalid_sessions
     : [];
+  const invalidTransferCount =
+    Number.isSafeInteger(inbox.skipped_invalid_transfer_count) &&
+    inbox.skipped_invalid_transfer_count >= 0
+      ? inbox.skipped_invalid_transfer_count
+      : invalidTransfers.length;
   if (!state.h2RemoteInboxLoading) {
     status.textContent =
       String(sessions.length) +
@@ -4167,9 +4172,9 @@ function renderH2RemoteInbox() {
           String(inbox.total_transfer_count || 0) +
           " Transfers gelesen"
         : "") +
-      (invalidTransfers.length || invalidSessions.length
+      (invalidTransferCount || invalidSessions.length
         ? " · " +
-          String(invalidTransfers.length + invalidSessions.length) +
+          String(invalidTransferCount + invalidSessions.length) +
           " Einträge nicht sicher lesbar"
         : "");
   }
