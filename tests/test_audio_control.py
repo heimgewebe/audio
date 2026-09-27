@@ -4628,6 +4628,23 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertIn("budget", call)
         self.assertEqual(timeout, MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS)
 
+    def test_h2_scan_budget_timeout_covers_every_bounded_raw_entry(self):
+        expected_entries = MODULE.H2_SCAN_BUDGET_MAX_ROOT_ENTRIES + (
+            MODULE.H2_SCAN_BUDGET_MAX_SESSIONS
+            * MODULE.H2_SCAN_BUDGET_MAX_SESSION_DIRECTORY_ENTRIES
+        )
+        self.assertEqual(MODULE.H2_SCAN_BUDGET_MAX_ENTRIES, expected_entries)
+        self.assertEqual(
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS,
+            float(
+                MODULE.H2_IO_TIMEOUT_OVERHEAD_SECONDS
+                + MODULE.math.ceil(
+                    expected_entries
+                    / MODULE.H2_MIN_SCAN_BUDGET_ENTRIES_PER_SECOND
+                )
+            ),
+        )
+
     def test_h2_workspace_budget_keeps_archive_reachable_without_source(self):
         archived = {
             "material_id": "a" * 24,
@@ -5311,6 +5328,26 @@ class H2MaterialControlTests(unittest.TestCase):
             )
             self.assertFalse(remote["source_delete_authorized"])
 
+    def test_h2_remote_inbox_future_mtime_cannot_pin_projection_slot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            future = inbox / "z-future"
+            future.mkdir(mode=0o700)
+            future_ns = time.time_ns() + 365 * 24 * 60 * 60 * 1_000_000_000
+            os.utime(future, ns=(future_ns, future_ns))
+            for name in ("a-newer", "b-newest"):
+                (inbox / name).mkdir(mode=0o700)
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                projected = controller.h2_remote_inbox()["inbox"]
+            self.assertEqual(projected["transfer_count"], 2)
+            self.assertNotIn(
+                "z-future",
+                [item["transfer_id"] for item in projected["sessions"]],
+            )
+
     def test_h2_remote_inbox_streams_large_root_without_entry_count_dos(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
@@ -5350,9 +5387,11 @@ class H2MaterialControlTests(unittest.TestCase):
                 projected = controller.h2_remote_inbox()["inbox"]
             self.assertEqual(budget["skipped_unsafe_transfer_count"], 5)
             self.assertEqual(projected["skipped_invalid_transfer_count"], 5)
-            self.assertEqual(
-                projected["skipped_invalid_transfers"],
-                ["unsafe-0", "unsafe-1"],
+            self.assertEqual(len(projected["skipped_invalid_transfers"]), 2)
+            self.assertTrue(projected["skipped_invalid_transfers_truncated"])
+            self.assertTrue(
+                set(projected["skipped_invalid_transfers"])
+                <= {f"unsafe-{index}" for index in range(5)}
             )
 
     def test_h2_remote_import_budget_addresses_transfer_outside_projection(self):

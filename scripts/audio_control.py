@@ -360,6 +360,7 @@ STATIC_H2_REMOTE_INBOX_ROOT = STATIC_RECORDING_OUTPUT_ROOT / "H2-Remote-Inbox"
 H2_REMOTE_TRANSFER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 H2_REMOTE_MAX_TRANSFERS = 2
 H2_REMOTE_MAX_SKIPPED_TRANSFER_IDS = 32
+H2_REMOTE_MAX_FUTURE_MTIME_SKEW_SECONDS = 300
 STATIC_RECORDING_STATE_ROOT = (
     pathlib.Path.home() / ".local" / "state" / "audio" / "recordings-v1"
 )
@@ -419,7 +420,17 @@ H2_IO_TIMEOUT_OVERHEAD_SECONDS = 60
 H2_METADATA_TIMEOUT_SECONDS = 30
 H2_MAX_CONTROL_LIBRARY_ITEMS = 80
 H2_MAX_METADATA_JSON_BYTES = 2 * 1024 * 1024
-H2_SCAN_BUDGET_MAX_ENTRIES = 2048 * 192
+H2_SCAN_BUDGET_MAX_SESSIONS = 2048
+H2_SCAN_BUDGET_METADATA_ENTRY_RESERVE = 64
+H2_SCAN_BUDGET_MAX_SESSION_DIRECTORY_ENTRIES = (
+    192 * 2 + H2_SCAN_BUDGET_METADATA_ENTRY_RESERVE
+)
+H2_SCAN_BUDGET_MAX_ROOT_ENTRIES = (
+    H2_SCAN_BUDGET_MAX_SESSIONS * 2 + H2_SCAN_BUDGET_METADATA_ENTRY_RESERVE
+)
+H2_SCAN_BUDGET_MAX_ENTRIES = H2_SCAN_BUDGET_MAX_ROOT_ENTRIES + (
+    H2_SCAN_BUDGET_MAX_SESSIONS * H2_SCAN_BUDGET_MAX_SESSION_DIRECTORY_ENTRIES
+)
 H2_MIN_SCAN_BUDGET_ENTRIES_PER_SECOND = 512
 H2_SCAN_BUDGET_TIMEOUT_SECONDS = float(
     H2_IO_TIMEOUT_OVERHEAD_SECONDS
@@ -4080,9 +4091,8 @@ class AudioControl:
             nonlocal skipped_total
             skipped_total += 1
             skipped.append(name)
-            skipped.sort()
             if len(skipped) > H2_REMOTE_MAX_SKIPPED_TRANSFER_IDS:
-                skipped.pop()
+                skipped.pop(0)
 
         try:
             with os.scandir(STATIC_H2_REMOTE_INBOX_ROOT) as entries:
@@ -4102,9 +4112,16 @@ class AudioControl:
                         remember_skipped(entry.name)
                         continue
                     total += 1
+                    ordering_ns = metadata.st_mtime_ns
+                    if ordering_ns > (
+                        metadata.st_ctime_ns
+                        + H2_REMOTE_MAX_FUTURE_MTIME_SKEW_SECONDS
+                        * 1_000_000_000
+                    ):
+                        ordering_ns = metadata.st_ctime_ns
                     newest.append(
                         (
-                            metadata.st_mtime_ns,
+                            ordering_ns,
                             entry.name,
                             STATIC_H2_REMOTE_INBOX_ROOT / entry.name,
                         )
@@ -4524,6 +4541,9 @@ class AudioControl:
                         ),
                     }
                 )
+        invalid_transfer_diagnostics = list(
+            dict.fromkeys(skipped_invalid_transfers)
+        )[-H2_REMOTE_MAX_SKIPPED_TRANSFER_IDS:]
         result = {
             "schema_version": 1,
             "kind": "audio_h2_remote_inbox",
@@ -4534,9 +4554,13 @@ class AudioControl:
                 "total_transfer_count": total,
                 "truncated": truncated,
                 "skipped_invalid_transfers": sorted(
-                    set(skipped_invalid_transfers)
+                    invalid_transfer_diagnostics
                 ),
                 "skipped_invalid_transfer_count": skipped_invalid_transfer_count,
+                "skipped_invalid_transfers_truncated": (
+                    skipped_invalid_transfer_count
+                    > len(invalid_transfer_diagnostics)
+                ),
                 "skipped_invalid_sessions": skipped_invalid_sessions,
                 "sessions": sessions,
             },

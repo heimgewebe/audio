@@ -445,6 +445,46 @@ class H2IngestTests(unittest.TestCase):
                 ):
                     MODULE.scan(source, projection=projection)
 
+    def test_control_scan_budget_allows_common_root_metadata_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory), roles=("FRONT",))
+            scene = "170926_191401"
+            (source / f"._{scene}").write_bytes(b"sidecar")
+            (source / ".DS_Store").write_bytes(b"metadata")
+            with (
+                mock.patch.object(MODULE, "MAX_CONTROL_SCAN_SESSIONS", 1),
+                mock.patch.object(MODULE, "MAX_CONTROL_SCAN_ROOT_ENTRIES", 4),
+            ):
+                report = MODULE.scan(source, projection="budget")
+            self.assertEqual(report["matching_session_count"], 1)
+
+    def test_control_scan_budget_allows_common_session_metadata_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory), roles=("FRONT",))
+            scene = "170926_191401"
+            session = source / scene
+            valid = session / f"{scene}_FRONT.WAV"
+            (session / f"._{valid.name}").write_bytes(b"sidecar")
+            (session / ".DS_Store").write_bytes(b"metadata")
+            with (
+                mock.patch.object(MODULE, "MAX_SESSION_FILES", 1),
+                mock.patch.object(MODULE, "MAX_SESSION_DIRECTORY_ENTRIES", 3),
+            ):
+                report = MODULE.scan(source, projection="budget")
+                inspected = MODULE.inspect_scene(source, scene)
+            self.assertEqual(report["candidate_file_count"], 1)
+            self.assertEqual(inspected["segment_count"], 1)
+
+    def test_directory_entry_limits_reserve_metadata_headroom(self):
+        self.assertGreaterEqual(
+            MODULE.MAX_SESSION_DIRECTORY_ENTRIES,
+            MODULE.MAX_SESSION_FILES * 2 + 64,
+        )
+        self.assertGreaterEqual(
+            MODULE.MAX_CONTROL_SCAN_ROOT_ENTRIES,
+            MODULE.MAX_CONTROL_SCAN_SESSIONS * 2 + 64,
+        )
+
     def test_control_scan_bounds_hidden_session_entries_before_name_filtering(self):
         with tempfile.TemporaryDirectory() as directory:
             source = make_source(pathlib.Path(directory), roles=("FRONT",))
