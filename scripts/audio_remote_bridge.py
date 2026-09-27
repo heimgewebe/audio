@@ -477,6 +477,26 @@ def validate_request_target(raw_target: str) -> tuple[str, bool]:
         if query:
             raise RouteDenied("fixed API routes accept no query")
         return path, True
+    remote_transfer_budget = H2_REMOTE_TRANSFER_BUDGET_RE.fullmatch(path)
+    if remote_transfer_budget:
+        if query:
+            raise RouteDenied("remote H2 transfer budget accepts no query")
+        return (
+            "/api/v1/h2/remote-inbox/transfer-budget/"
+            + remote_transfer_budget.group(1),
+            True,
+        )
+    remote_import_budget = H2_REMOTE_IMPORT_BUDGET_RE.fullmatch(path)
+    if remote_import_budget:
+        if query:
+            raise RouteDenied("remote H2 import budget accepts no query")
+        return (
+            "/api/v1/h2/remote-inbox/import-budget/"
+            + remote_import_budget.group(1)
+            + "/"
+            + remote_import_budget.group(2),
+            True,
+        )
     if path == "/api/v1/snapshot":
         if query not in {"", "refresh=1"}:
             raise RouteDenied("snapshot query is not allowed")

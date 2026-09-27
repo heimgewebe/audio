@@ -352,6 +352,24 @@ class TargetValidationTests(unittest.TestCase):
             ("/api/v1/h2/remote-inbox/budget", True),
         )
         self.assertEqual(
+            MODULE.validate_request_target(
+                "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926"
+            ),
+            (
+                "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+                True,
+            ),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target(
+                "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401"
+            ),
+            (
+                "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401",
+                True,
+            ),
+        )
+        self.assertEqual(
             MODULE.validate_request_target("/api/v1/h2/source/170926_191401/audio/0"),
             ("/api/v1/h2/source/170926_191401/audio/0", True),
         )
@@ -378,8 +396,10 @@ class TargetValidationTests(unittest.TestCase):
             "/api/v1/h2/source/170926_191401/audio/1000",
             "/api/v1/h2/material/nothex/audio/0",
             "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0?download=1",
-            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401",
-            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401?x=1",
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/bad",
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926?x=1",
+            "/api/v1/h2/remote-inbox/transfer-budget/%2e%2e",
             "http://example.invalid/app.js",
         )
         for target in rejected:
