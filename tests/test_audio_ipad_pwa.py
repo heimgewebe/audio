@@ -690,6 +690,7 @@ function fetchJson() {{
   return new Promise((resolve) => {{ resolveFetch = resolve; }});
 }}
 function renderH2Workspace() {{ renders += 1; }}
+function renderH2RemoteInbox() {{}}
 {loader}
 (async () => {{
   const first = loadH2Workspace({{ render: true }});
@@ -817,6 +818,7 @@ function fetchJson() {{
   return new Promise((resolve) => resolvers.push(resolve));
 }}
 function renderH2Workspace() {{ renders += 1; }}
+function renderH2RemoteInbox() {{}}
 {loader}
 (async () => {{
   const first = loadH2Workspace({{ render: true }});
@@ -1392,6 +1394,93 @@ process.stdout.write(JSON.stringify({{
                 "status": "Remote-Inbox wird gelesen.",
                 "refreshDisabled": True,
             },
+        )
+
+    def test_remote_inbox_import_buttons_disable_during_either_h2_scan(self):
+        workspace_loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2RemoteInboxBudget", 1)[0]
+        self.assertLess(
+            workspace_loader.index("state.h2WorkspaceLoading = true;"),
+            workspace_loader.index("if (render) renderH2RemoteInbox();"),
+        )
+        self.assertLess(
+            workspace_loader.index("if (render) renderH2RemoteInbox();"),
+            workspace_loader.index("const timeoutMs = await h2WorkspaceTimeoutMs();"),
+        )
+
+        renderer = "function renderH2RemoteInbox" + self.app.split(
+            "function renderH2RemoteInbox", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const nodes = {{
+  "h2-remote-inbox": {{ replaceChildren() {{}} }},
+  "h2-remote-status": {{ textContent: "" }},
+  "h2-remote-refresh": {{ disabled: false }},
+}};
+const state = {{
+  h2RemoteInboxLoading: true,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxError: null,
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [{{
+        transfer_id: "ipad-260927",
+        scene: "170926_191401",
+        recorded_date: "2026-09-17",
+        recorded_time: "19:14:01",
+        duration_seconds: 1,
+        sample_rate_hz: 48000,
+        roles: ["voice"],
+      }}],
+      skipped_invalid_transfers: [],
+      skipped_invalid_sessions: [],
+      transfer_count: 1,
+      total_transfer_count: 1,
+      truncated: false,
+    }},
+  }},
+}};
+let buttons = [];
+function byId(id) {{ return nodes[id] || null; }}
+function element(tag, className, textContent = "") {{
+  const node = {{
+    tag, className, textContent, children: [], disabled: false, type: "",
+    append(...children) {{ this.children.push(...children); }},
+    addEventListener() {{}},
+    setAttribute() {{}},
+  }};
+  if (tag === "button") buttons.push(node);
+  return node;
+}}
+function appendText(parent, tag, className, textContent) {{
+  const child = element(tag, className, textContent);
+  parent.append(child);
+  return child;
+}}
+function h2DisplayTimestamp() {{ return "17.09.2026 · 19:14:01"; }}
+function h2ActionsAllowed() {{ return true; }}
+function runH2Action() {{ throw new Error("must not run during render"); }}
+{renderer}
+renderH2RemoteInbox();
+const remoteScanDisabled = buttons.at(-1)?.disabled === true;
+buttons = [];
+state.h2RemoteInboxLoading = false;
+state.h2WorkspaceLoading = true;
+renderH2RemoteInbox();
+const workspaceScanDisabled = buttons.at(-1)?.disabled === true;
+process.stdout.write(JSON.stringify({{ remoteScanDisabled, workspaceScanDisabled }}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {"remoteScanDisabled": True, "workspaceScanDisabled": True},
         )
 
     def test_remote_inbox_scan_does_not_block_core_snapshot_refresh(self):

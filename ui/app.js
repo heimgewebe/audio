@@ -3775,6 +3775,7 @@ async function loadH2Workspace({ render = true } = {}) {
     state.h2ActionPending
   ) return;
   state.h2WorkspaceLoading = true;
+  if (render) renderH2RemoteInbox();
   const loadGeneration = ++state.h2WorkspaceLoadGeneration;
   const activitySequence = ++state.h2ActivitySequence;
   try {
@@ -4200,7 +4201,11 @@ function renderH2RemoteInbox() {
     );
     const keep = element("button", "primary-button", "BEHALTEN");
     keep.type = "button";
-    keep.disabled = state.h2ActionPending || !h2ActionsAllowed();
+    keep.disabled =
+      state.h2ActionPending ||
+      state.h2RemoteInboxLoading ||
+      state.h2WorkspaceLoading ||
+      !h2ActionsAllowed();
     keep.addEventListener("click", () =>
       runH2Action({
         operation: "import",
