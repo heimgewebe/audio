@@ -5330,15 +5330,25 @@ class H2MaterialControlTests(unittest.TestCase):
                 },
             )
             self.assertGreater(budget["import_timeout_seconds"], 0)
-            budget_scan = runner.calls[-1][0]
+            budget_scan = runner.calls[-2][0]
+            control_scan = runner.calls[-1][0]
             self.assertEqual(budget_scan[2], "scan")
+            self.assertEqual(control_scan[2], "scan")
             self.assertEqual(
                 budget_scan[budget_scan.index("--source-root") + 1],
                 str(inbox / "old"),
             )
             self.assertEqual(
+                control_scan[control_scan.index("--source-root") + 1],
+                str(inbox / "old"),
+            )
+            self.assertEqual(
                 budget_scan[budget_scan.index("--projection") + 1],
                 "budget",
+            )
+            self.assertEqual(
+                control_scan[control_scan.index("--projection") + 1],
+                "control",
             )
             with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
                 with self.assertRaises(MODULE.ControlError):
@@ -5346,6 +5356,45 @@ class H2MaterialControlTests(unittest.TestCase):
                         "old",
                         "../bad",
                     )
+
+    def test_h2_remote_import_budget_uses_requested_scene_actual_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            transfer = inbox / "ipad-260926"
+            transfer.mkdir(parents=True, mode=0o700)
+            controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+            actual_bytes = 8 * 1024 * 1024 * 1024
+            report = {
+                "sessions": [
+                    {
+                        "scene": "170926_191401",
+                        "total_bytes": actual_bytes,
+                    }
+                ]
+            }
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(
+                    controller,
+                    "_h2_control_scan_for_root",
+                    return_value=(report, 123.0),
+                ) as control_scan,
+                mock.patch.object(
+                    controller,
+                    "_h2_remote_import_action_timeout_for_bytes",
+                    return_value=999.0,
+                ) as timeout_for_bytes,
+            ):
+                budget = controller.h2_remote_import_budget(
+                    "ipad-260926",
+                    "170926_191401",
+                )
+            control_scan.assert_called_once_with(transfer)
+            timeout_for_bytes.assert_called_once_with(
+                actual_bytes,
+                scan_timeout=123.0,
+            )
+            self.assertEqual(budget["import_timeout_seconds"], 999.0)
 
     def test_h2_remote_transfer_identity_rejects_escape_symlink_and_world_write(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -4423,12 +4423,17 @@ class AudioControl:
         ):
             raise ControlError("Ungültige Remote-H2-Szene.")
         source_root = self._h2_remote_transfer_root(transfer_id)
-        budget_report, scan_timeout = self._h2_scan_budget_for_root(source_root)
-        total_candidate_bytes = budget_report["total_candidate_bytes"]
-        if total_candidate_bytes <= 0:
-            raise ControlError(
-                "Remote-H2-Transfer enthält kein importierbares Material."
-            )
+        report, scan_timeout = self._h2_control_scan_for_root(source_root)
+        session = next(
+            (
+                item
+                for item in report["sessions"]
+                if item["scene"] == scene
+            ),
+            None,
+        )
+        if session is None:
+            raise ControlError("Remote-H2-Szene ist nicht importierbar.")
         return {
             "schema_version": 1,
             "kind": "audio_h2_remote_import_budget",
@@ -4437,7 +4442,7 @@ class AudioControl:
             "scene": scene,
             "import_timeout_seconds": (
                 self._h2_remote_import_action_timeout_for_bytes(
-                    total_candidate_bytes,
+                    session["total_bytes"],
                     scan_timeout=scan_timeout,
                 )
             ),
