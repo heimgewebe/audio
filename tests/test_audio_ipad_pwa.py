@@ -1411,6 +1411,24 @@ class ServiceWorkerTests(unittest.TestCase):
         self.worker = read("sw.js")
         self.app = read("app.js")
 
+    def test_remote_h2_binding_tolerates_previous_cached_document(self):
+        self.assertIn(
+            'byId("h2-remote-refresh")?.addEventListener("click"',
+            self.app,
+        )
+        self.assertNotIn(
+            'byId("h2-remote-refresh").addEventListener("click"',
+            self.app,
+        )
+
+    def test_app_shell_cache_generation_is_bumped_for_remote_h2_dom(self):
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            contract["service_worker"]["cache_name"],
+            "audiozentrale-app-shell-v6",
+        )
+        self.assertIn('const CACHE_NAME = `${CACHE_PREFIX}v6`;', self.worker)
+
     def test_registration_happens_only_in_secure_contexts(self):
         block = self.app.split("function registerServiceWorker() {", 1)[1].split(
             "\nasync function", 1

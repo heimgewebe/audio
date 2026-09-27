@@ -5763,7 +5763,7 @@ function wireEvents() {
   byId("refresh-button").addEventListener("click", () => refreshSnapshot(true));
   byId("diagnostic-refresh").addEventListener("click", () => refreshSnapshot(true));
   byId("h2-refresh").addEventListener("click", () => loadH2Workspace());
-  byId("h2-remote-refresh").addEventListener("click", () =>
+  byId("h2-remote-refresh")?.addEventListener("click", () =>
     loadH2RemoteInbox(),
   );
   byId("library-view").addEventListener("change", (event) => {
