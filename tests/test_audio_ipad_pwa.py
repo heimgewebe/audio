@@ -490,9 +490,13 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn("candidate?.scene === scene", h2_timeout)
         self.assertIn("candidate?.transfer_id === transferId", h2_timeout)
         self.assertIn("session?.import_timeout_seconds", h2_timeout)
+        self.assertIn("session?.import_budget_timeout_seconds", h2_timeout)
         self.assertIn("Number.isFinite(backendSeconds)", h2_timeout)
         self.assertIn("Math.ceil(backendSeconds * 1000)", h2_timeout)
-        self.assertIn("await h2RemoteInboxTimeoutMs()", h2_timeout)
+        self.assertIn("Number.isFinite(importBudgetSeconds)", h2_timeout)
+        self.assertIn("Math.ceil(importBudgetSeconds * 1000)", h2_timeout)
+        self.assertIn("H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS", h2_timeout)
+        self.assertNotIn("await h2RemoteInboxTimeoutMs()", h2_timeout)
         self.assertIn("await h2WorkspaceTimeoutMs()", h2_timeout)
 
         library_budget = self.app.split("async function h2LibraryBudget() {", 1)[1].split(
@@ -515,6 +519,7 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
 
         self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;", self.app)
         self.assertIn("const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;", self.app)
+        self.assertIn("const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1830000;", self.app)
         self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
         h2_render = self.app.split("function renderH2Workspace", 1)[1].split(
             "\nfunction renderLibrary", 1
@@ -1438,6 +1443,57 @@ async function fetchJson(url, options) {{
         self.assertEqual(result["first"]["token"], "n" * 32)
         self.assertEqual(result["second"]["token"], "n" * 32)
 
+    def test_remote_h2_import_deadline_uses_requested_transfer_preflight(self):
+        timeout_function = (
+            "async function h2ImportTimeoutMs("
+            + self.app.split("async function h2ImportTimeoutMs(", 1)[1].split(
+                "\n}\n\nasync function h2LibraryBudget", 1
+            )[0]
+            + "\n}"
+        )
+        harness = f"""
+const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1830000;
+const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
+const state = {{
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [{{
+        transfer_id: "old-transfer",
+        scene: "170926_191401",
+        import_timeout_seconds: 480,
+        import_budget_timeout_seconds: 1807,
+      }}],
+    }},
+  }},
+  h2Workspace: {{ source: {{ sessions: [] }} }},
+}};
+async function h2RemoteInboxTimeoutMs() {{
+  throw new Error("global inbox timeout must not be consulted");
+}}
+async function h2WorkspaceTimeoutMs() {{
+  return 123000;
+}}
+{timeout_function}
+(async () => {{
+  const timeoutMs = await h2ImportTimeoutMs(
+    "170926_191401",
+    "remote-inbox",
+    "old-transfer",
+  );
+  process.stdout.write(JSON.stringify({{ timeoutMs }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout)["timeoutMs"],
+            480000 + 1807000 + 1830000 + 15000,
+        )
+
     def test_h2_pending_migration_cards_expose_no_media_or_mutation_authority(self):
         app = read("app.js")
         self.assertIn(
@@ -1511,9 +1567,9 @@ class ServiceWorkerTests(unittest.TestCase):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
         self.assertEqual(
             contract["service_worker"]["cache_name"],
-            "audiozentrale-app-shell-v6",
+            "audiozentrale-app-shell-v7",
         )
-        self.assertIn('const CACHE_NAME = `${CACHE_PREFIX}v6`;', self.worker)
+        self.assertIn('const CACHE_NAME = `${CACHE_PREFIX}v7`;', self.worker)
 
     def test_registration_happens_only_in_secure_contexts(self):
         block = self.app.split("function registerServiceWorker() {", 1)[1].split(

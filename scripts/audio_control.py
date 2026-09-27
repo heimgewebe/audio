@@ -398,6 +398,10 @@ H2_REMOTE_IMPORT_BUDGET_PATH_RE = re.compile(
     rf"^/api/{API_VERSION}/h2/remote-inbox/import-budget/"
     r"([A-Za-z0-9][A-Za-z0-9._-]{0,63})/([0-9]{6}_[0-9]{6})$"
 )
+H2_REMOTE_TRANSFER_BUDGET_PATH_RE = re.compile(
+    rf"^/api/{API_VERSION}/h2/remote-inbox/transfer-budget/"
+    r"([A-Za-z0-9][A-Za-z0-9._-]{0,63})$"
+)
 MAX_DEPLOY_RECEIPT_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 4096
 MAX_H2_REQUEST_BYTES = 16_384
@@ -4412,6 +4416,24 @@ class AudioControl:
             "source_mutated": False,
         }
 
+    def h2_remote_transfer_budget(
+        self,
+        transfer_id: str,
+    ) -> dict[str, Any]:
+        source_root = self._h2_remote_transfer_root(transfer_id)
+        _budget_report, scan_timeout = self._h2_scan_budget_for_root(source_root)
+        return {
+            "schema_version": 1,
+            "kind": "audio_h2_remote_transfer_budget",
+            "source": "remote-inbox",
+            "transfer_id": transfer_id,
+            "import_budget_timeout_seconds": self._h2_source_timeout_for_scan(
+                scan_timeout
+            ),
+            "read_only": True,
+            "source_mutated": False,
+        }
+
     def h2_remote_import_budget(
         self,
         transfer_id: str,
@@ -4477,6 +4499,9 @@ class AudioControl:
                         "sample_rate_hz": item.get("sample_rate_hz"),
                         "roles": item["roles"],
                         "segment_count": item["segment_count"],
+                        "import_budget_timeout_seconds": self._h2_source_timeout_for_scan(
+                            scan_timeout
+                        ),
                         "import_timeout_seconds": (
                             self._h2_remote_import_action_timeout_for_bytes(
                                 item["total_bytes"],
@@ -7050,6 +7075,33 @@ class AudioControlHandler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json(HTTPStatus.OK, source, head_only=head_only)
+            return
+        remote_transfer_budget = H2_REMOTE_TRANSFER_BUDGET_PATH_RE.fullmatch(
+            parsed.path
+        )
+        if remote_transfer_budget is not None:
+            if parsed.query:
+                self._send_error_json(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_query",
+                    "Das Remote-H2-Transferbudget akzeptiert keine Query.",
+                    head_only=head_only,
+                )
+                return
+            (transfer_id,) = remote_transfer_budget.groups()
+            try:
+                budget = self.server.controller.h2_remote_transfer_budget(
+                    transfer_id
+                )
+            except ControlError as error:
+                self._send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "h2_remote_transfer_budget_unavailable",
+                    str(error),
+                    head_only=head_only,
+                )
+                return
+            self._send_json(HTTPStatus.OK, budget, head_only=head_only)
             return
         remote_import_budget = H2_REMOTE_IMPORT_BUDGET_PATH_RE.fullmatch(
             parsed.path

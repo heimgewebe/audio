@@ -298,6 +298,7 @@ class TargetValidationTests(unittest.TestCase):
             "/api/v1/h2/material/nothex/audio/0",
             "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0?download=1",
             "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401",
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
             "http://example.invalid/app.js",
         )
         for target in rejected:
@@ -857,6 +858,21 @@ class BridgeHTTPTests(unittest.TestCase):
                         "transfer_id": "ipad-260926",
                         "scene": "170926_191401",
                         "import_timeout_seconds": 480.0,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_remote_transfer_budget",
+                        "source": "remote-inbox",
+                        "transfer_id": "ipad-260926",
+                        "import_budget_timeout_seconds": 180.0,
                         "read_only": True,
                         "source_mutated": False,
                     }
@@ -1544,6 +1560,67 @@ class BridgeHTTPTests(unittest.TestCase):
                     transfer_id="ipad-260926",
                 )
 
+    def test_h2_remote_import_budget_deadline_is_bound_to_requested_transfer(self):
+        target = (
+            "/api/v1/h2/remote-inbox/import-budget/"
+            "ipad-260926/170926_191401"
+        )
+        transfer_budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_remote_transfer_budget",
+            "source": "remote-inbox",
+            "transfer_id": "ipad-260926",
+            "import_budget_timeout_seconds": 1807.0,
+            "read_only": True,
+            "source_mutated": False,
+        }
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(
+                200,
+                [],
+                json.dumps(transfer_budget).encode("utf-8"),
+                0,
+            ),
+        ) as readback:
+            self.assertEqual(
+                MODULE.h2_remote_import_budget_backend_timeout_seconds(target),
+                1807.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+        readback.assert_called_once_with(
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+            None,
+        )
+
+        observed: list[float | None] = []
+
+        class TimeoutProbeConnection:
+            def __init__(self, _host, _port, *, timeout):
+                observed.append(timeout)
+
+            def putrequest(self, *_args, **_kwargs):
+                raise TimeoutError
+
+            def close(self):
+                return None
+
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_remote_import_budget_backend_timeout_seconds",
+                return_value=1822.0,
+            ),
+            mock.patch.object(
+                MODULE.http.client,
+                "HTTPConnection",
+                TimeoutProbeConnection,
+            ),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response(target, {})
+        self.assertEqual(observed, [1822.0])
+
     def test_h2_workspace_response_uses_bounded_h2_specific_byte_budget(self):
         payload = json.dumps(
             {
@@ -2165,7 +2242,7 @@ class BridgeHTTPTests(unittest.TestCase):
                 records = FakeBackendHandler.records[before:]
                 if action["operation"] == "import":
                     expected_methods = (
-                        ["GET", "GET", "POST"]
+                        ["GET", "GET", "GET", "POST"]
                         if action.get("source") == "remote-inbox"
                         else ["GET", "GET", "GET", "POST"]
                     )

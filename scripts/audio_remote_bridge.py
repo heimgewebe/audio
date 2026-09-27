@@ -172,6 +172,10 @@ H2_REMOTE_IMPORT_BUDGET_RE = re.compile(
     r"^/api/v1/h2/remote-inbox/import-budget/"
     r"([A-Za-z0-9][A-Za-z0-9._-]{0,63})/([0-9]{6}_[0-9]{6})$"
 )
+H2_REMOTE_TRANSFER_BUDGET_RE = re.compile(
+    r"^/api/v1/h2/remote-inbox/transfer-budget/"
+    r"([A-Za-z0-9][A-Za-z0-9._-]{0,63})$"
+)
 PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 FORBIDDEN_ENCODED_PATH_RE = re.compile(r"%(?:2f|5c)", re.IGNORECASE)
 SENSITIVE_KEY_TERMS = (
@@ -920,6 +924,51 @@ def h2_remote_inbox_backend_timeout_seconds() -> float:
     )
 
 
+def _read_backend_h2_remote_transfer_budget(
+    transfer_id: str,
+) -> dict[str, Any]:
+    target = f"/api/v1/h2/remote-inbox/transfer-budget/{transfer_id}"
+    status, _headers, payload, _redactions = read_backend_response(target, None)
+    if status != HTTPStatus.OK:
+        raise BackendFailure("backend remote H2 transfer budget is unavailable")
+    try:
+        budget = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BackendFailure("backend remote H2 transfer budget is invalid") from error
+    timeout = (
+        budget.get("import_budget_timeout_seconds")
+        if isinstance(budget, dict)
+        else None
+    )
+    if (
+        not isinstance(budget, dict)
+        or budget.get("schema_version") != 1
+        or budget.get("kind") != "audio_h2_remote_transfer_budget"
+        or budget.get("source") != "remote-inbox"
+        or budget.get("transfer_id") != transfer_id
+        or budget.get("read_only") is not True
+        or budget.get("source_mutated") is not False
+        or isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise BackendFailure("backend remote H2 transfer budget is invalid")
+    return budget
+
+
+def h2_remote_import_budget_backend_timeout_seconds(target: str) -> float:
+    match = H2_REMOTE_IMPORT_BUDGET_RE.fullmatch(target)
+    if match is None:
+        raise RequestRejected("remote H2 import budget target is invalid")
+    transfer_id, _scene = match.groups()
+    budget = _read_backend_h2_remote_transfer_budget(transfer_id)
+    return (
+        float(budget["import_budget_timeout_seconds"])
+        + H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS
+    )
+
+
 def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list[tuple[str, str]], bytes, int]:
     if target == "/api/v1/h2":
         backend_timeout_seconds = h2_workspace_backend_timeout_seconds()
@@ -927,9 +976,13 @@ def read_backend_response(target: str, incoming_headers: Any) -> tuple[int, list
         backend_timeout_seconds = h2_remote_inbox_backend_timeout_seconds()
     elif (
         target == "/api/v1/h2/remote-inbox/budget"
-        or H2_REMOTE_IMPORT_BUDGET_RE.fullmatch(target) is not None
+        or H2_REMOTE_TRANSFER_BUDGET_RE.fullmatch(target) is not None
     ):
         backend_timeout_seconds = H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS
+    elif H2_REMOTE_IMPORT_BUDGET_RE.fullmatch(target) is not None:
+        backend_timeout_seconds = h2_remote_import_budget_backend_timeout_seconds(
+            target
+        )
     elif target == "/api/v1/h2/budget":
         backend_timeout_seconds = H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS
     elif target == "/api/v1/h2/source":

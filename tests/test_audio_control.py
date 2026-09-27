@@ -5396,6 +5396,33 @@ class H2MaterialControlTests(unittest.TestCase):
             )
             self.assertEqual(budget["import_timeout_seconds"], 999.0)
 
+    def test_h2_remote_transfer_budget_covers_requested_import_budget_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            transfer = inbox / "ipad-260926"
+            transfer.mkdir(parents=True, mode=0o700)
+            controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+            scan_timeout = 974.0
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(
+                    controller,
+                    "_h2_scan_budget_for_root",
+                    return_value=({"kind": "unused"}, scan_timeout),
+                ) as scan_budget,
+            ):
+                budget = controller.h2_remote_transfer_budget("ipad-260926")
+            scan_budget.assert_called_once_with(transfer)
+            self.assertEqual(budget["kind"], "audio_h2_remote_transfer_budget")
+            self.assertEqual(budget["transfer_id"], "ipad-260926")
+            self.assertEqual(
+                budget["import_budget_timeout_seconds"],
+                MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS
+                + scan_timeout
+                + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+            )
+            self.assertGreater(budget["import_budget_timeout_seconds"], 1800.0)
+
     def test_h2_remote_transfer_identity_rejects_escape_symlink_and_world_write(self):
         with tempfile.TemporaryDirectory() as directory:
             inbox = pathlib.Path(directory) / "H2-Remote-Inbox"

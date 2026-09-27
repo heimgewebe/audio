@@ -216,6 +216,7 @@ const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
 const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;
 const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;
 const H2_REMOTE_INBOX_BUDGET_TIMEOUT_MS = 1830000;
+const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1830000;
 const H2_REMOTE_INBOX_UI_TIMEOUT_MARGIN_MS = 15000;
 const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
 const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;
@@ -3884,6 +3885,7 @@ async function h2ImportTimeoutMs(
       (source !== "remote-inbox" || candidate?.transfer_id === transferId),
   );
   const backendSeconds = session?.import_timeout_seconds;
+  const importBudgetSeconds = session?.import_budget_timeout_seconds;
   if (
     typeof backendSeconds !== "number" ||
     !Number.isFinite(backendSeconds) ||
@@ -3891,9 +3893,18 @@ async function h2ImportTimeoutMs(
   ) {
     throw new Error("H2-Import besitzt kein gültiges Zeitbudget.");
   }
+  if (
+    source === "remote-inbox" &&
+    (typeof importBudgetSeconds !== "number" ||
+      !Number.isFinite(importBudgetSeconds) ||
+      importBudgetSeconds <= 0)
+  ) {
+    throw new Error("Remote-H2-Import besitzt kein gültiges Preflight-Zeitbudget.");
+  }
   const preReadMs =
     source === "remote-inbox"
-      ? await h2RemoteInboxTimeoutMs()
+      ? Math.ceil(importBudgetSeconds * 1000) +
+        H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS
       : await h2WorkspaceTimeoutMs();
   return (
     Math.ceil(backendSeconds * 1000) +
