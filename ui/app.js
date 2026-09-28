@@ -5661,7 +5661,7 @@ function toggleDepth(panel, button) {
 
 function focusableInDepthPanel(panel) {
   return [...panel.querySelectorAll(
-    "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+    "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), audio[controls], [tabindex]:not([tabindex='-1'])",
   )].filter((node) => !node.closest("[hidden]") && !node.closest('[aria-hidden="true"]'));
 }
 

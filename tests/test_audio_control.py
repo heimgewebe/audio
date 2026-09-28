@@ -4465,6 +4465,7 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         self.assertIn("focusedDepthPanel.append(player)", player)
         self.assertIn("home.parent.insertBefore(player, home.nextSibling)", player)
         self.assertIn("attachGlobalTakePlayerToDepthFocus()", player)
+        self.assertIn("audio[controls]", javascript)
 
 
 
