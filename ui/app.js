@@ -152,6 +152,7 @@ let depthFocusReturn = null;
 let depthFocusScrollY = 0;
 let depthFocusBackgroundState = [];
 let depthFocusPanelSemantics = null;
+let globalTakePlayerHome = null;
 
 const TELEMETRY_STREAM_LABELS = {
   "audio-levels": "Pegel",
@@ -2423,9 +2424,37 @@ function globalTakePlayerItemName(item) {
   return item.name || `Take ${shortRevision(item.session_id)}`;
 }
 
+function captureGlobalTakePlayerHome(player) {
+  if (globalTakePlayerHome || !player?.parentElement) return;
+  globalTakePlayerHome = {
+    parent: player.parentElement,
+    nextSibling: player.nextSibling,
+  };
+}
+
+function attachGlobalTakePlayerToDepthFocus() {
+  const player = byId("global-take-player");
+  if (!player || !focusedDepthPanel) return;
+  captureGlobalTakePlayerHome(player);
+  if (player.parentElement !== focusedDepthPanel) focusedDepthPanel.append(player);
+}
+
+function restoreGlobalTakePlayerHome() {
+  const player = byId("global-take-player");
+  const home = globalTakePlayerHome;
+  globalTakePlayerHome = null;
+  if (!player || !home?.parent?.isConnected) return;
+  if (home.nextSibling?.isConnected && home.nextSibling.parentElement === home.parent) {
+    home.parent.insertBefore(player, home.nextSibling);
+  } else {
+    home.parent.append(player);
+  }
+}
+
 function renderGlobalTakePlayer(item) {
   const player = byId("global-take-player");
   if (!player) return;
+  attachGlobalTakePlayerToDepthFocus();
   const name = globalTakePlayerItemName(item);
   byId("global-take-player-title").textContent = name;
   byId("global-take-player-audio").setAttribute("aria-label", `${name} abspielen`);
@@ -5703,6 +5732,7 @@ function closeDepthFocus({ restoreFocus = true, restoreScroll = true } = {}) {
   const trigger = depthFocusReturn;
   panel.classList.remove("is-workspace-focused");
   document.body.classList.remove("workspace-focus-open");
+  restoreGlobalTakePlayerHome();
   restoreDepthFocusBackground();
   restoreDepthFocusSemantics(panel);
   if (trigger) {
@@ -5740,6 +5770,7 @@ function openDepthFocus(panel, trigger) {
   panel.classList.add("is-workspace-focused");
   document.body.classList.add("workspace-focus-open");
   applyDepthFocusSemantics(panel);
+  attachGlobalTakePlayerToDepthFocus();
   isolateDepthFocusBackground(panel);
   trigger.focus({ preventScroll: true });
 }

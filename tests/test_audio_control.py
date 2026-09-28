@@ -4455,7 +4455,16 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         self.assertIn('panel.setAttribute("aria-modal", "true")', modal)
         self.assertIn("restoreDepthFocusBackground()", modal)
         self.assertIn("restoreDepthFocusSemantics(panel)", modal)
+        self.assertIn("attachGlobalTakePlayerToDepthFocus()", modal)
+        self.assertIn("restoreGlobalTakePlayerHome()", modal)
         self.assertIn("trigger.focus({ preventScroll: true })", modal)
+
+        player_start = javascript.index("function captureGlobalTakePlayerHome")
+        player_end = javascript.index("function clearGlobalTakePlayer", player_start)
+        player = javascript[player_start:player_end]
+        self.assertIn("focusedDepthPanel.append(player)", player)
+        self.assertIn("home.parent.insertBefore(player, home.nextSibling)", player)
+        self.assertIn("attachGlobalTakePlayerToDepthFocus()", player)
 
 
 
