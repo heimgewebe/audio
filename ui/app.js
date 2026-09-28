@@ -5759,14 +5759,32 @@ function keepDepthFocus(event) {
   }
 }
 
+function ensureDepthPanelId(panel, index) {
+  if (panel.id) return panel.id;
+  const base = `audio-depth-panel-${index + 1}`;
+  let candidate = base;
+  let collision = 1;
+  while (
+    document.getElementById(candidate) ||
+    document.getElementById(`${candidate}-detail`)
+  ) {
+    collision += 1;
+    candidate = `${base}-${collision}`;
+  }
+  panel.id = candidate;
+  return candidate;
+}
+
 function wireDepthPanels() {
-  for (const panel of document.querySelectorAll("[data-depth-panel]")) {
+  const panels = [...document.querySelectorAll("[data-depth-panel]")];
+  for (const [index, panel] of panels.entries()) {
+    const panelId = ensureDepthPanelId(panel, index);
     const toggle = panel.querySelector(":scope > .depth-heading .depth-toggle");
     const focus = panel.querySelector(":scope > .depth-heading .depth-focus");
     const detail = panel.querySelector(":scope > .depth-detail");
     if (toggle) {
-      if (detail && panel.id) {
-        detail.id ||= `${panel.id}-detail`;
+      if (detail) {
+        detail.id ||= `${panelId}-detail`;
         toggle.setAttribute("aria-controls", detail.id);
       }
       setDepthToggleLabel(panel, toggle, toggle.getAttribute("aria-expanded") === "true");
@@ -5776,7 +5794,7 @@ function wireDepthPanels() {
       focus.dataset.focusLabel = "Vollbild";
       focus.textContent = "Vollbild";
       focus.setAttribute("aria-pressed", "false");
-      if (panel.id) focus.setAttribute("aria-controls", panel.id);
+      focus.setAttribute("aria-controls", panelId);
       setDepthFocusLabel(panel, focus, false);
     } else if (focus) {
       focus.setAttribute(

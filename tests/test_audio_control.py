@@ -4434,8 +4434,16 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         )
         self.assertIn("function setDepthToggleLabel", javascript)
         self.assertIn("function setDepthFocusLabel", javascript)
+        self.assertIn("function ensureDepthPanelId(panel, index)", javascript)
+        self.assertIn('const base = `audio-depth-panel-${index + 1}`', javascript)
+        self.assertIn(
+            "document.getElementById(`${candidate}-detail`)", javascript
+        )
+        self.assertIn("const panelId = ensureDepthPanelId(panel, index)", javascript)
         self.assertIn('toggle.setAttribute("aria-controls", detail.id)', javascript)
-        self.assertIn('focus.setAttribute("aria-controls", panel.id)', javascript)
+        self.assertIn('focus.setAttribute("aria-controls", panelId)', javascript)
+        self.assertNotIn("if (detail && panel.id)", javascript)
+        self.assertNotIn('if (panel.id) focus.setAttribute("aria-controls", panel.id)', javascript)
 
         modal_start = javascript.index("function isolateDepthFocusBackground")
         modal_end = javascript.index("function keepDepthFocus", modal_start)
