@@ -4286,7 +4286,7 @@ function renderH2RemoteInbox() {
     keep.type = "button";
     keep.setAttribute(
       "aria-label",
-      `Remote-H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`,
+      `Remote-H2-Aufnahme ${h2DisplayTimestamp(session)}, Transfer ${String(session.transfer_id || "unbekannt")} behalten`,
     );
     keep.disabled =
       state.h2ActionPending ||

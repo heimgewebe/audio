@@ -4421,7 +4421,7 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
             javascript,
         )
         self.assertIn(
-            '`Remote-H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`',
+            '`Remote-H2-Aufnahme ${h2DisplayTimestamp(session)}, Transfer ${String(session.transfer_id || "unbekannt")} behalten`',
             javascript,
         )
         self.assertIn(
