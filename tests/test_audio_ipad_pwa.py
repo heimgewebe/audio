@@ -659,7 +659,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(result["shortDelay"], 5000)
 
     def test_h2_scan_never_blocks_core_snapshot_render_or_recorder_controls(self):
-        refresh = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(
+        refresh = self.app.split("async function refreshSnapshot(", 1)[1].split(
             "\n}\n\nfunction renderAuthority", 1
         )[0]
         self.assertIn("await loadRecordingLibrary({ render: false });", refresh)
@@ -667,6 +667,8 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("renderAll();", refresh)
         self.assertIn("await loadH2Workspace({ render: true });", refresh)
         self.assertNotIn("await loadH2Workspace({ render: false });", refresh)
+        self.assertIn("renderWithRefreshFocus(renderH2RemoteInbox)", self.app)
+        self.assertIn("renderWithRefreshFocus(renderH2Workspace)", self.app)
         self.assertLess(
             refresh.index("setLoading(false);"),
             refresh.index("renderAll();"),
@@ -744,6 +746,96 @@ function renderH2RemoteInbox() {{}}
         self.assertIn(
             "state.h2ActionPending || state.h2WorkspaceLoading || state.h2RemoteInboxLoading",
             renderer,
+        )
+
+    def test_h2_workspace_final_render_restores_remote_focus_without_stealing_new_focus(self):
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2RemoteInboxBudget", 1)[0]
+        harness = f"""
+const state = {{
+  h2WorkspaceLoadGeneration: 0,
+  h2WorkspaceLoading: false,
+  h2RemoteInboxLoading: false,
+  h2ActionPending: false,
+  h2ActivitySequence: 0,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+  interactionUntil: 100,
+}};
+let activeKey = "h2-remote:transfer-a:scene-a:keep";
+let restoreCalls = [];
+let resolveFetch;
+function backendAllowed() {{ return true; }}
+function refreshFocusKey() {{ return activeKey; }}
+function restoreRefreshFocusIfLost(key) {{
+  restoreCalls.push(key);
+  if (activeKey === null) activeKey = key;
+}}
+function renderH2RemoteInbox() {{
+  if (state.h2WorkspaceLoading && activeKey?.startsWith("h2-remote:")) {{
+    activeKey = null;
+  }}
+}}
+function renderH2Workspace() {{}}
+async function h2WorkspaceTimeoutMs() {{ return 1000; }}
+function fetchJson() {{
+  return new Promise((resolve) => {{ resolveFetch = resolve; }});
+}}
+{loader}
+(async () => {{
+  const first = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  resolveFetch({{ kind: "audio_h2_workspace" }});
+  await first;
+  const restoredWithoutInteraction = {{
+    activeKey,
+    restoreCalls: [...restoreCalls],
+  }};
+
+  activeKey = "h2-remote:transfer-b:scene-b:keep";
+  restoreCalls = [];
+  const second = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  state.interactionUntil = 200;
+  activeKey = "profile:user-choice:details";
+  resolveFetch({{ kind: "audio_h2_workspace" }});
+  await second;
+  const preservedUserFocus = {{
+    activeKey,
+    restoreCalls: [...restoreCalls],
+  }};
+
+  process.stdout.write(JSON.stringify({{
+    restoredWithoutInteraction,
+    preservedUserFocus,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["restoredWithoutInteraction"]["activeKey"],
+            "h2-remote:transfer-a:scene-a:keep",
+        )
+        self.assertIn(
+            "h2-remote:transfer-a:scene-a:keep",
+            result["restoredWithoutInteraction"]["restoreCalls"],
+        )
+        self.assertEqual(
+            result["preservedUserFocus"]["activeKey"],
+            "profile:user-choice:details",
+        )
+        self.assertEqual(
+            result["preservedUserFocus"]["restoreCalls"][-1],
+            "profile:user-choice:details",
         )
 
     def test_h2_workspace_load_does_not_supersede_pending_action(self):
@@ -981,6 +1073,114 @@ class FeatureDetectionTests(unittest.TestCase):
         self.assertIn('listen.addEventListener("click", (event) =>', listener)
         self.assertIn("playRecordingTake(item, event.currentTarget)", listener)
 
+    def test_refresh_focus_is_restored_by_semantic_identity(self):
+        helpers = "function refreshFocusKey()" + self.app.split(
+            "function refreshFocusKey()", 1
+        )[1].split("\nfunction renderAll", 1)[0]
+        render_all = "function renderAll" + self.app.split(
+            "function renderAll", 1
+        )[1].split("\nfunction renderTruth", 1)[0]
+        self.assertIn("const refreshKey = refreshFocusKey();", render_all)
+        self.assertIn("restoreRefreshFocus(refreshKey);", render_all)
+        for token in (
+            "operating-mode:${mode.id}:action",
+            "profile:${profile.id}:details",
+            "recent-take",
+            "library-take:${item.session_id}:category",
+            "library-take:${item.session_id}:trash",
+            "h2-source:${session.scene}:keep",
+            "h2-remote:${session.transfer_id}:${session.scene}:keep",
+            "h2-material:${item.material_id}:save",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, self.app)
+
+        harness = f"""
+let focused = null;
+let candidates = [];
+function makeNode(key, options = {{}}) {{
+  return {{
+    hidden: options.hidden === true,
+    disabled: options.disabled === true,
+    getAttribute(name) {{
+      return name === "data-refresh-key" ? key : null;
+    }},
+    closest() {{
+      return options.hiddenAncestor === true ? {{ hidden: true }} : null;
+    }},
+    focus(options) {{
+      focused = {{
+        key,
+        preventScroll: options?.preventScroll === true,
+      }};
+    }},
+  }};
+}}
+const document = {{
+  body: {{ kind: "body" }},
+  documentElement: {{ kind: "html" }},
+  activeElement: makeNode("operating-mode:desktop-listening:action"),
+  querySelectorAll() {{ return candidates; }},
+}};
+{helpers}
+const captured = refreshFocusKey();
+candidates = [makeNode(captured)];
+restoreRefreshFocus(captured);
+const restored = focused;
+focused = null;
+candidates = [makeNode(captured, {{ disabled: true }})];
+restoreRefreshFocus(captured);
+const disabled = focused;
+focused = null;
+candidates = [makeNode(captured, {{ hiddenAncestor: true }})];
+restoreRefreshFocus(captured);
+const hidden = focused;
+focused = null;
+candidates = [makeNode(captured)];
+document.activeElement = document.body;
+restoreRefreshFocusIfLost(captured);
+const lostRestored = focused;
+focused = null;
+document.activeElement = makeNode("profile:other:details");
+restoreRefreshFocusIfLost(captured);
+const intentionalFocusPreserved = focused;
+process.stdout.write(JSON.stringify({{
+  captured,
+  restored,
+  disabled,
+  hidden,
+  lostRestored,
+  intentionalFocusPreserved,
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["captured"], "operating-mode:desktop-listening:action"
+        )
+        self.assertEqual(
+            result["restored"],
+            {
+                "key": "operating-mode:desktop-listening:action",
+                "preventScroll": True,
+            },
+        )
+        self.assertIsNone(result["disabled"])
+        self.assertIsNone(result["hidden"])
+        self.assertEqual(
+            result["lostRestored"],
+            {
+                "key": "operating-mode:desktop-listening:action",
+                "preventScroll": True,
+            },
+        )
+        self.assertIsNone(result["intentionalFocusPreserved"])
+
     def test_detection_probes_every_required_capability(self):
         self.assertIn("window.isSecureContext === true", self.app)
         self.assertIn('typeof window.AudioContext === "function"', self.app)
@@ -1029,7 +1229,10 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
         guarded = (
             "async function fetchJson(url, options = {}) {\n"
             "  if (!backendAllowed() && sameOriginApiTarget(url)) {",
-            "async function refreshSnapshot(force = false) {\n"
+            "async function refreshSnapshot(\n"
+            "  force = false,\n"
+            "  { waitForLock = force } = {},\n"
+            ") {\n"
             "  if (\n"
             "    state.loading ||\n"
             "    state.recordingActionPending ||\n"
@@ -1290,7 +1493,7 @@ async function postH2Action() {{
         self.assertNotIn("state.h2AnnotationDrafts.size > 0", blocked)
         self.assertNotIn("state.h2RemoteInboxLoading", blocked)
 
-        refresh_guard = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(
+        refresh_guard = self.app.split("async function refreshSnapshot(", 1)[1].split(
             "setLoading(true);", 1
         )[0]
         self.assertNotIn("state.h2RemoteInboxLoading", refresh_guard)
@@ -1519,11 +1722,19 @@ process.stdout.write(nodes["h2-remote-status"].textContent);
         )[1].split("\nasync function h2RemoteInboxBudget", 1)[0]
         self.assertLess(
             workspace_loader.index("state.h2WorkspaceLoading = true;"),
-            workspace_loader.index("if (render) renderH2RemoteInbox();"),
+            workspace_loader.index(
+                "if (render) renderWithRefreshFocus(renderH2RemoteInbox);"
+            ),
         )
         self.assertLess(
-            workspace_loader.index("if (render) renderH2RemoteInbox();"),
+            workspace_loader.index(
+                "if (render) renderWithRefreshFocus(renderH2RemoteInbox);"
+            ),
             workspace_loader.index("const timeoutMs = await h2WorkspaceTimeoutMs();"),
+        )
+        self.assertLess(
+            workspace_loader.index("const workspace = await fetchJson"),
+            workspace_loader.index("renderWithRefreshFocus(renderH2Workspace);"),
         )
 
         renderer = "function renderH2RemoteInbox" + self.app.split(
@@ -1659,6 +1870,276 @@ function renderAuthority() {{ events.push("authority"); }}
         self.assertEqual(result["workspaceGeneration"], 0)
         self.assertFalse(result["workspaceLoading"])
         self.assertNotIn("h2-render", result["events"])
+
+    def test_bootstrap_waits_for_snapshot_lock_without_force_refresh(self):
+        runtime = self.app.split("function applyRuntimeMode", 1)[1].split(
+            "\n}\n\nfunction loadRuntimeMode", 1
+        )[0]
+        self.assertIn(
+            "refreshSnapshot(false, { waitForLock: true });",
+            runtime,
+        )
+        self.assertNotIn("refreshSnapshot(true);", runtime)
+
+    def test_snapshot_refresh_web_locks_serialize_tabs_and_busy_is_soft_state(self):
+        refresh = "async function refreshSnapshot" + self.app.split(
+            "async function refreshSnapshot", 1
+        )[1].split("\nfunction renderAuthority", 1)[0]
+        harness = f"""
+const SNAPSHOT_REFRESH_LOCK_NAME = "audio-control-snapshot-refresh-v1";
+const state = {{
+  snapshot: {{ marker: "initial" }},
+  snapshotRefreshPending: false,
+  loading: false,
+  recordingActionPending: false,
+  h2ActionPending: false,
+  dauersongActionPending: false,
+  operatingModeActionPending: false,
+  whaleActionPending: false,
+  remoteBridgeProjection: false,
+}};
+let mode = "auto-skip";
+let fetchMode = "ok";
+let fetchCalls = 0;
+let fetchUrls = [];
+let lockCalls = [];
+let notices = [];
+let authority = [];
+function backendAllowed() {{ return true; }}
+function setLoading(value) {{ state.loading = value; }}
+async function fetchJson(url) {{
+  if (!url.startsWith("/api/v1/snapshot")) throw new Error("unexpected URL");
+  fetchCalls += 1;
+  fetchUrls.push(url);
+  if (fetchMode === "busy") {{
+    const error = new Error("snapshot busy");
+    error.code = "snapshot_busy";
+    error.status = 429;
+    throw error;
+  }}
+  return {{ kind: "audio_control_snapshot", marker: "fresh" }};
+}}
+function clearNotice() {{ notices.push(["clear"]); }}
+function showNotice(message, tone = "error") {{ notices.push(["show", message, tone]); }}
+function renderAuthority(status) {{ authority.push(status); }}
+async function ensureRemoteWhaleSession() {{ throw new Error("unexpected remote session"); }}
+async function loadRecordingLibrary() {{}}
+function renderAll() {{}}
+async function loadH2Workspace() {{}}
+const locks = {{
+  async request(name, optionsOrCallback, maybeCallback) {{
+    const withOptions = typeof optionsOrCallback === "object";
+    const callback = withOptions ? maybeCallback : optionsOrCallback;
+    lockCalls.push({{ name, ifAvailable: withOptions && optionsOrCallback.ifAvailable === true }});
+    if (
+      (mode === "auto-skip" || mode === "startup-wait" || mode === "manual-wait") &&
+      withOptions
+    ) {{
+      return callback(null);
+    }}
+    return callback({{ name }});
+  }},
+}};
+Object.defineProperty(globalThis, "navigator", {{
+  value: {{ locks }},
+  configurable: true,
+}});
+{refresh}
+(async () => {{
+  await refreshSnapshot(false);
+  const autoSkip = {{
+    fetchCalls,
+    lockCalls: [...lockCalls],
+    pending: state.snapshotRefreshPending,
+  }};
+
+  mode = "startup-wait";
+  fetchCalls = 0;
+  fetchUrls = [];
+  lockCalls = [];
+  notices = [];
+  authority = [];
+  await refreshSnapshot(false, {{ waitForLock: true }});
+  const startupWait = {{
+    fetchCalls,
+    fetchUrls: [...fetchUrls],
+    lockCalls: [...lockCalls],
+    notices: [...notices],
+    authority: [...authority],
+    pending: state.snapshotRefreshPending,
+  }};
+
+  mode = "manual-wait";
+  fetchCalls = 0;
+  lockCalls = [];
+  notices = [];
+  authority = [];
+  await refreshSnapshot(true);
+  const manualWait = {{
+    fetchCalls,
+    lockCalls: [...lockCalls],
+    notices: [...notices],
+    authority: [...authority],
+    pending: state.snapshotRefreshPending,
+  }};
+
+  mode = "available";
+  fetchMode = "busy";
+  fetchCalls = 0;
+  lockCalls = [];
+  notices = [];
+  authority = [];
+  state.snapshot = {{ marker: "last-valid" }};
+  await refreshSnapshot(false);
+  const busy = {{
+    fetchCalls,
+    notices: [...notices],
+    authority: [...authority],
+    marker: state.snapshot.marker,
+    pending: state.snapshotRefreshPending,
+  }};
+
+  Object.defineProperty(globalThis, "navigator", {{
+    value: {{}},
+    configurable: true,
+  }});
+  fetchMode = "ok";
+  fetchCalls = 0;
+  notices = [];
+  authority = [];
+  await refreshSnapshot(false);
+  const fallback = {{
+    fetchCalls,
+    marker: state.snapshot.marker,
+    pending: state.snapshotRefreshPending,
+  }};
+
+  process.stdout.write(JSON.stringify({{
+    autoSkip,
+    startupWait,
+    manualWait,
+    busy,
+    fallback,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["autoSkip"]["fetchCalls"], 0)
+        self.assertEqual(result["autoSkip"]["lockCalls"], [
+            {"name": "audio-control-snapshot-refresh-v1", "ifAvailable": True}
+        ])
+        self.assertFalse(result["autoSkip"]["pending"])
+        self.assertEqual(result["startupWait"]["fetchCalls"], 1)
+        self.assertEqual(
+            result["startupWait"]["fetchUrls"],
+            ["/api/v1/snapshot"],
+        )
+        self.assertEqual(
+            [call["ifAvailable"] for call in result["startupWait"]["lockCalls"]],
+            [True, False],
+        )
+        self.assertEqual(result["startupWait"]["notices"], [["clear"]])
+        self.assertEqual(result["startupWait"]["authority"], ["busy"])
+        self.assertFalse(result["startupWait"]["pending"])
+        self.assertEqual(result["manualWait"]["fetchCalls"], 1)
+        self.assertEqual([call["ifAvailable"] for call in result["manualWait"]["lockCalls"]], [True, False])
+        self.assertEqual(result["manualWait"]["authority"], ["busy"])
+        self.assertEqual(result["manualWait"]["notices"][0][2], "info")
+        self.assertEqual(result["manualWait"]["notices"][-1], ["clear"])
+        self.assertFalse(result["manualWait"]["pending"])
+        self.assertEqual(result["busy"]["fetchCalls"], 1)
+        self.assertEqual(result["busy"]["notices"], [])
+        self.assertEqual(result["busy"]["authority"], ["busy"])
+        self.assertEqual(result["busy"]["marker"], "last-valid")
+        self.assertFalse(result["busy"]["pending"])
+        self.assertEqual(result["fallback"]["fetchCalls"], 1)
+        self.assertEqual(result["fallback"]["marker"], "fresh")
+        self.assertFalse(result["fallback"]["pending"])
+
+    def test_snapshot_lock_is_released_before_library_and_h2_followup(self):
+        refresh = "async function refreshSnapshot" + self.app.split(
+            "async function refreshSnapshot", 1
+        )[1].split("\nfunction renderAuthority", 1)[0]
+        harness = f"""
+const SNAPSHOT_REFRESH_LOCK_NAME = "audio-control-snapshot-refresh-v1";
+const state = {{
+  snapshot: {{ marker: "initial" }},
+  snapshotRefreshPending: false,
+  loading: false,
+  recordingActionPending: false,
+  h2ActionPending: false,
+  dauersongActionPending: false,
+  operatingModeActionPending: false,
+  whaleActionPending: false,
+  remoteBridgeProjection: false,
+}};
+let lockHeld = false;
+let fetchLockState = null;
+const followupLockStates = [];
+function backendAllowed() {{ return true; }}
+function setLoading(value) {{ state.loading = value; }}
+async function fetchJson(url) {{
+  fetchLockState = lockHeld;
+  return {{ kind: "audio_control_snapshot", marker: "fresh" }};
+}}
+function clearNotice() {{}}
+function showNotice(message) {{ throw new Error(message); }}
+function renderAuthority() {{}}
+async function ensureRemoteWhaleSession() {{}}
+async function loadRecordingLibrary() {{
+  followupLockStates.push(["library", lockHeld]);
+}}
+function renderAll() {{}}
+async function loadH2Workspace() {{
+  followupLockStates.push(["h2", lockHeld]);
+}}
+const locks = {{
+  async request(name, optionsOrCallback, maybeCallback) {{
+    const callback =
+      typeof optionsOrCallback === "object" ? maybeCallback : optionsOrCallback;
+    lockHeld = true;
+    try {{
+      return await callback({{ name }});
+    }} finally {{
+      lockHeld = false;
+    }}
+  }},
+}};
+Object.defineProperty(globalThis, "navigator", {{
+  value: {{ locks }},
+  configurable: true,
+}});
+{refresh}
+(async () => {{
+  const result = await refreshSnapshot(false);
+  process.stdout.write(JSON.stringify({{
+    result,
+    fetchLockState,
+    followupLockStates,
+    pending: state.snapshotRefreshPending,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertIs(result["result"], True)
+        self.assertIs(result["fetchLockState"], True)
+        self.assertEqual(
+            result["followupLockStates"],
+            [["library", False], ["h2", False]],
+        )
+        self.assertFalse(result["pending"])
 
     def test_remote_h2_import_succeeds_without_cached_workspace_and_refreshes(self):
         runnable_action = "async function runH2Action" + self.app.split(
