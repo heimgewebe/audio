@@ -1209,11 +1209,12 @@ function renderAuthority(status = "ready") {
 }
 
 function refreshFocusKey() {
+  if (typeof document === "undefined") return null;
   return document.activeElement?.getAttribute?.("data-refresh-key") || null;
 }
 
 function restoreRefreshFocus(key) {
-  if (!key) return;
+  if (!key || typeof document === "undefined") return;
   const replacement = [...document.querySelectorAll("[data-refresh-key]")].find(
     (candidate) => candidate.getAttribute("data-refresh-key") === key,
   );
@@ -1225,6 +1226,17 @@ function restoreRefreshFocus(key) {
     typeof replacement.focus !== "function"
   ) return;
   replacement.focus({ preventScroll: true });
+}
+
+function restoreRefreshFocusIfLost(key) {
+  if (!key || typeof document === "undefined") return;
+  const active = document.activeElement;
+  if (
+    active &&
+    active !== document.body &&
+    active !== document.documentElement
+  ) return;
+  restoreRefreshFocus(key);
 }
 
 function renderAll({ preserveRecorderDraft = true } = {}) {
@@ -3934,8 +3946,22 @@ async function loadH2Workspace({ render = true } = {}) {
     state.h2RemoteInboxLoading ||
     state.h2ActionPending
   ) return;
+  const deferredRefreshFocusKey =
+    typeof refreshFocusKey === "function" ? refreshFocusKey() : null;
+  const deferredInteractionUntil = state.interactionUntil;
+  const renderWithRefreshFocus = (renderer) => {
+    const refreshKey =
+      typeof refreshFocusKey === "function" ? refreshFocusKey() : null;
+    renderer();
+    if (
+      refreshKey &&
+      typeof restoreRefreshFocusIfLost === "function"
+    ) {
+      restoreRefreshFocusIfLost(refreshKey);
+    }
+  };
   state.h2WorkspaceLoading = true;
-  if (render) renderH2RemoteInbox();
+  if (render) renderWithRefreshFocus(renderH2RemoteInbox);
   const loadGeneration = ++state.h2WorkspaceLoadGeneration;
   const activitySequence = ++state.h2ActivitySequence;
   try {
@@ -3958,7 +3984,16 @@ async function loadH2Workspace({ render = true } = {}) {
       state.h2WorkspaceLoading = false;
     }
   }
-  if (render) renderH2Workspace();
+  if (render) {
+    renderWithRefreshFocus(renderH2Workspace);
+    if (
+      deferredRefreshFocusKey &&
+      state.interactionUntil === deferredInteractionUntil &&
+      typeof restoreRefreshFocusIfLost === "function"
+    ) {
+      restoreRefreshFocusIfLost(deferredRefreshFocusKey);
+    }
+  }
 }
 
 async function h2RemoteInboxBudget() {

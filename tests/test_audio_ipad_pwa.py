@@ -667,6 +667,8 @@ process.stdout.write(JSON.stringify({{
         self.assertIn("renderAll();", refresh)
         self.assertIn("await loadH2Workspace({ render: true });", refresh)
         self.assertNotIn("await loadH2Workspace({ render: false });", refresh)
+        self.assertIn("renderWithRefreshFocus(renderH2RemoteInbox)", self.app)
+        self.assertIn("renderWithRefreshFocus(renderH2Workspace)", self.app)
         self.assertLess(
             refresh.index("setLoading(false);"),
             refresh.index("renderAll();"),
@@ -744,6 +746,96 @@ function renderH2RemoteInbox() {{}}
         self.assertIn(
             "state.h2ActionPending || state.h2WorkspaceLoading || state.h2RemoteInboxLoading",
             renderer,
+        )
+
+    def test_h2_workspace_final_render_restores_remote_focus_without_stealing_new_focus(self):
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2RemoteInboxBudget", 1)[0]
+        harness = f"""
+const state = {{
+  h2WorkspaceLoadGeneration: 0,
+  h2WorkspaceLoading: false,
+  h2RemoteInboxLoading: false,
+  h2ActionPending: false,
+  h2ActivitySequence: 0,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+  interactionUntil: 100,
+}};
+let activeKey = "h2-remote:transfer-a:scene-a:keep";
+let restoreCalls = [];
+let resolveFetch;
+function backendAllowed() {{ return true; }}
+function refreshFocusKey() {{ return activeKey; }}
+function restoreRefreshFocusIfLost(key) {{
+  restoreCalls.push(key);
+  if (activeKey === null) activeKey = key;
+}}
+function renderH2RemoteInbox() {{
+  if (state.h2WorkspaceLoading && activeKey?.startsWith("h2-remote:")) {{
+    activeKey = null;
+  }}
+}}
+function renderH2Workspace() {{}}
+async function h2WorkspaceTimeoutMs() {{ return 1000; }}
+function fetchJson() {{
+  return new Promise((resolve) => {{ resolveFetch = resolve; }});
+}}
+{loader}
+(async () => {{
+  const first = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  resolveFetch({{ kind: "audio_h2_workspace" }});
+  await first;
+  const restoredWithoutInteraction = {{
+    activeKey,
+    restoreCalls: [...restoreCalls],
+  }};
+
+  activeKey = "h2-remote:transfer-b:scene-b:keep";
+  restoreCalls = [];
+  const second = loadH2Workspace({{ render: true }});
+  await Promise.resolve();
+  await Promise.resolve();
+  state.interactionUntil = 200;
+  activeKey = "profile:user-choice:details";
+  resolveFetch({{ kind: "audio_h2_workspace" }});
+  await second;
+  const preservedUserFocus = {{
+    activeKey,
+    restoreCalls: [...restoreCalls],
+  }};
+
+  process.stdout.write(JSON.stringify({{
+    restoredWithoutInteraction,
+    preservedUserFocus,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["restoredWithoutInteraction"]["activeKey"],
+            "h2-remote:transfer-a:scene-a:keep",
+        )
+        self.assertIn(
+            "h2-remote:transfer-a:scene-a:keep",
+            result["restoredWithoutInteraction"]["restoreCalls"],
+        )
+        self.assertEqual(
+            result["preservedUserFocus"]["activeKey"],
+            "profile:user-choice:details",
+        )
+        self.assertEqual(
+            result["preservedUserFocus"]["restoreCalls"][-1],
+            "profile:user-choice:details",
         )
 
     def test_h2_workspace_load_does_not_supersede_pending_action(self):
@@ -1025,6 +1117,8 @@ function makeNode(key, options = {{}}) {{
   }};
 }}
 const document = {{
+  body: {{ kind: "body" }},
+  documentElement: {{ kind: "html" }},
   activeElement: makeNode("operating-mode:desktop-listening:action"),
   querySelectorAll() {{ return candidates; }},
 }};
@@ -1041,7 +1135,23 @@ focused = null;
 candidates = [makeNode(captured, {{ hiddenAncestor: true }})];
 restoreRefreshFocus(captured);
 const hidden = focused;
-process.stdout.write(JSON.stringify({{ captured, restored, disabled, hidden }}));
+focused = null;
+candidates = [makeNode(captured)];
+document.activeElement = document.body;
+restoreRefreshFocusIfLost(captured);
+const lostRestored = focused;
+focused = null;
+document.activeElement = makeNode("profile:other:details");
+restoreRefreshFocusIfLost(captured);
+const intentionalFocusPreserved = focused;
+process.stdout.write(JSON.stringify({{
+  captured,
+  restored,
+  disabled,
+  hidden,
+  lostRestored,
+  intentionalFocusPreserved,
+}}));
 """
         completed = subprocess.run(
             ["node", "-e", harness],
@@ -1062,6 +1172,14 @@ process.stdout.write(JSON.stringify({{ captured, restored, disabled, hidden }}))
         )
         self.assertIsNone(result["disabled"])
         self.assertIsNone(result["hidden"])
+        self.assertEqual(
+            result["lostRestored"],
+            {
+                "key": "operating-mode:desktop-listening:action",
+                "preventScroll": True,
+            },
+        )
+        self.assertIsNone(result["intentionalFocusPreserved"])
 
     def test_detection_probes_every_required_capability(self):
         self.assertIn("window.isSecureContext === true", self.app)
@@ -1601,11 +1719,19 @@ process.stdout.write(nodes["h2-remote-status"].textContent);
         )[1].split("\nasync function h2RemoteInboxBudget", 1)[0]
         self.assertLess(
             workspace_loader.index("state.h2WorkspaceLoading = true;"),
-            workspace_loader.index("if (render) renderH2RemoteInbox();"),
+            workspace_loader.index(
+                "if (render) renderWithRefreshFocus(renderH2RemoteInbox);"
+            ),
         )
         self.assertLess(
-            workspace_loader.index("if (render) renderH2RemoteInbox();"),
+            workspace_loader.index(
+                "if (render) renderWithRefreshFocus(renderH2RemoteInbox);"
+            ),
             workspace_loader.index("const timeoutMs = await h2WorkspaceTimeoutMs();"),
+        )
+        self.assertLess(
+            workspace_loader.index("const workspace = await fetchJson"),
+            workspace_loader.index("renderWithRefreshFocus(renderH2Workspace);"),
         )
 
         renderer = "function renderH2RemoteInbox" + self.app.split(
