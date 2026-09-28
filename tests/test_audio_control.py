@@ -4409,6 +4409,48 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         self.assertFalse(self.runner.whale_active)
 
 
+    def test_task_workspace_controls_have_contextual_accessible_names_and_modal_isolation(self):
+        javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'button.setAttribute("aria-label", `${mode.label}: ${button.textContent}`)',
+            javascript,
+        )
+        self.assertIn(
+            '`${displayProfile(profile.id)}: ${button.textContent}`',
+            javascript,
+        )
+        self.assertIn(
+            '`Remote-H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`',
+            javascript,
+        )
+        self.assertIn(
+            '`H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`',
+            javascript,
+        )
+        self.assertIn(
+            '`Metadaten für ${materialLabel} speichern`',
+            javascript,
+        )
+        self.assertIn("function setDepthToggleLabel", javascript)
+        self.assertIn("function setDepthFocusLabel", javascript)
+        self.assertIn('toggle.setAttribute("aria-controls", detail.id)', javascript)
+        self.assertIn('focus.setAttribute("aria-controls", panel.id)', javascript)
+
+        modal_start = javascript.index("function isolateDepthFocusBackground")
+        modal_end = javascript.index("function keepDepthFocus", modal_start)
+        modal = javascript[modal_start:modal_end]
+        self.assertIn('sibling.id === "dialog-backdrop"', modal)
+        self.assertIn("sibling.inert = true", modal)
+        self.assertIn('sibling.setAttribute("aria-hidden", "true")', modal)
+        self.assertIn('panel.setAttribute("role", "dialog")', modal)
+        self.assertIn('panel.setAttribute("aria-modal", "true")', modal)
+        self.assertIn("restoreDepthFocusBackground()", modal)
+        self.assertIn("restoreDepthFocusSemantics(panel)", modal)
+        self.assertIn("trigger.focus({ preventScroll: true })", modal)
+
+
+
 class H2MaterialControlTests(unittest.TestCase):
     class Runner:
         def __init__(

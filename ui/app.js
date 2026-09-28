@@ -150,6 +150,8 @@ const TELEMETRY_POLL_MS = 2000;
 let focusedDepthPanel = null;
 let depthFocusReturn = null;
 let depthFocusScrollY = 0;
+let depthFocusBackgroundState = [];
+let depthFocusPanelSemantics = null;
 
 const TELEMETRY_STREAM_LABELS = {
   "audio-levels": "Pegel",
@@ -3442,6 +3444,7 @@ function operatingModeCard(mode, projection) {
           : "Diesen Modus wählen",
   );
   button.type = "button";
+  button.setAttribute("aria-label", `${mode.label}: ${button.textContent}`);
   button.disabled =
     state.operatingModeActionPending ||
     retryForOtherMode ||
@@ -3578,6 +3581,10 @@ function profileCard(profile) {
     profile.plan_available ? "Voraussetzungen" : "Details nicht verfügbar",
   );
   button.type = "button";
+  button.setAttribute(
+    "aria-label",
+    `${displayProfile(profile.id)}: ${button.textContent}`,
+  );
   button.disabled = !profile.plan_available;
   if (profile.plan_available) {
     button.addEventListener("click", (event) =>
@@ -4277,6 +4284,10 @@ function renderH2RemoteInbox() {
     );
     const keep = element("button", "primary-button", "BEHALTEN");
     keep.type = "button";
+    keep.setAttribute(
+      "aria-label",
+      `Remote-H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`,
+    );
     keep.disabled =
       state.h2ActionPending ||
       state.h2RemoteInboxLoading ||
@@ -4392,6 +4403,10 @@ function renderH2Workspace({ force = false } = {}) {
     appendH2Audio(card, session.audio_url, session.segment_count);
     const keep = element("button", "primary-button", "BEHALTEN");
     keep.type = "button";
+    keep.setAttribute(
+      "aria-label",
+      `H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`,
+    );
     keep.disabled = state.h2ActionPending || !h2ActionsAllowed();
     keep.addEventListener("click", () =>
       runH2Action({ operation: "import", scene: session.scene }),
@@ -4487,6 +4502,13 @@ function renderH2Workspace({ force = false } = {}) {
 
     const save = element("button", "primary-button", "SPEICHERN");
     save.type = "button";
+    const updateSaveLabel = () => {
+      const materialLabel =
+        title.value.trim() || annotations.title || h2DisplayTimestamp(sourceItem);
+      save.setAttribute("aria-label", `Metadaten für ${materialLabel} speichern`);
+    };
+    updateSaveLabel();
+    title.addEventListener("input", updateSaveLabel);
     save.disabled = state.h2ActionPending || !h2ActionsAllowed();
     save.addEventListener("click", () => {
       const payload = {
@@ -5573,6 +5595,30 @@ function installTaskWorkspaceLayout() {
   byId("system-live-host").append(byId("live-telemetry"));
 }
 
+function depthPanelLabel(panel) {
+  return (
+    panel?.dataset?.focusTitle ||
+    panel?.querySelector(":scope > .depth-heading h2")?.textContent?.trim() ||
+    "Arbeitsbereich"
+  );
+}
+
+function setDepthToggleLabel(panel, button, expanded) {
+  button.setAttribute(
+    "aria-label",
+    `${depthPanelLabel(panel)} ${expanded ? "reduzieren" : "erweitern"}`,
+  );
+}
+
+function setDepthFocusLabel(panel, button, focused) {
+  button.setAttribute(
+    "aria-label",
+    focused
+      ? `${depthPanelLabel(panel)} Vollbild schließen`
+      : `${depthPanelLabel(panel)} im Vollbild öffnen`,
+  );
+}
+
 function toggleDepth(panel, button) {
   const detail = panel.querySelector(":scope > .depth-detail");
   if (!detail) return;
@@ -5581,6 +5627,7 @@ function toggleDepth(panel, button) {
   panel.classList.toggle("is-expanded", !expanded);
   button.setAttribute("aria-expanded", String(!expanded));
   button.textContent = expanded ? "Erweitern" : "Reduzieren";
+  setDepthToggleLabel(panel, button, !expanded);
 }
 
 function focusableInDepthPanel(panel) {
@@ -5589,15 +5636,79 @@ function focusableInDepthPanel(panel) {
   )].filter((node) => !node.closest("[hidden]") && !node.closest('[aria-hidden="true"]'));
 }
 
+function isolateDepthFocusBackground(panel) {
+  depthFocusBackgroundState = [];
+  let current = panel;
+  while (current && current !== document.body) {
+    const parent = current.parentElement;
+    if (!parent) break;
+    for (const sibling of parent.children) {
+      if (
+        !(sibling instanceof HTMLElement) ||
+        sibling === current ||
+        sibling.id === "dialog-backdrop"
+      ) continue;
+      depthFocusBackgroundState.push({
+        node: sibling,
+        inert: sibling.inert,
+        ariaHidden: sibling.getAttribute("aria-hidden"),
+      });
+      sibling.inert = true;
+      sibling.setAttribute("aria-hidden", "true");
+    }
+    current = parent;
+  }
+}
+
+function restoreDepthFocusBackground() {
+  for (const saved of [...depthFocusBackgroundState].reverse()) {
+    saved.node.inert = saved.inert;
+    if (saved.ariaHidden === null) {
+      saved.node.removeAttribute("aria-hidden");
+    } else {
+      saved.node.setAttribute("aria-hidden", saved.ariaHidden);
+    }
+  }
+  depthFocusBackgroundState = [];
+}
+
+function applyDepthFocusSemantics(panel) {
+  depthFocusPanelSemantics = {
+    role: panel.getAttribute("role"),
+    ariaModal: panel.getAttribute("aria-modal"),
+    ariaLabel: panel.getAttribute("aria-label"),
+  };
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-label", depthPanelLabel(panel));
+}
+
+function restoreDepthFocusSemantics(panel) {
+  const saved = depthFocusPanelSemantics;
+  depthFocusPanelSemantics = null;
+  if (!saved) return;
+  for (const [attribute, value] of [
+    ["role", saved.role],
+    ["aria-modal", saved.ariaModal],
+    ["aria-label", saved.ariaLabel],
+  ]) {
+    if (value === null) panel.removeAttribute(attribute);
+    else panel.setAttribute(attribute, value);
+  }
+}
+
 function closeDepthFocus({ restoreFocus = true, restoreScroll = true } = {}) {
   if (!focusedDepthPanel) return;
   const panel = focusedDepthPanel;
   const trigger = depthFocusReturn;
   panel.classList.remove("is-workspace-focused");
   document.body.classList.remove("workspace-focus-open");
+  restoreDepthFocusBackground();
+  restoreDepthFocusSemantics(panel);
   if (trigger) {
     trigger.textContent = trigger.dataset.focusLabel || "Vollbild";
     trigger.setAttribute("aria-pressed", "false");
+    setDepthFocusLabel(panel, trigger, false);
   }
   focusedDepthPanel = null;
   depthFocusReturn = null;
@@ -5625,8 +5736,11 @@ function openDepthFocus(panel, trigger) {
   trigger.dataset.focusLabel ||= trigger.textContent.trim() || "Vollbild";
   trigger.textContent = "Zurück";
   trigger.setAttribute("aria-pressed", "true");
+  setDepthFocusLabel(panel, trigger, true);
   panel.classList.add("is-workspace-focused");
   document.body.classList.add("workspace-focus-open");
+  applyDepthFocusSemantics(panel);
+  isolateDepthFocusBackground(panel);
   trigger.focus({ preventScroll: true });
 }
 
@@ -5649,11 +5763,26 @@ function wireDepthPanels() {
   for (const panel of document.querySelectorAll("[data-depth-panel]")) {
     const toggle = panel.querySelector(":scope > .depth-heading .depth-toggle");
     const focus = panel.querySelector(":scope > .depth-heading .depth-focus");
-    if (toggle) toggle.addEventListener("click", () => toggleDepth(panel, toggle));
+    const detail = panel.querySelector(":scope > .depth-detail");
+    if (toggle) {
+      if (detail && panel.id) {
+        detail.id ||= `${panel.id}-detail`;
+        toggle.setAttribute("aria-controls", detail.id);
+      }
+      setDepthToggleLabel(panel, toggle, toggle.getAttribute("aria-expanded") === "true");
+      toggle.addEventListener("click", () => toggleDepth(panel, toggle));
+    }
     if (focus && panel.dataset.focusKind !== "whale-learning") {
       focus.dataset.focusLabel = "Vollbild";
       focus.textContent = "Vollbild";
       focus.setAttribute("aria-pressed", "false");
+      if (panel.id) focus.setAttribute("aria-controls", panel.id);
+      setDepthFocusLabel(panel, focus, false);
+    } else if (focus) {
+      focus.setAttribute(
+        "aria-label",
+        `${depthPanelLabel(panel)}: ${focus.textContent.trim()}`,
+      );
     }
     if (focus) focus.addEventListener("click", () => openDepthFocus(panel, focus));
   }
@@ -5698,6 +5827,7 @@ function revealRouteTarget(target) {
     if (toggle) {
       toggle.setAttribute("aria-expanded", "true");
       toggle.textContent = "Reduzieren";
+      setDepthToggleLabel(panel, toggle, true);
     }
   }
   target.focus({ preventScroll: true });
