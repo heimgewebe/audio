@@ -424,8 +424,11 @@ function recordingLevelAcceptanceGuidance(measurement) {
   return guidance.join(" · ");
 }
 
+const SNAPSHOT_REFRESH_LOCK_NAME = "audio-control-snapshot-refresh-v1";
+
 const state = {
   snapshot: null,
+  snapshotRefreshPending: false,
   runtimeMode: DEFAULT_RUNTIME_MODE,
   capabilities: null,
   serviceWorkerState: "nicht geprüft",
@@ -1076,29 +1079,113 @@ async function refreshSnapshot(force = false) {
     state.whaleActionPending ||
     !backendAllowed()
   ) return;
-  setLoading(true);
-  try {
-    const suffix = force ? "?refresh=1" : "";
-    const snapshot = await fetchJson(`/api/v1/snapshot${suffix}`, {
-      timeoutMs: 50000,
-    });
-    state.snapshot = snapshot;
-    clearNotice();
-    if (state.remoteBridgeProjection === true) {
-      await ensureRemoteWhaleSession();
+  if (state.snapshotRefreshPending) return;
+
+  const refreshBlocked = () =>
+    state.loading ||
+    state.recordingActionPending ||
+    state.h2ActionPending ||
+    state.dauersongActionPending ||
+    state.operatingModeActionPending ||
+    state.whaleActionPending ||
+    !backendAllowed();
+
+  const readSnapshotResult = async () => {
+    if (refreshBlocked()) return { skipped: true };
+    setLoading(true);
+    try {
+      const suffix = force ? "?refresh=1" : "";
+      return {
+        snapshot: await fetchJson(`/api/v1/snapshot${suffix}`, {
+          timeoutMs: 50000,
+        }),
+      };
+    } catch (error) {
+      return { error };
     }
-    await loadRecordingLibrary({ render: false });
-    // H2 removable-media scans can legitimately take much longer than the
-    // core snapshot. Release the global loading gate and render recorder/core
-    // state first; the H2 surface converges separately below.
-    setLoading(false);
-    renderAll();
-    await loadH2Workspace({ render: true });
-  } catch (error) {
-    showNotice(error instanceof Error ? error.message : "Zustand konnte nicht gelesen werden.");
-    renderAuthority(error?.code === "snapshot_busy" ? "busy" : "offline");
+  };
+
+  const completeRefresh = async (readResult) => {
+    if (!readResult || readResult.skipped) {
+      if (force) clearNotice();
+      return false;
+    }
+    try {
+      if (readResult.error) throw readResult.error;
+      state.snapshot = readResult.snapshot;
+      clearNotice();
+      if (state.remoteBridgeProjection === true) {
+        await ensureRemoteWhaleSession();
+      }
+      await loadRecordingLibrary({ render: false });
+      // H2 removable-media scans can legitimately take much longer than the
+      // core snapshot. Release the global loading gate and render recorder/core
+      // state first; the H2 surface converges separately below.
+      setLoading(false);
+      renderAll();
+      await loadH2Workspace({ render: true });
+      return true;
+    } catch (error) {
+      const snapshotBusy =
+        error?.code === "snapshot_busy" || error?.status === 429;
+      if (snapshotBusy) {
+        renderAuthority("busy");
+        if (force) {
+          showNotice(
+            "Aktualisierung wartet auf eine bereits laufende Zustandsabfrage.",
+            "info",
+          );
+        }
+        return false;
+      }
+      showNotice(
+        error instanceof Error
+          ? error.message
+          : "Zustand konnte nicht gelesen werden.",
+      );
+      renderAuthority("offline");
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const locks = globalThis.navigator?.locks;
+  if (!locks || typeof locks.request !== "function") {
+    return completeRefresh(await readSnapshotResult());
+  }
+
+  state.snapshotRefreshPending = true;
+  try {
+    if (!force) {
+      const readResult = await locks.request(
+        SNAPSHOT_REFRESH_LOCK_NAME,
+        { ifAvailable: true },
+        (lock) => (lock ? readSnapshotResult() : null),
+      );
+      if (!readResult) return false;
+      return completeRefresh(readResult);
+    }
+
+    let readResult = await locks.request(
+      SNAPSHOT_REFRESH_LOCK_NAME,
+      { ifAvailable: true },
+      (lock) => (lock ? readSnapshotResult() : null),
+    );
+    if (readResult) return completeRefresh(readResult);
+
+    renderAuthority("busy");
+    showNotice(
+      "Aktualisierung wartet auf eine bereits laufende Zustandsabfrage.",
+      "info",
+    );
+    readResult = await locks.request(
+      SNAPSHOT_REFRESH_LOCK_NAME,
+      readSnapshotResult,
+    );
+    return completeRefresh(readResult);
   } finally {
-    setLoading(false);
+    state.snapshotRefreshPending = false;
   }
 }
 
@@ -1121,8 +1208,28 @@ function renderAuthority(status = "ready") {
   byId("mobile-authority").setAttribute("aria-label", fullLabel);
 }
 
+function refreshFocusKey() {
+  return document.activeElement?.getAttribute?.("data-refresh-key") || null;
+}
+
+function restoreRefreshFocus(key) {
+  if (!key) return;
+  const replacement = [...document.querySelectorAll("[data-refresh-key]")].find(
+    (candidate) => candidate.getAttribute("data-refresh-key") === key,
+  );
+  if (
+    !replacement ||
+    replacement.hidden ||
+    replacement.disabled ||
+    replacement.closest("[hidden]") ||
+    typeof replacement.focus !== "function"
+  ) return;
+  replacement.focus({ preventScroll: true });
+}
+
 function renderAll({ preserveRecorderDraft = true } = {}) {
   if (!state.snapshot) return;
+  const refreshKey = refreshFocusKey();
   renderAuthority("ready");
   renderRuntimeMode();
   byId("updated-at").textContent = formatTimestamp(state.snapshot.generated_at);
@@ -1144,6 +1251,7 @@ function renderAll({ preserveRecorderDraft = true } = {}) {
   renderDiagnostics();
   renderSettings();
   renderReplay();
+  restoreRefreshFocus(refreshKey);
 }
 
 function renderTruth() {
@@ -2555,6 +2663,12 @@ function appendTakeListenButton(parent, item) {
     "Anhören",
   );
   listen.type = "button";
+  const refreshScope =
+    parent.className === "recording-recent-card" ? "recent-take" : "library-take";
+  listen.setAttribute(
+    "data-refresh-key",
+    `${refreshScope}:${item.session_id}:listen`,
+  );
   listen.setAttribute("aria-label", `${globalTakePlayerItemName(item)} anhören`);
   listen.addEventListener("click", (event) =>
     playRecordingTake(item, event.currentTarget),
@@ -3473,6 +3587,10 @@ function operatingModeCard(mode, projection) {
           : "Diesen Modus wählen",
   );
   button.type = "button";
+  button.setAttribute(
+    "data-refresh-key",
+    `operating-mode:${mode.id}:action`,
+  );
   button.setAttribute("aria-label", `${mode.label}: ${button.textContent}`);
   button.disabled =
     state.operatingModeActionPending ||
@@ -3610,6 +3728,10 @@ function profileCard(profile) {
     profile.plan_available ? "Voraussetzungen" : "Details nicht verfügbar",
   );
   button.type = "button";
+  button.setAttribute(
+    "data-refresh-key",
+    `profile:${profile.id}:details`,
+  );
   button.setAttribute(
     "aria-label",
     `${displayProfile(profile.id)}: ${button.textContent}`,
@@ -4314,6 +4436,10 @@ function renderH2RemoteInbox() {
     const keep = element("button", "primary-button", "BEHALTEN");
     keep.type = "button";
     keep.setAttribute(
+      "data-refresh-key",
+      `h2-remote:${session.transfer_id}:${session.scene}:keep`,
+    );
+    keep.setAttribute(
       "aria-label",
       `Remote-H2-Aufnahme ${h2DisplayTimestamp(session)}, Transfer ${String(session.transfer_id || "unbekannt")} behalten`,
     );
@@ -4433,6 +4559,10 @@ function renderH2Workspace({ force = false } = {}) {
     const keep = element("button", "primary-button", "BEHALTEN");
     keep.type = "button";
     keep.setAttribute(
+      "data-refresh-key",
+      `h2-source:${session.scene}:keep`,
+    );
+    keep.setAttribute(
       "aria-label",
       `H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`,
     );
@@ -4531,6 +4661,10 @@ function renderH2Workspace({ force = false } = {}) {
 
     const save = element("button", "primary-button", "SPEICHERN");
     save.type = "button";
+    save.setAttribute(
+      "data-refresh-key",
+      `h2-material:${item.material_id}:save`,
+    );
     const updateSaveLabel = () => {
       const materialLabel =
         title.value.trim() || annotations.title || h2DisplayTimestamp(sourceItem);
@@ -4736,6 +4870,10 @@ function renderLibrary() {
       const categoryLabel = element("label", "recording-library-category");
       appendText(categoryLabel, "span", "", "Kategorie");
       const categorySelect = element("select", "recording-category-select");
+      categorySelect.setAttribute(
+        "data-refresh-key",
+        `library-take:${item.session_id}:category`,
+      );
       for (const [value, label] of Object.entries(RECORDING_LIBRARY_CATEGORIES)) {
         const option = element("option", "", label);
         option.value = value;
@@ -4757,6 +4895,10 @@ function renderLibrary() {
       if (trashed) {
         const restore = element("button", "secondary-button", "Wiederherstellen");
         restore.type = "button";
+        restore.setAttribute(
+          "data-refresh-key",
+          `library-take:${item.session_id}:restore`,
+        );
         restore.disabled =
           !recordingLibraryActionsAllowed() || state.recordingActionPending;
         restore.addEventListener("click", () =>
@@ -4766,6 +4908,10 @@ function renderLibrary() {
       } else {
         const remove = element("button", "secondary-button danger-button", "Löschen");
         remove.type = "button";
+        remove.setAttribute(
+          "data-refresh-key",
+          `library-take:${item.session_id}:trash`,
+        );
         remove.disabled =
           !recordingLibraryActionsAllowed() || state.recordingActionPending;
         remove.addEventListener("click", () => {
@@ -4783,6 +4929,10 @@ function renderLibrary() {
     if (!trashed && (item.recovery_required === true || item.cleanup_required === true)) {
       const recover = element("button", "secondary-button", "Recovery");
       recover.type = "button";
+      recover.setAttribute(
+        "data-refresh-key",
+        `library-take:${item.session_id}:recover`,
+      );
       recover.disabled = !recordingActionsAllowed() || state.recordingActionPending;
       recover.addEventListener("click", () =>
         runRecordingAction({ operation: "recover", session_id: item.session_id }),
