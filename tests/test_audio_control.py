@@ -4409,6 +4409,66 @@ class AudioControlInMemoryHTTPTests(unittest.TestCase):
         self.assertFalse(self.runner.whale_active)
 
 
+    def test_task_workspace_controls_have_contextual_accessible_names_and_modal_isolation(self):
+        javascript = (ROOT / "ui" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'button.setAttribute("aria-label", `${mode.label}: ${button.textContent}`)',
+            javascript,
+        )
+        self.assertIn(
+            '`${displayProfile(profile.id)}: ${button.textContent}`',
+            javascript,
+        )
+        self.assertIn(
+            '`Remote-H2-Aufnahme ${h2DisplayTimestamp(session)}, Transfer ${String(session.transfer_id || "unbekannt")} behalten`',
+            javascript,
+        )
+        self.assertIn(
+            '`H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`',
+            javascript,
+        )
+        self.assertIn(
+            '`Metadaten für ${materialLabel} speichern`',
+            javascript,
+        )
+        self.assertIn("function setDepthToggleLabel", javascript)
+        self.assertIn("function setDepthFocusLabel", javascript)
+        self.assertIn("function ensureDepthPanelId(panel, index)", javascript)
+        self.assertIn('const base = `audio-depth-panel-${index + 1}`', javascript)
+        self.assertIn(
+            "document.getElementById(`${candidate}-detail`)", javascript
+        )
+        self.assertIn("const panelId = ensureDepthPanelId(panel, index)", javascript)
+        self.assertIn('toggle.setAttribute("aria-controls", detail.id)', javascript)
+        self.assertIn('focus.setAttribute("aria-controls", panelId)', javascript)
+        self.assertNotIn("if (detail && panel.id)", javascript)
+        self.assertNotIn('if (panel.id) focus.setAttribute("aria-controls", panel.id)', javascript)
+
+        modal_start = javascript.index("function isolateDepthFocusBackground")
+        modal_end = javascript.index("function keepDepthFocus", modal_start)
+        modal = javascript[modal_start:modal_end]
+        self.assertIn('sibling.id === "dialog-backdrop"', modal)
+        self.assertIn("sibling.inert = true", modal)
+        self.assertIn('sibling.setAttribute("aria-hidden", "true")', modal)
+        self.assertIn('panel.setAttribute("role", "dialog")', modal)
+        self.assertIn('panel.setAttribute("aria-modal", "true")', modal)
+        self.assertIn("restoreDepthFocusBackground()", modal)
+        self.assertIn("restoreDepthFocusSemantics(panel)", modal)
+        self.assertIn("attachGlobalTakePlayerToDepthFocus()", modal)
+        self.assertIn("restoreGlobalTakePlayerHome()", modal)
+        self.assertIn("trigger.focus({ preventScroll: true })", modal)
+
+        player_start = javascript.index("function captureGlobalTakePlayerHome")
+        player_end = javascript.index("function clearGlobalTakePlayer", player_start)
+        player = javascript[player_start:player_end]
+        self.assertIn("focusedDepthPanel.append(player)", player)
+        self.assertIn("home.parent.insertBefore(player, home.nextSibling)", player)
+        self.assertIn("attachGlobalTakePlayerToDepthFocus()", player)
+        self.assertIn("audio[controls]", javascript)
+
+
+
 class H2MaterialControlTests(unittest.TestCase):
     class Runner:
         def __init__(
