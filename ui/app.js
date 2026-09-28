@@ -873,7 +873,7 @@ function applyRuntimeMode({ persist = false } = {}) {
     loadReplay();
     loadWhaleLesson();
     requestTelemetry().finally(() => scheduleTelemetryPolling());
-    refreshSnapshot(true);
+    refreshSnapshot(false, { waitForLock: true });
   } else {
     stopRemoteActivity();
     renderLocalDeviceAuthority();
@@ -1069,7 +1069,10 @@ function setLoading(loading) {
   if (state.snapshot) renderWhale();
 }
 
-async function refreshSnapshot(force = false) {
+async function refreshSnapshot(
+  force = false,
+  { waitForLock = force } = {},
+) {
   if (
     state.loading ||
     state.recordingActionPending ||
@@ -1157,7 +1160,7 @@ async function refreshSnapshot(force = false) {
 
   state.snapshotRefreshPending = true;
   try {
-    if (!force) {
+    if (!waitForLock) {
       const readResult = await locks.request(
         SNAPSHOT_REFRESH_LOCK_NAME,
         { ifAvailable: true },
@@ -1175,10 +1178,12 @@ async function refreshSnapshot(force = false) {
     if (readResult) return completeRefresh(readResult);
 
     renderAuthority("busy");
-    showNotice(
-      "Aktualisierung wartet auf eine bereits laufende Zustandsabfrage.",
-      "info",
-    );
+    if (force) {
+      showNotice(
+        "Aktualisierung wartet auf eine bereits laufende Zustandsabfrage.",
+        "info",
+      );
+    }
     readResult = await locks.request(
       SNAPSHOT_REFRESH_LOCK_NAME,
       readSnapshotResult,

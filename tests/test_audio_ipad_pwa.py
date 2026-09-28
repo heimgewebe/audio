@@ -659,7 +659,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(result["shortDelay"], 5000)
 
     def test_h2_scan_never_blocks_core_snapshot_render_or_recorder_controls(self):
-        refresh = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(
+        refresh = self.app.split("async function refreshSnapshot(", 1)[1].split(
             "\n}\n\nfunction renderAuthority", 1
         )[0]
         self.assertIn("await loadRecordingLibrary({ render: false });", refresh)
@@ -1229,7 +1229,10 @@ class LocalModeBackendSuppressionTests(unittest.TestCase):
         guarded = (
             "async function fetchJson(url, options = {}) {\n"
             "  if (!backendAllowed() && sameOriginApiTarget(url)) {",
-            "async function refreshSnapshot(force = false) {\n"
+            "async function refreshSnapshot(\n"
+            "  force = false,\n"
+            "  { waitForLock = force } = {},\n"
+            ") {\n"
             "  if (\n"
             "    state.loading ||\n"
             "    state.recordingActionPending ||\n"
@@ -1490,7 +1493,7 @@ async function postH2Action() {{
         self.assertNotIn("state.h2AnnotationDrafts.size > 0", blocked)
         self.assertNotIn("state.h2RemoteInboxLoading", blocked)
 
-        refresh_guard = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(
+        refresh_guard = self.app.split("async function refreshSnapshot(", 1)[1].split(
             "setLoading(true);", 1
         )[0]
         self.assertNotIn("state.h2RemoteInboxLoading", refresh_guard)
@@ -1868,6 +1871,16 @@ function renderAuthority() {{ events.push("authority"); }}
         self.assertFalse(result["workspaceLoading"])
         self.assertNotIn("h2-render", result["events"])
 
+    def test_bootstrap_waits_for_snapshot_lock_without_force_refresh(self):
+        runtime = self.app.split("function applyRuntimeMode", 1)[1].split(
+            "\n}\n\nfunction loadRuntimeMode", 1
+        )[0]
+        self.assertIn(
+            "refreshSnapshot(false, { waitForLock: true });",
+            runtime,
+        )
+        self.assertNotIn("refreshSnapshot(true);", runtime)
+
     def test_snapshot_refresh_web_locks_serialize_tabs_and_busy_is_soft_state(self):
         refresh = "async function refreshSnapshot" + self.app.split(
             "async function refreshSnapshot", 1
@@ -1888,6 +1901,7 @@ const state = {{
 let mode = "auto-skip";
 let fetchMode = "ok";
 let fetchCalls = 0;
+let fetchUrls = [];
 let lockCalls = [];
 let notices = [];
 let authority = [];
@@ -1896,6 +1910,7 @@ function setLoading(value) {{ state.loading = value; }}
 async function fetchJson(url) {{
   if (!url.startsWith("/api/v1/snapshot")) throw new Error("unexpected URL");
   fetchCalls += 1;
+  fetchUrls.push(url);
   if (fetchMode === "busy") {{
     const error = new Error("snapshot busy");
     error.code = "snapshot_busy";
@@ -1916,7 +1931,10 @@ const locks = {{
     const withOptions = typeof optionsOrCallback === "object";
     const callback = withOptions ? maybeCallback : optionsOrCallback;
     lockCalls.push({{ name, ifAvailable: withOptions && optionsOrCallback.ifAvailable === true }});
-    if ((mode === "auto-skip" || mode === "manual-wait") && withOptions) {{
+    if (
+      (mode === "auto-skip" || mode === "startup-wait" || mode === "manual-wait") &&
+      withOptions
+    ) {{
       return callback(null);
     }}
     return callback({{ name }});
@@ -1932,6 +1950,22 @@ Object.defineProperty(globalThis, "navigator", {{
   const autoSkip = {{
     fetchCalls,
     lockCalls: [...lockCalls],
+    pending: state.snapshotRefreshPending,
+  }};
+
+  mode = "startup-wait";
+  fetchCalls = 0;
+  fetchUrls = [];
+  lockCalls = [];
+  notices = [];
+  authority = [];
+  await refreshSnapshot(false, {{ waitForLock: true }});
+  const startupWait = {{
+    fetchCalls,
+    fetchUrls: [...fetchUrls],
+    lockCalls: [...lockCalls],
+    notices: [...notices],
+    authority: [...authority],
     pending: state.snapshotRefreshPending,
   }};
 
@@ -1980,7 +2014,13 @@ Object.defineProperty(globalThis, "navigator", {{
     pending: state.snapshotRefreshPending,
   }};
 
-  process.stdout.write(JSON.stringify({{ autoSkip, manualWait, busy, fallback }}));
+  process.stdout.write(JSON.stringify({{
+    autoSkip,
+    startupWait,
+    manualWait,
+    busy,
+    fallback,
+  }}));
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
         completed = subprocess.run(
@@ -1995,6 +2035,18 @@ Object.defineProperty(globalThis, "navigator", {{
             {"name": "audio-control-snapshot-refresh-v1", "ifAvailable": True}
         ])
         self.assertFalse(result["autoSkip"]["pending"])
+        self.assertEqual(result["startupWait"]["fetchCalls"], 1)
+        self.assertEqual(
+            result["startupWait"]["fetchUrls"],
+            ["/api/v1/snapshot"],
+        )
+        self.assertEqual(
+            [call["ifAvailable"] for call in result["startupWait"]["lockCalls"]],
+            [True, False],
+        )
+        self.assertEqual(result["startupWait"]["notices"], [["clear"]])
+        self.assertEqual(result["startupWait"]["authority"], ["busy"])
+        self.assertFalse(result["startupWait"]["pending"])
         self.assertEqual(result["manualWait"]["fetchCalls"], 1)
         self.assertEqual([call["ifAvailable"] for call in result["manualWait"]["lockCalls"]], [True, False])
         self.assertEqual(result["manualWait"]["authority"], ["busy"])
