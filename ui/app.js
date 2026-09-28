@@ -215,6 +215,11 @@ const LIBRARY_SORTS = new Set(["newest", "oldest", "name", "duration", "category
 const RECORDING_LIBRARY_ACTIONS = new Set(["categorize", "trash", "restore"]);
 const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;
 const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;
+// Bootstrap budget reads cannot derive their own deadline. Keep them above
+// the bridge's bounded one-transfer (1900 s) and two-transfer (3800 s) scans.
+const H2_REMOTE_INBOX_BUDGET_TIMEOUT_MS = 3815000;
+const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1915000;
+const H2_REMOTE_INBOX_UI_TIMEOUT_MARGIN_MS = 15000;
 const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
 const MAX_BROWSER_TIMER_DELAY_MS = 2147000000;
 
@@ -435,6 +440,10 @@ const state = {
   h2ActivitySequence: 0,
   h2WorkspaceLoadGeneration: 0,
   h2WorkspaceLoading: false,
+  h2RemoteInbox: null,
+  h2RemoteInboxError: null,
+  h2RemoteInboxLoading: false,
+  h2RemoteInboxLoadGeneration: 0,
   h2ActionPending: false,
   h2AnnotationDrafts: new Map(),
   recordingPlayerSessionId: null,
@@ -818,6 +827,10 @@ function stopRemoteActivity() {
   state.h2WorkspaceLoading = false;
   state.h2Workspace = null;
   state.h2WorkspaceError = null;
+  state.h2RemoteInbox = null;
+  state.h2RemoteInboxError = null;
+  state.h2RemoteInboxLoading = false;
+  state.h2RemoteInboxLoadGeneration += 1;
   state.h2ActionPending = false;
   state.recordingPlan = null;
   state.recordingPlanInput = null;
@@ -839,6 +852,7 @@ function stopRemoteActivity() {
   }
   clearGlobalTakePlayer();
   renderH2Workspace({ force: true });
+  renderH2RemoteInbox();
   // Kein gelesener Zustand darf als Kennzahl stehen bleiben.
   byId("diagnostic-badge").hidden = true;
   byId("diagnostic-badge").textContent = "0";
@@ -3756,8 +3770,14 @@ async function h2WorkspaceTimeoutMs() {
 }
 
 async function loadH2Workspace({ render = true } = {}) {
-  if (!backendAllowed() || state.h2WorkspaceLoading || state.h2ActionPending) return;
+  if (
+    !backendAllowed() ||
+    state.h2WorkspaceLoading ||
+    state.h2RemoteInboxLoading ||
+    state.h2ActionPending
+  ) return;
   state.h2WorkspaceLoading = true;
+  if (render) renderH2RemoteInbox();
   const loadGeneration = ++state.h2WorkspaceLoadGeneration;
   const activitySequence = ++state.h2ActivitySequence;
   try {
@@ -3783,7 +3803,165 @@ async function loadH2Workspace({ render = true } = {}) {
   if (render) renderH2Workspace();
 }
 
-async function h2ImportTimeoutMs(scene) {
+async function h2RemoteInboxBudget() {
+  const budget = await fetchJson("/api/v1/h2/remote-inbox/budget", {
+    timeoutMs: H2_REMOTE_INBOX_BUDGET_TIMEOUT_MS,
+  });
+  const inboxSeconds = budget?.inbox_timeout_seconds;
+  if (
+    budget?.kind !== "audio_h2_remote_inbox_budget" ||
+    budget?.read_only !== true ||
+    budget?.source_mutated !== false ||
+    typeof inboxSeconds !== "number" ||
+    !Number.isFinite(inboxSeconds) ||
+    inboxSeconds <= 0
+  ) {
+    throw new Error("Remote-H2-Inbox besitzt kein gültiges Zeitbudget.");
+  }
+  return budget;
+}
+
+async function h2RemoteInboxTimeoutMs() {
+  const budget = await h2RemoteInboxBudget();
+  return (
+    Math.ceil(budget.inbox_timeout_seconds * 1000) +
+    H2_REMOTE_INBOX_BUDGET_TIMEOUT_MS +
+    H2_REMOTE_INBOX_UI_TIMEOUT_MARGIN_MS
+  );
+}
+
+async function loadH2RemoteInbox({ render = true } = {}) {
+  if (
+    !backendAllowed() ||
+    state.h2RemoteInboxLoading ||
+    state.h2WorkspaceLoading ||
+    state.h2ActionPending
+  ) return;
+  state.h2RemoteInboxLoading = true;
+  const loadGeneration = ++state.h2RemoteInboxLoadGeneration;
+  if (render) renderH2RemoteInbox();
+  try {
+    const timeoutMs = await h2RemoteInboxTimeoutMs();
+    if (
+      loadGeneration !== state.h2RemoteInboxLoadGeneration ||
+      !backendAllowed()
+    ) return;
+    const remote = await fetchJson("/api/v1/h2/remote-inbox", { timeoutMs });
+    if (
+      loadGeneration !== state.h2RemoteInboxLoadGeneration ||
+      !backendAllowed()
+    ) return;
+    if (remote?.kind !== "audio_h2_remote_inbox" || !remote?.inbox) {
+      throw new Error("Remote-H2-Inbox besitzt keinen gültigen Vertrag.");
+    }
+    state.h2RemoteInbox = remote;
+    state.h2RemoteInboxError = null;
+  } catch (error) {
+    if (
+      loadGeneration !== state.h2RemoteInboxLoadGeneration ||
+      !backendAllowed()
+    ) return;
+    state.h2RemoteInbox = null;
+    state.h2RemoteInboxError =
+      error instanceof Error ? error.message : "Remote-H2-Inbox ist nicht lesbar.";
+  } finally {
+    if (loadGeneration === state.h2RemoteInboxLoadGeneration) {
+      state.h2RemoteInboxLoading = false;
+    }
+  }
+  if (render) renderH2RemoteInbox();
+}
+
+async function h2RemoteTransferBudget(transferId) {
+  const budget = await fetchJson(
+    "/api/v1/h2/remote-inbox/transfer-budget/" +
+      encodeURIComponent(transferId),
+    { timeoutMs: H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS },
+  );
+  const importBudgetSeconds = budget?.import_budget_timeout_seconds;
+  if (
+    budget?.schema_version !== 1 ||
+    budget?.kind !== "audio_h2_remote_transfer_budget" ||
+    budget?.source !== "remote-inbox" ||
+    budget?.transfer_id !== transferId ||
+    budget?.read_only !== true ||
+    budget?.source_mutated !== false ||
+    typeof importBudgetSeconds !== "number" ||
+    !Number.isFinite(importBudgetSeconds) ||
+    importBudgetSeconds <= 0
+  ) {
+    throw new Error("Remote-H2-Transfer besitzt kein gültiges Preflight-Zeitbudget.");
+  }
+  return budget;
+}
+
+function h2RemoteImportBudgetTimeoutMs(transferBudget) {
+  const importBudgetSeconds = transferBudget?.import_budget_timeout_seconds;
+  if (
+    typeof importBudgetSeconds !== "number" ||
+    !Number.isFinite(importBudgetSeconds) ||
+    importBudgetSeconds <= 0
+  ) {
+    throw new Error("Remote-H2-Import besitzt kein gültiges Preflight-Zeitbudget.");
+  }
+  return (
+    Math.ceil(importBudgetSeconds * 1000) +
+    H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS +
+    H2_REMOTE_INBOX_UI_TIMEOUT_MARGIN_MS
+  );
+}
+
+async function h2RemoteImportBudget(transferId, scene, transferBudget) {
+  const budget = await fetchJson(
+    "/api/v1/h2/remote-inbox/import-budget/" +
+      encodeURIComponent(transferId) +
+      "/" +
+      encodeURIComponent(scene),
+    { timeoutMs: h2RemoteImportBudgetTimeoutMs(transferBudget) },
+  );
+  const importSeconds = budget?.import_timeout_seconds;
+  if (
+    budget?.schema_version !== 1 ||
+    budget?.kind !== "audio_h2_remote_import_budget" ||
+    budget?.source !== "remote-inbox" ||
+    budget?.transfer_id !== transferId ||
+    budget?.scene !== scene ||
+    budget?.read_only !== true ||
+    budget?.source_mutated !== false ||
+    typeof importSeconds !== "number" ||
+    !Number.isFinite(importSeconds) ||
+    importSeconds <= 0
+  ) {
+    throw new Error("Remote-H2-Import besitzt kein gültiges Aktionszeitbudget.");
+  }
+  return budget;
+}
+
+async function h2ImportTimeoutMs(
+  scene,
+  source = "device",
+  transferId = null,
+) {
+  if (source === "remote-inbox") {
+    if (typeof transferId !== "string" || transferId.length === 0) {
+      throw new Error("Remote-H2-Import besitzt keine gültige Transfer-ID.");
+    }
+    const transferBudget = await h2RemoteTransferBudget(transferId);
+    const preReadMs = h2RemoteImportBudgetTimeoutMs(transferBudget);
+    const importBudget = await h2RemoteImportBudget(
+      transferId,
+      scene,
+      transferBudget,
+    );
+    return (
+      Math.ceil(importBudget.import_timeout_seconds * 1000) +
+      preReadMs +
+      H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS
+    );
+  }
+  if (source !== "device") {
+    throw new Error("H2-Importquelle ist ungültig.");
+  }
   const sessions = Array.isArray(state.h2Workspace?.source?.sessions)
     ? state.h2Workspace.source.sessions
     : [];
@@ -3796,7 +3974,11 @@ async function h2ImportTimeoutMs(scene) {
   ) {
     throw new Error("H2-Import besitzt kein gültiges Zeitbudget.");
   }
-  return Math.ceil(backendSeconds * 1000) + (await h2WorkspaceTimeoutMs());
+  return (
+    Math.ceil(backendSeconds * 1000) +
+    (await h2WorkspaceTimeoutMs()) +
+    H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS
+  );
 }
 
 async function h2LibraryBudget() {
@@ -3833,7 +4015,11 @@ async function h2AnnotationTimeoutMs() {
 async function postH2Action(payload) {
   const timeoutMs =
     payload?.operation === "import"
-      ? await h2ImportTimeoutMs(payload.scene)
+      ? await h2ImportTimeoutMs(
+          payload.scene,
+          payload.source || "device",
+          payload.transfer_id || null,
+        )
       : await h2AnnotationTimeoutMs();
   if (localH2ActionsAllowed()) {
     return fetchJson("/api/v1/actions/h2", {
@@ -3871,6 +4057,7 @@ async function postH2Action(payload) {
 async function runH2Action(payload) {
   if (state.h2ActionPending) return;
   const activitySequence = ++state.h2ActivitySequence;
+  let refreshWorkspaceAfterRemoteImport = false;
   state.h2ActionPending = true;
   renderH2Workspace();
   try {
@@ -3880,10 +4067,29 @@ async function runH2Action(payload) {
       throw new Error("H2-Aktion lieferte keinen aktuellen Materialzustand.");
     }
     if (payload.operation === "import") {
-      if (result.workspace?.kind !== "audio_h2_workspace") {
-        throw new Error("H2-Import lieferte keinen aktuellen Arbeitsbereich.");
+      if (payload.source === "remote-inbox") {
+        if (
+          result.source !== "remote-inbox" ||
+          result.transfer_id !== payload.transfer_id ||
+          result.library?.kind !== "audio_h2_library" ||
+          !result.library?.library
+        ) {
+          throw new Error("Remote-H2-Import lieferte keine aktuelle Bibliothek.");
+        }
+        if (state.h2Workspace?.kind === "audio_h2_workspace") {
+          state.h2Workspace = {
+            ...state.h2Workspace,
+            library: result.library.library,
+          };
+        } else {
+          refreshWorkspaceAfterRemoteImport = true;
+        }
+      } else {
+        if (result.workspace?.kind !== "audio_h2_workspace") {
+          throw new Error("H2-Import lieferte keinen aktuellen Arbeitsbereich.");
+        }
+        state.h2Workspace = result.workspace;
       }
-      state.h2Workspace = result.workspace;
     } else {
       if (
         result.library?.kind !== "audio_h2_library" ||
@@ -3901,11 +4107,17 @@ async function runH2Action(payload) {
     state.h2WorkspaceError = null;
     const alreadyImported =
       payload.operation === "import" && result.result?.status === "already-imported";
+    const remoteImport =
+      payload.operation === "import" && payload.source === "remote-inbox";
     showNotice(
       payload.operation === "import"
-        ? alreadyImported
-          ? "Aufnahme ist bereits sicher archiviert. Das Original bleibt auf dem H2."
-          : "Aufnahme sicher archiviert. Das Original bleibt auf dem H2."
+        ? remoteImport
+          ? alreadyImported
+            ? "Remote-Aufnahme ist bereits sicher archiviert. Die Inbox bleibt unverändert."
+            : "Remote-Aufnahme sicher archiviert. Die Inbox bleibt unverändert."
+          : alreadyImported
+            ? "Aufnahme ist bereits sicher archiviert. Das Original bleibt auf dem H2."
+            : "Aufnahme sicher archiviert. Das Original bleibt auf dem H2."
         : "Titel, Notiz und Tags gespeichert.",
       "success",
     );
@@ -3916,9 +4128,13 @@ async function runH2Action(payload) {
     if (activitySequence === state.h2ActivitySequence) {
       state.h2ActionPending = false;
       if (backendAllowed()) {
-        renderH2Workspace({
-          force: payload.operation === "annotate",
-        });
+        if (refreshWorkspaceAfterRemoteImport) {
+          loadH2Workspace();
+        } else {
+          renderH2Workspace({
+            force: payload.operation === "annotate",
+          });
+        }
       }
     }
   }
@@ -3972,7 +4188,130 @@ function appendH2Audio(card, audioUrl, segmentCount) {
   card.append(audio);
 }
 
+function renderH2RemoteInbox() {
+  const grid = byId("h2-remote-inbox");
+  const status = byId("h2-remote-status");
+  const refresh = byId("h2-remote-refresh");
+  if (!grid || !status || !refresh) return;
+  refresh.disabled =
+    state.h2RemoteInboxLoading || state.h2WorkspaceLoading || state.h2ActionPending;
+
+  if (state.h2RemoteInboxLoading) {
+    status.textContent = "Remote-Inbox wird gelesen.";
+  } else if (!state.h2RemoteInbox) {
+    status.textContent =
+      state.h2RemoteInboxError ||
+      "Remote-Inbox wird nur auf Wunsch gelesen; der normale H2-Refresh scannt sie nicht.";
+  }
+
+  const inbox = state.h2RemoteInbox?.inbox;
+  if (!inbox) {
+    const empty = element("article", "h2-card h2-empty");
+    empty.textContent =
+      state.h2RemoteInboxError ||
+      "Noch kein Remote-Inbox-Readback. Erst nach vollständigem Dateitransfer lesen.";
+    grid.replaceChildren(empty);
+    return;
+  }
+
+  const sessions = Array.isArray(inbox.sessions) ? inbox.sessions : [];
+  const invalidTransfers = Array.isArray(inbox.skipped_invalid_transfers)
+    ? inbox.skipped_invalid_transfers
+    : [];
+  const invalidSessions = Array.isArray(inbox.skipped_invalid_sessions)
+    ? inbox.skipped_invalid_sessions
+    : [];
+  const invalidTransferCount =
+    Number.isSafeInteger(inbox.skipped_invalid_transfer_count) &&
+    inbox.skipped_invalid_transfer_count >= 0
+      ? inbox.skipped_invalid_transfer_count
+      : invalidTransfers.length;
+  const enumerationComplete = inbox.enumeration_complete !== false;
+  if (!state.h2RemoteInboxLoading) {
+    status.textContent =
+      String(sessions.length) +
+      " Remote-Aufnahmen in " +
+      String(inbox.transfer_count || 0) +
+      " geprüften Transfers" +
+      (inbox.truncated === true
+        ? enumerationComplete
+          ? " · nur die " +
+            String(inbox.transfer_count || 0) +
+            " neuesten von " +
+            String(inbox.total_transfer_count || 0) +
+            " Transfers gelesen"
+          : " · Inbox-Auflistung begrenzt; Transferzahlen sind Mindestwerte"
+        : "") +
+      (invalidTransferCount || invalidSessions.length
+        ? " · " +
+          (enumerationComplete ? "" : "mindestens ") +
+          String(invalidTransferCount + invalidSessions.length) +
+          " Einträge nicht sicher lesbar"
+        : "");
+  }
+
+  const cards = [];
+  for (const session of sessions) {
+    const card = element("article", "h2-card");
+    const top = element("div", "card-topline");
+    appendText(top, "span", "card-glyph", "⇣").setAttribute("aria-hidden", "true");
+    appendText(top, "span", "status-pill", "remote");
+    card.append(top);
+    appendText(card, "h3", "", h2DisplayTimestamp(session));
+    const rate = Number(session.sample_rate_hz || 0);
+    appendText(
+      card,
+      "p",
+      "h2-meta",
+      Number(session.duration_seconds).toFixed(1) +
+        " s · " +
+        (rate ? (rate / 1000).toFixed(1) + " kHz" : "Rate offen") +
+        " · " +
+        (session.roles || []).join(" + ").toUpperCase(),
+    );
+    appendText(
+      card,
+      "small",
+      "h2-safety-note",
+      "Transfer: " + String(session.transfer_id || "unbekannt"),
+    );
+    const keep = element("button", "primary-button", "BEHALTEN");
+    keep.type = "button";
+    keep.disabled =
+      state.h2ActionPending ||
+      state.h2RemoteInboxLoading ||
+      state.h2WorkspaceLoading ||
+      !h2ActionsAllowed();
+    keep.addEventListener("click", () =>
+      runH2Action({
+        operation: "import",
+        source: "remote-inbox",
+        transfer_id: session.transfer_id,
+        scene: session.scene,
+      }),
+    );
+    card.append(keep);
+    appendText(
+      card,
+      "small",
+      "h2-safety-note",
+      "Kein Remote-Preview: erst der bestehende H2-Prüfpfad darf die Aufnahme archivieren. Der Transfer bleibt dabei erhalten.",
+    );
+    cards.push(card);
+  }
+  if (!cards.length) {
+    const empty = element("article", "h2-card h2-empty");
+    empty.textContent =
+      invalidTransfers.length || invalidSessions.length
+        ? "Keine vollständig lesbare Remote-H2-Aufnahme gefunden."
+        : "Keine Remote-H2-Aufnahmen in den aktiven Transfers gefunden.";
+    cards.push(empty);
+  }
+  grid.replaceChildren(...cards);
+}
+
 function renderH2Workspace({ force = false } = {}) {
+  renderH2RemoteInbox();
   const inbox = byId("h2-inbox");
   const archive = byId("h2-library");
   const status = byId("h2-status");
@@ -3980,7 +4319,8 @@ function renderH2Workspace({ force = false } = {}) {
   if (!inbox || !archive || !status || !refresh) return;
   if (!force && document.activeElement?.closest(".h2-annotation-form")) return;
 
-  refresh.disabled = state.h2ActionPending || state.h2WorkspaceLoading;
+  refresh.disabled =
+    state.h2ActionPending || state.h2WorkspaceLoading || state.h2RemoteInboxLoading;
   const workspace = state.h2Workspace;
   if (!workspace) {
     status.textContent = state.h2WorkspaceError || "H2 wird gelesen.";
@@ -5524,6 +5864,9 @@ function wireEvents() {
   byId("refresh-button").addEventListener("click", () => refreshSnapshot(true));
   byId("diagnostic-refresh").addEventListener("click", () => refreshSnapshot(true));
   byId("h2-refresh").addEventListener("click", () => loadH2Workspace());
+  byId("h2-remote-refresh")?.addEventListener("click", () =>
+    loadH2RemoteInbox(),
+  );
   byId("library-view").addEventListener("change", (event) => {
     if (!LIBRARY_VIEWS.has(event.target.value)) return;
     state.libraryView = event.target.value;

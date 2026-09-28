@@ -4108,6 +4108,26 @@ class AudioControlHTTPTests(unittest.TestCase):
         self.assertEqual(json.loads(payload)["error"]["code"], "invalid_query")
         self.assertEqual(self.runner.calls, before)
 
+    def test_remote_h2_endpoints_reject_query_strings(self):
+        before = list(self.runner.calls)
+        targets = (
+            "/api/v1/h2/remote-inbox",
+            "/api/v1/h2/remote-inbox/budget",
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401",
+        )
+        for target in targets:
+            with self.subTest(target=target):
+                status, _headers, payload = self.request(
+                    "GET", target + "?unexpected=1"
+                )
+                self.assertEqual(status, 400)
+                self.assertEqual(
+                    json.loads(payload)["error"]["code"],
+                    "invalid_query",
+                )
+        self.assertEqual(self.runner.calls, before)
+
 
 class AudioControlInMemoryHTTPTests(unittest.TestCase):
     def setUp(self):
@@ -4607,6 +4627,23 @@ class H2MaterialControlTests(unittest.TestCase):
         self.assertEqual(call[2], "scan")
         self.assertIn("budget", call)
         self.assertEqual(timeout, MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS)
+
+    def test_h2_scan_budget_timeout_covers_every_bounded_raw_entry(self):
+        expected_entries = MODULE.H2_SCAN_BUDGET_MAX_ROOT_ENTRIES + (
+            MODULE.H2_SCAN_BUDGET_MAX_SESSIONS
+            * MODULE.H2_SCAN_BUDGET_MAX_SESSION_DIRECTORY_ENTRIES
+        )
+        self.assertEqual(MODULE.H2_SCAN_BUDGET_MAX_ENTRIES, expected_entries)
+        self.assertEqual(
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS,
+            float(
+                MODULE.H2_IO_TIMEOUT_OVERHEAD_SECONDS
+                + MODULE.math.ceil(
+                    expected_entries
+                    / MODULE.H2_MIN_SCAN_BUDGET_ENTRIES_PER_SECOND
+                )
+            ),
+        )
 
     def test_h2_workspace_budget_keeps_archive_reachable_without_source(self):
         archived = {
@@ -5251,6 +5288,446 @@ class H2MaterialControlTests(unittest.TestCase):
         ):
             MODULE.AudioControl._validate_h2_library(invalid)
 
+    def test_h2_workspace_never_scans_remote_inbox(self):
+        runner = self.Runner()
+        controller = MODULE.AudioControl(runner=runner, telemetry=None)
+        with mock.patch.object(
+            controller,
+            "_h2_remote_transfer_roots",
+            side_effect=AssertionError("workspace touched remote inbox"),
+        ):
+            workspace = controller.h2_workspace()
+        self.assertEqual(workspace["kind"], "audio_h2_workspace")
+        self.assertNotIn("remote_inbox", workspace)
+
+    def test_h2_remote_inbox_projects_only_two_latest_safe_transfers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            transfer_times = (
+                ("old", 1_000_000_000),
+                ("middle", 2_000_000_000),
+                ("new", 3_000_000_000),
+            )
+            for name, mtime_ns in transfer_times:
+                transfer = inbox / name
+                transfer.mkdir(mode=0o700)
+                os.utime(transfer, ns=(mtime_ns, mtime_ns))
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                remote = controller.h2_remote_inbox()
+            projected = remote["inbox"]
+            self.assertEqual(projected["transfer_count"], 2)
+            self.assertEqual(projected["total_transfer_count"], 3)
+            self.assertTrue(projected["truncated"])
+            self.assertEqual(projected["count"], 2)
+            self.assertEqual(
+                [item["transfer_id"] for item in projected["sessions"]],
+                ["new", "middle"],
+            )
+            self.assertFalse(remote["source_delete_authorized"])
+
+    def test_h2_remote_inbox_future_mtime_cannot_pin_projection_slot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            future = inbox / "z-future"
+            future.mkdir(mode=0o700)
+            future_ns = time.time_ns() + 365 * 24 * 60 * 60 * 1_000_000_000
+            os.utime(future, ns=(future_ns, future_ns))
+            for name in ("a-newer", "b-newest"):
+                (inbox / name).mkdir(mode=0o700)
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                projected = controller.h2_remote_inbox()["inbox"]
+            self.assertEqual(projected["transfer_count"], 2)
+            self.assertNotIn(
+                "z-future",
+                [item["transfer_id"] for item in projected["sessions"]],
+            )
+
+    def test_h2_remote_inbox_streams_large_root_without_entry_count_dos(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            for index in range(6):
+                transfer = inbox / f"transfer-{index}"
+                transfer.mkdir(mode=0o700)
+                mtime_ns = (index + 1) * 1_000_000_000
+                os.utime(transfer, ns=(mtime_ns, mtime_ns))
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                projected = controller.h2_remote_inbox()["inbox"]
+            self.assertEqual(projected["transfer_count"], 2)
+            self.assertEqual(projected["total_transfer_count"], 6)
+            self.assertTrue(projected["truncated"])
+            self.assertEqual(
+                [item["transfer_id"] for item in projected["sessions"]],
+                ["transfer-5", "transfer-4"],
+            )
+
+    def test_h2_remote_inbox_bounds_root_work_without_locking_whole_inbox(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            for index in range(6):
+                (inbox / f"transfer-{index}").mkdir(mode=0o700)
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(MODULE, "H2_REMOTE_MAX_ROOT_ENTRIES", 3),
+            ):
+                budget = controller.h2_remote_inbox_budget()
+                projected = controller.h2_remote_inbox()["inbox"]
+            self.assertFalse(budget["enumeration_complete"])
+            self.assertFalse(budget["counts_exact"])
+            self.assertTrue(budget["truncated"])
+            self.assertEqual(budget["total_transfer_count"], 3)
+            self.assertFalse(projected["enumeration_complete"])
+            self.assertFalse(projected["counts_exact"])
+            self.assertEqual(projected["status"], "partial")
+            self.assertTrue(projected["truncated"])
+            self.assertEqual(projected["total_transfer_count"], 3)
+            self.assertEqual(projected["transfer_count"], 2)
+
+    def test_h2_remote_direct_budget_survives_zero_projection_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            transfer = inbox / "known-transfer"
+            transfer.mkdir(mode=0o700)
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(MODULE, "H2_REMOTE_MAX_ROOT_ENTRIES", 0),
+            ):
+                projected = controller.h2_remote_inbox()["inbox"]
+                budget = controller.h2_remote_import_budget(
+                    "known-transfer",
+                    "170926_191401",
+                )
+            self.assertFalse(projected["enumeration_complete"])
+            self.assertEqual(projected["transfer_count"], 0)
+            self.assertEqual(budget["transfer_id"], "known-transfer")
+            self.assertEqual(budget["scene"], "170926_191401")
+
+    def test_h2_remote_inbox_bounds_unsafe_ids_but_keeps_exact_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            for index in range(5):
+                transfer = inbox / f"unsafe-{index}"
+                transfer.mkdir(mode=0o700)
+                transfer.chmod(0o777)
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(MODULE, "H2_REMOTE_MAX_SKIPPED_TRANSFER_IDS", 2),
+            ):
+                budget = controller.h2_remote_inbox_budget()
+                projected = controller.h2_remote_inbox()["inbox"]
+            self.assertEqual(budget["skipped_unsafe_transfer_count"], 5)
+            self.assertEqual(projected["skipped_invalid_transfer_count"], 5)
+            self.assertEqual(len(projected["skipped_invalid_transfers"]), 2)
+            self.assertTrue(projected["skipped_invalid_transfers_truncated"])
+            self.assertTrue(
+                set(projected["skipped_invalid_transfers"])
+                <= {f"unsafe-{index}" for index in range(5)}
+            )
+
+    def test_h2_remote_import_budget_addresses_transfer_outside_projection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            transfer_times = (
+                ("old", 1_000_000_000),
+                ("middle", 2_000_000_000),
+                ("new", 3_000_000_000),
+            )
+            for name, mtime_ns in transfer_times:
+                transfer = inbox / name
+                transfer.mkdir(mode=0o700)
+                os.utime(transfer, ns=(mtime_ns, mtime_ns))
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                projected = controller.h2_remote_inbox()["inbox"]
+                budget = controller.h2_remote_import_budget(
+                    "old",
+                    "170926_191401",
+                )
+            self.assertNotIn(
+                "old",
+                [item["transfer_id"] for item in projected["sessions"]],
+            )
+            self.assertEqual(
+                budget,
+                {
+                    "schema_version": 1,
+                    "kind": "audio_h2_remote_import_budget",
+                    "source": "remote-inbox",
+                    "transfer_id": "old",
+                    "scene": "170926_191401",
+                    "import_timeout_seconds": budget["import_timeout_seconds"],
+                    "read_only": True,
+                    "source_mutated": False,
+                },
+            )
+            self.assertGreater(budget["import_timeout_seconds"], 0)
+            budget_scan = runner.calls[-2][0]
+            control_scan = runner.calls[-1][0]
+            self.assertEqual(budget_scan[2], "scan")
+            self.assertEqual(control_scan[2], "scan")
+            self.assertEqual(
+                budget_scan[budget_scan.index("--source-root") + 1],
+                str(inbox / "old"),
+            )
+            self.assertEqual(
+                control_scan[control_scan.index("--source-root") + 1],
+                str(inbox / "old"),
+            )
+            self.assertEqual(
+                budget_scan[budget_scan.index("--projection") + 1],
+                "budget",
+            )
+            self.assertEqual(
+                control_scan[control_scan.index("--projection") + 1],
+                "control",
+            )
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                with self.assertRaises(MODULE.ControlError):
+                    controller.h2_remote_import_budget(
+                        "old",
+                        "../bad",
+                    )
+
+    def test_h2_device_import_timeout_covers_pre_scan_import_and_workspace_readback(self):
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        byte_count = 8 * 1024 * 1024 * 1024
+        scan_timeout = 321.0
+        import_work = controller._h2_timeout_for_bytes(
+            byte_count,
+            passes=MODULE.H2_IMPORT_IO_PASSES,
+            minimum=300,
+        )
+        post_workspace = controller._h2_workspace_timeout_for_scan(scan_timeout)
+        expected = (
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS
+            + scan_timeout
+            + import_work
+            + post_workspace
+        )
+        projected = controller._h2_import_action_timeout_for_bytes(
+            byte_count,
+            scan_timeout=scan_timeout,
+        )
+        self.assertEqual(projected, expected)
+        self.assertGreater(
+            projected,
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS + scan_timeout + import_work,
+        )
+
+    def test_h2_remote_import_timeout_covers_pre_scan_import_and_library_readback(self):
+        controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+        byte_count = 8 * 1024 * 1024 * 1024
+        scan_timeout = 321.0
+        import_work = controller._h2_timeout_for_bytes(
+            byte_count,
+            passes=MODULE.H2_IMPORT_IO_PASSES,
+            minimum=300,
+        )
+        post_library = controller._h2_library_timeout()
+        expected = (
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS
+            + scan_timeout
+            + import_work
+            + post_library
+            + MODULE.REQUEST_IO_TIMEOUT_SECONDS
+        )
+        projected = controller._h2_remote_import_action_timeout_for_bytes(
+            byte_count,
+            scan_timeout=scan_timeout,
+        )
+        self.assertEqual(projected, expected)
+        self.assertGreater(
+            projected,
+            MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS + scan_timeout + import_work,
+        )
+
+    def test_h2_remote_import_budget_rejects_missing_valid_scene(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            transfer = inbox / "ipad-260926"
+            transfer.mkdir(parents=True, mode=0o700)
+            controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+            report = {
+                "sessions": [
+                    {
+                        "scene": "170926_191400",
+                        "total_bytes": 1024,
+                    }
+                ]
+            }
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(
+                    controller,
+                    "_h2_control_scan_for_root",
+                    return_value=(report, 123.0),
+                ) as control_scan,
+                mock.patch.object(
+                    controller,
+                    "_h2_remote_import_action_timeout_for_bytes",
+                ) as timeout_for_bytes,
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.ControlError,
+                    "Remote-H2-Szene ist nicht importierbar",
+                ):
+                    controller.h2_remote_import_budget(
+                        "ipad-260926",
+                        "170926_191401",
+                    )
+            control_scan.assert_called_once_with(transfer)
+            timeout_for_bytes.assert_not_called()
+
+    def test_h2_remote_import_budget_uses_requested_scene_actual_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            transfer = inbox / "ipad-260926"
+            transfer.mkdir(parents=True, mode=0o700)
+            controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+            actual_bytes = 8 * 1024 * 1024 * 1024
+            report = {
+                "sessions": [
+                    {
+                        "scene": "170926_191401",
+                        "total_bytes": actual_bytes,
+                    }
+                ]
+            }
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(
+                    controller,
+                    "_h2_control_scan_for_root",
+                    return_value=(report, 123.0),
+                ) as control_scan,
+                mock.patch.object(
+                    controller,
+                    "_h2_remote_import_action_timeout_for_bytes",
+                    return_value=999.0,
+                ) as timeout_for_bytes,
+            ):
+                budget = controller.h2_remote_import_budget(
+                    "ipad-260926",
+                    "170926_191401",
+                )
+            control_scan.assert_called_once_with(transfer)
+            timeout_for_bytes.assert_called_once_with(
+                actual_bytes,
+                scan_timeout=123.0,
+            )
+            self.assertEqual(budget["import_timeout_seconds"], 999.0)
+
+    def test_h2_remote_transfer_budget_covers_requested_import_budget_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            transfer = inbox / "ipad-260926"
+            transfer.mkdir(parents=True, mode=0o700)
+            controller = MODULE.AudioControl(runner=self.Runner(), telemetry=None)
+            scan_timeout = 974.0
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(
+                    controller,
+                    "_h2_scan_budget_for_root",
+                    return_value=({"kind": "unused"}, scan_timeout),
+                ) as scan_budget,
+            ):
+                budget = controller.h2_remote_transfer_budget("ipad-260926")
+            scan_budget.assert_called_once_with(transfer)
+            self.assertEqual(budget["kind"], "audio_h2_remote_transfer_budget")
+            self.assertEqual(budget["transfer_id"], "ipad-260926")
+            self.assertEqual(
+                budget["import_budget_timeout_seconds"],
+                MODULE.H2_SCAN_BUDGET_TIMEOUT_SECONDS
+                + scan_timeout
+                + MODULE.REQUEST_IO_TIMEOUT_SECONDS,
+            )
+            self.assertGreater(budget["import_budget_timeout_seconds"], 1800.0)
+
+    def test_h2_remote_transfer_identity_rejects_escape_symlink_and_world_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inbox = pathlib.Path(directory) / "H2-Remote-Inbox"
+            inbox.mkdir(mode=0o700)
+            outside = pathlib.Path(directory) / "outside"
+            outside.mkdir(mode=0o700)
+            (inbox / "linked").symlink_to(outside, target_is_directory=True)
+            unsafe = inbox / "unsafe"
+            unsafe.mkdir(mode=0o700)
+            unsafe.chmod(0o777)
+            with mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox):
+                for transfer_id in ("../x", "x/y", ".", "..", "bad id"):
+                    with self.subTest(transfer_id=transfer_id), self.assertRaises(
+                        MODULE.ControlError
+                    ):
+                        MODULE.AudioControl._h2_remote_transfer_root(transfer_id)
+                for transfer_id in ("linked", "unsafe"):
+                    with self.subTest(transfer_id=transfer_id), self.assertRaisesRegex(
+                        MODULE.ControlError,
+                        "sichere lokale Identität",
+                    ):
+                        MODULE.AudioControl._h2_remote_transfer_root(transfer_id)
+
+    def test_h2_remote_import_uses_only_server_bound_transfer_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = pathlib.Path(directory)
+            inbox = base / "H2-Remote-Inbox"
+            transfer = inbox / "ipad-260926"
+            transfer.mkdir(parents=True, mode=0o700)
+            library = base / "library"
+            runner = self.Runner()
+            controller = MODULE.AudioControl(runner=runner, telemetry=None)
+            payload = {
+                "operation": "import",
+                "source": "remote-inbox",
+                "transfer_id": "ipad-260926",
+                "scene": "170926_191401",
+            }
+            with (
+                mock.patch.object(MODULE, "STATIC_H2_REMOTE_INBOX_ROOT", inbox),
+                mock.patch.object(
+                    MODULE,
+                    "_current_h2_library_root",
+                    return_value=library,
+                ),
+            ):
+                result = controller.perform_h2_action(payload)
+                import_call = next(
+                    call for call, _timeout in runner.calls if call[2] == "import"
+                )
+                self.assertEqual(
+                    import_call[import_call.index("--source-root") + 1],
+                    str(transfer),
+                )
+                self.assertEqual(result["source"], "remote-inbox")
+                self.assertEqual(result["transfer_id"], "ipad-260926")
+                self.assertEqual(result["library"]["kind"], "audio_h2_library")
+                self.assertNotIn("workspace", result)
+                before = len(runner.calls)
+                with self.assertRaises(MODULE.ControlError):
+                    controller.perform_h2_action(
+                        {**payload, "source_root": "/tmp/client-selected"}
+                    )
+                self.assertEqual(len(runner.calls), before)
+
     def test_h2_surface_is_task_named_and_has_no_delete_action(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
         html = (ROOT / "ui" / "index.html").read_text()
@@ -5260,11 +5737,15 @@ class H2MaterialControlTests(unittest.TestCase):
             "BEHALTEN",
             "Was ist zu hören?",
             "Originale werden beim Archivieren nicht vom H2 gelöscht",
+            "Remote-Inbox lesen",
+            "Vom iPad oder Smartphone",
         ):
             self.assertIn(needle, html + javascript)
         self.assertIn('fetchJson("/api/v1/actions/h2"', javascript)
         self.assertIn("function h2ActionsAllowed()", javascript)
         self.assertIn('fetchJson("/bridge/v1/actions/h2"', javascript)
+        self.assertIn('fetchJson("/api/v1/h2/remote-inbox"', javascript)
+        self.assertIn("state.h2RemoteInboxLoading ||", javascript)
         self.assertIn('state.remoteActionScopes.includes("h2")', javascript)
         self.assertIn("h2_material_control", javascript)
         self.assertIn("note.maxLength = 2000", javascript)

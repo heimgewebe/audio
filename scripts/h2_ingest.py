@@ -46,7 +46,14 @@ ALLOWED_SAMPLE_RATES = frozenset({44_100, 48_000, 96_000})
 COPY_CHUNK_BYTES = 1024 * 1024
 MAX_BEXT_BYTES = 128 * 1024
 MAX_SESSION_FILES = 192
+MAX_DIRECTORY_METADATA_ENTRIES = 64
+MAX_SESSION_DIRECTORY_ENTRIES = (
+    MAX_SESSION_FILES * 2 + MAX_DIRECTORY_METADATA_ENTRIES
+)
 MAX_CONTROL_SCAN_SESSIONS = 2048
+MAX_CONTROL_SCAN_ROOT_ENTRIES = (
+    MAX_CONTROL_SCAN_SESSIONS * 2 + MAX_DIRECTORY_METADATA_ENTRIES
+)
 MAX_CONTROL_LIBRARY_ITEMS = 80
 MAX_METADATA_JSON_BYTES = 2 * 1024 * 1024
 MANIFEST_METADATA_ENVELOPE_RESERVE_BYTES = 64 * 1024
@@ -543,8 +550,14 @@ def inspect_scene(source_root: pathlib.Path, scene: str) -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     seen_segments: set[tuple[str, int]] = set()
     manifest_master_metadata_bytes = 2  # JSON list brackets.
+    observed_entries = 0
     with os.scandir(session_dir) as entries:
         for entry in entries:
+            observed_entries += 1
+            if observed_entries > MAX_SESSION_DIRECTORY_ENTRIES:
+                raise H2IngestError(
+                    "H2-Session überschreitet das Verzeichniseintragslimit."
+                )
             if entry.name.startswith("."):
                 continue
             if not entry.is_file(follow_symlinks=False):
@@ -692,8 +705,14 @@ def _control_scan_budget(source: pathlib.Path) -> dict[str, Any]:
     matching_session_count = 0
     candidate_file_count = 0
     total_candidate_bytes = 0
+    observed_source_entries = 0
     with os.scandir(source) as entries:
         for entry in entries:
+            observed_source_entries += 1
+            if observed_source_entries > MAX_CONTROL_SCAN_ROOT_ENTRIES:
+                raise H2IngestError(
+                    "H2-Control-Scan überschreitet das Quellverzeichnis-Eintragslimit."
+                )
             if not entry.is_dir(follow_symlinks=False):
                 continue
             if not SCENE_RE.fullmatch(entry.name):
@@ -704,8 +723,15 @@ def _control_scan_budget(source: pathlib.Path) -> dict[str, Any]:
                     "H2-Control-Scan überschreitet das Session-Limit."
                 )
             session_candidate_count = 0
+            observed_session_entries = 0
             with os.scandir(entry.path) as session_entries:
                 for candidate in session_entries:
+                    observed_session_entries += 1
+                    if observed_session_entries > MAX_SESSION_DIRECTORY_ENTRIES:
+                        raise H2IngestError(
+                            "H2-Control-Scan überschreitet das "
+                            "Verzeichniseintragslimit pro Session."
+                        )
                     if candidate.name.startswith("."):
                         continue
                     match = ROLE_RE.fullmatch(candidate.name)
@@ -745,8 +771,16 @@ def scan(
     sessions: list[dict[str, Any]] = []
     skipped: list[str] = []
     observed_scenes = 0
+    observed_source_entries = 0
     with os.scandir(source) as entries:
         for entry in entries:
+            if projection == "control":
+                observed_source_entries += 1
+                if observed_source_entries > MAX_CONTROL_SCAN_ROOT_ENTRIES:
+                    raise H2IngestError(
+                        "H2-Control-Scan überschreitet das "
+                        "Quellverzeichnis-Eintragslimit."
+                    )
             if not entry.is_dir(follow_symlinks=False):
                 continue
             if not SCENE_RE.fullmatch(entry.name):
@@ -985,17 +1019,61 @@ def _read_json_regular(
     *,
     max_bytes: int = MAX_METADATA_JSON_BYTES,
 ) -> dict[str, Any]:
-    metadata = _lstat_regular(path, "Metadatendatei")
-    if (
-        isinstance(max_bytes, bool)
-        or not isinstance(max_bytes, int)
-        or max_bytes <= 0
-        or metadata.st_size > max_bytes
-    ):
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+    lexical = _lstat_regular(path, "Metadatendatei")
+    if lexical.st_size > max_bytes:
+        raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise H2IngestError("Metadatendatei ist nicht sicher lesbar.") from exc
+
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != lexical.st_dev
+            or opened.st_ino != lexical.st_ino
+            or opened.st_size != lexical.st_size
+            or opened.st_mtime_ns != lexical.st_mtime_ns
+            or opened.st_ctime_ns != lexical.st_ctime_ns
+        ):
+            raise H2IngestError("Metadatendatei änderte ihre Identität beim Öffnen.")
+        if opened.st_size > max_bytes:
+            raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+        with os.fdopen(fd, "rb", closefd=True) as handle:
+            fd = -1
+            raw = handle.read(max_bytes + 1)
+            finished = os.fstat(handle.fileno())
+        if len(raw) > max_bytes:
+            raise H2IngestError("Metadatendatei überschreitet das sichere Größenlimit.")
+        if (
+            len(raw) != opened.st_size
+            or finished.st_dev != opened.st_dev
+            or finished.st_ino != opened.st_ino
+            or finished.st_size != opened.st_size
+            or finished.st_mtime_ns != opened.st_mtime_ns
+            or finished.st_ctime_ns != opened.st_ctime_ns
+        ):
+            raise H2IngestError("Metadatendatei änderte sich während des Lesens.")
+    except H2IngestError:
+        raise
+    except OSError as exc:
+        raise H2IngestError("Metadatendatei ist nicht sicher lesbar.") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise H2IngestError("Metadatendatei ist nicht sicher lesbar.") from exc
     if not isinstance(value, dict):
         raise H2IngestError("Metadatendatei besitzt kein Objektformat.")

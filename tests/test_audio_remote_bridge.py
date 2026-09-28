@@ -131,6 +131,14 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(remote_action["h2_max_body_bytes"], MODULE.MAX_H2_ACTION_BODY_BYTES)
         self.assertEqual(set(remote_action["h2_operations"]), MODULE.H2_ACTION_OPERATIONS)
         self.assertEqual(
+            contract["bridge"]["h2_remote_transfer_budget_pattern"],
+            "/api/v1/h2/remote-inbox/transfer-budget/{transfer_id}",
+        )
+        self.assertEqual(
+            contract["bridge"]["h2_remote_import_budget_pattern"],
+            "/api/v1/h2/remote-inbox/import-budget/{transfer_id}/{scene}",
+        )
+        self.assertEqual(
             contract["bridge"]["h2_source_media_pattern"],
             "/api/v1/h2/source/{scene}/audio/{segment_index}",
         )
@@ -144,6 +152,87 @@ class ContractTests(unittest.TestCase):
         self.assertIs(remote_action["session_identity_bound"], True)
         self.assertIs(remote_action["backend_action_token_exposed"], False)
         self.assertEqual(set(contract["runtime_acceptance"]), set(MODULE.ACCEPTANCE_KEYS))
+
+
+class RemoteH2BudgetTests(unittest.TestCase):
+    def test_remote_h2_budget_readbacks_fail_closed(self):
+        readers = (
+            (
+                "inbox",
+                MODULE._read_backend_h2_remote_inbox_budget,
+                (),
+            ),
+            (
+                "transfer",
+                MODULE._read_backend_h2_remote_transfer_budget,
+                ("ipad-260926",),
+            ),
+            (
+                "import",
+                MODULE._read_backend_h2_remote_import_budget,
+                ("ipad-260926", "170926_191401"),
+            ),
+        )
+        failures = (
+            (
+                "non-200",
+                (503, [], b"{}", 0),
+                "unavailable",
+            ),
+            (
+                "malformed-json",
+                (200, [], b"{", 0),
+                "invalid",
+            ),
+            (
+                "invalid-schema",
+                (200, [], b"{}", 0),
+                "invalid",
+            ),
+        )
+        for reader_name, reader, args in readers:
+            for failure_name, response, message in failures:
+                with (
+                    self.subTest(reader=reader_name, failure=failure_name),
+                    mock.patch.object(
+                        MODULE,
+                        "read_backend_response",
+                        return_value=response,
+                    ),
+                    self.assertRaisesRegex(MODULE.BackendFailure, message),
+                ):
+                    reader(*args)
+
+    def test_remote_h2_budget_timeouts_cover_backend_scan_contract(self):
+        self.assertGreaterEqual(
+            MODULE.H2_WORKSPACE_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            1861.0,
+        )
+        self.assertGreaterEqual(
+            MODULE.H2_SOURCE_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            1861.0,
+        )
+        self.assertGreaterEqual(
+            MODULE.H2_REMOTE_TRANSFER_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            1861.0,
+        )
+        self.assertGreaterEqual(
+            MODULE.H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            2 * 1861.0,
+        )
+        self.assertEqual(
+            MODULE.H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS,
+            2 * MODULE.H2_REMOTE_TRANSFER_BUDGET_BACKEND_TIMEOUT_SECONDS,
+        )
+
+    def test_remote_h2_import_budget_timeout_rejects_invalid_target(self):
+        with self.assertRaisesRegex(
+            MODULE.RequestRejected,
+            "remote H2 import budget target is invalid",
+        ):
+            MODULE.h2_remote_import_budget_backend_timeout_seconds(
+                "/api/v1/h2/remote-inbox/import-budget/ipad-260926"
+            )
 
 
 class RuntimeAcceptanceTests(unittest.TestCase):
@@ -263,6 +352,32 @@ class TargetValidationTests(unittest.TestCase):
             ("/api/v1/h2/library/budget", True),
         )
         self.assertEqual(
+            MODULE.validate_request_target("/api/v1/h2/remote-inbox"),
+            ("/api/v1/h2/remote-inbox", True),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target("/api/v1/h2/remote-inbox/budget"),
+            ("/api/v1/h2/remote-inbox/budget", True),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target(
+                "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926"
+            ),
+            (
+                "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+                True,
+            ),
+        )
+        self.assertEqual(
+            MODULE.validate_request_target(
+                "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401"
+            ),
+            (
+                "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401",
+                True,
+            ),
+        )
+        self.assertEqual(
             MODULE.validate_request_target("/api/v1/h2/source/170926_191401/audio/0"),
             ("/api/v1/h2/source/170926_191401/audio/0", True),
         )
@@ -289,6 +404,10 @@ class TargetValidationTests(unittest.TestCase):
             "/api/v1/h2/source/170926_191401/audio/1000",
             "/api/v1/h2/material/nothex/audio/0",
             "/api/v1/h2/material/aaaaaaaaaaaaaaaaaaaaaaaa/audio/0?download=1",
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401?x=1",
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/bad",
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926?x=1",
+            "/api/v1/h2/remote-inbox/transfer-budget/%2e%2e",
             "http://example.invalid/app.js",
         )
         for target in rejected:
@@ -372,6 +491,16 @@ class TargetValidationTests(unittest.TestCase):
             MODULE.validate_h2_action_payload(json.dumps(imported).encode()),
             imported,
         )
+        remote_imported = {
+            "operation": "import",
+            "source": "remote-inbox",
+            "transfer_id": "ipad-260926",
+            "scene": "170926_191401",
+        }
+        self.assertEqual(
+            MODULE.validate_h2_action_payload(json.dumps(remote_imported).encode()),
+            remote_imported,
+        )
         annotated = {
             "operation": "annotate",
             "material_id": "a" * 24,
@@ -399,6 +528,19 @@ class TargetValidationTests(unittest.TestCase):
         rejected = (
             {"operation": "import", "scene": "../x"},
             {"operation": "import", "scene": "170926_191401", "delete": True},
+            {
+                "operation": "import",
+                "source": "remote-inbox",
+                "transfer_id": "../escape",
+                "scene": "170926_191401",
+            },
+            {
+                "operation": "import",
+                "source": "remote-inbox",
+                "transfer_id": "ipad-260926",
+                "scene": "170926_191401",
+                "source_root": "/tmp/client-selected",
+            },
             {"operation": "delete-source", "scene": "170926_191401"},
             {**annotated, "material_id": "bad"},
             {**annotated, "title": "x" * 161},
@@ -560,14 +702,23 @@ class FakeBackendHandler(BaseHTTPRequestHandler):
                 "operation": action["operation"],
             }
             if action["operation"] == "import":
-                result["workspace"] = {
-                    "schema_version": 1,
-                    "kind": "audio_h2_workspace",
-                    "source": {"status": "ready", "count": 1, "sessions": []},
-                    "library": {"count": 1, "items": []},
-                    "source_delete_authorized": False,
-                    "creative_handoff_authorized": False,
-                }
+                if action.get("source") == "remote-inbox":
+                    result["source"] = "remote-inbox"
+                    result["transfer_id"] = action["transfer_id"]
+                    result["library"] = {
+                        "schema_version": 1,
+                        "kind": "audio_h2_library",
+                        "library": {"count": 1, "items": []},
+                    }
+                else:
+                    result["workspace"] = {
+                        "schema_version": 1,
+                        "kind": "audio_h2_workspace",
+                        "source": {"status": "ready", "count": 1, "sessions": []},
+                        "library": {"count": 1, "items": []},
+                        "source_delete_authorized": False,
+                        "creative_handoff_authorized": False,
+                    }
             else:
                 result["library"] = {
                     "schema_version": 1,
@@ -784,6 +935,89 @@ class BridgeHTTPTests(unittest.TestCase):
                                 }
                             ],
                         },
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/remote-inbox/budget": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_remote_inbox_budget",
+                        "inbox_timeout_seconds": 180.0,
+                        "transfer_count": 1,
+                        "total_transfer_count": 1,
+                        "truncated": False,
+                        "skipped_unsafe_transfer_count": 0,
+                        "budget_available": True,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/remote-inbox/import-budget/ipad-260926/170926_191401": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_remote_import_budget",
+                        "source": "remote-inbox",
+                        "transfer_id": "ipad-260926",
+                        "scene": "170926_191401",
+                        "import_timeout_seconds": 480.0,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_remote_transfer_budget",
+                        "source": "remote-inbox",
+                        "transfer_id": "ipad-260926",
+                        "import_budget_timeout_seconds": 180.0,
+                        "read_only": True,
+                        "source_mutated": False,
+                    }
+                ).encode(),
+            ),
+            "/api/v1/h2/remote-inbox": (
+                200,
+                [("Content-Type", "application/json; charset=utf-8")],
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "audio_h2_remote_inbox",
+                        "inbox": {
+                            "status": "ready",
+                            "count": 1,
+                            "transfer_count": 1,
+                            "total_transfer_count": 1,
+                            "truncated": False,
+                            "skipped_invalid_transfers": [],
+                            "skipped_invalid_sessions": [],
+                            "sessions": [
+                                {
+                                    "transfer_id": "ipad-260926",
+                                    "source_kind": "remote-inbox",
+                                    "scene": "170926_191401",
+                                    "recorded_date": "2026-09-17",
+                                    "recorded_time": "19:14:01",
+                                    "duration_seconds": 21.5,
+                                    "sample_rate_hz": 44100,
+                                    "roles": ["front", "rear", "mix"],
+                                    "segment_count": 1,
+                                    "import_timeout_seconds": 480.0,
+                                }
+                            ],
+                        },
+                        "source_delete_authorized": False,
                     }
                 ).encode(),
             ),
@@ -1392,6 +1626,110 @@ class BridgeHTTPTests(unittest.TestCase):
             with self.assertRaises(MODULE.BackendFailure):
                 MODULE.h2_import_backend_timeout_seconds("170926_191401")
 
+    def test_h2_remote_import_timeout_is_bound_to_requested_transfer(self):
+        budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_remote_import_budget",
+            "source": "remote-inbox",
+            "transfer_id": "ipad-260926",
+            "scene": "170926_191401",
+            "import_timeout_seconds": 888.0,
+            "read_only": True,
+            "source_mutated": False,
+        }
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(budget).encode("utf-8"), 0),
+        ) as readback:
+            self.assertEqual(
+                MODULE.h2_import_backend_timeout_seconds(
+                    "170926_191401",
+                    source="remote-inbox",
+                    transfer_id="ipad-260926",
+                ),
+                888.0,
+            )
+        readback.assert_called_once_with(
+            "/api/v1/h2/remote-inbox/import-budget/"
+            "ipad-260926/170926_191401",
+            None,
+        )
+
+        mismatched = {**budget, "transfer_id": "newer"}
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(200, [], json.dumps(mismatched).encode("utf-8"), 0),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.h2_import_backend_timeout_seconds(
+                    "170926_191401",
+                    source="remote-inbox",
+                    transfer_id="ipad-260926",
+                )
+
+    def test_h2_remote_import_budget_deadline_is_bound_to_requested_transfer(self):
+        target = (
+            "/api/v1/h2/remote-inbox/import-budget/"
+            "ipad-260926/170926_191401"
+        )
+        transfer_budget = {
+            "schema_version": 1,
+            "kind": "audio_h2_remote_transfer_budget",
+            "source": "remote-inbox",
+            "transfer_id": "ipad-260926",
+            "import_budget_timeout_seconds": 1807.0,
+            "read_only": True,
+            "source_mutated": False,
+        }
+        with mock.patch.object(
+            MODULE,
+            "read_backend_response",
+            return_value=(
+                200,
+                [],
+                json.dumps(transfer_budget).encode("utf-8"),
+                0,
+            ),
+        ) as readback:
+            self.assertEqual(
+                MODULE.h2_remote_import_budget_backend_timeout_seconds(target),
+                1807.0 + MODULE.H2_WORKSPACE_BACKEND_TIMEOUT_MARGIN_SECONDS,
+            )
+        readback.assert_called_once_with(
+            "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+            None,
+        )
+
+        observed: list[float | None] = []
+
+        class TimeoutProbeConnection:
+            def __init__(self, _host, _port, *, timeout):
+                observed.append(timeout)
+
+            def putrequest(self, *_args, **_kwargs):
+                raise TimeoutError
+
+            def close(self):
+                return None
+
+        with (
+            mock.patch.object(
+                MODULE,
+                "h2_remote_import_budget_backend_timeout_seconds",
+                return_value=1822.0,
+            ),
+            mock.patch.object(
+                MODULE.http.client,
+                "HTTPConnection",
+                TimeoutProbeConnection,
+            ),
+        ):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response(target, {})
+        self.assertEqual(observed, [1822.0])
+
     def test_h2_workspace_response_uses_bounded_h2_specific_byte_budget(self):
         payload = json.dumps(
             {
@@ -1631,6 +1969,27 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(
             observed,
             [MODULE.H2_LIBRARY_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response("/api/v1/h2/remote-inbox/budget", {})
+        self.assertEqual(
+            observed,
+            [MODULE.H2_REMOTE_INBOX_BUDGET_BACKEND_TIMEOUT_SECONDS],
+        )
+
+        observed.clear()
+        with mock.patch.object(MODULE.http.client, "HTTPConnection", TimeoutProbeConnection):
+            with self.assertRaises(MODULE.BackendFailure):
+                MODULE.read_backend_response(
+                    "/api/v1/h2/remote-inbox/transfer-budget/ipad-260926",
+                    {},
+                )
+        self.assertEqual(
+            observed,
+            [MODULE.H2_REMOTE_TRANSFER_BUDGET_BACKEND_TIMEOUT_SECONDS],
         )
 
         observed.clear()
@@ -1930,6 +2289,14 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(len(FakeBackendHandler.records), before)
 
     def test_remote_h2_workspace_media_and_actions_are_scoped_without_delete_authority(self):
+        remote_status, _remote_headers, remote_payload = self.request(
+            "GET", "/api/v1/h2/remote-inbox"
+        )
+        self.assertEqual(remote_status, 200)
+        remote = json.loads(remote_payload)
+        self.assertEqual(remote["kind"], "audio_h2_remote_inbox")
+        self.assertFalse(remote["source_delete_authorized"])
+
         status, headers, payload = self.request("GET", "/api/v1/h2")
         self.assertEqual(status, 200)
         workspace = json.loads(payload)
@@ -1959,6 +2326,12 @@ class BridgeHTTPTests(unittest.TestCase):
         }
         for action in (
             {"operation": "import", "scene": "170926_191401"},
+            {
+                "operation": "import",
+                "source": "remote-inbox",
+                "transfer_id": "ipad-260926",
+                "scene": "170926_191401",
+            },
             {
                 "operation": "annotate",
                 "material_id": "a" * 24,
@@ -1997,11 +2370,14 @@ class BridgeHTTPTests(unittest.TestCase):
                 self.assertEqual(decoded["kind"], "audio_control_h2_action_result")
                 self.assertEqual(decoded["operation"], action["operation"])
                 records = FakeBackendHandler.records[before:]
-                expected_methods = (
-                    ["GET", "GET", "GET", "POST"]
-                    if action["operation"] == "import"
-                    else ["GET", "GET", "POST"]
-                )
+                if action["operation"] == "import":
+                    expected_methods = (
+                        ["GET", "GET", "GET", "POST"]
+                        if action.get("source") == "remote-inbox"
+                        else ["GET", "GET", "GET", "POST"]
+                    )
+                else:
+                    expected_methods = ["GET", "GET", "POST"]
                 self.assertEqual(
                     [record["method"] for record in records],
                     expected_methods,

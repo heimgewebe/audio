@@ -431,6 +431,80 @@ class H2IngestTests(unittest.TestCase):
                 ):
                     MODULE.scan(source, projection=projection)
 
+    def test_control_scan_bounds_all_root_entries_before_name_filtering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory), roles=("FRONT",))
+            for projection in ("control", "budget"):
+                with (
+                    self.subTest(projection=projection),
+                    mock.patch.object(MODULE, "MAX_CONTROL_SCAN_ROOT_ENTRIES", 1),
+                    self.assertRaisesRegex(
+                        MODULE.H2IngestError,
+                        "Quellverzeichnis-Eintragslimit",
+                    ),
+                ):
+                    MODULE.scan(source, projection=projection)
+
+    def test_control_scan_budget_allows_common_root_metadata_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory), roles=("FRONT",))
+            scene = "170926_191401"
+            (source / f"._{scene}").write_bytes(b"sidecar")
+            (source / ".DS_Store").write_bytes(b"metadata")
+            with (
+                mock.patch.object(MODULE, "MAX_CONTROL_SCAN_SESSIONS", 1),
+                mock.patch.object(MODULE, "MAX_CONTROL_SCAN_ROOT_ENTRIES", 4),
+            ):
+                report = MODULE.scan(source, projection="budget")
+            self.assertEqual(report["matching_session_count"], 1)
+
+    def test_control_scan_budget_allows_common_session_metadata_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory), roles=("FRONT",))
+            scene = "170926_191401"
+            session = source / scene
+            valid = session / f"{scene}_FRONT.WAV"
+            (session / f"._{valid.name}").write_bytes(b"sidecar")
+            (session / ".DS_Store").write_bytes(b"metadata")
+            with (
+                mock.patch.object(MODULE, "MAX_SESSION_FILES", 1),
+                mock.patch.object(MODULE, "MAX_SESSION_DIRECTORY_ENTRIES", 3),
+            ):
+                report = MODULE.scan(source, projection="budget")
+                inspected = MODULE.inspect_scene(source, scene)
+            self.assertEqual(report["candidate_file_count"], 1)
+            self.assertEqual(inspected["segment_count"], 1)
+
+    def test_directory_entry_limits_reserve_metadata_headroom(self):
+        self.assertGreaterEqual(
+            MODULE.MAX_SESSION_DIRECTORY_ENTRIES,
+            MODULE.MAX_SESSION_FILES * 2 + 64,
+        )
+        self.assertGreaterEqual(
+            MODULE.MAX_CONTROL_SCAN_ROOT_ENTRIES,
+            MODULE.MAX_CONTROL_SCAN_SESSIONS * 2 + 64,
+        )
+
+    def test_control_scan_bounds_hidden_session_entries_before_name_filtering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = make_source(pathlib.Path(directory), roles=("FRONT",))
+            scene = "170926_191401"
+            (source / scene / ".ignored").write_text("ignored", encoding="utf-8")
+            with mock.patch.object(MODULE, "MAX_SESSION_DIRECTORY_ENTRIES", 1):
+                control = MODULE.scan(source, projection="control")
+                self.assertEqual(control["count"], 0)
+                self.assertEqual(control["skipped_invalid_sessions"], [scene])
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "Verzeichniseintragslimit",
+                ):
+                    MODULE.scan(source, projection="budget")
+                with self.assertRaisesRegex(
+                    MODULE.H2IngestError,
+                    "Verzeichniseintragslimit",
+                ):
+                    MODULE.inspect_scene(source, scene)
+
     def test_scan_reports_invalid_matching_session_instead_of_claiming_it(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -2263,6 +2337,57 @@ class H2IngestTests(unittest.TestCase):
                 handle.truncate(MODULE.MAX_METADATA_JSON_BYTES + 1)
             with self.assertRaisesRegex(MODULE.H2IngestError, "Größenlimit"):
                 MODULE._read_json_regular(path)
+
+    def test_metadata_reader_rejects_generation_swap_after_lstat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            replacement = pathlib.Path(directory) / "replacement.json"
+            path.write_text('{"kind":"original"}', encoding="utf-8")
+            replacement.write_text('{"kind":"replacement"}', encoding="utf-8")
+            real_lstat = MODULE._lstat_regular
+
+            def swap_after_lstat(target, description):
+                metadata = real_lstat(target, description)
+                target.unlink()
+                replacement.replace(target)
+                return metadata
+
+            with (
+                mock.patch.object(MODULE, "_lstat_regular", side_effect=swap_after_lstat),
+                self.assertRaisesRegex(MODULE.H2IngestError, "Identität"),
+            ):
+                MODULE._read_json_regular(path)
+
+    def test_metadata_reader_bounds_growth_on_open_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "manifest.json"
+            path.write_text('{"kind":"small"}', encoding="utf-8")
+            real_fdopen = MODULE.os.fdopen
+
+            class GrowingReader:
+                def __init__(self, handle):
+                    self.handle = handle
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    self.handle.close()
+
+                def read(self, maximum):
+                    return b"x" * maximum
+
+                def fileno(self):
+                    return self.handle.fileno()
+
+            def growing_fdopen(fd, mode, closefd=True):
+                return GrowingReader(real_fdopen(fd, mode, closefd=closefd))
+
+            with (
+                mock.patch.object(MODULE.os, "fdopen", side_effect=growing_fdopen),
+                self.assertRaisesRegex(MODULE.H2IngestError, "Größenlimit"),
+            ):
+                MODULE._read_json_regular(path, max_bytes=32)
 
     def test_import_rejects_oversized_manifest_before_publication(self):
         with tempfile.TemporaryDirectory() as directory:

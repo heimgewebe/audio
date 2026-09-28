@@ -434,12 +434,14 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
         self.assertIn('/bridge/v1/actions/h2', h2_router)
         self.assertIn('"X-Audio-Bridge-Session"', h2_router)
         self.assertIn('payload?.operation === "import"', h2_router)
-        self.assertIn("await h2ImportTimeoutMs(payload.scene)", h2_router)
+        self.assertIn("await h2ImportTimeoutMs(", h2_router)
+        self.assertIn("payload.source || \"device\"", h2_router)
+        self.assertIn("payload.transfer_id || null", h2_router)
         self.assertIn("await h2AnnotationTimeoutMs()", h2_router)
         self.assertIn("await ensureRemoteWhaleSession()", h2_router)
         self.assertNotIn("ensureRemoteWhaleSession({ force: true })", h2_router)
         self.assertLess(
-            h2_router.index("await h2ImportTimeoutMs(payload.scene)"),
+            h2_router.index("await h2ImportTimeoutMs("),
             h2_router.index("await ensureRemoteWhaleSession()"),
         )
         self.assertLess(
@@ -477,10 +479,37 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
             h2_load,
         )
 
-        h2_timeout = self.app.split("async function h2ImportTimeoutMs(scene) {", 1)[1].split(
+        remote_transfer_budget = self.app.split(
+            "async function h2RemoteTransferBudget(", 1
+        )[1].split("\n}\n\nfunction h2RemoteImportBudgetTimeoutMs", 1)[0]
+        self.assertIn("/api/v1/h2/remote-inbox/transfer-budget/", remote_transfer_budget)
+        self.assertIn("H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS", remote_transfer_budget)
+        self.assertIn('budget?.kind !== "audio_h2_remote_transfer_budget"', remote_transfer_budget)
+        self.assertIn("budget?.transfer_id !== transferId", remote_transfer_budget)
+        self.assertIn("budget?.import_budget_timeout_seconds", remote_transfer_budget)
+
+        remote_import_budget = self.app.split(
+            "async function h2RemoteImportBudget(", 1
+        )[1].split("\n}\n\nasync function h2ImportTimeoutMs", 1)[0]
+        self.assertIn("/api/v1/h2/remote-inbox/import-budget/", remote_import_budget)
+        self.assertIn("h2RemoteImportBudgetTimeoutMs(transferBudget)", remote_import_budget)
+        self.assertIn('budget?.kind !== "audio_h2_remote_import_budget"', remote_import_budget)
+        self.assertIn("budget?.transfer_id !== transferId", remote_import_budget)
+        self.assertIn("budget?.scene !== scene", remote_import_budget)
+        self.assertIn("budget?.import_timeout_seconds", remote_import_budget)
+
+        h2_timeout = self.app.split("async function h2ImportTimeoutMs(", 1)[1].split(
             "\n}\n\nasync function h2LibraryBudget", 1
         )[0]
-        self.assertIn("state.h2Workspace?.source?.sessions", h2_timeout)
+        self.assertIn('source = "device"', h2_timeout)
+        self.assertIn("transferId = null", h2_timeout)
+        self.assertIn('source === "remote-inbox"', h2_timeout)
+        self.assertIn("await h2RemoteTransferBudget(transferId)", h2_timeout)
+        self.assertIn("h2RemoteImportBudgetTimeoutMs(transferBudget)", h2_timeout)
+        self.assertIn("await h2RemoteImportBudget(", h2_timeout)
+        self.assertIn("importBudget.import_timeout_seconds", h2_timeout)
+        self.assertNotIn("state.h2RemoteInbox?.inbox", h2_timeout)
+        self.assertIn("state.h2Workspace.source.sessions", h2_timeout)
         self.assertIn("candidate?.scene === scene", h2_timeout)
         self.assertIn("session?.import_timeout_seconds", h2_timeout)
         self.assertIn("Number.isFinite(backendSeconds)", h2_timeout)
@@ -507,6 +536,8 @@ class RecordingMutationBoundaryTests(unittest.TestCase):
 
         self.assertIn("const H2_WORKSPACE_BUDGET_TIMEOUT_MS = 930000;", self.app)
         self.assertIn("const H2_LIBRARY_BUDGET_TIMEOUT_MS = 30000;", self.app)
+        self.assertIn("const H2_REMOTE_INBOX_BUDGET_TIMEOUT_MS = 3815000;", self.app)
+        self.assertIn("const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1915000;", self.app)
         self.assertIn("const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;", self.app)
         h2_render = self.app.split("function renderH2Workspace", 1)[1].split(
             "\nfunction renderLibrary", 1
@@ -677,6 +708,7 @@ function fetchJson() {{
   return new Promise((resolve) => {{ resolveFetch = resolve; }});
 }}
 function renderH2Workspace() {{ renders += 1; }}
+function renderH2RemoteInbox() {{}}
 {loader}
 (async () => {{
   const first = loadH2Workspace({{ render: true }});
@@ -710,7 +742,7 @@ function renderH2Workspace() {{ renders += 1; }}
             "\nfunction renderLibrary", 1
         )[0]
         self.assertIn(
-            "refresh.disabled = state.h2ActionPending || state.h2WorkspaceLoading;",
+            "state.h2ActionPending || state.h2WorkspaceLoading || state.h2RemoteInboxLoading",
             renderer,
         )
 
@@ -804,6 +836,7 @@ function fetchJson() {{
   return new Promise((resolve) => resolvers.push(resolve));
 }}
 function renderH2Workspace() {{ renders += 1; }}
+function renderH2RemoteInbox() {{}}
 {loader}
 (async () => {{
   const first = loadH2Workspace({{ render: true }});
@@ -1255,6 +1288,463 @@ async function postH2Action() {{
             "\n}", 1
         )[0]
         self.assertNotIn("state.h2AnnotationDrafts.size > 0", blocked)
+        self.assertNotIn("state.h2RemoteInboxLoading", blocked)
+
+        refresh_guard = self.app.split("async function refreshSnapshot(force = false) {", 1)[1].split(
+            "setLoading(true);", 1
+        )[0]
+        self.assertNotIn("state.h2RemoteInboxLoading", refresh_guard)
+        loader_guard = self.app.split("async function loadH2Workspace", 1)[1].split(
+            "state.h2WorkspaceLoading = true;", 1
+        )[0]
+        self.assertIn("state.h2RemoteInboxLoading", loader_guard)
+
+    def test_remote_inbox_renders_loading_state_before_budget_scan_completes(self):
+        loader = "async function loadH2RemoteInbox" + self.app.split(
+            "async function loadH2RemoteInbox", 1
+        )[1].split("\nasync function h2ImportTimeoutMs", 1)[0]
+        harness = f"""
+const state = {{
+  h2RemoteInboxLoading: false,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxLoadGeneration: 0,
+  h2RemoteInbox: null,
+  h2RemoteInboxError: null,
+}};
+const renders = [];
+let releaseBudget;
+function backendAllowed() {{ return true; }}
+function renderH2RemoteInbox() {{
+  renders.push({{ loading: state.h2RemoteInboxLoading }});
+}}
+async function h2RemoteInboxTimeoutMs() {{
+  return await new Promise((resolve) => {{ releaseBudget = resolve; }});
+}}
+async function fetchJson() {{
+  return {{ kind: "audio_h2_remote_inbox", inbox: {{ sessions: [] }} }};
+}}
+{loader}
+(async () => {{
+  const pending = loadH2RemoteInbox();
+  await Promise.resolve();
+  const during = {{
+    loading: state.h2RemoteInboxLoading,
+    renders: [...renders],
+  }};
+  releaseBudget(1000);
+  await pending;
+  process.stdout.write(JSON.stringify({{
+    during,
+    after: {{
+      loading: state.h2RemoteInboxLoading,
+      renders,
+    }},
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["during"],
+            {"loading": True, "renders": [{"loading": True}]},
+        )
+        self.assertEqual(
+            result["after"],
+            {
+                "loading": False,
+                "renders": [{"loading": True}, {"loading": False}],
+            },
+        )
+
+    def test_remote_inbox_loading_status_survives_cached_inbox_render(self):
+        renderer = "function renderH2RemoteInbox" + self.app.split(
+            "function renderH2RemoteInbox", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const nodes = {{
+  "h2-remote-inbox": {{
+    children: [],
+    replaceChildren(...children) {{ this.children = children; }},
+  }},
+  "h2-remote-status": {{ textContent: "" }},
+  "h2-remote-refresh": {{ disabled: false }},
+}};
+const state = {{
+  h2RemoteInboxLoading: true,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxError: null,
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [],
+      skipped_invalid_transfers: [],
+      skipped_invalid_sessions: [],
+      transfer_count: 1,
+      total_transfer_count: 1,
+      truncated: false,
+    }},
+  }},
+}};
+function byId(id) {{ return nodes[id] || null; }}
+function element(tag, className) {{ return {{ tag, className, textContent: "" }}; }}
+{renderer}
+renderH2RemoteInbox();
+process.stdout.write(JSON.stringify({{
+  status: nodes["h2-remote-status"].textContent,
+  refreshDisabled: nodes["h2-remote-refresh"].disabled,
+}}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "status": "Remote-Inbox wird gelesen.",
+                "refreshDisabled": True,
+            },
+        )
+
+    def test_remote_inbox_status_uses_exact_bounded_invalid_transfer_count(self):
+        renderer = "function renderH2RemoteInbox" + self.app.split(
+            "function renderH2RemoteInbox", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const nodes = {{
+  "h2-remote-inbox": {{ replaceChildren() {{}} }},
+  "h2-remote-status": {{ textContent: "" }},
+  "h2-remote-refresh": {{ disabled: false }},
+}};
+const state = {{
+  h2RemoteInboxLoading: false,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxError: null,
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [],
+      skipped_invalid_transfers: ["unsafe-0", "unsafe-1"],
+      skipped_invalid_transfer_count: 5,
+      skipped_invalid_sessions: [],
+      transfer_count: 0,
+      total_transfer_count: 0,
+      truncated: false,
+    }},
+  }},
+}};
+function byId(id) {{ return nodes[id] || null; }}
+function element(tag, className, textContent = "") {{
+  return {{
+    tag, className, textContent, children: [],
+    append(...children) {{ this.children.push(...children); }},
+    setAttribute() {{}},
+  }};
+}}
+{renderer}
+renderH2RemoteInbox();
+process.stdout.write(nodes["h2-remote-status"].textContent);
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("5 Einträge nicht sicher lesbar", completed.stdout)
+
+    def test_remote_inbox_status_marks_incomplete_root_enumeration(self):
+        renderer = "function renderH2RemoteInbox" + self.app.split(
+            "function renderH2RemoteInbox", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const nodes = {{
+  "h2-remote-inbox": {{ replaceChildren() {{}} }},
+  "h2-remote-status": {{ textContent: "" }},
+  "h2-remote-refresh": {{ disabled: false }},
+}};
+const state = {{
+  h2RemoteInboxLoading: false,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxError: null,
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [],
+      skipped_invalid_transfers: ["unsafe"],
+      skipped_invalid_transfer_count: 1,
+      skipped_invalid_sessions: [],
+      transfer_count: 2,
+      total_transfer_count: 3,
+      truncated: true,
+      enumeration_complete: false,
+      counts_exact: false,
+    }},
+  }},
+}};
+function byId(id) {{ return nodes[id] || null; }}
+function element(tag, className, textContent = "") {{
+  return {{
+    tag, className, textContent, children: [],
+    append(...children) {{ this.children.push(...children); }},
+    setAttribute() {{}},
+  }};
+}}
+{renderer}
+renderH2RemoteInbox();
+process.stdout.write(nodes["h2-remote-status"].textContent);
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("Inbox-Auflistung begrenzt", completed.stdout)
+        self.assertIn("Transferzahlen sind Mindestwerte", completed.stdout)
+        self.assertIn("mindestens 1 Einträge nicht sicher lesbar", completed.stdout)
+        self.assertNotIn("neuesten von", completed.stdout)
+
+    def test_remote_inbox_import_buttons_disable_during_either_h2_scan(self):
+        workspace_loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2RemoteInboxBudget", 1)[0]
+        self.assertLess(
+            workspace_loader.index("state.h2WorkspaceLoading = true;"),
+            workspace_loader.index("if (render) renderH2RemoteInbox();"),
+        )
+        self.assertLess(
+            workspace_loader.index("if (render) renderH2RemoteInbox();"),
+            workspace_loader.index("const timeoutMs = await h2WorkspaceTimeoutMs();"),
+        )
+
+        renderer = "function renderH2RemoteInbox" + self.app.split(
+            "function renderH2RemoteInbox", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const nodes = {{
+  "h2-remote-inbox": {{ replaceChildren() {{}} }},
+  "h2-remote-status": {{ textContent: "" }},
+  "h2-remote-refresh": {{ disabled: false }},
+}};
+const state = {{
+  h2RemoteInboxLoading: true,
+  h2WorkspaceLoading: false,
+  h2ActionPending: false,
+  h2RemoteInboxError: null,
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [{{
+        transfer_id: "ipad-260927",
+        scene: "170926_191401",
+        recorded_date: "2026-09-17",
+        recorded_time: "19:14:01",
+        duration_seconds: 1,
+        sample_rate_hz: 48000,
+        roles: ["voice"],
+      }}],
+      skipped_invalid_transfers: [],
+      skipped_invalid_sessions: [],
+      transfer_count: 1,
+      total_transfer_count: 1,
+      truncated: false,
+    }},
+  }},
+}};
+let buttons = [];
+function byId(id) {{ return nodes[id] || null; }}
+function element(tag, className, textContent = "") {{
+  const node = {{
+    tag, className, textContent, children: [], disabled: false, type: "",
+    append(...children) {{ this.children.push(...children); }},
+    addEventListener() {{}},
+    setAttribute() {{}},
+  }};
+  if (tag === "button") buttons.push(node);
+  return node;
+}}
+function appendText(parent, tag, className, textContent) {{
+  const child = element(tag, className, textContent);
+  parent.append(child);
+  return child;
+}}
+function h2DisplayTimestamp() {{ return "17.09.2026 · 19:14:01"; }}
+function h2ActionsAllowed() {{ return true; }}
+function runH2Action() {{ throw new Error("must not run during render"); }}
+{renderer}
+renderH2RemoteInbox();
+const remoteScanDisabled = buttons.at(-1)?.disabled === true;
+buttons = [];
+state.h2RemoteInboxLoading = false;
+state.h2WorkspaceLoading = true;
+renderH2RemoteInbox();
+const workspaceScanDisabled = buttons.at(-1)?.disabled === true;
+process.stdout.write(JSON.stringify({{ remoteScanDisabled, workspaceScanDisabled }}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {"remoteScanDisabled": True, "workspaceScanDisabled": True},
+        )
+
+    def test_remote_inbox_scan_does_not_block_core_snapshot_refresh(self):
+        refresh = "async function refreshSnapshot" + self.app.split(
+            "async function refreshSnapshot", 1
+        )[1].split("\nfunction renderAuthority", 1)[0]
+        loader = "async function loadH2Workspace" + self.app.split(
+            "async function loadH2Workspace", 1
+        )[1].split("\nasync function h2RemoteInboxBudget", 1)[0]
+        harness = f"""
+const state = {{
+  loading: false,
+  recordingActionPending: false,
+  h2ActionPending: false,
+  h2RemoteInboxLoading: true,
+  dauersongActionPending: false,
+  operatingModeActionPending: false,
+  whaleActionPending: false,
+  remoteBridgeProjection: false,
+  h2WorkspaceLoading: false,
+  h2WorkspaceLoadGeneration: 0,
+  h2ActivitySequence: 0,
+  h2Workspace: null,
+  h2WorkspaceError: null,
+}};
+const events = [];
+function backendAllowed() {{ return true; }}
+function setLoading(value) {{ state.loading = value; events.push("loading:" + String(value)); }}
+async function fetchJson(url) {{ events.push("fetch:" + url); return {{ kind: "audio_control_snapshot" }}; }}
+function clearNotice() {{ events.push("clear"); }}
+async function ensureRemoteWhaleSession() {{ throw new Error("unexpected remote session"); }}
+async function loadRecordingLibrary(options) {{ events.push("recordings:" + String(options.render)); }}
+function renderAll() {{ events.push("render"); }}
+async function h2WorkspaceTimeoutMs() {{ throw new Error("H2 workspace must stay mutually blocked"); }}
+function renderH2Workspace() {{ events.push("h2-render"); }}
+function showNotice(message) {{ throw new Error(message); }}
+function renderAuthority() {{ events.push("authority"); }}
+{loader}
+{refresh}
+(async () => {{
+  await refreshSnapshot(false);
+  process.stdout.write(JSON.stringify({{
+    events,
+    workspaceGeneration: state.h2WorkspaceLoadGeneration,
+    workspaceLoading: state.h2WorkspaceLoading,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertIn("fetch:/api/v1/snapshot", result["events"])
+        self.assertIn("recordings:false", result["events"])
+        self.assertIn("render", result["events"])
+        self.assertEqual(result["workspaceGeneration"], 0)
+        self.assertFalse(result["workspaceLoading"])
+        self.assertNotIn("h2-render", result["events"])
+
+    def test_remote_h2_import_succeeds_without_cached_workspace_and_refreshes(self):
+        runnable_action = "async function runH2Action" + self.app.split(
+            "async function runH2Action", 1
+        )[1].split("\nfunction h2DisplayTimestamp", 1)[0]
+        harness = f"""
+const state = {{
+  h2ActionPending: false,
+  h2ActivitySequence: 0,
+  h2AnnotationDrafts: new Map(),
+  h2Workspace: null,
+  h2WorkspaceError: "vorheriger Workspace-Fehler",
+}};
+const notices = [];
+const renders = [];
+const refreshes = [];
+function backendAllowed() {{ return true; }}
+function renderH2Workspace(options = {{}}) {{
+  renders.push({{
+    pending: state.h2ActionPending,
+    force: options.force === true,
+  }});
+}}
+function showNotice(message, type = "error") {{
+  notices.push({{ message, type }});
+}}
+async function postH2Action(payload) {{
+  return {{
+    kind: "audio_control_h2_action_result",
+    source: "remote-inbox",
+    transfer_id: payload.transfer_id,
+    library: {{
+      kind: "audio_h2_library",
+      library: {{ count: 1, items: [{{ material_id: "a".repeat(24) }}] }},
+    }},
+    result: {{ status: "imported" }},
+  }};
+}}
+function loadH2Workspace() {{
+  refreshes.push({{
+    pending: state.h2ActionPending,
+    workspace: state.h2Workspace,
+  }});
+}}
+{runnable_action}
+(async () => {{
+  await runH2Action({{
+    operation: "import",
+    source: "remote-inbox",
+    transfer_id: "ipad-260927",
+    scene: "170926_191401",
+  }});
+  process.stdout.write(JSON.stringify({{
+    pending: state.h2ActionPending,
+    workspace: state.h2Workspace,
+    workspaceError: state.h2WorkspaceError,
+    notices,
+    renders,
+    refreshes,
+  }}));
+}})();
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertFalse(result["pending"])
+        self.assertIsNone(result["workspace"])
+        self.assertIsNone(result["workspaceError"])
+        self.assertEqual(
+            result["refreshes"],
+            [{"pending": False, "workspace": None}],
+        )
+        self.assertEqual(
+            result["notices"],
+            [
+                {
+                    "message": "Remote-Aufnahme sicher archiviert. Die Inbox bleibt unverändert.",
+                    "type": "success",
+                }
+            ],
+        )
+        self.assertEqual(result["renders"], [{"pending": True, "force": False}])
 
     def test_remote_h2_post_rechecks_and_reuses_session_after_async_deadline(self):
         post = "async function postH2Action" + self.app.split(
@@ -1343,6 +1833,97 @@ async function fetchJson(url, options) {{
         self.assertEqual(result["first"]["token"], "n" * 32)
         self.assertEqual(result["second"]["token"], "n" * 32)
 
+    def test_remote_h2_import_deadline_refreshes_exact_transfer_and_scene_budget(self):
+        timeout_chain = (
+            "async function h2RemoteTransferBudget("
+            + self.app.split("async function h2RemoteTransferBudget(", 1)[1].split(
+                "\n}\n\nasync function h2LibraryBudget", 1
+            )[0]
+            + "\n}"
+        )
+        harness = f"""
+const H2_REMOTE_TRANSFER_BUDGET_TIMEOUT_MS = 1915000;
+const H2_REMOTE_INBOX_UI_TIMEOUT_MARGIN_MS = 15000;
+const H2_WORKSPACE_UI_TIMEOUT_MARGIN_MS = 15000;
+const requests = [];
+const state = {{
+  h2RemoteInbox: {{
+    inbox: {{
+      sessions: [{{
+        transfer_id: "old-transfer",
+        scene: "170926_191401",
+        import_timeout_seconds: 480,
+        import_budget_timeout_seconds: 1807,
+      }}],
+    }},
+  }},
+  h2Workspace: {{ source: {{ sessions: [] }} }},
+}};
+async function fetchJson(url, options = {{}}) {{
+  requests.push({{ url, timeoutMs: options.timeoutMs }});
+  if (url === "/api/v1/h2/remote-inbox/transfer-budget/old-transfer") {{
+    return {{
+      schema_version: 1,
+      kind: "audio_h2_remote_transfer_budget",
+      source: "remote-inbox",
+      transfer_id: "old-transfer",
+      import_budget_timeout_seconds: 2000,
+      read_only: true,
+      source_mutated: false,
+    }};
+  }}
+  if (url === "/api/v1/h2/remote-inbox/import-budget/old-transfer/170926_191401") {{
+    return {{
+      schema_version: 1,
+      kind: "audio_h2_remote_import_budget",
+      source: "remote-inbox",
+      transfer_id: "old-transfer",
+      scene: "170926_191401",
+      import_timeout_seconds: 900,
+      read_only: true,
+      source_mutated: false,
+    }};
+  }}
+  throw new Error("unexpected request " + url);
+}}
+async function h2WorkspaceTimeoutMs() {{
+  throw new Error("device workspace timeout must not be consulted");
+}}
+{timeout_chain}
+(async () => {{
+  const timeoutMs = await h2ImportTimeoutMs(
+    "170926_191401",
+    "remote-inbox",
+    "old-transfer",
+  );
+  process.stdout.write(JSON.stringify({{ timeoutMs, requests }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["requests"],
+            [
+                {
+                    "url": "/api/v1/h2/remote-inbox/transfer-budget/old-transfer",
+                    "timeoutMs": 1915000,
+                },
+                {
+                    "url": "/api/v1/h2/remote-inbox/import-budget/old-transfer/170926_191401",
+                    "timeoutMs": 2000000 + 1915000 + 15000,
+                },
+            ],
+        )
+        self.assertEqual(
+            result["timeoutMs"],
+            900000 + 2000000 + 1915000 + 15000 + 15000,
+        )
+
     def test_h2_pending_migration_cards_expose_no_media_or_mutation_authority(self):
         app = read("app.js")
         self.assertIn(
@@ -1401,6 +1982,24 @@ class ServiceWorkerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.worker = read("sw.js")
         self.app = read("app.js")
+
+    def test_remote_h2_binding_tolerates_previous_cached_document(self):
+        self.assertIn(
+            'byId("h2-remote-refresh")?.addEventListener("click"',
+            self.app,
+        )
+        self.assertNotIn(
+            'byId("h2-remote-refresh").addEventListener("click"',
+            self.app,
+        )
+
+    def test_app_shell_cache_generation_is_bumped_for_remote_h2_dom(self):
+        contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            contract["service_worker"]["cache_name"],
+            "audiozentrale-app-shell-v8",
+        )
+        self.assertIn('const CACHE_NAME = `${CACHE_PREFIX}v8`;', self.worker)
 
     def test_registration_happens_only_in_secure_contexts(self):
         block = self.app.split("function registerServiceWorker() {", 1)[1].split(

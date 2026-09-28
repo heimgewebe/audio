@@ -199,12 +199,14 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base = pathlib.Path(directory)
             output = base / "Music" / "Audio-Aufnahmen"
+            remote_h2 = output / "H2-Remote-Inbox"
             recording = base / ".local" / "state" / "audio" / "recordings-v1"
             transition = base / ".local" / "state" / "audio" / "profile-transitions-v1"
             laboratory = base / ".local" / "state" / "audio" / "laboratory"
             with (
                 mock.patch.object(CONTROL, "RECORDING_OUTPUT_ROOT", output),
                 mock.patch.object(CONTROL, "STATIC_RECORDING_OUTPUT_ROOT", output),
+                mock.patch.object(CONTROL, "STATIC_H2_REMOTE_INBOX_ROOT", remote_h2),
                 mock.patch.object(CONTROL, "RECORDING_STATE_ROOT", recording),
                 mock.patch.object(CONTROL, "STATIC_RECORDING_STATE_ROOT", recording),
                 mock.patch.object(CONTROL, "PROFILE_TRANSITION_STATE_ROOT", transition),
@@ -223,7 +225,12 @@ class AudioControlProfileTransitionReleaseTests(unittest.TestCase):
             self.assertFalse(receipt["audio_mutated"])
             self.assertNotIn(str(base), repr(receipt))
             for path in (
-                output, recording, transition, laboratory, transition / "operations"
+                output,
+                remote_h2,
+                recording,
+                transition,
+                laboratory,
+                transition / "operations",
             ):
                 self.assertTrue(path.is_dir())
                 self.assertEqual(path.stat().st_mode & 0o777, 0o700)
