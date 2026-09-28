@@ -5792,15 +5792,17 @@ class H2MaterialControlTests(unittest.TestCase):
         javascript = (ROOT / "ui" / "app.js").read_text()
         html = (ROOT / "ui" / "index.html").read_text()
         for needle in (
-            "Neue H2-Aufnahmen",
+            "Material importieren",
             "Mein Klangmaterial",
             "BEHALTEN",
             "Was ist zu hören?",
             "Originale werden beim Archivieren nicht vom H2 gelöscht",
-            "Remote-Inbox lesen",
-            "Vom iPad oder Smartphone",
+            "Von unterwegs lesen",
+            "Von unterwegs",
+            "Vom Aufnahmegerät",
         ):
             self.assertIn(needle, html + javascript)
+        self.assertNotIn(">Remote-Inbox<", html)
         self.assertIn('fetchJson("/api/v1/actions/h2"', javascript)
         self.assertIn("function h2ActionsAllowed()", javascript)
         self.assertIn('fetchJson("/bridge/v1/actions/h2"', javascript)

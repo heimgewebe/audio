@@ -23,8 +23,8 @@ const ROUTES = {
   },
   material: {
     title: "Bibliothek",
-    eyebrow: "Aufnahmen, Klänge und Replay",
-    description: "Eigene Takes, Klangmaterial und Replay getrennt organisieren und wiederfinden.",
+    eyebrow: "Aufnahmen und Klänge",
+    description: "Eigene Takes und Klangmaterial gemeinsam durchsuchen, ordnen und wiederfinden.",
   },
   system: {
     title: "System",
@@ -458,6 +458,7 @@ const state = {
   libraryView: "active",
   libraryCategory: "all",
   librarySort: "newest",
+  libraryQuery: "",
   recordingPlan: null,
   recordingPlanInput: null,
   recordingDraft: {
@@ -4395,11 +4396,11 @@ function renderH2RemoteInbox() {
     state.h2RemoteInboxLoading || state.h2WorkspaceLoading || state.h2ActionPending;
 
   if (state.h2RemoteInboxLoading) {
-    status.textContent = "Remote-Inbox wird gelesen.";
+    status.textContent = "Von unterwegs wird gelesen.";
   } else if (!state.h2RemoteInbox) {
     status.textContent =
       state.h2RemoteInboxError ||
-      "Remote-Inbox wird nur auf Wunsch gelesen; der normale H2-Refresh scannt sie nicht.";
+      "Von unterwegs wird nur auf Wunsch gelesen; der normale H2-Refresh scannt diesen Eingang nicht.";
   }
 
   const inbox = state.h2RemoteInbox?.inbox;
@@ -4407,7 +4408,7 @@ function renderH2RemoteInbox() {
     const empty = element("article", "h2-card h2-empty");
     empty.textContent =
       state.h2RemoteInboxError ||
-      "Noch kein Remote-Inbox-Readback. Erst nach vollständigem Dateitransfer lesen.";
+      "Noch kein mobiler Readback. Erst nach vollständigem Dateitransfer lesen.";
     grid.replaceChildren(empty);
     return;
   }
@@ -4516,6 +4517,17 @@ function renderH2RemoteInbox() {
   grid.replaceChildren(...cards);
 }
 
+function matchesLibraryQuery(values) {
+  const query = String(state.libraryQuery || "").trim().toLocaleLowerCase("de");
+  if (!query) return true;
+  return values.some((value) => {
+    const candidates = Array.isArray(value) ? value : [value];
+    return candidates.some((candidate) =>
+      String(candidate ?? "").toLocaleLowerCase("de").includes(query),
+    );
+  });
+}
+
 function renderH2Workspace({ force = false } = {}) {
   renderH2RemoteInbox();
   const inbox = byId("h2-inbox");
@@ -4543,26 +4555,42 @@ function renderH2Workspace({ force = false } = {}) {
     ? source.skipped_invalid_sessions
     : [];
   const library = workspace.library || {};
-  const items = Array.isArray(library.items) ? library.items : [];
-  const migrationPending = Array.isArray(library.migration_pending)
+  const allItems = Array.isArray(library.items) ? library.items : [];
+  const allMigrationPending = Array.isArray(library.migration_pending)
     ? library.migration_pending
     : [];
-  const libraryProjected = items.length + migrationPending.length;
+  const items = allItems.filter((item) => {
+    const annotations = item.annotations || {};
+    const draft = state.h2AnnotationDrafts.get(item.material_id) || {};
+    return matchesLibraryQuery([
+      annotations.title,
+      annotations.note,
+      annotations.tags,
+      draft.title,
+      draft.note,
+      draft.tags,
+      item.material_id,
+    ]);
+  });
+  const migrationPending = allMigrationPending.filter((pending) =>
+    matchesLibraryQuery([pending?.material_id, pending?.metadata]),
+  );
+  const libraryProjected = allItems.length + allMigrationPending.length;
   const libraryTotal =
     Number.isInteger(library.total_count) && library.total_count >= libraryProjected
       ? library.total_count
       : libraryProjected;
-  const librarySummary = migrationPending.length
-    ? String(items.length) +
+  const librarySummary = allMigrationPending.length
+    ? String(allItems.length) +
       " bereit · " +
-      String(migrationPending.length) +
+      String(allMigrationPending.length) +
       " Migration offen" +
       (library.truncated === true
         ? " · " + String(libraryProjected) + " von " + String(libraryTotal) + " angezeigt"
         : "")
     : library.truncated === true
-      ? String(items.length) + " von " + String(libraryTotal)
-      : String(items.length);
+      ? String(allItems.length) + " von " + String(libraryTotal)
+      : String(allItems.length);
   const sourceReadable = source.status === "ready";
   const invalidSummary = invalidSessions.length
     ? " · " + String(invalidSessions.length) + " nicht sicher lesbar"
@@ -4742,15 +4770,16 @@ function renderH2Workspace({ force = false } = {}) {
   }
   if (!archiveCards.length) {
     const empty = element("article", "h2-card h2-empty");
-    empty.textContent =
-      "Noch nichts archiviert. Oben eine Aufnahme anhören und BEHALTEN wählen.";
+    empty.textContent = String(state.libraryQuery || "").trim()
+      ? "Kein archiviertes Klangmaterial passt zur Suche."
+      : "Noch nichts archiviert. Unter Material importieren eine Aufnahme anhören und BEHALTEN wählen.";
     archiveCards.push(empty);
   }
   archive.replaceChildren(...archiveCards);
 }
 
 function renderLibrary() {
-  const recording = state.snapshot.recording || {};
+  const recording = state.snapshot?.recording || {};
   const library = state.recordingLibrary;
   const target = byId("library-takes");
   const allItems = Array.isArray(library?.items) ? [...library.items] : [];
@@ -4762,12 +4791,22 @@ function renderLibrary() {
     byId("library-category-filter").value = state.libraryCategory;
   }
   if (byId("library-sort")) byId("library-sort").value = state.librarySort;
+  if (byId("library-search")) byId("library-search").value = state.libraryQuery;
 
   let items = allItems.filter((item) => {
     const trashed = item.library?.trashed === true;
     if (state.libraryView === "active" && trashed) return false;
     if (state.libraryView === "trash" && !trashed) return false;
     if (state.libraryCategory !== "all" && item.library?.category !== state.libraryCategory) {
+      return false;
+    }
+    if (
+      !matchesLibraryQuery([
+        item.name,
+        recordingCategoryLabel(item.library?.category),
+        recordingStatusLabel(item.status),
+      ])
+    ) {
       return false;
     }
     return true;
@@ -4835,7 +4874,7 @@ function renderLibrary() {
     const empty = element("article", "metric-card");
     appendText(empty, "p", "eyebrow", "Ansicht");
     appendText(empty, "strong", "", "Keine passenden Takes");
-    appendText(empty, "span", "", "Filter oder Ansicht ändern, um andere Aufnahmen zu sehen.");
+    appendText(empty, "span", "", "Suche, Filter oder Ansicht ändern, um andere Aufnahmen zu sehen.");
     cards.push(empty);
   }
 
@@ -6236,6 +6275,11 @@ function wireEvents() {
   byId("h2-remote-refresh")?.addEventListener("click", () =>
     loadH2RemoteInbox(),
   );
+  byId("library-search").addEventListener("input", (event) => {
+    state.libraryQuery = event.target.value;
+    renderLibrary();
+    renderH2Workspace();
+  });
   byId("library-view").addEventListener("change", (event) => {
     if (!LIBRARY_VIEWS.has(event.target.value)) return;
     state.libraryView = event.target.value;

@@ -66,6 +66,61 @@ class ContractTests(unittest.TestCase):
             hashlib.sha256(SCHEMA_PATH.read_bytes()).hexdigest(),
         )
 
+    def test_material_route_prioritizes_searchable_library_and_moves_replay_to_system(self):
+        html = read("index.html")
+        app = read("app.js")
+        material_start = html.index('id="view-material"')
+        system_start = html.index('id="view-system"')
+        material = html[material_start:system_start]
+        system = html[system_start:]
+
+        self.assertLess(
+            material.index('id="material-library"'),
+            material.index('id="h2-material-workspace"'),
+        )
+        self.assertIn('id="library-search"', material)
+        self.assertLess(
+            material.index('id="material-library"'),
+            material.index('id="h2-library"'),
+        )
+        self.assertNotIn("Telemetrie-Replay", material)
+        self.assertIn("Telemetrie-Replay", system)
+        self.assertIn('libraryQuery: ""', app)
+        self.assertGreaterEqual(app.count("matchesLibraryQuery(["), 3)
+        self.assertIn('byId("library-search").addEventListener("input"', app)
+
+    def test_library_query_is_case_insensitive_and_matches_array_metadata(self):
+        app = read("app.js")
+        helper = "function matchesLibraryQuery" + app.split(
+            "function matchesLibraryQuery", 1
+        )[1].split("\nfunction renderH2Workspace", 1)[0]
+        harness = f"""
+const state = {{ libraryQuery: "BRÜCKE" }};
+{helper}
+const titleMatch = matchesLibraryQuery(["Metallgeländer unter Brücke"]);
+const tagMiss = matchesLibraryQuery([["Metall", "draußen"]]);
+state.libraryQuery = "DRAUẞEN";
+const tagMatch = matchesLibraryQuery([["Metall", "draußen"]]);
+state.libraryQuery = "   ";
+const emptyQueryMatches = matchesLibraryQuery([null]);
+process.stdout.write(JSON.stringify({{ titleMatch, tagMiss, tagMatch, emptyQueryMatches }}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", harness],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "titleMatch": True,
+                "tagMiss": False,
+                "tagMatch": True,
+                "emptyQueryMatches": True,
+            },
+        )
+
     def test_physical_acceptance_is_false_everywhere(self):
         acceptance = self.contract["physical_acceptance"]
         self.assertEqual(
@@ -1612,7 +1667,7 @@ process.stdout.write(JSON.stringify({{
         self.assertEqual(
             json.loads(completed.stdout),
             {
-                "status": "Remote-Inbox wird gelesen.",
+                "status": "Von unterwegs wird gelesen.",
                 "refreshDisabled": True,
             },
         )
@@ -2408,7 +2463,11 @@ async function h2WorkspaceTimeoutMs() {{
     def test_h2_pending_migration_cards_expose_no_media_or_mutation_authority(self):
         app = read("app.js")
         self.assertIn(
-            "const migrationPending = Array.isArray(library.migration_pending)",
+            "const allMigrationPending = Array.isArray(library.migration_pending)",
+            app,
+        )
+        self.assertIn(
+            "const migrationPending = allMigrationPending.filter",
             app,
         )
         start = app.index("for (const pending of migrationPending)")
