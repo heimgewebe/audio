@@ -3368,7 +3368,8 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         home = javascript[home_start:home_end]
         self.assertIn('snapshot.whale.status === "ok"', home)
         self.assertIn('"Walstatus nicht lesbar"', home)
-        self.assertIn('"Replay verfügbar · Livezustand nicht lesbar"', home)
+        self.assertIn('"Bibliothek verfügbar · Livezustand nicht lesbar"', home)
+        self.assertNotIn('"Replay verfügbar · Livezustand nicht lesbar"', home)
 
     def test_home_qobuz_reference_status_is_evidence_bound(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
