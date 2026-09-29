@@ -2742,7 +2742,10 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('"iPad / Handy"', javascript)
         self.assertIn('mögliche Wiedergabequelle · Anschlussweg offen', javascript)
         self.assertIn('"Zentraler Knoten"', javascript)
-        self.assertIn("homePhysicalTruthReadable = Array.isArray(doctor.physical_unknowns)", javascript)
+        self.assertIn(
+            'homePhysicalTruthReadable = doctor.status === "ok" && Array.isArray(doctor.physical_unknowns)',
+            javascript,
+        )
         self.assertIn('homeUnknownFacts.has("motu_output_to_lake_people")', javascript)
         self.assertIn('homeUnknownFacts.has("focal_connected_output")', javascript)
         self.assertIn('homeUnknownFacts.has("pioneer_pc_connection")', javascript)

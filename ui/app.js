@@ -3220,7 +3220,7 @@ function renderHome() {
   byId("home-actions").replaceChildren(...actions.map(homeActionCard));
 
   const external = doctor.external_endpoints || {};
-  const homePhysicalTruthReadable = Array.isArray(doctor.physical_unknowns);
+  const homePhysicalTruthReadable = doctor.status === "ok" && Array.isArray(doctor.physical_unknowns);
   const homeUnknownFacts = new Set(homePhysicalTruthReadable ? doctor.physical_unknowns : []);
   const lakePeopleConnectionOpen =
     !homePhysicalTruthReadable || homeUnknownFacts.has("motu_output_to_lake_people");
