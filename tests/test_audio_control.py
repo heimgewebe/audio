@@ -5803,6 +5803,7 @@ class H2MaterialControlTests(unittest.TestCase):
         ):
             self.assertIn(needle, html + javascript)
         self.assertNotIn(">Remote-Inbox<", html)
+        self.assertNotIn("Remote-H2-Import", javascript)
         self.assertIn('fetchJson("/api/v1/actions/h2"', javascript)
         self.assertIn("function h2ActionsAllowed()", javascript)
         self.assertIn('fetchJson("/bridge/v1/actions/h2"', javascript)

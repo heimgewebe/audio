@@ -4101,7 +4101,7 @@ function h2RemoteImportBudgetTimeoutMs(transferBudget) {
     !Number.isFinite(importBudgetSeconds) ||
     importBudgetSeconds <= 0
   ) {
-    throw new Error("Remote-H2-Import besitzt kein gültiges Preflight-Zeitbudget.");
+    throw new Error("Import von unterwegs besitzt kein gültiges Preflight-Zeitbudget.");
   }
   return (
     Math.ceil(importBudgetSeconds * 1000) +
@@ -4131,7 +4131,7 @@ async function h2RemoteImportBudget(transferId, scene, transferBudget) {
     !Number.isFinite(importSeconds) ||
     importSeconds <= 0
   ) {
-    throw new Error("Remote-H2-Import besitzt kein gültiges Aktionszeitbudget.");
+    throw new Error("Import von unterwegs besitzt kein gültiges Aktionszeitbudget.");
   }
   return budget;
 }
@@ -4143,7 +4143,7 @@ async function h2ImportTimeoutMs(
 ) {
   if (source === "remote-inbox") {
     if (typeof transferId !== "string" || transferId.length === 0) {
-      throw new Error("Remote-H2-Import besitzt keine gültige Transfer-ID.");
+      throw new Error("Der Import von unterwegs besitzt keine gültige Transfer-ID.");
     }
     const transferBudget = await h2RemoteTransferBudget(transferId);
     const preReadMs = h2RemoteImportBudgetTimeoutMs(transferBudget);
@@ -4273,7 +4273,7 @@ async function runH2Action(payload) {
           result.library?.kind !== "audio_h2_library" ||
           !result.library?.library
         ) {
-          throw new Error("Remote-H2-Import lieferte keine aktuelle Bibliothek.");
+          throw new Error("Import von unterwegs lieferte keine aktuelle Bibliothek.");
         }
         if (state.h2Workspace?.kind === "audio_h2_workspace") {
           state.h2Workspace = {
