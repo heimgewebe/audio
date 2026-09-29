@@ -79,6 +79,8 @@ class ContractTests(unittest.TestCase):
             material.index('id="h2-material-workspace"'),
         )
         self.assertIn('id="library-search"', material)
+        self.assertIn('aria-describedby="library-search-scope"', material)
+        self.assertIn('id="library-search-scope"', material)
         self.assertLess(
             material.index('id="material-library"'),
             material.index('id="h2-library"'),
@@ -88,6 +90,34 @@ class ContractTests(unittest.TestCase):
         self.assertIn('libraryQuery: ""', app)
         self.assertGreaterEqual(app.count("matchesLibraryQuery(["), 3)
         self.assertIn('byId("library-search").addEventListener("input"', app)
+
+    def test_library_search_is_projection_bounded_and_preserves_import_workspace(self):
+        html = read("index.html")
+        app = read("app.js")
+        scope = app.split("function renderLibrarySearchScope()", 1)[1].split(
+            "\nfunction renderH2Workspace", 1
+        )[0]
+        renderer = app.split("function renderH2Workspace", 1)[1].split(
+            "\nfunction renderLibrary", 1
+        )[0]
+        search_handler = app.split(
+            'byId("library-search").addEventListener("input"', 1
+        )[1].split("\n  });", 1)[0]
+        home_library = app.split('href: "#material"', 1)[1].split(
+            'priority: "secondary"', 1
+        )[0]
+
+        self.assertIn("state.recordingLibrary?.truncated === true", scope)
+        self.assertIn("state.h2Workspace?.library?.truncated === true", scope)
+        self.assertIn("aktuell geladenen Ausschnitt", scope)
+        self.assertIn("aktuell geladenen Ausschnitt", app)
+        self.assertIn("library-search-scope", html)
+        self.assertIn("renderH2Workspace({ archiveOnly: true });", search_handler)
+        self.assertNotIn("renderH2Workspace();", search_handler)
+        self.assertIn("if (!archiveOnly) renderH2RemoteInbox();", renderer)
+        self.assertIn("if (!archive || (!archiveOnly && (!inbox || !status || !refresh)))", renderer)
+        self.assertNotIn("Replay", home_library)
+        self.assertIn("Klangmaterial", home_library)
 
     def test_library_query_is_case_insensitive_and_matches_array_metadata(self):
         app = read("app.js")

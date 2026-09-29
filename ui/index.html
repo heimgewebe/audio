@@ -226,7 +226,8 @@
         <section class="view" id="view-material" data-view="material" hidden>
           <article class="depth-panel" id="material-library" data-zone="library" data-depth-panel data-workspace-panel data-focus-title="Bibliothek" data-focus-summary="Takes und archiviertes Klangmaterial gemeinsam durchsuchen; Audio-Master bleiben unverändert.">
             <header class="depth-heading"><div><p class="eyebrow">Aufnahmen und Klänge</p><h2>Bibliothek</h2></div><div class="depth-actions"><button class="depth-toggle secondary-button" type="button" aria-expanded="false">Erweitern</button><button class="depth-focus secondary-button" type="button">Fokus</button></div></header>
-            <label class="recording-library-category" for="library-search">Suche<input class="recording-category-select" id="library-search" type="search" autocomplete="off" placeholder="Takes, Titel, Notizen oder Tags"></label>
+            <label class="recording-library-category" for="library-search">Suche<input class="recording-category-select" id="library-search" type="search" autocomplete="off" placeholder="Takes, Titel, Notizen oder Tags" aria-describedby="library-search-scope"></label>
+            <p class="library-delete-note" id="library-search-scope">Suche durchsucht nur die derzeit geladenen Bibliothekseinträge.</p>
             <div class="library-toolbar" aria-label="Aufnahmen sortieren und filtern">
               <label>Ansicht<select id="library-view"><option value="active">Aktive Aufnahmen</option><option value="trash">Papierkorb</option><option value="all">Alle</option></select></label>
               <label>Kategorie<select id="library-category-filter"><option value="all">Alle Kategorien</option><option value="unsorted">Unsortiert</option><option value="song">Song</option><option value="practice">Übung</option><option value="idea">Idee</option><option value="test">Test</option><option value="finished">Fertig</option></select></label>
