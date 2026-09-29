@@ -2742,8 +2742,29 @@ class AudioControlTests(unittest.TestCase):
         self.assertIn('"iPad / Handy"', javascript)
         self.assertIn('mögliche Wiedergabequelle · Anschlussweg offen', javascript)
         self.assertIn('"Zentraler Knoten"', javascript)
-        self.assertIn('"MOTU Monitor Out (MOTU-seitig TRS belegt) → Lake People → Focal"', javascript)
-        self.assertIn('"MOTU RCA/Cinch (spiegelt Monitor 1/2) → Pioneer → ELAC/Canton"', javascript)
+        self.assertIn(
+            'homePhysicalTruthReadable = doctor.status === "ok" && Array.isArray(doctor.physical_unknowns)',
+            javascript,
+        )
+        self.assertIn('homeUnknownFacts.has("motu_output_to_lake_people")', javascript)
+        self.assertIn('homeUnknownFacts.has("focal_connected_output")', javascript)
+        self.assertIn('homeUnknownFacts.has("pioneer_pc_connection")', javascript)
+        self.assertIn(
+            '"MOTU Monitor Out (MOTU-seitig TRS belegt) · Lake People / Focal: physischer Weg offen"',
+            javascript,
+        )
+        self.assertIn(
+            '"MOTU RCA/Cinch (MOTU-seitig belegt) · Verbindung zum Pioneer physisch offen · Lautsprecherzuordnung offen"',
+            javascript,
+        )
+        self.assertNotIn(
+            '"MOTU Monitor Out (MOTU-seitig TRS belegt) → Lake People → Focal"',
+            javascript,
+        )
+        self.assertNotIn(
+            '"MOTU RCA/Cinch (spiegelt Monitor 1/2) → Pioneer → ELAC/Canton"',
+            javascript,
+        )
         self.assertIn('"zentraler Hörknoten"', javascript)
         self.assertIn(
             'Zwischen gemeinsamem Desktop-Pfad und geprüftem Qobuz-Referenzpfad wechseln',

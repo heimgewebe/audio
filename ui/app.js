@@ -3220,8 +3220,28 @@ function renderHome() {
   byId("home-actions").replaceChildren(...actions.map(homeActionCard));
 
   const external = doctor.external_endpoints || {};
+  const homePhysicalTruthReadable = doctor.status === "ok" && Array.isArray(doctor.physical_unknowns);
+  const homeUnknownFacts = new Set(homePhysicalTruthReadable ? doctor.physical_unknowns : []);
+  const lakePeopleConnectionOpen =
+    !homePhysicalTruthReadable || homeUnknownFacts.has("motu_output_to_lake_people");
+  const lakePeopleSettingsOpen =
+    !homePhysicalTruthReadable ||
+    homeUnknownFacts.has("lake_people_gain_setting") ||
+    homeUnknownFacts.has("lake_people_volume_reference");
+  const focalConnectionOpen =
+    !homePhysicalTruthReadable || homeUnknownFacts.has("focal_connected_output");
+  const headphonePhysicalOpen = lakePeopleConnectionOpen || focalConnectionOpen;
+  const headphonePathDetail = headphonePhysicalOpen
+    ? "MOTU Monitor Out (MOTU-seitig TRS belegt) · Lake People / Focal: physischer Weg offen"
+    : "MOTU Monitor Out → Lake People → Focal · physischer Weg belegt";
   const receiverProfile = homeProfile("receiver");
-  const receiverPhysicalOpen = (receiverProfile?.unresolved_physical_fact_count ?? 0) > 0;
+  const receiverConnectionOpen =
+    !homePhysicalTruthReadable || homeUnknownFacts.has("pioneer_pc_connection");
+  const receiverPhysicalOpen =
+    !homePhysicalTruthReadable || (receiverProfile?.unresolved_physical_fact_count ?? 0) > 0;
+  const receiverPathDetail = receiverConnectionOpen
+    ? "MOTU RCA/Cinch (MOTU-seitig belegt) · Verbindung zum Pioneer physisch offen · Lautsprecherzuordnung offen"
+    : "MOTU RCA/Cinch → Pioneer · Lautsprecherzuordnung offen";
   const pioneerObserved = external.pioneer_vsx_830_k?.software_observed === true;
   const pioneerTone = pioneerObserved ? "observed" : receiverPhysicalOpen ? "onsite" : "configured";
   const pioneerDetail = pioneerObserved
@@ -3252,11 +3272,25 @@ function renderHome() {
         motuObserved ? "observed" : "onsite",
       ),
       [
-        listeningPathCard("Kopfhörer · Referenz", "MOTU Monitor Out (MOTU-seitig TRS belegt) → Lake People → Focal", [
-          homeSignalNode("Verstärker", "Lake People G111 Mk 2", "Kopfhörerverstärker", "configured"),
-          homeSignalNode("Kopfhörer", "Focal Clear MG", "Referenzabhöre", "configured"),
+        listeningPathCard("Kopfhörer · Referenz", headphonePathDetail, [
+          homeSignalNode(
+            "Verstärker",
+            "Lake People G111 Mk 2",
+            lakePeopleConnectionOpen
+              ? "Kopfhörerverstärker · physischer Eingang offen"
+              : lakePeopleSettingsOpen
+                ? "physischer Weg belegt · Gain / Pegelreferenz offen"
+                : "physischer Weg und Referenzwerte belegt",
+            lakePeopleConnectionOpen || lakePeopleSettingsOpen ? "onsite" : "configured",
+          ),
+          homeSignalNode(
+            "Kopfhörer",
+            "Focal Clear MG",
+            focalConnectionOpen ? "Referenzabhöre · Anschluss offen" : "Referenzabhöre · Anschluss belegt",
+            focalConnectionOpen ? "onsite" : "configured",
+          ),
         ], "reference"),
-        listeningPathCard("Lautsprecher · Receiver", "MOTU RCA/Cinch (spiegelt Monitor 1/2) → Pioneer → ELAC/Canton", [
+        listeningPathCard("Lautsprecher · Receiver", receiverPathDetail, [
           homeSignalNode("Receiver", "Pioneer VSX-830-K", pioneerDetail, pioneerTone),
           homeSignalNode(
             "Lautsprecher",
