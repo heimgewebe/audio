@@ -3368,7 +3368,8 @@ process.stdout.write(JSON.stringify({{ passive, action, fallback, missing, route
         home = javascript[home_start:home_end]
         self.assertIn('snapshot.whale.status === "ok"', home)
         self.assertIn('"Walstatus nicht lesbar"', home)
-        self.assertIn('"Replay verfügbar · Livezustand nicht lesbar"', home)
+        self.assertIn('"Bibliothek verfügbar · Livezustand nicht lesbar"', home)
+        self.assertNotIn('"Replay verfügbar · Livezustand nicht lesbar"', home)
 
     def test_home_qobuz_reference_status_is_evidence_bound(self):
         javascript = (ROOT / "ui" / "app.js").read_text()
@@ -5792,15 +5793,18 @@ class H2MaterialControlTests(unittest.TestCase):
         javascript = (ROOT / "ui" / "app.js").read_text()
         html = (ROOT / "ui" / "index.html").read_text()
         for needle in (
-            "Neue H2-Aufnahmen",
+            "Material importieren",
             "Mein Klangmaterial",
             "BEHALTEN",
             "Was ist zu hören?",
             "Originale werden beim Archivieren nicht vom H2 gelöscht",
-            "Remote-Inbox lesen",
-            "Vom iPad oder Smartphone",
+            "Von unterwegs lesen",
+            "Von unterwegs",
+            "Vom Aufnahmegerät",
         ):
             self.assertIn(needle, html + javascript)
+        self.assertNotIn(">Remote-Inbox<", html)
+        self.assertNotIn("Remote-H2-Import", javascript)
         self.assertIn('fetchJson("/api/v1/actions/h2"', javascript)
         self.assertIn("function h2ActionsAllowed()", javascript)
         self.assertIn('fetchJson("/bridge/v1/actions/h2"', javascript)

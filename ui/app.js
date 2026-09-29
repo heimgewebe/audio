@@ -23,8 +23,8 @@ const ROUTES = {
   },
   material: {
     title: "Bibliothek",
-    eyebrow: "Aufnahmen, Klänge und Replay",
-    description: "Eigene Takes, Klangmaterial und Replay getrennt organisieren und wiederfinden.",
+    eyebrow: "Aufnahmen und Klänge",
+    description: "Eigene Takes und Klangmaterial gemeinsam durchsuchen, ordnen und wiederfinden.",
   },
   system: {
     title: "System",
@@ -458,6 +458,7 @@ const state = {
   libraryView: "active",
   libraryCategory: "all",
   librarySort: "newest",
+  libraryQuery: "",
   recordingPlan: null,
   recordingPlanInput: null,
   recordingDraft: {
@@ -3211,8 +3212,8 @@ function renderHome() {
       detail: whaleStatusReadable
         ? activeWhale
           ? `${whaleMode} · Wal aktiv`
-          : "Walstimmen, Takes und Replay"
-        : "Replay verfügbar · Livezustand nicht lesbar",
+          : "Walstimmen, Takes und Klangmaterial"
+        : "Bibliothek verfügbar · Livezustand nicht lesbar",
       priority: "secondary",
     },
   ];
@@ -4100,7 +4101,7 @@ function h2RemoteImportBudgetTimeoutMs(transferBudget) {
     !Number.isFinite(importBudgetSeconds) ||
     importBudgetSeconds <= 0
   ) {
-    throw new Error("Remote-H2-Import besitzt kein gültiges Preflight-Zeitbudget.");
+    throw new Error("Import von unterwegs besitzt kein gültiges Preflight-Zeitbudget.");
   }
   return (
     Math.ceil(importBudgetSeconds * 1000) +
@@ -4130,7 +4131,7 @@ async function h2RemoteImportBudget(transferId, scene, transferBudget) {
     !Number.isFinite(importSeconds) ||
     importSeconds <= 0
   ) {
-    throw new Error("Remote-H2-Import besitzt kein gültiges Aktionszeitbudget.");
+    throw new Error("Import von unterwegs besitzt kein gültiges Aktionszeitbudget.");
   }
   return budget;
 }
@@ -4142,7 +4143,7 @@ async function h2ImportTimeoutMs(
 ) {
   if (source === "remote-inbox") {
     if (typeof transferId !== "string" || transferId.length === 0) {
-      throw new Error("Remote-H2-Import besitzt keine gültige Transfer-ID.");
+      throw new Error("Der Import von unterwegs besitzt keine gültige Transfer-ID.");
     }
     const transferBudget = await h2RemoteTransferBudget(transferId);
     const preReadMs = h2RemoteImportBudgetTimeoutMs(transferBudget);
@@ -4272,7 +4273,7 @@ async function runH2Action(payload) {
           result.library?.kind !== "audio_h2_library" ||
           !result.library?.library
         ) {
-          throw new Error("Remote-H2-Import lieferte keine aktuelle Bibliothek.");
+          throw new Error("Import von unterwegs lieferte keine aktuelle Bibliothek.");
         }
         if (state.h2Workspace?.kind === "audio_h2_workspace") {
           state.h2Workspace = {
@@ -4395,11 +4396,11 @@ function renderH2RemoteInbox() {
     state.h2RemoteInboxLoading || state.h2WorkspaceLoading || state.h2ActionPending;
 
   if (state.h2RemoteInboxLoading) {
-    status.textContent = "Remote-Inbox wird gelesen.";
+    status.textContent = "Von unterwegs wird gelesen.";
   } else if (!state.h2RemoteInbox) {
     status.textContent =
       state.h2RemoteInboxError ||
-      "Remote-Inbox wird nur auf Wunsch gelesen; der normale H2-Refresh scannt sie nicht.";
+      "Von unterwegs wird nur auf Wunsch gelesen; der normale H2-Refresh scannt diesen Eingang nicht.";
   }
 
   const inbox = state.h2RemoteInbox?.inbox;
@@ -4407,7 +4408,7 @@ function renderH2RemoteInbox() {
     const empty = element("article", "h2-card h2-empty");
     empty.textContent =
       state.h2RemoteInboxError ||
-      "Noch kein Remote-Inbox-Readback. Erst nach vollständigem Dateitransfer lesen.";
+      "Noch kein mobiler Readback. Erst nach vollständigem Dateitransfer lesen.";
     grid.replaceChildren(empty);
     return;
   }
@@ -4516,24 +4517,51 @@ function renderH2RemoteInbox() {
   grid.replaceChildren(...cards);
 }
 
-function renderH2Workspace({ force = false } = {}) {
-  renderH2RemoteInbox();
+function matchesLibraryQuery(values) {
+  const query = String(state.libraryQuery || "").trim().toLocaleLowerCase("de");
+  if (!query) return true;
+  return values.some((value) => {
+    const candidates = Array.isArray(value) ? value : [value];
+    return candidates.some((candidate) =>
+      String(candidate ?? "").toLocaleLowerCase("de").includes(query),
+    );
+  });
+}
+
+function renderLibrarySearchScope() {
+  const target = byId("library-search-scope");
+  if (!target) return;
+  const limited = [];
+  if (state.recordingLibrary?.truncated === true) limited.push("Takes");
+  if (state.h2Workspace?.library?.truncated === true) limited.push("Klangmaterial");
+  target.textContent = limited.length
+    ? `Suche durchsucht nur den aktuell geladenen Ausschnitt für ${limited.join(" und ")}; ältere passende Einträge können außerhalb liegen.`
+    : "Suche durchsucht nur die derzeit geladenen Bibliothekseinträge.";
+}
+
+function renderH2Workspace({ force = false, archiveOnly = false } = {}) {
+  if (!archiveOnly) renderH2RemoteInbox();
   const inbox = byId("h2-inbox");
   const archive = byId("h2-library");
   const status = byId("h2-status");
   const refresh = byId("h2-refresh");
-  if (!inbox || !archive || !status || !refresh) return;
+  if (!archive || (!archiveOnly && (!inbox || !status || !refresh))) return;
   if (!force && document.activeElement?.closest(".h2-annotation-form")) return;
 
-  refresh.disabled =
-    state.h2ActionPending || state.h2WorkspaceLoading || state.h2RemoteInboxLoading;
+  if (!archiveOnly) {
+    refresh.disabled =
+      state.h2ActionPending || state.h2WorkspaceLoading || state.h2RemoteInboxLoading;
+  }
   const workspace = state.h2Workspace;
   if (!workspace) {
-    status.textContent = state.h2WorkspaceError || "H2 wird gelesen.";
-    const empty = element("article", "h2-card h2-empty");
-    empty.textContent = state.h2WorkspaceError || "Noch kein H2-Zustand.";
-    inbox.replaceChildren(empty);
+    if (!archiveOnly) {
+      status.textContent = state.h2WorkspaceError || "H2 wird gelesen.";
+      const empty = element("article", "h2-card h2-empty");
+      empty.textContent = state.h2WorkspaceError || "Noch kein H2-Zustand.";
+      inbox.replaceChildren(empty);
+    }
     archive.replaceChildren();
+    renderLibrarySearchScope();
     return;
   }
 
@@ -4543,95 +4571,115 @@ function renderH2Workspace({ force = false } = {}) {
     ? source.skipped_invalid_sessions
     : [];
   const library = workspace.library || {};
-  const items = Array.isArray(library.items) ? library.items : [];
-  const migrationPending = Array.isArray(library.migration_pending)
+  const allItems = Array.isArray(library.items) ? library.items : [];
+  const allMigrationPending = Array.isArray(library.migration_pending)
     ? library.migration_pending
     : [];
-  const libraryProjected = items.length + migrationPending.length;
+  const items = allItems.filter((item) => {
+    const annotations = item.annotations || {};
+    const draft = state.h2AnnotationDrafts.get(item.material_id) || {};
+    return matchesLibraryQuery([
+      annotations.title,
+      annotations.note,
+      annotations.tags,
+      draft.title,
+      draft.note,
+      draft.tags,
+      item.material_id,
+    ]);
+  });
+  const migrationPending = allMigrationPending.filter((pending) =>
+    matchesLibraryQuery([pending?.material_id, pending?.metadata]),
+  );
+  const libraryProjected = allItems.length + allMigrationPending.length;
   const libraryTotal =
     Number.isInteger(library.total_count) && library.total_count >= libraryProjected
       ? library.total_count
       : libraryProjected;
-  const librarySummary = migrationPending.length
-    ? String(items.length) +
+  const librarySummary = allMigrationPending.length
+    ? String(allItems.length) +
       " bereit · " +
-      String(migrationPending.length) +
+      String(allMigrationPending.length) +
       " Migration offen" +
       (library.truncated === true
         ? " · " + String(libraryProjected) + " von " + String(libraryTotal) + " angezeigt"
         : "")
     : library.truncated === true
-      ? String(items.length) + " von " + String(libraryTotal)
-      : String(items.length);
-  const sourceReadable = source.status === "ready";
-  const invalidSummary = invalidSessions.length
-    ? " · " + String(invalidSessions.length) + " nicht sicher lesbar"
-    : "";
-  status.textContent = sourceReadable
-    ? String(source.count) +
-      " Aufnahmen auf dem H2" +
-      invalidSummary +
-      " · " +
-      librarySummary +
-      " im Klangarchiv"
-    : "H2 nicht verbunden · " + librarySummary + " archivierte Aufnahmen bleiben verfügbar";
+      ? String(allItems.length) + " von " + String(libraryTotal)
+      : String(allItems.length);
+  renderLibrarySearchScope();
 
-  const sourceCards = [];
-  for (const session of sessions) {
-    const card = element("article", "h2-card");
-    const top = element("div", "card-topline");
-    appendText(top, "span", "card-glyph", "◉").setAttribute("aria-hidden", "true");
-    appendText(top, "span", "status-pill", "auf H2");
-    card.append(top);
-    appendText(card, "h3", "", h2DisplayTimestamp(session));
-    const rate = Number(session.sample_rate_hz || 0);
-    appendText(
-      card,
-      "p",
-      "h2-meta",
-      Number(session.duration_seconds).toFixed(1) +
-        " s · " +
-        (rate ? (rate / 1000).toFixed(1) + " kHz" : "Rate offen") +
+  if (!archiveOnly) {
+    const sourceReadable = source.status === "ready";
+    const invalidSummary = invalidSessions.length
+      ? " · " + String(invalidSessions.length) + " nicht sicher lesbar"
+      : "";
+    status.textContent = sourceReadable
+      ? String(source.count) +
+        " Aufnahmen auf dem H2" +
+        invalidSummary +
         " · " +
-        (session.roles || []).join(" + ").toUpperCase(),
-    );
-    appendH2Audio(card, session.audio_url, session.segment_count);
-    const keep = element("button", "primary-button", "BEHALTEN");
-    keep.type = "button";
-    keep.setAttribute(
-      "data-refresh-key",
-      `h2-source:${session.scene}:keep`,
-    );
-    keep.setAttribute(
-      "aria-label",
-      `H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`,
-    );
-    keep.disabled = state.h2ActionPending || !h2ActionsAllowed();
-    keep.addEventListener("click", () =>
-      runH2Action({ operation: "import", scene: session.scene }),
-    );
-    card.append(keep);
-    appendText(
-      card,
-      "small",
-      "h2-safety-note",
-      "Das Original auf dem H2 wird weder verändert noch gelöscht.",
-    );
-    sourceCards.push(card);
+        librarySummary +
+        " im Klangarchiv"
+      : "H2 nicht verbunden · " + librarySummary + " archivierte Aufnahmen bleiben verfügbar";
+
+    const sourceCards = [];
+    for (const session of sessions) {
+      const card = element("article", "h2-card");
+      const top = element("div", "card-topline");
+      appendText(top, "span", "card-glyph", "◉").setAttribute("aria-hidden", "true");
+      appendText(top, "span", "status-pill", "auf H2");
+      card.append(top);
+      appendText(card, "h3", "", h2DisplayTimestamp(session));
+      const rate = Number(session.sample_rate_hz || 0);
+      appendText(
+        card,
+        "p",
+        "h2-meta",
+        Number(session.duration_seconds).toFixed(1) +
+          " s · " +
+          (rate ? (rate / 1000).toFixed(1) + " kHz" : "Rate offen") +
+          " · " +
+          (session.roles || []).join(" + ").toUpperCase(),
+      );
+      appendH2Audio(card, session.audio_url, session.segment_count);
+      const keep = element("button", "primary-button", "BEHALTEN");
+      keep.type = "button";
+      keep.setAttribute(
+        "data-refresh-key",
+        `h2-source:${session.scene}:keep`,
+      );
+      keep.setAttribute(
+        "aria-label",
+        `H2-Aufnahme ${h2DisplayTimestamp(session)} behalten`,
+      );
+      keep.disabled = state.h2ActionPending || !h2ActionsAllowed();
+      keep.addEventListener("click", () =>
+        runH2Action({ operation: "import", scene: session.scene }),
+      );
+      card.append(keep);
+      appendText(
+        card,
+        "small",
+        "h2-safety-note",
+        "Das Original auf dem H2 wird weder verändert noch gelöscht.",
+      );
+      sourceCards.push(card);
+    }
+    if (!sourceCards.length) {
+      const empty = element("article", "h2-card h2-empty");
+      empty.textContent = sourceReadable
+        ? invalidSessions.length
+          ? String(invalidSessions.length) +
+            " H2-Aufnahme" +
+            (invalidSessions.length === 1 ? "" : "n") +
+            " konnten nicht sicher gelesen werden. Keine gültige Aufnahme verfügbar."
+          : "Keine Aufnahmen auf dem H2 gefunden."
+        : source.error || "H2 ist nicht im Datei-Transfer-Modus verbunden.";
+      sourceCards.push(empty);
+    }
+    inbox.replaceChildren(...sourceCards);
   }
-  if (!sourceCards.length) {
-    const empty = element("article", "h2-card h2-empty");
-    empty.textContent = sourceReadable
-      ? invalidSessions.length
-        ? String(invalidSessions.length) +
-          " H2-Aufnahme" +
-          (invalidSessions.length === 1 ? "" : "n") +
-          " konnten nicht sicher gelesen werden. Keine gültige Aufnahme verfügbar."
-        : "Keine Aufnahmen auf dem H2 gefunden."
-      : source.error || "H2 ist nicht im Datei-Transfer-Modus verbunden.";
-    sourceCards.push(empty);
-  }
-  inbox.replaceChildren(...sourceCards);
 
   const archiveCards = [];
   for (const pending of migrationPending) {
@@ -4742,15 +4790,18 @@ function renderH2Workspace({ force = false } = {}) {
   }
   if (!archiveCards.length) {
     const empty = element("article", "h2-card h2-empty");
-    empty.textContent =
-      "Noch nichts archiviert. Oben eine Aufnahme anhören und BEHALTEN wählen.";
+    empty.textContent = String(state.libraryQuery || "").trim()
+      ? library.truncated === true
+        ? "Kein archiviertes Klangmaterial passt im aktuell geladenen Ausschnitt zur Suche; ältere passende Einträge können außerhalb liegen."
+        : "Kein archiviertes Klangmaterial passt zur Suche."
+      : "Noch nichts archiviert. Unter Material importieren eine Aufnahme anhören und BEHALTEN wählen.";
     archiveCards.push(empty);
   }
   archive.replaceChildren(...archiveCards);
 }
 
 function renderLibrary() {
-  const recording = state.snapshot.recording || {};
+  const recording = state.snapshot?.recording || {};
   const library = state.recordingLibrary;
   const target = byId("library-takes");
   const allItems = Array.isArray(library?.items) ? [...library.items] : [];
@@ -4762,12 +4813,23 @@ function renderLibrary() {
     byId("library-category-filter").value = state.libraryCategory;
   }
   if (byId("library-sort")) byId("library-sort").value = state.librarySort;
+  if (byId("library-search")) byId("library-search").value = state.libraryQuery;
+  renderLibrarySearchScope();
 
   let items = allItems.filter((item) => {
     const trashed = item.library?.trashed === true;
     if (state.libraryView === "active" && trashed) return false;
     if (state.libraryView === "trash" && !trashed) return false;
     if (state.libraryCategory !== "all" && item.library?.category !== state.libraryCategory) {
+      return false;
+    }
+    if (
+      !matchesLibraryQuery([
+        item.name,
+        recordingCategoryLabel(item.library?.category),
+        recordingStatusLabel(item.status),
+      ])
+    ) {
       return false;
     }
     return true;
@@ -4835,7 +4897,14 @@ function renderLibrary() {
     const empty = element("article", "metric-card");
     appendText(empty, "p", "eyebrow", "Ansicht");
     appendText(empty, "strong", "", "Keine passenden Takes");
-    appendText(empty, "span", "", "Filter oder Ansicht ändern, um andere Aufnahmen zu sehen.");
+    appendText(
+      empty,
+      "span",
+      "",
+      String(state.libraryQuery || "").trim() && library.truncated === true
+        ? "Keine passenden Takes im aktuell geladenen Ausschnitt; ältere passende Takes können außerhalb liegen."
+        : "Suche, Filter oder Ansicht ändern, um andere Aufnahmen zu sehen.",
+    );
     cards.push(empty);
   }
 
@@ -6236,6 +6305,11 @@ function wireEvents() {
   byId("h2-remote-refresh")?.addEventListener("click", () =>
     loadH2RemoteInbox(),
   );
+  byId("library-search").addEventListener("input", (event) => {
+    state.libraryQuery = event.target.value;
+    renderLibrary();
+    renderH2Workspace({ archiveOnly: true });
+  });
   byId("library-view").addEventListener("change", (event) => {
     if (!LIBRARY_VIEWS.has(event.target.value)) return;
     state.libraryView = event.target.value;
