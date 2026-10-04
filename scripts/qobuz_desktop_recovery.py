@@ -46,6 +46,19 @@ MAX_PROC_FILE_BYTES = 4_096
 MAX_SYSFS_FILE_BYTES = 1_024
 MAX_CARDS = 32
 MAX_SUBSTREAMS = 64
+KNOWN_ACTIVE_PCM_STATES = frozenset(
+    {
+        "OPEN",
+        "SETUP",
+        "PREPARED",
+        "RUNNING",
+        "XRUN",
+        "DRAINING",
+        "PAUSED",
+        "SUSPENDED",
+        "DISCONNECTED",
+    }
+)
 UNITY_VOLUME = 65_536
 STATE_SCHEMA_VERSION = 2
 
@@ -482,6 +495,8 @@ def other_pcm_restart_safe(
         direction = substream.parent.name[-1]
         if direction == "c":
             raise RecoveryError("host-capture-not-closed")
+        if _known_active_pcm_state(status) is None:
+            raise RecoveryError("host-playback-state-unrecognized")
         owner = _owner_pid(status)
         if owner is None or not _pipewire_owns(owner, proc_root):
             raise RecoveryError("host-playback-owner-unproven")
@@ -493,6 +508,13 @@ def _owner_pid(status_text: str) -> int | None:
         return None
     value = int(matches[0])
     return value if value > 0 else None
+
+
+def _known_active_pcm_state(status_text: str) -> str | None:
+    matches = re.findall(r"(?m)^state:\s*([A-Z_]+)\s*$", status_text)
+    if len(matches) != 1 or matches[0] not in KNOWN_ACTIVE_PCM_STATES:
+        return None
+    return matches[0]
 
 
 def _pipewire_owns(pid: int, proc_root: pathlib.Path) -> bool:

@@ -59,10 +59,12 @@ the immediately following effect.
 Because that restart is global, every non-MOTU ALSA PCM is also enumerated from
 `/proc/asound/card*/pcm*/sub*/status` in two identical snapshots before the
 level observer is quiesced and again at the final restart edge. Capture must be
-exactly `CLOSED`. Playback may be `CLOSED` or have stable `owner_pid`
-evidence whose `/proc/PID/exe` is exactly `/usr/bin/pipewire`; direct ALSA
-playback, capture, missing ownership, and any missing, unreadable, changing, or
-unknown status still defer recovery. This allows ordinary PipeWire-managed
+exactly `CLOSED`. Playback may be `CLOSED` or report exactly one kernel-defined active ALSA
+state (`OPEN`, `SETUP`, `PREPARED`, `RUNNING`, `XRUN`, `DRAINING`,
+`PAUSED`, `SUSPENDED`, or `DISCONNECTED`) plus stable `owner_pid` evidence
+whose `/proc/PID/exe` is exactly `/usr/bin/pipewire`; direct ALSA playback,
+capture, missing ownership, and any missing, unreadable, changing, malformed,
+or unknown status still defer recovery. This allows ordinary PipeWire-managed
 desktop playback to survive the session-manager repair without weakening the
 recording guard. The exception is active only while `pw-metadata -n default`
 reports the exact serial-bound MOTU sink as `default.configured.audio.sink`;

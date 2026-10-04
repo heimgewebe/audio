@@ -463,6 +463,31 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(runner.commands.count(RESTART), 1)
         self.assertEqual(runner.commands.count(DEFAULT_METADATA_COMMAND), 2)
 
+    def test_pipewire_owned_playback_with_unknown_state_blocks(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK_UNKNOWN",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7006,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+        (self.pcm("p", number=0) / "status").write_text(
+            "state: UNKNOWN\nowner_pid: 7006\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertNotIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+
     def test_pipewire_owned_playback_blocks_when_motu_is_not_configured_default(self):
         self.make_card(
             0,
