@@ -32,6 +32,7 @@ WIREPLUMBER_UNIT = "wireplumber.service"
 LEVEL_OBSERVER_UNIT = "audio-control-level-observer-v1.service"
 PIPEWIRE_EXECUTABLE = "/usr/bin/pipewire"
 DEFAULT_METADATA_COMMAND = ("pw-metadata", "-n", "default")
+CAPTURE_STREAMS_COMMAND = ("pactl", "--format=json", "list", "source-outputs")
 POLL_SECONDS = 10.0
 READBACK_ATTEMPTS = 6
 READBACK_INTERVAL_SECONDS = 1.0
@@ -109,6 +110,7 @@ def _validate_command(argv: tuple[str, ...]) -> None:
         ("pactl", "--format=json", "list", "sinks"),
         ("pactl", "info"),
         DEFAULT_METADATA_COMMAND,
+        CAPTURE_STREAMS_COMMAND,
         ("systemctl", "--user", "restart", WIREPLUMBER_UNIT),
         ("systemctl", "--user", "stop", LEVEL_OBSERVER_UNIT),
         ("systemctl", "--user", "start", LEVEL_OBSERVER_UNIT),
@@ -423,8 +425,8 @@ def all_pcm_definitely_closed(card: pathlib.Path) -> None:
 
 def _stable_other_pcm_status_snapshot(
     asound_root: pathlib.Path, motu_card: pathlib.Path
-) -> tuple[tuple[pathlib.Path, str], ...]:
-    def observe() -> tuple[tuple[pathlib.Path, str], ...]:
+) -> tuple[tuple[pathlib.Path, str, str, int | None], ...]:
+    def observe() -> tuple[tuple[pathlib.Path, str, str, int | None], ...]:
         try:
             cards = sorted(
                 (
@@ -443,7 +445,7 @@ def _stable_other_pcm_status_snapshot(
         ):
             raise RecoveryError("host-pcm-ambiguous")
 
-        snapshot: list[tuple[pathlib.Path, str]] = []
+        snapshot: list[tuple[pathlib.Path, str, str, int | None]] = []
         try:
             for card in cards:
                 if card == motu_card:
@@ -470,9 +472,27 @@ def _stable_other_pcm_status_snapshot(
                     if card_substream_count > MAX_SUBSTREAMS:
                         raise RecoveryError("host-pcm-ambiguous")
                     for substream in substreams:
-                        snapshot.append(
-                            (substream, _read_proc_text(substream / "status"))
-                        )
+                        direction = substream.parent.name[-1]
+                        status = _read_proc_text(substream / "status")
+                        if status.casefold() == "closed":
+                            state = "CLOSED"
+                            owner = None
+                        else:
+                            state = _known_active_pcm_state(status)
+                            if state is None:
+                                if direction == "p":
+                                    raise RecoveryError(
+                                        "host-playback-state-unrecognized"
+                                    )
+                                raise RecoveryError("host-capture-state-unrecognized")
+                            owner = _owner_pid(status)
+                            if owner is None:
+                                if direction == "p":
+                                    raise RecoveryError(
+                                        "host-playback-owner-unproven"
+                                    )
+                                raise RecoveryError("host-capture-owner-unproven")
+                        snapshot.append((substream, direction, state, owner))
         except OSError as exc:
             raise RecoveryError("host-pcm-unreadable") from exc
         return tuple(snapshot)
@@ -487,19 +507,30 @@ def _stable_other_pcm_status_snapshot(
 def other_pcm_restart_safe(
     asound_root: pathlib.Path, motu_card: pathlib.Path, proc_root: pathlib.Path
 ) -> None:
-    for substream, status in _stable_other_pcm_status_snapshot(
+    for _substream, direction, state, owner in _stable_other_pcm_status_snapshot(
         asound_root, motu_card
     ):
-        if status.casefold() == "closed":
+        if state == "CLOSED":
             continue
-        direction = substream.parent.name[-1]
         if direction == "c":
             raise RecoveryError("host-capture-not-closed")
-        if _known_active_pcm_state(status) is None:
-            raise RecoveryError("host-playback-state-unrecognized")
-        owner = _owner_pid(status)
         if owner is None or not _pipewire_owns(owner, proc_root):
             raise RecoveryError("host-playback-owner-unproven")
+
+
+def require_no_pipewire_capture_streams(runner: Runner) -> None:
+    try:
+        payload = json.loads(runner(CAPTURE_STREAMS_COMMAND))
+    except RecoveryError as exc:
+        raise RecoveryError("pipewire-capture-unreadable") from exc
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise RecoveryError("pipewire-capture-unreadable") from exc
+    if not isinstance(payload, list):
+        raise RecoveryError("pipewire-capture-unreadable")
+    if any(not isinstance(item, dict) for item in payload):
+        raise RecoveryError("pipewire-capture-unreadable")
+    if payload:
+        raise RecoveryError("pipewire-capture-active")
 
 
 def _owner_pid(status_text: str) -> int | None:
@@ -957,6 +988,7 @@ def _normalize_exact_sink(
         raise RecoveryError("motu-sink-disappeared")
     _item, identity = recovered
     sink_transition_pcm_safe(physical.card, proc_root)
+    require_configured_motu_default(runner, physical)
     runner(("pactl", "set-sink-volume", identity.name, "100%"))
     runner(("pactl", "set-sink-mute", identity.name, "0"))
 
@@ -978,6 +1010,39 @@ def _normalize_exact_sink(
         raise RecoveryError("desktop-sink-readback-failed")
     sink_transition_pcm_safe(physical.card, proc_root)
     return identity
+
+
+def _require_pending_configured_motu_default(
+    *,
+    physical: PhysicalMotu,
+    runner: Runner,
+    state_path: pathlib.Path,
+) -> None:
+    try:
+        require_configured_motu_default(runner, physical)
+    except RecoveryError as exc:
+        if str(exc) == "configured-default-not-motu":
+            _store_state(state_path, _default_state())
+        raise
+
+
+def _normalize_pending_exact_sink(
+    *,
+    physical: PhysicalMotu,
+    runner: Runner,
+    proc_root: pathlib.Path,
+    state_path: pathlib.Path,
+) -> SinkIdentity:
+    try:
+        return _normalize_exact_sink(
+            physical=physical,
+            runner=runner,
+            proc_root=proc_root,
+        )
+    except RecoveryError as exc:
+        if str(exc) == "configured-default-not-motu":
+            _store_state(state_path, _default_state())
+        raise
 
 
 def reconcile_once(
@@ -1012,6 +1077,12 @@ def reconcile_once(
             state["handoff_serial_sha256"] != physical.serial_sha256
         ):
             raise RecoveryError("handoff-physical-identity-changed")
+        if state["handoff_pending"]:
+            _require_pending_configured_motu_default(
+                physical=physical,
+                runner=runner,
+                state_path=state_path,
+            )
 
         if sink is None:
             if observed_now < float(state["next_attempt_at"]):
@@ -1028,7 +1099,11 @@ def reconcile_once(
             if sink is not None and not state["handoff_pending"]:
                 return "noop:sink-present"
         if sink is not None:
-            require_configured_motu_default(runner, physical)
+            _require_pending_configured_motu_default(
+                physical=physical,
+                runner=runner,
+                state_path=state_path,
+            )
             with quiesce_level_observer(runner, quiesce_marker):
                 current = resolve_unique_motu_card(
                     asound_root,
@@ -1043,14 +1118,26 @@ def reconcile_once(
                     sleeper,
                     {"motu-capture-not-closed"},
                 )
-                require_configured_motu_default(runner, physical)
-                _normalize_exact_sink(
-                    physical=physical, runner=runner, proc_root=proc_root
+                _require_pending_configured_motu_default(
+                    physical=physical,
+                    runner=runner,
+                    state_path=state_path,
+                )
+                _normalize_pending_exact_sink(
+                    physical=physical,
+                    runner=runner,
+                    proc_root=proc_root,
+                    state_path=state_path,
                 )
             _store_state(state_path, _success_state(observed_now))
             return "handoff-restored"
 
-        require_configured_motu_default(runner, physical)
+        if state["handoff_pending"]:
+            _require_pending_configured_motu_default(
+                physical=physical, runner=runner, state_path=state_path
+            )
+        else:
+            require_configured_motu_default(runner, physical)
         other_pcm_restart_safe(asound_root, physical.card, proc_root)
         with quiesce_level_observer(runner, quiesce_marker):
             current = resolve_unique_motu_card(
@@ -1077,6 +1164,7 @@ def reconcile_once(
                     sleeper,
                     {"motu-pcm-not-closed"},
                 )
+                require_no_pipewire_capture_streams(runner)
                 # Durable arming precedes the effect; a crash cannot lose handoff intent.
                 _store_state(
                     state_path, _armed_failure_state(state, physical, observed_now)
@@ -1095,14 +1183,20 @@ def reconcile_once(
                 require_audio_services_active(runner)
                 returned = resolve_motu_sink(read_sink_inventory(runner), physical)
                 if returned is not None:
-                    _normalize_exact_sink(
-                        physical=physical, runner=runner, proc_root=proc_root
+                    _normalize_pending_exact_sink(
+                        physical=physical,
+                        runner=runner,
+                        proc_root=proc_root,
+                        state_path=state_path,
                     )
                     recovered_without_restart = True
                 else:
                     all_pcm_definitely_closed(physical.card)
-                    require_configured_motu_default(runner, physical)
+                    _require_pending_configured_motu_default(
+                        physical=physical, runner=runner, state_path=state_path
+                    )
                     other_pcm_restart_safe(asound_root, physical.card, proc_root)
+                    require_no_pipewire_capture_streams(runner)
                     runner(("systemctl", "--user", "restart", WIREPLUMBER_UNIT))
                     recovered_without_restart = False
 
@@ -1125,8 +1219,11 @@ def reconcile_once(
                             sleeper(READBACK_INTERVAL_SECONDS)
                     if recovered is None:
                         raise RecoveryError("motu-sink-readback-timeout")
-                    _normalize_exact_sink(
-                        physical=physical, runner=runner, proc_root=proc_root
+                    _normalize_pending_exact_sink(
+                        physical=physical,
+                        runner=runner,
+                        proc_root=proc_root,
+                        state_path=state_path,
                     )
 
         _store_state(state_path, _success_state(observed_now))

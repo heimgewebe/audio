@@ -35,11 +35,16 @@ An armed attempt temporarily stops only the repository-owned
 `audio-control-level-observer-v1.service`. That service normally keeps MOTU
 capture open for meters, so stopping it is necessary to distinguish the meter
 from a real recorder. After the stop is read back as inactive, **every playback
-and capture PCM substream** must be present in two identical snapshots with
-`hw_params=closed` and `status=closed`. If capture stays open, another capture
-client or a real recording may exist: recovery aborts without restarting
-WirePlumber. The level observer is started and read back active in the cleanup
-path after success, failure, or an exception.
+and capture PCM substream on the MOTU** must be present in two identical
+snapshots with `hw_params=closed` and `status=closed`. In addition, the
+structured `pactl --format=json list source-outputs` inventory must be readable
+and empty after the repository observer has been quiesced. Any remaining
+PipeWire source-output stream, including monitor/loopback capture, blocks the
+restart. The source-output gate is checked once before arming the durable
+handoff and again as the final read immediately before the WirePlumber restart,
+so a capture stream that appears between those observations is also caught.
+The level observer is started and read back active in the cleanup path after
+success, failure, or an exception.
 The close gate allows a bounded seven-observation grace period for PipeWire's
 normal source-suspend delay; it never stops any other client. A capture stream
 that remains open after that grace period is treated as a recording and blocks
@@ -57,25 +62,31 @@ all-playback-and-capture closed observation. The WirePlumber restart call is
 the immediately following effect.
 
 Because that restart is global, every non-MOTU ALSA PCM is also enumerated from
-`/proc/asound/card*/pcm*/sub*/status` in two identical snapshots before the
-level observer is quiesced and again at the final restart edge. Capture must be
-exactly `CLOSED`. Playback may be `CLOSED` or report exactly one kernel-defined active ALSA
-state (`OPEN`, `SETUP`, `PREPARED`, `RUNNING`, `XRUN`, `DRAINING`,
-`PAUSED`, `SUSPENDED`, or `DISCONNECTED`) plus stable `owner_pid` evidence
-whose `/proc/PID/exe` is exactly `/usr/bin/pipewire`; direct ALSA playback,
-capture, missing ownership, and any missing, unreadable, changing, malformed,
-or unknown status still defer recovery. This allows ordinary PipeWire-managed
-desktop playback to survive the session-manager repair without weakening the
-recording guard. The exception is active only while `pw-metadata -n default`
-reports the exact serial-bound MOTU sink as `default.configured.audio.sink`;
-that intent is checked before quiescing and again at the final restart edge. A
-pending handoff whose MOTU sink reappears naturally is guarded the same way:
-configured MOTU intent is required before quiescing and again during
-normalization immediately before `pactl set-default-sink`. The normalization
-helper itself owns that final effect-edge check, so every recovery path that can
-change the desktop default inherits the same guard. An intentional switch to
-HDMI/SPDIF or another desktop default therefore aborts recovery without
-rewriting the user's choice.
+`/proc/asound/card*/pcm*/sub*/status` in two semantically identical snapshots
+before the level observer is quiesced and again at the final restart edge.
+Snapshot stability is defined only by substream identity/direction, normalized
+PCM state, and `owner_pid`; dynamic kernel fields such as timestamps, delay,
+availability, and hardware/application pointers are deliberately ignored.
+Capture must be exactly `CLOSED`. Playback may be `CLOSED` or report exactly one
+kernel-defined active ALSA state (`OPEN`, `SETUP`, `PREPARED`, `RUNNING`, `XRUN`,
+`DRAINING`, `PAUSED`, `SUSPENDED`, or `DISCONNECTED`) plus stable `owner_pid`
+evidence whose `/proc/PID/exe` is exactly `/usr/bin/pipewire`; direct ALSA
+playback, capture, missing ownership, and any missing, unreadable, malformed,
+or unknown status still defer recovery.
+
+Every recovery path that can restart WirePlumber or change the desktop default
+also requires `pw-metadata -n default` to yield exactly one
+`default.configured.audio.sink` entry naming the exact serial-bound MOTU sink.
+Missing, duplicated, malformed, or otherwise unreadable configured-default
+metadata fails closed; the service never assumes that MOTU was probably
+intended from priority alone. The configured intent is checked before
+quiescing, again at the final restart edge, before the first volume/mute
+normalization effect, and again immediately before `pactl set-default-sink`.
+An explicit HDMI/SPDIF or other non-MOTU
+configured default therefore aborts recovery without rewriting the user's
+choice. If a durable handoff was already pending, that explicit non-MOTU choice
+also disarms the stale handoff. Unreadable or ambiguous metadata blocks without
+being interpreted as a user choice and therefore does not disarm pending state.
 
 Blocked recovery attempts remain fail-closed but are journaled with a bounded
 internal `reason` token such as `host-capture-not-closed` or
@@ -101,15 +112,20 @@ without changing the service contract. It persists exponential failure backoff
 (capped at 15 minutes), the
 two-minute success cooldown, and the physical-serial-bound `handoff_pending`
 intent across service restarts and UI deployments. If an armed exact sink
-reappears naturally, the same safe handoff gate restores it and clears pending.
-Without pending, a healthy sink remains a no-op, so an intentional alternate
-desktop default is not overwritten.
+reappears naturally while the exact MOTU configured-default intent is still
+present, the same safe handoff gate restores it and clears pending. A verified
+explicit non-MOTU configured default clears the stale handoff instead. Without
+pending, a healthy sink remains a no-op, so a later return to MOTU intent does
+not replay old volume/mute/default normalization.
 
 There is no atomic exclusion primitive for arbitrary non-cooperating ALSA
 clients. Such a client can still open in the sub-call interval between the last
 `/proc/asound` read and `systemctl restart`, or between an ownership read and a
 subsequent `pactl` effect. The observer minimizes those windows and fails closed
-when the next read sees the race; it does not claim to eliminate them.
+when the next read sees the race; it does not claim to eliminate them. A new
+PipeWire capture stream can likewise appear after the final source-output read
+but before the restart exec; that irreducible sub-call race is documented
+rather than treated as eliminated.
 
 The revision-bound audio-control deployer installs the unit and explicitly
 reads back that it is loaded and active on every supporting-release convergence,
