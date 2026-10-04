@@ -32,6 +32,7 @@ OBSERVER_START = (
     "start",
     "audio-control-level-observer-v1.service",
 )
+DEFAULT_METADATA_COMMAND = ("pw-metadata", "-n", "default")
 
 
 def motu_sink(*, serial=PW_SERIAL, bus_path=BUS_PATH, muted=False, volume=65_536):
@@ -74,6 +75,8 @@ class FakeRunner:
         self.close_observer_capture = True
         self.restart_owner = None
         self.inventory_override = None
+        self.configured_default_sink = MOTU_NAME
+        self.configured_default_after_observer_stop = None
 
     def inventory(self):
         if self.inventory_override is not None:
@@ -98,6 +101,8 @@ class FakeRunner:
             self.observer_state = "inactive"
             if self.close_observer_capture:
                 self.case.close_pcm("c")
+            if self.configured_default_after_observer_stop is not None:
+                self.configured_default_sink = self.configured_default_after_observer_stop
             return ""
         if argv == OBSERVER_START:
             self.observer_state = "active"
@@ -113,6 +118,16 @@ class FakeRunner:
             return json.dumps(self.inventory())
         if argv == ("pactl", "info"):
             return f"Default Sink: {self.default_sink}\n"
+        if argv == DEFAULT_METADATA_COMMAND:
+            payload = json.dumps(
+                {"name": self.configured_default_sink},
+                separators=(",", ":"),
+            )
+            return (
+                'Found "default" metadata 50\n'
+                "update: id:0 key:'default.configured.audio.sink' "
+                f"value:'{payload}' type:'Spa:String:JSON'\n"
+            )
         if argv[:3] == ("pactl", "set-sink-volume", MOTU_NAME):
             self.volume = 65_536
             return ""
@@ -213,7 +228,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
             self, sink_present=sink_present, recover_on_restart=recover_on_restart
         )
 
-    def reconcile(self, runner, *, now=1_000.0):
+    def reconcile(self, runner, *, now=1_000.0, blocked_reason_sink=None):
         return MODULE.reconcile_once(
             asound_root=self.asound,
             state_path=self.state,
@@ -223,6 +238,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
             runner=runner,
             now=now,
             sleeper=lambda _seconds: None,
+            blocked_reason_sink=blocked_reason_sink,
         )
 
     def state_payload(self):
@@ -426,6 +442,97 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertNotIn(OBSERVER_STOP, runner.commands)
         self.assertNotIn(RESTART, runner.commands)
 
+    def test_pipewire_owned_playback_on_another_card_permits_recovery(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7002,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+
+        self.assertEqual(self.reconcile(runner), "recovered")
+        self.assertEqual(runner.commands.count(RESTART), 1)
+        self.assertEqual(runner.commands.count(DEFAULT_METADATA_COMMAND), 2)
+
+    def test_pipewire_owned_playback_blocks_when_motu_is_not_configured_default(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK_ALTERNATE_DEFAULT",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        runner.configured_default_sink = "alsa_output.pci-generic.analog-stereo"
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7004,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertNotIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+
+    def test_configured_default_change_at_final_boundary_blocks_restart(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK_DEFAULT_CHANGED",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        runner.configured_default_after_observer_stop = (
+            "alsa_output.pci-generic.analog-stereo"
+        )
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7005,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+        self.assertEqual(runner.observer_state, "active")
+        self.assertEqual(runner.commands.count(DEFAULT_METADATA_COMMAND), 2)
+
+    def test_pipewire_owned_capture_on_another_card_still_blocks(self):
+        self.make_card(
+            0,
+            card_id="PCH",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_CAPTURE",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        self.open_pcm(
+            "c",
+            number=0,
+            pid=7003,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertNotIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+
     def test_unreadable_or_unknown_other_card_pcm_status_blocks(self):
         self.make_card(
             0,
@@ -470,6 +577,43 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertNotIn(RESTART, runner.commands)
         self.assertNotIn(OBSERVER_STOP, runner.commands)
         self.assertEqual(runner.observer_state, "active")
+
+    def test_blocked_reason_is_logged_as_internal_token_only(self):
+        runner = self.runner(sink_present=False)
+        self.open_pcm("p")
+        reasons = []
+
+        self.assertEqual(
+            self.reconcile(runner, blocked_reason_sink=reasons.append),
+            "blocked",
+        )
+        self.assertEqual(reasons, ["motu-pcm-owner-unproven"])
+        self.assertEqual(
+            MODULE._recovery_log_payload("blocked", reasons[0]),
+            {
+                "qobuz_desktop_recovery": "blocked",
+                "reason": "motu-pcm-owner-unproven",
+            },
+        )
+
+    def test_unexpected_blocked_reason_is_redacted(self):
+        runner = self.runner(sink_present=False)
+        reasons = []
+
+        with mock.patch.object(
+            MODULE,
+            "resolve_unique_motu_card",
+            side_effect=MODULE.RecoveryError("/home/alex/private"),
+        ):
+            self.assertEqual(
+                self.reconcile(runner, blocked_reason_sink=reasons.append),
+                "blocked",
+            )
+        self.assertEqual(reasons, ["recovery-error"])
+        self.assertEqual(
+            MODULE._recovery_log_payload("noop:sink-present", "ignored"),
+            {"qobuz_desktop_recovery": "noop:sink-present"},
+        )
 
     def test_ambiguous_pcm_blocks_before_absence_stabilization(self):
         runner = self.runner(sink_present=False)
@@ -662,7 +806,10 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         runner = self.runner(sink_present=False)
         self.assertEqual(self.reconcile(runner), "recovered")
         self.assertTrue(
-            all(command[0] in {"pactl", "systemctl"} for command in runner.commands)
+            all(
+                command[0] in {"pactl", "pw-metadata", "systemctl"}
+                for command in runner.commands
+            )
         )
 
 
