@@ -77,6 +77,7 @@ class FakeRunner:
         self.inventory_override = None
         self.configured_default_sink = MOTU_NAME
         self.configured_default_after_observer_stop = None
+        self.configured_default_after_sink_mute = None
 
     def inventory(self):
         if self.inventory_override is not None:
@@ -133,6 +134,8 @@ class FakeRunner:
             return ""
         if argv[:3] == ("pactl", "set-sink-mute", MOTU_NAME):
             self.muted = False
+            if self.configured_default_after_sink_mute is not None:
+                self.configured_default_sink = self.configured_default_after_sink_mute
             return ""
         if argv == ("pactl", "set-default-sink", MOTU_NAME):
             self.default_sink = MOTU_NAME
@@ -461,7 +464,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
 
         self.assertEqual(self.reconcile(runner), "recovered")
         self.assertEqual(runner.commands.count(RESTART), 1)
-        self.assertEqual(runner.commands.count(DEFAULT_METADATA_COMMAND), 2)
+        self.assertEqual(runner.commands.count(DEFAULT_METADATA_COMMAND), 3)
 
     def test_pipewire_owned_playback_with_unknown_state_blocks(self):
         self.make_card(
@@ -721,6 +724,67 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertNotIn(RESTART, second.commands)
         self.assertEqual(second.default_sink, MOTU_NAME)
         self.assertFalse(self.state_payload()["handoff_pending"])
+
+    def test_pending_handoff_respects_changed_configured_default(self):
+        first = self.runner(sink_present=False, recover_on_restart=False)
+        self.assertEqual(self.reconcile(first), "blocked")
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+        second = self.runner(sink_present=True)
+        second.configured_default_sink = "alsa_output.pci-generic.analog-stereo"
+
+        self.assertEqual(self.reconcile(second, now=1_001.0), "blocked")
+        self.assertNotIn(OBSERVER_STOP, second.commands)
+        self.assertNotIn(RESTART, second.commands)
+        self.assertEqual(
+            second.default_sink,
+            "alsa_output.pci-generic.analog-stereo",
+        )
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+    def test_pending_handoff_rechecks_configured_default_after_quiesce(self):
+        first = self.runner(sink_present=False, recover_on_restart=False)
+        self.assertEqual(self.reconcile(first), "blocked")
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+        second = self.runner(sink_present=True)
+        second.configured_default_after_observer_stop = (
+            "alsa_output.pci-generic.analog-stereo"
+        )
+
+        self.assertEqual(self.reconcile(second, now=1_001.0), "blocked")
+        self.assertIn(OBSERVER_STOP, second.commands)
+        self.assertEqual(second.commands.count(OBSERVER_START), 1)
+        self.assertNotIn(RESTART, second.commands)
+        self.assertEqual(
+            second.default_sink,
+            "alsa_output.pci-generic.analog-stereo",
+        )
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+    def test_pending_handoff_rechecks_configured_default_at_set_default_boundary(self):
+        first = self.runner(sink_present=False, recover_on_restart=False)
+        self.assertEqual(self.reconcile(first), "blocked")
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+        second = self.runner(sink_present=True)
+        second.configured_default_after_sink_mute = (
+            "alsa_output.pci-generic.analog-stereo"
+        )
+
+        self.assertEqual(self.reconcile(second, now=1_001.0), "blocked")
+        self.assertIn(OBSERVER_STOP, second.commands)
+        self.assertEqual(second.commands.count(OBSERVER_START), 1)
+        self.assertNotIn(RESTART, second.commands)
+        self.assertNotIn(
+            ("pactl", "set-default-sink", MOTU_NAME),
+            second.commands,
+        )
+        self.assertEqual(
+            second.default_sink,
+            "alsa_output.pci-generic.analog-stereo",
+        )
+        self.assertTrue(self.state_payload()["handoff_pending"])
 
     def test_natural_reappearance_during_stabilization_is_a_healthy_noop(self):
         runner = self.runner(sink_present=False)

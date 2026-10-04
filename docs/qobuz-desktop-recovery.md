@@ -68,8 +68,14 @@ or unknown status still defer recovery. This allows ordinary PipeWire-managed
 desktop playback to survive the session-manager repair without weakening the
 recording guard. The exception is active only while `pw-metadata -n default`
 reports the exact serial-bound MOTU sink as `default.configured.audio.sink`;
-that intent is checked before quiescing and again at the final restart edge, so
-an intentional switch to HDMI/SPDIF or another desktop default aborts recovery.
+that intent is checked before quiescing and again at the final restart edge. A
+pending handoff whose MOTU sink reappears naturally is guarded the same way:
+configured MOTU intent is required before quiescing and again during
+normalization immediately before `pactl set-default-sink`. The normalization
+helper itself owns that final effect-edge check, so every recovery path that can
+change the desktop default inherits the same guard. An intentional switch to
+HDMI/SPDIF or another desktop default therefore aborts recovery without
+rewriting the user's choice.
 
 Blocked recovery attempts remain fail-closed but are journaled with a bounded
 internal `reason` token such as `host-capture-not-closed` or

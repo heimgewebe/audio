@@ -965,6 +965,7 @@ def _normalize_exact_sink(
     if rebound is None or rebound[1] != identity:
         raise RecoveryError("motu-sink-changed")
     sink_transition_pcm_safe(physical.card, proc_root)
+    require_configured_motu_default(runner, physical)
     runner(("pactl", "set-default-sink", identity.name))
 
     verified = resolve_motu_sink(read_sink_inventory(runner), physical)
@@ -1027,6 +1028,7 @@ def reconcile_once(
             if sink is not None and not state["handoff_pending"]:
                 return "noop:sink-present"
         if sink is not None:
+            require_configured_motu_default(runner, physical)
             with quiesce_level_observer(runner, quiesce_marker):
                 current = resolve_unique_motu_card(
                     asound_root,
@@ -1041,6 +1043,7 @@ def reconcile_once(
                     sleeper,
                     {"motu-capture-not-closed"},
                 )
+                require_configured_motu_default(runner, physical)
                 _normalize_exact_sink(
                     physical=physical, runner=runner, proc_root=proc_root
                 )
