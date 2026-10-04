@@ -33,6 +33,7 @@ LEVEL_OBSERVER_UNIT = "audio-control-level-observer-v1.service"
 PIPEWIRE_EXECUTABLE = "/usr/bin/pipewire"
 DEFAULT_METADATA_COMMAND = ("pw-metadata", "-n", "default")
 CAPTURE_STREAMS_COMMAND = ("pactl", "--format=json", "list", "source-outputs")
+PIPEWIRE_GRAPH_COMMAND = ("pw-dump",)
 POLL_SECONDS = 10.0
 READBACK_ATTEMPTS = 6
 READBACK_INTERVAL_SECONDS = 1.0
@@ -111,6 +112,7 @@ def _validate_command(argv: tuple[str, ...]) -> None:
         ("pactl", "info"),
         DEFAULT_METADATA_COMMAND,
         CAPTURE_STREAMS_COMMAND,
+        PIPEWIRE_GRAPH_COMMAND,
         ("systemctl", "--user", "restart", WIREPLUMBER_UNIT),
         ("systemctl", "--user", "stop", LEVEL_OBSERVER_UNIT),
         ("systemctl", "--user", "start", LEVEL_OBSERVER_UNIT),
@@ -520,17 +522,33 @@ def other_pcm_restart_safe(
 
 def require_no_pipewire_capture_streams(runner: Runner) -> None:
     try:
-        payload = json.loads(runner(CAPTURE_STREAMS_COMMAND))
+        source_outputs = json.loads(runner(CAPTURE_STREAMS_COMMAND))
+        pipewire_objects = json.loads(runner(PIPEWIRE_GRAPH_COMMAND))
     except RecoveryError as exc:
         raise RecoveryError("pipewire-capture-unreadable") from exc
     except (json.JSONDecodeError, UnicodeError) as exc:
         raise RecoveryError("pipewire-capture-unreadable") from exc
-    if not isinstance(payload, list):
+    if not isinstance(source_outputs, list) or any(
+        not isinstance(item, dict) for item in source_outputs
+    ):
         raise RecoveryError("pipewire-capture-unreadable")
-    if any(not isinstance(item, dict) for item in payload):
-        raise RecoveryError("pipewire-capture-unreadable")
-    if payload:
+    if source_outputs:
         raise RecoveryError("pipewire-capture-active")
+    if not isinstance(pipewire_objects, list) or any(
+        not isinstance(item, dict) for item in pipewire_objects
+    ):
+        raise RecoveryError("pipewire-capture-unreadable")
+    for item in pipewire_objects:
+        if item.get("type") != "PipeWire:Interface:Node":
+            continue
+        info = item.get("info")
+        if not isinstance(info, dict):
+            raise RecoveryError("pipewire-capture-unreadable")
+        props = info.get("props")
+        if not isinstance(props, dict):
+            raise RecoveryError("pipewire-capture-unreadable")
+        if props.get("media.class") == "Stream/Input/Audio":
+            raise RecoveryError("pipewire-capture-active")
 
 
 def _owner_pid(status_text: str) -> int | None:
@@ -1251,6 +1269,8 @@ def check_contract() -> None:
         ("systemctl", "--user", "is-active", "pipewire.service"),
         ("pactl", "--format=json", "list", "sinks"),
         DEFAULT_METADATA_COMMAND,
+        CAPTURE_STREAMS_COMMAND,
+        PIPEWIRE_GRAPH_COMMAND,
     ):
         _validate_command(argv)
     if REQUIRED_SERVICES != (

@@ -38,11 +38,13 @@ from a real recorder. After the stop is read back as inactive, **every playback
 and capture PCM substream on the MOTU** must be present in two identical
 snapshots with `hw_params=closed` and `status=closed`. In addition, the
 structured `pactl --format=json list source-outputs` inventory must be readable
-and empty after the repository observer has been quiesced. Any remaining
-PipeWire source-output stream, including monitor/loopback capture, blocks the
-restart. The source-output gate is checked once before arming the durable
-handoff and again as the final read immediately before the WirePlumber restart,
-so a capture stream that appears between those observations is also caught.
+and empty after the repository observer has been quiesced. The native PipeWire
+graph from `pw-dump` must also be readable and contain no
+`Stream/Input/Audio` node. This covers native recorders that do not appear as
+Pulse-compatible source outputs while deliberately leaving native
+`Stream/Output/Audio` playback allowed. Both capture views are checked once
+before arming the durable handoff and again at the final restart edge, so a
+capture stream that appears between those observations is also caught.
 The level observer is started and read back active in the cleanup path after
 success, failure, or an exception.
 The close gate allows a bounded seven-observation grace period for PipeWire's
@@ -123,9 +125,9 @@ clients. Such a client can still open in the sub-call interval between the last
 `/proc/asound` read and `systemctl restart`, or between an ownership read and a
 subsequent `pactl` effect. The observer minimizes those windows and fails closed
 when the next read sees the race; it does not claim to eliminate them. A new
-PipeWire capture stream can likewise appear after the final source-output read
-but before the restart exec; that irreducible sub-call race is documented
-rather than treated as eliminated.
+PipeWire capture stream can likewise appear after the final source-output and
+native-graph reads but before the restart exec; that irreducible sub-call race
+is documented rather than treated as eliminated.
 
 The revision-bound audio-control deployer installs the unit and explicitly
 reads back that it is loaded and active on every supporting-release convergence,

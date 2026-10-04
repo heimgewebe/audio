@@ -34,6 +34,7 @@ OBSERVER_START = (
 )
 DEFAULT_METADATA_COMMAND = ("pw-metadata", "-n", "default")
 CAPTURE_STREAMS_COMMAND = ("pactl", "--format=json", "list", "source-outputs")
+PIPEWIRE_GRAPH_COMMAND = ("pw-dump",)
 
 
 def motu_sink(*, serial=PW_SERIAL, bus_path=BUS_PATH, muted=False, volume=65_536):
@@ -84,6 +85,10 @@ class FakeRunner:
         self.capture_streams_after_first_check = None
         self.capture_status_override = None
         self.capture_check_count = 0
+        self.native_capture_streams = []
+        self.native_capture_streams_after_first_check = None
+        self.native_capture_status_override = None
+        self.native_capture_check_count = 0
 
     def inventory(self):
         if self.inventory_override is not None:
@@ -157,6 +162,32 @@ class FakeRunner:
                 and self.capture_streams_after_first_check is not None
             ):
                 self.capture_streams = list(self.capture_streams_after_first_check)
+            return json.dumps(current)
+        if argv == PIPEWIRE_GRAPH_COMMAND:
+            self.native_capture_check_count += 1
+            if self.native_capture_status_override is not None:
+                return self.native_capture_status_override
+            current = list(self.native_capture_streams)
+            if self.observer_state == "active":
+                current.insert(
+                    0,
+                    {
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "media.class": "Stream/Input/Audio",
+                                "node.name": "audio-control-level-observer-v1",
+                            }
+                        },
+                    },
+                )
+            if (
+                self.native_capture_check_count == 1
+                and self.native_capture_streams_after_first_check is not None
+            ):
+                self.native_capture_streams = list(
+                    self.native_capture_streams_after_first_check
+                )
             return json.dumps(current)
         if argv[:3] == ("pactl", "set-sink-volume", MOTU_NAME):
             self.volume = 65_536
@@ -284,7 +315,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(self.reconcile(runner), "noop:sink-present")
         self.assertEqual(runner.default_sink, "alsa_output.pci-generic.analog-stereo")
         self.assertFalse(
-            any(command[1].startswith("set-") for command in runner.commands)
+            any(len(command) > 1 and command[1].startswith("set-") for command in runner.commands)
         )
         self.assertNotIn(OBSERVER_STOP, runner.commands)
         self.assertFalse(self.state.exists())
@@ -561,11 +592,52 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(runner.commands.count(OBSERVER_START), 1)
         self.assertFalse(self.state.exists())
 
+    def test_native_pipewire_capture_blocks_without_pulse_source_output(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_streams = [
+            {
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Input/Audio",
+                        "node.name": "native-recorder",
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 1)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 1)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+        self.assertFalse(self.state.exists())
+
+    def test_native_pipewire_playback_does_not_block_capture_gate(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_streams = [
+            {
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Output/Audio",
+                        "node.name": "native-player",
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(self.reconcile(runner), "recovered")
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
+        self.assertEqual(runner.commands.count(RESTART), 1)
+
     def test_repo_observer_alone_does_not_block_pipewire_capture_gate(self):
         runner = self.runner(sink_present=False)
 
         self.assertEqual(self.reconcile(runner), "recovered")
         self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 2)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
         self.assertEqual(runner.commands.count(RESTART), 1)
 
     def test_unreadable_pipewire_capture_status_blocks(self):
@@ -579,12 +651,46 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(runner.commands.count(OBSERVER_START), 1)
         self.assertFalse(self.state.exists())
 
+    def test_unreadable_native_pipewire_graph_blocks(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_status_override = "{not-json"
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 1)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 1)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+        self.assertFalse(self.state.exists())
+
     def test_pipewire_capture_race_at_final_restart_gate_blocks(self):
         runner = self.runner(sink_present=False)
         runner.capture_streams_after_first_check = [{"index": 12264}]
 
         self.assertEqual(self.reconcile(runner), "blocked")
         self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 2)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertTrue(self.state_payload()["handoff_pending"])
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+
+    def test_native_pipewire_capture_race_at_final_restart_gate_blocks(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_streams_after_first_check = [
+            {
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Input/Audio",
+                        "node.name": "late-native-recorder",
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 2)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
         self.assertNotIn(RESTART, runner.commands)
         self.assertTrue(self.state_payload()["handoff_pending"])
         self.assertEqual(runner.commands.count(OBSERVER_START), 1)
@@ -1035,7 +1141,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(self.reconcile(runner), "blocked")
         self.assertIn(RESTART, runner.commands)
         self.assertFalse(
-            any(command[1].startswith("set-") for command in runner.commands)
+            any(len(command) > 1 and command[1].startswith("set-") for command in runner.commands)
         )
         self.assertTrue(self.state_payload()["handoff_pending"])
         self.assertEqual(runner.observer_state, "active")
@@ -1074,7 +1180,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(self.reconcile(runner), "recovered")
         self.assertTrue(
             all(
-                command[0] in {"pactl", "pw-metadata", "systemctl"}
+                command[0] in {"pactl", "pw-dump", "pw-metadata", "systemctl"}
                 for command in runner.commands
             )
         )
