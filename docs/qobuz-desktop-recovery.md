@@ -39,10 +39,14 @@ and capture PCM substream on the MOTU** must be present in two identical
 snapshots with `hw_params=closed` and `status=closed`. In addition, the
 structured `pactl --format=json list source-outputs` inventory must be readable
 and empty after the repository observer has been quiesced. The native PipeWire
-graph from `pw-dump` must also be readable and contain no
-`Stream/Input/Audio` node. This covers native recorders that do not appear as
-Pulse-compatible source outputs while deliberately leaving native
-`Stream/Output/Audio` playback allowed. Both capture views are checked once
+graph from `pw-dump` must also be readable. Native
+`Stream/Output/Audio` playback remains allowed, but any other
+`Stream/*/Audio` class is treated as potentially capture-capable and blocks
+recovery, including `Stream/Input/Audio` and `Stream/Duplex/Audio`. This
+covers native recorders that do not appear as Pulse-compatible source outputs.
+The full graph read has its own 2,000,000-byte bound, matching the repository's
+passive telemetry budget instead of the smaller ordinary command budget. Both
+capture views are checked once
 before arming the durable handoff and again at the final restart edge, so a
 capture stream that appears between those observations is also caught.
 The level observer is started and read back active in the cleanup path after
@@ -124,10 +128,12 @@ There is no atomic exclusion primitive for arbitrary non-cooperating ALSA
 clients. Such a client can still open in the sub-call interval between the last
 `/proc/asound` read and `systemctl restart`, or between an ownership read and a
 subsequent `pactl` effect. The observer minimizes those windows and fails closed
-when the next read sees the race; it does not claim to eliminate them. A new
-PipeWire capture stream can likewise appear after the final source-output and
-native-graph reads but before the restart exec; that irreducible sub-call race
-is documented rather than treated as eliminated.
+when the next read sees the race; it does not claim to eliminate them. The
+MOTU all-PCM-closed observation is repeated after metadata, other-card and
+PipeWire capture checks so it is the final observation before the restart call.
+A new client can still open after that final observation and before the restart
+exec; that irreducible sub-call race is documented rather than treated as
+eliminated.
 
 The revision-bound audio-control deployer installs the unit and explicitly
 reads back that it is loaded and active on every supporting-release convergence,

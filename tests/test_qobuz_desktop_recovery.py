@@ -632,6 +632,25 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
         self.assertEqual(runner.commands.count(RESTART), 1)
 
+    def test_native_pipewire_duplex_stream_blocks_capture_gate(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_streams = [
+            {
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Duplex/Audio",
+                        "node.name": "native-duplex-recorder",
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertFalse(self.state.exists())
+
     def test_repo_observer_alone_does_not_block_pipewire_capture_gate(self):
         runner = self.runner(sink_present=False)
 
@@ -952,6 +971,29 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(runner.observer_state, "active")
         self.assertTrue(self.state_payload()["handoff_pending"])
 
+    def test_motu_pcm_opening_after_pipewire_gate_prevents_restart(self):
+        runner = self.runner(sink_present=False)
+        original_gate = MODULE.require_no_pipewire_capture_streams
+        gate_calls = 0
+
+        def gate_then_race(active_runner):
+            nonlocal gate_calls
+            original_gate(active_runner)
+            gate_calls += 1
+            if gate_calls == 2:
+                self.open_pcm("c", pid=9002, executable="/usr/bin/arecord")
+
+        with mock.patch.object(
+            MODULE,
+            "require_no_pipewire_capture_streams",
+            side_effect=gate_then_race,
+        ):
+            self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertEqual(gate_calls, 2)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.observer_state, "active")
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
     def test_swapped_serial_sink_is_ambiguous_and_never_restarted(self):
         runner = self.runner(sink_present=False)
         runner.inventory_override = [other_sink(), motu_sink(serial="MOTU_M2_OTHER")]
@@ -1170,6 +1212,30 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
 
         self.assertEqual(self.reconcile(runner), "noop:m2-absent")
         self.assertEqual(runner.commands, [])
+
+    def test_pw_dump_has_dedicated_bounded_output_budget(self):
+        above_general_limit = b"x" * (MODULE.MAX_COMMAND_OUTPUT_BYTES + 1)
+        completed = mock.Mock(returncode=0, stdout=above_general_limit, stderr=b"")
+        with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
+            self.assertEqual(
+                len(MODULE.run_command(PIPEWIRE_GRAPH_COMMAND)),
+                len(above_general_limit),
+            )
+
+        above_graph_limit = b"x" * (MODULE.MAX_PIPEWIRE_GRAPH_OUTPUT_BYTES + 1)
+        completed = mock.Mock(returncode=0, stdout=above_graph_limit, stderr=b"")
+        with (
+            mock.patch.object(MODULE.subprocess, "run", return_value=completed),
+            self.assertRaisesRegex(MODULE.RecoveryError, r"command-output-limit:pw-dump"),
+        ):
+            MODULE.run_command(PIPEWIRE_GRAPH_COMMAND)
+
+        completed = mock.Mock(returncode=0, stdout=above_general_limit, stderr=b"")
+        with (
+            mock.patch.object(MODULE.subprocess, "run", return_value=completed),
+            self.assertRaisesRegex(MODULE.RecoveryError, r"command-output-limit:pactl"),
+        ):
+            MODULE.run_command(("pactl", "--format=json", "list", "sinks"))
 
     def test_recovery_has_no_dependency_on_stale_qobuz_api_fields(self):
         source = inspect.getsource(MODULE)
