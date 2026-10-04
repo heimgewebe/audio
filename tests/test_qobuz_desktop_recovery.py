@@ -32,6 +32,9 @@ OBSERVER_START = (
     "start",
     "audio-control-level-observer-v1.service",
 )
+DEFAULT_METADATA_COMMAND = ("pw-metadata", "-n", "default")
+CAPTURE_STREAMS_COMMAND = ("pactl", "--format=json", "list", "source-outputs")
+PIPEWIRE_GRAPH_COMMAND = ("pw-dump",)
 
 
 def motu_sink(*, serial=PW_SERIAL, bus_path=BUS_PATH, muted=False, volume=65_536):
@@ -74,6 +77,18 @@ class FakeRunner:
         self.close_observer_capture = True
         self.restart_owner = None
         self.inventory_override = None
+        self.configured_default_sink = MOTU_NAME
+        self.configured_default_after_observer_stop = None
+        self.configured_default_after_sink_mute = None
+        self.default_metadata_override = None
+        self.capture_streams = []
+        self.capture_streams_after_first_check = None
+        self.capture_status_override = None
+        self.capture_check_count = 0
+        self.native_capture_streams = []
+        self.native_capture_streams_after_first_check = None
+        self.native_capture_status_override = None
+        self.native_capture_check_count = 0
 
     def inventory(self):
         if self.inventory_override is not None:
@@ -98,6 +113,8 @@ class FakeRunner:
             self.observer_state = "inactive"
             if self.close_observer_capture:
                 self.case.close_pcm("c")
+            if self.configured_default_after_observer_stop is not None:
+                self.configured_default_sink = self.configured_default_after_observer_stop
             return ""
         if argv == OBSERVER_START:
             self.observer_state = "active"
@@ -113,11 +130,72 @@ class FakeRunner:
             return json.dumps(self.inventory())
         if argv == ("pactl", "info"):
             return f"Default Sink: {self.default_sink}\n"
+        if argv == DEFAULT_METADATA_COMMAND:
+            if self.default_metadata_override is not None:
+                return self.default_metadata_override
+            payload = json.dumps(
+                {"name": self.configured_default_sink},
+                separators=(",", ":"),
+            )
+            return (
+                'Found "default" metadata 50\n'
+                "update: id:0 key:'default.configured.audio.sink' "
+                f"value:'{payload}' type:'Spa:String:JSON'\n"
+            )
+        if argv == CAPTURE_STREAMS_COMMAND:
+            self.capture_check_count += 1
+            if self.capture_status_override is not None:
+                return self.capture_status_override
+            current = list(self.capture_streams)
+            if self.observer_state == "active":
+                current.insert(
+                    0,
+                    {
+                        "index": 4435,
+                        "properties": {
+                            "node.name": "audio-control-level-observer-v1"
+                        },
+                    },
+                )
+            if (
+                self.capture_check_count == 1
+                and self.capture_streams_after_first_check is not None
+            ):
+                self.capture_streams = list(self.capture_streams_after_first_check)
+            return json.dumps(current)
+        if argv == PIPEWIRE_GRAPH_COMMAND:
+            self.native_capture_check_count += 1
+            if self.native_capture_status_override is not None:
+                return self.native_capture_status_override
+            current = list(self.native_capture_streams)
+            if self.observer_state == "active":
+                current.insert(
+                    0,
+                    {
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "media.class": "Stream/Input/Audio",
+                                "node.name": "audio-control-level-observer-v1",
+                            }
+                        },
+                    },
+                )
+            if (
+                self.native_capture_check_count == 1
+                and self.native_capture_streams_after_first_check is not None
+            ):
+                self.native_capture_streams = list(
+                    self.native_capture_streams_after_first_check
+                )
+            return json.dumps(current)
         if argv[:3] == ("pactl", "set-sink-volume", MOTU_NAME):
             self.volume = 65_536
             return ""
         if argv[:3] == ("pactl", "set-sink-mute", MOTU_NAME):
             self.muted = False
+            if self.configured_default_after_sink_mute is not None:
+                self.configured_default_sink = self.configured_default_after_sink_mute
             return ""
         if argv == ("pactl", "set-default-sink", MOTU_NAME):
             self.default_sink = MOTU_NAME
@@ -213,7 +291,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
             self, sink_present=sink_present, recover_on_restart=recover_on_restart
         )
 
-    def reconcile(self, runner, *, now=1_000.0):
+    def reconcile(self, runner, *, now=1_000.0, blocked_reason_sink=None):
         return MODULE.reconcile_once(
             asound_root=self.asound,
             state_path=self.state,
@@ -223,6 +301,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
             runner=runner,
             now=now,
             sleeper=lambda _seconds: None,
+            blocked_reason_sink=blocked_reason_sink,
         )
 
     def state_payload(self):
@@ -236,7 +315,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(self.reconcile(runner), "noop:sink-present")
         self.assertEqual(runner.default_sink, "alsa_output.pci-generic.analog-stereo")
         self.assertFalse(
-            any(command[1].startswith("set-") for command in runner.commands)
+            any(len(command) > 1 and command[1].startswith("set-") for command in runner.commands)
         )
         self.assertNotIn(OBSERVER_STOP, runner.commands)
         self.assertFalse(self.state.exists())
@@ -370,6 +449,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(state["next_attempt_at"], 1_120.0)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.state.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 2)
 
     def test_persistent_quiesce_marker_repairs_observer_after_process_crash(self):
         marker = self.state.with_name("level-observer-quiesced")
@@ -426,6 +506,334 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertNotIn(OBSERVER_STOP, runner.commands)
         self.assertNotIn(RESTART, runner.commands)
 
+    def test_pipewire_owned_playback_on_another_card_permits_recovery(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7002,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+
+        self.assertEqual(self.reconcile(runner), "recovered")
+        self.assertEqual(runner.commands.count(RESTART), 1)
+        self.assertEqual(runner.commands.count(DEFAULT_METADATA_COMMAND), 4)
+
+    def test_pipewire_owned_playback_dynamic_status_fields_do_not_break_snapshot(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK_DYNAMIC",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7002,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+        target = self.pcm("p", number=0) / "status"
+        original_read = MODULE._read_proc_text
+        reads = 0
+
+        def varying_status(path):
+            nonlocal reads
+            if path == target:
+                reads += 1
+                return (
+                    "state: RUNNING\n"
+                    "owner_pid: 7002\n"
+                    f"tstamp: {reads}.000000000\n"
+                    f"delay: {reads}\n"
+                    f"avail: {reads + 10}\n"
+                    f"hw_ptr: {reads + 20}\n"
+                    f"appl_ptr: {reads + 30}\n"
+                )
+            return original_read(path)
+
+        with mock.patch.object(MODULE, "_read_proc_text", side_effect=varying_status):
+            self.assertEqual(self.reconcile(runner), "recovered")
+        self.assertEqual(runner.commands.count(RESTART), 1)
+        self.assertGreaterEqual(reads, 4)
+
+    def test_foreign_pipewire_capture_blocks_after_observer_quiesce(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK_WITH_CAPTURE",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7002,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+        runner.capture_streams = [{"index": 12264}]
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 1)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+        self.assertFalse(self.state.exists())
+
+    def test_native_pipewire_capture_blocks_without_pulse_source_output(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_streams = [
+            {
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Input/Audio",
+                        "node.name": "native-recorder",
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 1)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 1)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+        self.assertFalse(self.state.exists())
+
+    def test_native_pipewire_playback_does_not_block_capture_gate(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_streams = [
+            {
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Output/Audio",
+                        "node.name": "native-player",
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(self.reconcile(runner), "recovered")
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
+        self.assertEqual(runner.commands.count(RESTART), 1)
+
+    def test_repo_observer_alone_does_not_block_pipewire_capture_gate(self):
+        runner = self.runner(sink_present=False)
+
+        self.assertEqual(self.reconcile(runner), "recovered")
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 2)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
+        self.assertEqual(runner.commands.count(RESTART), 1)
+
+    def test_unreadable_pipewire_capture_status_blocks(self):
+        runner = self.runner(sink_present=False)
+        runner.capture_status_override = "{not-json"
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 1)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+        self.assertFalse(self.state.exists())
+
+    def test_unreadable_native_pipewire_graph_blocks(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_status_override = "{not-json"
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 1)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 1)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+        self.assertFalse(self.state.exists())
+
+    def test_pipewire_capture_race_at_final_restart_gate_blocks(self):
+        runner = self.runner(sink_present=False)
+        runner.capture_streams_after_first_check = [{"index": 12264}]
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 2)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertTrue(self.state_payload()["handoff_pending"])
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+
+    def test_native_pipewire_capture_race_at_final_restart_gate_blocks(self):
+        runner = self.runner(sink_present=False)
+        runner.native_capture_streams_after_first_check = [
+            {
+                "type": "PipeWire:Interface:Node",
+                "info": {
+                    "props": {
+                        "media.class": "Stream/Input/Audio",
+                        "node.name": "late-native-recorder",
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertEqual(runner.commands.count(CAPTURE_STREAMS_COMMAND), 2)
+        self.assertEqual(runner.commands.count(PIPEWIRE_GRAPH_COMMAND), 2)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertTrue(self.state_payload()["handoff_pending"])
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+
+    def test_pipewire_owned_playback_with_unknown_state_blocks(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK_UNKNOWN",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7006,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+        (self.pcm("p", number=0) / "status").write_text(
+            "state: UNKNOWN\nowner_pid: 7006\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertNotIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+
+    def test_pipewire_owned_playback_blocks_when_motu_is_not_configured_default(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK_ALTERNATE_DEFAULT",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        runner.configured_default_sink = "alsa_output.pci-generic.analog-stereo"
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7004,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertNotIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+
+    def test_configured_default_change_at_final_boundary_blocks_restart(self):
+        self.make_card(
+            0,
+            card_id="HDMI",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_PLAYBACK_DEFAULT_CHANGED",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        runner.configured_default_after_observer_stop = (
+            "alsa_output.pci-generic.analog-stereo"
+        )
+        self.open_pcm(
+            "p",
+            number=0,
+            pid=7005,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertEqual(runner.commands.count(OBSERVER_START), 1)
+        self.assertEqual(runner.observer_state, "active")
+        self.assertEqual(runner.commands.count(DEFAULT_METADATA_COMMAND), 2)
+
+    def test_missing_configured_default_key_blocks_without_mutation(self):
+        runner = self.runner(sink_present=False)
+        runner.default_metadata_override = 'Found "default" metadata 50\n'
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertNotIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertFalse(self.state.exists())
+
+    def test_ambiguous_configured_default_key_blocks_without_mutation(self):
+        runner = self.runner(sink_present=False)
+        payload = json.dumps({"name": MOTU_NAME}, separators=(",", ":"))
+        line = (
+            "update: id:0 key:'default.configured.audio.sink' "
+            f"value:'{payload}' type:'Spa:String:JSON'\n"
+        )
+        runner.default_metadata_override = (
+            'Found "default" metadata 50\n' + line + line
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertNotIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+        self.assertFalse(self.state.exists())
+
+    def test_exact_serial_configured_default_allows_recovery(self):
+        runner = self.runner(sink_present=False)
+        runner.configured_default_sink = MOTU_NAME
+
+        self.assertEqual(self.reconcile(runner), "recovered")
+        self.assertEqual(runner.commands.count(RESTART), 1)
+
+    def test_pending_handoff_unreadable_default_remains_pending(self):
+        first = self.runner(sink_present=False, recover_on_restart=False)
+        self.assertEqual(self.reconcile(first), "blocked")
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+        second = self.runner(sink_present=True)
+        second.default_metadata_override = 'Found "default" metadata 50\n'
+
+        self.assertEqual(self.reconcile(second, now=1_001.0), "blocked")
+        self.assertNotIn(OBSERVER_STOP, second.commands)
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+    def test_pipewire_owned_capture_on_another_card_still_blocks(self):
+        self.make_card(
+            0,
+            card_id="PCH",
+            usb_id="1234:5678",
+            serial="PIPEWIRE_CAPTURE",
+            vendor_id="1234",
+            product_id="5678",
+        )
+        runner = self.runner(sink_present=False)
+        self.open_pcm(
+            "c",
+            number=0,
+            pid=7003,
+            executable=MODULE.PIPEWIRE_EXECUTABLE,
+        )
+
+        self.assertEqual(self.reconcile(runner), "blocked")
+        self.assertNotIn(OBSERVER_STOP, runner.commands)
+        self.assertNotIn(RESTART, runner.commands)
+
     def test_unreadable_or_unknown_other_card_pcm_status_blocks(self):
         self.make_card(
             0,
@@ -470,6 +878,43 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertNotIn(RESTART, runner.commands)
         self.assertNotIn(OBSERVER_STOP, runner.commands)
         self.assertEqual(runner.observer_state, "active")
+
+    def test_blocked_reason_is_logged_as_internal_token_only(self):
+        runner = self.runner(sink_present=False)
+        self.open_pcm("p")
+        reasons = []
+
+        self.assertEqual(
+            self.reconcile(runner, blocked_reason_sink=reasons.append),
+            "blocked",
+        )
+        self.assertEqual(reasons, ["motu-pcm-owner-unproven"])
+        self.assertEqual(
+            MODULE._recovery_log_payload("blocked", reasons[0]),
+            {
+                "qobuz_desktop_recovery": "blocked",
+                "reason": "motu-pcm-owner-unproven",
+            },
+        )
+
+    def test_unexpected_blocked_reason_is_redacted(self):
+        runner = self.runner(sink_present=False)
+        reasons = []
+
+        with mock.patch.object(
+            MODULE,
+            "resolve_unique_motu_card",
+            side_effect=MODULE.RecoveryError("/home/alex/private"),
+        ):
+            self.assertEqual(
+                self.reconcile(runner, blocked_reason_sink=reasons.append),
+                "blocked",
+            )
+        self.assertEqual(reasons, ["recovery-error"])
+        self.assertEqual(
+            MODULE._recovery_log_payload("noop:sink-present", "ignored"),
+            {"qobuz_desktop_recovery": "noop:sink-present"},
+        )
 
     def test_ambiguous_pcm_blocks_before_absence_stabilization(self):
         runner = self.runner(sink_present=False)
@@ -553,6 +998,78 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(second.default_sink, MOTU_NAME)
         self.assertFalse(self.state_payload()["handoff_pending"])
 
+    def test_pending_handoff_respects_changed_configured_default(self):
+        first = self.runner(sink_present=False, recover_on_restart=False)
+        self.assertEqual(self.reconcile(first), "blocked")
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+        second = self.runner(sink_present=True)
+        second.configured_default_sink = "alsa_output.pci-generic.analog-stereo"
+
+        self.assertEqual(self.reconcile(second, now=1_001.0), "blocked")
+        self.assertNotIn(OBSERVER_STOP, second.commands)
+        self.assertNotIn(RESTART, second.commands)
+        self.assertEqual(
+            second.default_sink,
+            "alsa_output.pci-generic.analog-stereo",
+        )
+        self.assertFalse(self.state_payload()["handoff_pending"])
+
+        third = self.runner(sink_present=True)
+        third.configured_default_sink = MOTU_NAME
+        self.assertEqual(self.reconcile(third, now=1_002.0), "noop:sink-present")
+        self.assertEqual(third.default_sink, "alsa_output.pci-generic.analog-stereo")
+        self.assertNotIn(
+            ("pactl", "set-default-sink", MOTU_NAME),
+            third.commands,
+        )
+        self.assertTrue(third.muted)
+        self.assertEqual(third.volume, 32_768)
+
+    def test_pending_handoff_rechecks_configured_default_after_quiesce(self):
+        first = self.runner(sink_present=False, recover_on_restart=False)
+        self.assertEqual(self.reconcile(first), "blocked")
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+        second = self.runner(sink_present=True)
+        second.configured_default_after_observer_stop = (
+            "alsa_output.pci-generic.analog-stereo"
+        )
+
+        self.assertEqual(self.reconcile(second, now=1_001.0), "blocked")
+        self.assertIn(OBSERVER_STOP, second.commands)
+        self.assertEqual(second.commands.count(OBSERVER_START), 1)
+        self.assertNotIn(RESTART, second.commands)
+        self.assertEqual(
+            second.default_sink,
+            "alsa_output.pci-generic.analog-stereo",
+        )
+        self.assertFalse(self.state_payload()["handoff_pending"])
+
+    def test_pending_handoff_rechecks_configured_default_at_set_default_boundary(self):
+        first = self.runner(sink_present=False, recover_on_restart=False)
+        self.assertEqual(self.reconcile(first), "blocked")
+        self.assertTrue(self.state_payload()["handoff_pending"])
+
+        second = self.runner(sink_present=True)
+        second.configured_default_after_sink_mute = (
+            "alsa_output.pci-generic.analog-stereo"
+        )
+
+        self.assertEqual(self.reconcile(second, now=1_001.0), "blocked")
+        self.assertIn(OBSERVER_STOP, second.commands)
+        self.assertEqual(second.commands.count(OBSERVER_START), 1)
+        self.assertNotIn(RESTART, second.commands)
+        self.assertNotIn(
+            ("pactl", "set-default-sink", MOTU_NAME),
+            second.commands,
+        )
+        self.assertEqual(
+            second.default_sink,
+            "alsa_output.pci-generic.analog-stereo",
+        )
+        self.assertFalse(self.state_payload()["handoff_pending"])
+
     def test_natural_reappearance_during_stabilization_is_a_healthy_noop(self):
         runner = self.runner(sink_present=False)
 
@@ -624,7 +1141,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(self.reconcile(runner), "blocked")
         self.assertIn(RESTART, runner.commands)
         self.assertFalse(
-            any(command[1].startswith("set-") for command in runner.commands)
+            any(len(command) > 1 and command[1].startswith("set-") for command in runner.commands)
         )
         self.assertTrue(self.state_payload()["handoff_pending"])
         self.assertEqual(runner.observer_state, "active")
@@ -662,7 +1179,10 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         runner = self.runner(sink_present=False)
         self.assertEqual(self.reconcile(runner), "recovered")
         self.assertTrue(
-            all(command[0] in {"pactl", "systemctl"} for command in runner.commands)
+            all(
+                command[0] in {"pactl", "pw-dump", "pw-metadata", "systemctl"}
+                for command in runner.commands
+            )
         )
 
 
