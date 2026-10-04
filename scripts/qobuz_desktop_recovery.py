@@ -44,6 +44,7 @@ FAILURE_BACKOFF_BASE_SECONDS = 30.0
 FAILURE_BACKOFF_MAX_SECONDS = 900.0
 COMMAND_TIMEOUT_SECONDS = 5.0
 MAX_COMMAND_OUTPUT_BYTES = 1_048_576
+MAX_PIPEWIRE_GRAPH_OUTPUT_BYTES = 2_000_000
 MAX_PROC_FILE_BYTES = 4_096
 MAX_SYSFS_FILE_BYTES = 1_024
 MAX_CARDS = 32
@@ -159,10 +160,12 @@ def run_command(argv: tuple[str, ...]) -> str:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RecoveryError(f"command-unavailable:{argv[0]}") from exc
-    if (
-        len(completed.stdout) > MAX_COMMAND_OUTPUT_BYTES
-        or len(completed.stderr) > MAX_COMMAND_OUTPUT_BYTES
-    ):
+    output_limit = (
+        MAX_PIPEWIRE_GRAPH_OUTPUT_BYTES
+        if argv == PIPEWIRE_GRAPH_COMMAND
+        else MAX_COMMAND_OUTPUT_BYTES
+    )
+    if len(completed.stdout) > output_limit or len(completed.stderr) > output_limit:
         raise RecoveryError(f"command-output-limit:{argv[0]}")
     if completed.returncode != 0:
         raise RecoveryError(f"command-failed:{argv[0]}")
@@ -547,7 +550,14 @@ def require_no_pipewire_capture_streams(runner: Runner) -> None:
         props = info.get("props")
         if not isinstance(props, dict):
             raise RecoveryError("pipewire-capture-unreadable")
-        if props.get("media.class") == "Stream/Input/Audio":
+        media_class = props.get("media.class")
+        if not isinstance(media_class, str):
+            continue
+        if (
+            media_class.startswith("Stream/")
+            and media_class.endswith("/Audio")
+            and media_class != "Stream/Output/Audio"
+        ):
             raise RecoveryError("pipewire-capture-active")
 
 
@@ -1209,12 +1219,14 @@ def reconcile_once(
                     )
                     recovered_without_restart = True
                 else:
-                    all_pcm_definitely_closed(physical.card)
                     _require_pending_configured_motu_default(
                         physical=physical, runner=runner, state_path=state_path
                     )
                     other_pcm_restart_safe(asound_root, physical.card, proc_root)
                     require_no_pipewire_capture_streams(runner)
+                    # Keep the MOTU direct-ALSA gate as the final observation
+                    # before the global session-manager restart.
+                    all_pcm_definitely_closed(physical.card)
                     runner(("systemctl", "--user", "restart", WIREPLUMBER_UNIT))
                     recovered_without_restart = False
 
