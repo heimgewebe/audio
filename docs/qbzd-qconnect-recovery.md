@@ -127,7 +127,10 @@ original stricter restart-edge observations:
   playback substream resolves to the exact QBZD TGID and service cgroup and
   reports `state: PAUSED`. The closed-idle fallback is entered only when the
   target-owner gate reports that no target playback substream is open; it then
-  runs the broader PCM-idle proof to exclude any other QBZD-owned ALSA stream.
+  runs the broader PCM-idle proof to exclude any other QBZD-owned ALSA stream
+  and repeats the exact target-closed proof after that scan. A target PCM that
+  opens during the idle scan therefore blocks instead of inheriting closed-idle
+  authority.
   Foreign ownership, a same-cgroup helper without the exact QBZD TGID, `RUNNING`
   or another non-`PAUSED` open state, unreadable input, or identity drift blocks
   the cycle rather than falling back;

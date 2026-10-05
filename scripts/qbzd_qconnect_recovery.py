@@ -866,7 +866,9 @@ def require_qconnect_pcm_safe(
     already closed. In that one stale-open case, the stricter paused gate reports
     qbzd-target-pcm-owner-not-found. Requiring the global QBZD PCM-idle gate
     then proves that no QBZD-owned ALSA stream remains before treating the kernel
-    state as closed. Every other paused-gate failure remains fail-closed.
+    state as closed. The exact target-closed proof is repeated after the idle
+    scan so a target PCM opening during that scan cannot inherit closed-idle
+    authority. Every other paused-gate failure remains fail-closed.
     """
     try:
         pcm_paused_checker(service)
@@ -874,7 +876,13 @@ def require_qconnect_pcm_safe(
         if str(exc) != "qbzd-target-pcm-owner-not-found":
             raise
         pcm_idle_checker(service)
-        return QCONNECT_PCM_MODE_CLOSED_IDLE
+        try:
+            pcm_paused_checker(service)
+        except RecoveryError as closed_recheck:
+            if str(closed_recheck) == "qbzd-target-pcm-owner-not-found":
+                return QCONNECT_PCM_MODE_CLOSED_IDLE
+            raise
+        raise RecoveryError("qconnect-pcm-mode-changed")
     return QCONNECT_PCM_MODE_PAUSED_OWNED
 
 

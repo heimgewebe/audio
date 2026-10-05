@@ -643,7 +643,7 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
             )
 
             self.assertEqual(result, "recovered:qconnect")
-            self.assertEqual(paused_checks, [SERVICE_A, SERVICE_A, SERVICE_A])
+            self.assertEqual(paused_checks, [SERVICE_A] * 6)
             self.assertEqual(idle_checks, [SERVICE_A, SERVICE_A, SERVICE_A])
             self.assertEqual(
                 [action for _service, action in qconnect.commands],
@@ -705,6 +705,27 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 pcm_paused_checker=foreign_owner,
             )
         self.assertEqual(idle_checks, [])
+
+    def test_stale_open_fallback_requires_global_qbzd_pcm_idle(self):
+        paused_checks = []
+        idle_checks = []
+
+        def target_closed(service):
+            paused_checks.append(service)
+            raise MODULE.RecoveryError("qbzd-target-pcm-owner-not-found")
+
+        def qbzd_still_owns_other_pcm(service):
+            idle_checks.append(service)
+            raise MODULE.RecoveryError("qbzd-pcm-open")
+
+        with self.assertRaisesRegex(MODULE.RecoveryError, "qbzd-pcm-open"):
+            MODULE.require_qconnect_pcm_safe(
+                SERVICE_A,
+                pcm_idle_checker=qbzd_still_owns_other_pcm,
+                pcm_paused_checker=target_closed,
+            )
+        self.assertEqual(paused_checks, [SERVICE_A])
+        self.assertEqual(idle_checks, [SERVICE_A])
 
     def test_paused_open_resume_after_final_owner_scan_blocks_before_effect(self):
         with tempfile.TemporaryDirectory() as tmp:
