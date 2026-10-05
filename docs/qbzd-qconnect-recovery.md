@@ -51,9 +51,11 @@ full 30-second reconciliation cadence. The candidate remains bound to the same
 boot, PID and process start tick. `retrying`/`reconnecting` cannot cause an
 effect before 90 seconds; a previously armed terminal `exhausted` state may use
 the narrow QConnect-only path earlier. Every QConnect effect rechecks status,
-process identity and the appropriate ALSA ownership gate at the effect edge:
-PCM-idle for the original closed-device path, or exact target-MOTU ownership plus
-kernel-reported ALSA `PAUSED` for the paused-open path. QBZD's own playback
+process identity and the appropriate ALSA kernel gate at the effect edge:
+PCM-idle for the original closed-device path; for an API-open paused candidate,
+either exact target-MOTU ownership with kernel-reported ALSA `PAUSED`, or the
+separately proven target-closed plus global QBZD-idle mode described below.
+QBZD's own playback
 `state=paused` remains a diagnostic consistency check, not effect authority: it
 has been observed stale while the same PCM was already kernel-visible as
 `RUNNING`. QConnect recovery has its own durable pre-effect arm, bounded readback
