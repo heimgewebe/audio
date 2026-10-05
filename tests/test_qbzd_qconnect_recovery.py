@@ -597,6 +597,115 @@ class QbzdQconnectRecoveryTests(unittest.TestCase):
                 ["disable", "enable"],
             )
 
+    def test_stale_api_open_with_closed_kernel_pcm_recovers_via_qconnect_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            qconnect = FakeQconnectRunner()
+            idle_checks = []
+            paused_checks = []
+
+            def kernel_closed(_service):
+                paused_checks.append(_service)
+                raise MODULE.RecoveryError("qbzd-target-pcm-owner-not-found")
+
+            stuck = status(
+                qconnect="retrying",
+                online=False,
+                opened=True,
+                playback_state="paused",
+                track_id=131558986,
+                position=0,
+            )
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[
+                    stuck,
+                    stuck,
+                    stuck,
+                    stuck,
+                    healthy(
+                        opened=True,
+                        playback_state="paused",
+                        track_id=131558986,
+                        position=0,
+                    ),
+                ],
+                services=[SERVICE_A] * 6,
+                monotonic=[200.0, 202.0, 203.0, 203.5, 204.0],
+                wall=[1000.0] * 10,
+                qconnect_runner=qconnect,
+                pcm=lambda service: idle_checks.append(service),
+                pcm_owned=kernel_closed,
+                network_evidence_realtime=1000.0,
+            )
+
+            self.assertEqual(result, "recovered:qconnect")
+            self.assertEqual(paused_checks, [SERVICE_A, SERVICE_A, SERVICE_A])
+            self.assertEqual(idle_checks, [SERVICE_A, SERVICE_A, SERVICE_A])
+            self.assertEqual(
+                [action for _service, action in qconnect.commands],
+                ["disable", "enable"],
+            )
+
+    def test_stale_open_kernel_mode_change_blocks_before_qconnect_effect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = self.state_path(tmp)
+            MODULE._store_state(
+                state_path, self.candidate_state(qconnect_next_attempt=0.0)
+            )
+            qconnect = FakeQconnectRunner()
+            idle_checks = []
+            paused_checks = []
+
+            def closes_then_reopens(service):
+                paused_checks.append(service)
+                if len(paused_checks) == 1:
+                    raise MODULE.RecoveryError("qbzd-target-pcm-owner-not-found")
+
+            stuck = status(
+                qconnect="retrying",
+                online=False,
+                opened=True,
+                playback_state="paused",
+                track_id=131558986,
+                position=0,
+            )
+            result = self.reconcile(
+                state_path=state_path,
+                statuses=[stuck, stuck],
+                services=[SERVICE_A, SERVICE_A],
+                monotonic=[200.0, 202.0],
+                wall=[1000.0] * 5,
+                qconnect_runner=qconnect,
+                pcm=lambda service: idle_checks.append(service),
+                pcm_owned=closes_then_reopens,
+                network_evidence_realtime=1000.0,
+            )
+
+            self.assertEqual(result, "blocked:qconnect-pcm-mode-changed")
+            self.assertEqual(paused_checks, [SERVICE_A, SERVICE_A])
+            self.assertEqual(idle_checks, [SERVICE_A])
+            self.assertEqual(qconnect.commands, [])
+
+    def test_stale_open_fallback_never_accepts_foreign_target_owner(self):
+        idle_checks = []
+
+        def foreign_owner(_service):
+            raise MODULE.RecoveryError("qbzd-target-pcm-owner-mismatch")
+
+        with self.assertRaisesRegex(
+            MODULE.RecoveryError, "qbzd-target-pcm-owner-mismatch"
+        ):
+            MODULE.require_qconnect_pcm_safe(
+                SERVICE_A,
+                pcm_idle_checker=lambda service: idle_checks.append(service),
+                pcm_paused_checker=foreign_owner,
+            )
+        self.assertEqual(idle_checks, [])
+
     def test_paused_open_resume_after_final_owner_scan_blocks_before_effect(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = self.state_path(tmp)

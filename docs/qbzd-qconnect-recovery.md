@@ -99,15 +99,20 @@ original stricter restart-edge observations:
   session;
 - QBZD is configured for ALSA and exactly `front:CARD=M2,DEV=0`;
 - the configured MOTU device is present. A closed device follows the original
-  PCM-idle path. An open device is eligible **only for the QConnect-only cycle**
-  when QBZD's snapshot is strictly `paused`, track ID and position are valid, a
-  second status read after the stabilization delay reports the identical track
-  and non-progressing position, the final effect-edge read still matches, **and**
-  the independent kernel PCM state is `PAUSED`. Any kernel `RUNNING`, missing or
-  ambiguous state blocks the effect even if QBZD still reports `paused`. These
-  playback fields are required only for this paused-open exception: if a QBZD
-  status omits them, the exception fails closed while the original
-  closed-device/PCM-idle recovery path remains available;
+  PCM-idle path. An API-open device is eligible **only for the QConnect-only
+  cycle** when QBZD's snapshot is strictly `paused`, track ID and position are
+  valid, and those values remain stable through the final effect edge. The
+  independent kernel gate then selects exactly one mode: either the target
+  playback PCM is exact-QBZD-owned and `PAUSED`, or every exact target playback
+  substream is already `closed` and the broader PCM-idle gate proves that QBZD
+  owns no other ALSA stream. The latter handles a stale QBZD `device_open=true`
+  snapshot without granting daemon-restart authority. The selected kernel mode
+  must remain unchanged across stabilization, final readback, and the production
+  effect-edge gate. Any kernel `RUNNING`, foreign ownership, unreadable or
+  ambiguous state, or mode change blocks the effect. These playback fields are
+  required only for this API-open QConnect exception: if a QBZD status omits
+  them, the exception fails closed while the original closed-device/PCM-idle
+  recovery path remains available;
 - `qbzd.service` is active, has one positive `MainPID`, `/proc/<pid>/comm` is
   exactly `qbzd`, and the process start tick plus systemd cgroup remain stable;
 - both the 90-second QConnect threshold and the five-minute daemon threshold
@@ -117,12 +122,15 @@ original stricter restart-edge observations:
 - every `/proc/asound/card*/pcm*/sub*/status` entry is bounded and readable.
   For the daemon restart, an owner thread in the QBZD process or any helper in
   the same `qbzd.service` cgroup still blocks the effect exactly as before. For
-  the paused-open **QConnect-only** cycle, the inverse proof is required instead:
-  an open PCM must resolve to the exact QBZD TGID and exact bound service cgroup,
-  every open target playback substream must report `state: PAUSED`, and the
-  service PID/start tick is revalidated before and after the kernel-state scan.
-  Unknown ownership, a same-cgroup helper without the exact QBZD TGID, `RUNNING`
-  or another non-`PAUSED` state, or identity drift blocks the cycle;
+  the API-open **QConnect-only** cycle, the kernel proof is either exact paused
+  ownership or exact closed-idle fallback. In paused mode, every open target
+  playback substream resolves to the exact QBZD TGID and service cgroup and
+  reports `state: PAUSED`. The closed-idle fallback is entered only when the
+  target-owner gate reports that no target playback substream is open; it then
+  runs the broader PCM-idle proof to exclude any other QBZD-owned ALSA stream.
+  Foreign ownership, a same-cgroup helper without the exact QBZD TGID, `RUNNING`
+  or another non-`PAUSED` open state, unreadable input, or identity drift blocks
+  the cycle rather than falling back;
 - QConnect state, playback fingerprint, service identity, boot identity and the
   appropriate ALSA gate are repeated immediately before the effect. The
   QConnect-only path additionally opens the previously observed absolute `qbzd`
@@ -130,9 +138,10 @@ original stricter restart-edge observations:
   `/proc/<pid>/exe`, PID start tick and service cgroup, and executes through
   `/proc/self/fd/<fd>`. PID reuse therefore cannot redirect the action to a
   different process image. The complete service identity is rechecked again
-  between `disable` and `enable`. For the production paused-open path the kernel
-  `PAUSED`/owner gate is repeated once more after the final QBZD status and
-  process read, immediately before the durable effect arm.
+  between `disable` and `enable`. For the production API-open path the selected
+  kernel mode—exact paused ownership or exact closed-idle—is repeated once more
+  after the final QBZD status and process read, immediately before the durable
+  effect arm.
 
 The QConnect-only effect is durably armed **before** `qconnect disable`: exact
 PID, process start tick and executable identity plus a minimum retry deadline are
