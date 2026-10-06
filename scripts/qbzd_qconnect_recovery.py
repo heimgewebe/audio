@@ -850,6 +850,42 @@ def require_qbzd_pcm_paused(
     require_qbzd_pcm_owned(service, asound_root=asound_root, proc_root=proc_root)
 
 
+QCONNECT_PCM_MODE_PAUSED_OWNED = "paused-owned"
+QCONNECT_PCM_MODE_CLOSED_IDLE = "closed-idle"
+
+
+def require_qconnect_pcm_safe(
+    service: QbzdService,
+    *,
+    pcm_idle_checker: PcmIdleChecker,
+    pcm_paused_checker: PcmOwnedChecker,
+) -> str:
+    """Return one stable kernel mode that permits only a QConnect control cycle.
+
+    QBZD can retain device_open=true after its exact MOTU playback PCM has
+    already closed. In that one stale-open case, the stricter paused gate reports
+    qbzd-target-pcm-owner-not-found. Requiring the global QBZD PCM-idle gate
+    then proves that no QBZD-owned ALSA stream remains before treating the kernel
+    state as closed. The exact target-closed proof is repeated after the idle
+    scan so a target PCM opening during that scan cannot inherit closed-idle
+    authority. Every other paused-gate failure remains fail-closed.
+    """
+    try:
+        pcm_paused_checker(service)
+    except RecoveryError as exc:
+        if str(exc) != "qbzd-target-pcm-owner-not-found":
+            raise
+        pcm_idle_checker(service)
+        try:
+            pcm_paused_checker(service)
+        except RecoveryError as closed_recheck:
+            if str(closed_recheck) == "qbzd-target-pcm-owner-not-found":
+                return QCONNECT_PCM_MODE_CLOSED_IDLE
+            raise
+        raise RecoveryError("qconnect-pcm-mode-changed")
+    return QCONNECT_PCM_MODE_PAUSED_OWNED
+
+
 def _paused_playback_fingerprint(status: QbzdStatus) -> tuple[int, float] | None:
     if (
         status.device_open is not True
@@ -1581,8 +1617,13 @@ def reconcile_once(
         restart_now = now_monotonic
         if qconnect_due:
             paused_open_cycle = _paused_playback_fingerprint(first) is not None
+            qconnect_pcm_mode: str | None = None
             if paused_open_cycle:
-                pcm_owned(service)
+                qconnect_pcm_mode = require_qconnect_pcm_safe(
+                    service,
+                    pcm_idle_checker=pcm_idle,
+                    pcm_paused_checker=pcm_owned,
+                )
             else:
                 pcm_idle(service)
             sleeper(STABILIZATION_SECONDS)
@@ -1631,7 +1672,15 @@ def reconcile_once(
             if paused_open_cycle:
                 if not _same_paused_playback(first, second):
                     return "blocked:playback-not-stably-paused"
-                pcm_owned(second_service)
+                if (
+                    require_qconnect_pcm_safe(
+                        second_service,
+                        pcm_idle_checker=pcm_idle,
+                        pcm_paused_checker=pcm_owned,
+                    )
+                    != qconnect_pcm_mode
+                ):
+                    return "blocked:qconnect-pcm-mode-changed"
             else:
                 if second.device_open is not False:
                     return "blocked:audio-open-state-changed"
@@ -1682,7 +1731,15 @@ def reconcile_once(
             if paused_open_cycle:
                 if not _same_paused_playback(first, final_status):
                     return "blocked:playback-not-stably-paused"
-                pcm_owned(final_service)
+                if (
+                    require_qconnect_pcm_safe(
+                        final_service,
+                        pcm_idle_checker=pcm_idle,
+                        pcm_paused_checker=pcm_owned,
+                    )
+                    != qconnect_pcm_mode
+                ):
+                    return "blocked:qconnect-pcm-mode-changed"
                 edge_status = status_reader()
                 edge_unix = _clock_value(wall_clock, "wall")
                 if not _is_recovery_candidate(
@@ -1697,11 +1754,20 @@ def reconcile_once(
                 if service_probe() != final_service:
                     return "blocked:qbzd-process-changed-at-effect-edge"
                 # QBZD playback metadata is not authoritative here. Production
-                # therefore takes one final independent kernel PAUSED/owner
-                # observation after the last QBZD status and process read. Test
-                # seams may inject their own equivalent checker.
-                if pcm_owned_checker is None:
-                    pcm_owned(final_service)
+                # therefore takes one final independent kernel mode observation
+                # after the last QBZD status and process read. A stale API-open
+                # candidate must remain kernel-closed/idle; a genuinely open one
+                # must remain exact-QBZD-owned and PAUSED. Test seams may inject
+                # their own equivalent checker.
+                if pcm_owned_checker is None and (
+                    require_qconnect_pcm_safe(
+                        final_service,
+                        pcm_idle_checker=pcm_idle,
+                        pcm_paused_checker=pcm_owned,
+                    )
+                    != qconnect_pcm_mode
+                ):
+                    return "blocked:qconnect-pcm-mode-changed"
                 final_status = edge_status
             else:
                 if final_status.device_open is not False:

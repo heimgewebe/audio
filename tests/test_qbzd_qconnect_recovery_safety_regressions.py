@@ -22,7 +22,7 @@ SERVICE = MODULE.QbzdService(
 )
 
 
-def status(*, qconnect="exhausted", enabled=False):
+def status(*, qconnect="exhausted", enabled=False, opened=False):
     return MODULE.QbzdStatus(
         api_version=1,
         version="2.0.2",
@@ -33,7 +33,7 @@ def status(*, qconnect="exhausted", enabled=False):
         audio_backend="alsa",
         configured_device="front:CARD=M2,DEV=0",
         device_present=True,
-        device_open=False,
+        device_open=opened,
         playback_state="paused",
         playback_track_id=123456,
         playback_position=0.0,
@@ -59,6 +59,43 @@ class FakeQconnectRunner:
     def __call__(self, service, action):
         self.commands.append((service, action))
         return f"qconnect {action} ok"
+
+
+def candidate_state():
+    state = MODULE._default_state(BOOT)
+    state.update(
+        {
+            "candidate_pid": SERVICE.pid,
+            "candidate_start_ticks": SERVICE.start_ticks,
+            "retry_since_monotonic": 100.0,
+            "qconnect_next_attempt_monotonic": 0.0,
+        }
+    )
+    return state
+
+
+def real_gate_tree(root):
+    proc_root = root / "proc"
+    asound_root = root / "asound"
+    process = proc_root / str(SERVICE.pid)
+    process.mkdir(parents=True)
+    fields = ["S", *(["1"] * 18), str(SERVICE.start_ticks)]
+    (process / "stat").write_text(
+        f"{SERVICE.pid} (qbzd) " + " ".join(fields) + "\n",
+        encoding="utf-8",
+    )
+    (process / "status").write_text(
+        f"Name:\tqbzd\nTgid:\t{SERVICE.pid}\n", encoding="utf-8"
+    )
+    (process / "cgroup").write_text(
+        f"0::{SERVICE.cgroup}\n", encoding="utf-8"
+    )
+    card = asound_root / "card2"
+    target_status = card / "pcm0p" / "sub0" / "status"
+    target_status.parent.mkdir(parents=True)
+    (card / "id").write_text("M2\n", encoding="utf-8")
+    target_status.write_text("closed\n", encoding="utf-8")
+    return proc_root, asound_root, target_status
 
 
 class QbzdQconnectSafetyRegressionTests(unittest.TestCase):
@@ -143,6 +180,332 @@ class QbzdQconnectSafetyRegressionTests(unittest.TestCase):
             MODULE.require_qbzd_pcm_paused(
                 SERVICE, asound_root=asound_root, proc_root=proc_root
             )
+
+
+    def test_selected_qconnect_pcm_mode_must_stay_stable_between_gates(self):
+        stuck = status(qconnect="retrying", opened=True)
+        cases = (
+            (
+                "paused-to-closed-at-second-gate",
+                [None, "closed", "closed"],
+                [stuck, stuck],
+                [SERVICE, SERVICE],
+                [200.0, 202.0],
+            ),
+            (
+                "closed-to-paused-at-second-gate",
+                ["closed", "closed", None],
+                [stuck, stuck],
+                [SERVICE, SERVICE],
+                [200.0, 202.0],
+            ),
+            (
+                "paused-to-closed-at-final-gate",
+                [None, None, "closed", "closed"],
+                [stuck, stuck, stuck],
+                [SERVICE, SERVICE, SERVICE],
+                [200.0, 202.0, 203.0],
+            ),
+            (
+                "closed-to-paused-at-final-gate",
+                ["closed", "closed", "closed", "closed", None],
+                [stuck, stuck, stuck],
+                [SERVICE, SERVICE, SERVICE],
+                [200.0, 202.0, 203.0],
+            ),
+        )
+
+        for label, outcomes, statuses, services, monotonic in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                state_path = pathlib.Path(tmp) / "state.json"
+                MODULE._store_state(state_path, candidate_state())
+                qconnect = FakeQconnectRunner()
+                remaining = iter(outcomes)
+
+                def pcm_owned(_service):
+                    outcome = next(remaining)
+                    if outcome == "closed":
+                        raise MODULE.RecoveryError(
+                            "qbzd-target-pcm-owner-not-found"
+                        )
+
+                result = MODULE.reconcile_once(
+                    state_path=state_path,
+                    status_reader=SequenceReader(statuses),
+                    service_reader=SequenceReader(services),
+                    qconnect_action_runner=qconnect,
+                    pcm_idle_checker=lambda _service: None,
+                    pcm_owned_checker=pcm_owned,
+                    sleeper=lambda _seconds: None,
+                    monotonic_clock=SequenceReader(monotonic),
+                    wall_clock=lambda: 1000.0,
+                    boot_id_reader=lambda: BOOT,
+                )
+
+                self.assertEqual(result, "blocked:qconnect-pcm-mode-changed")
+                self.assertEqual(qconnect.commands, [])
+
+    def test_production_effect_edge_rechecks_selected_qconnect_pcm_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = pathlib.Path(tmp) / "state.json"
+            MODULE._store_state(state_path, candidate_state())
+            stuck = status(qconnect="retrying", opened=True)
+            qconnect = FakeQconnectRunner()
+            observed_services = []
+            modes = iter(
+                [
+                    MODULE.QCONNECT_PCM_MODE_PAUSED_OWNED,
+                    MODULE.QCONNECT_PCM_MODE_PAUSED_OWNED,
+                    MODULE.QCONNECT_PCM_MODE_PAUSED_OWNED,
+                    MODULE.QCONNECT_PCM_MODE_CLOSED_IDLE,
+                ]
+            )
+
+            def mode_probe(service, *, pcm_idle_checker, pcm_paused_checker):
+                observed_services.append(service)
+                return next(modes)
+
+            original = MODULE.require_qconnect_pcm_safe
+            MODULE.require_qconnect_pcm_safe = mode_probe
+            try:
+                result = MODULE.reconcile_once(
+                    state_path=state_path,
+                    status_reader=SequenceReader([stuck, stuck, stuck, stuck]),
+                    service_reader=SequenceReader([SERVICE] * 4),
+                    qconnect_action_runner=qconnect,
+                    pcm_idle_checker=lambda _service: None,
+                    sleeper=lambda _seconds: None,
+                    monotonic_clock=SequenceReader([200.0, 202.0, 203.0]),
+                    wall_clock=lambda: 1000.0,
+                    boot_id_reader=lambda: BOOT,
+                )
+            finally:
+                MODULE.require_qconnect_pcm_safe = original
+
+            self.assertEqual(result, "blocked:qconnect-pcm-mode-changed")
+            self.assertEqual(observed_services, [SERVICE] * 4)
+            self.assertEqual(qconnect.commands, [])
+
+    def test_closed_recheck_race_blocks_at_final_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = pathlib.Path(tmp) / "state.json"
+            MODULE._store_state(state_path, candidate_state())
+            stuck = status(qconnect="retrying", opened=True)
+            qconnect = FakeQconnectRunner()
+            outcomes = iter(
+                ["closed", "closed", "closed", "closed", "closed", None]
+            )
+
+            def closes_then_reopens(_service):
+                outcome = next(outcomes)
+                if outcome == "closed":
+                    raise MODULE.RecoveryError("qbzd-target-pcm-owner-not-found")
+
+            result = MODULE.reconcile_once(
+                state_path=state_path,
+                status_reader=SequenceReader([stuck, stuck, stuck]),
+                service_reader=SequenceReader([SERVICE] * 3),
+                qconnect_action_runner=qconnect,
+                pcm_idle_checker=lambda _service: None,
+                pcm_owned_checker=closes_then_reopens,
+                sleeper=lambda _seconds: None,
+                monotonic_clock=SequenceReader([200.0, 202.0, 203.0]),
+                wall_clock=lambda: 1000.0,
+                boot_id_reader=lambda: BOOT,
+            )
+
+            self.assertEqual(result, "blocked:qconnect-pcm-mode-changed")
+            self.assertEqual(qconnect.commands, [])
+
+    def test_production_effect_edge_blocks_real_closed_to_paused_transition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            state_path = root / "state.json"
+            MODULE._store_state(state_path, candidate_state())
+            proc_root, asound_root, target_status = real_gate_tree(root)
+            stuck = status(qconnect="retrying", opened=True)
+            qconnect = FakeQconnectRunner()
+            status_reads = 0
+
+            def status_with_edge_reopen():
+                nonlocal status_reads
+                status_reads += 1
+                if status_reads == 4:
+                    target_status.write_text(
+                        f"state: PAUSED\nowner_pid: {SERVICE.pid}\n",
+                        encoding="utf-8",
+                    )
+                return stuck
+
+            original_idle = MODULE.require_qbzd_pcm_idle
+            original_paused = MODULE.require_qbzd_pcm_paused
+
+            def bound_idle(service, **_kwargs):
+                return original_idle(
+                    service, asound_root=asound_root, proc_root=proc_root
+                )
+
+            def bound_paused(service, **_kwargs):
+                return original_paused(
+                    service, asound_root=asound_root, proc_root=proc_root
+                )
+
+            MODULE.require_qbzd_pcm_idle = bound_idle
+            MODULE.require_qbzd_pcm_paused = bound_paused
+            try:
+                result = MODULE.reconcile_once(
+                    state_path=state_path,
+                    status_reader=status_with_edge_reopen,
+                    service_reader=SequenceReader([SERVICE] * 4),
+                    qconnect_action_runner=qconnect,
+                    proc_root=proc_root,
+                    sleeper=lambda _seconds: None,
+                    monotonic_clock=SequenceReader([200.0, 202.0, 203.0]),
+                    wall_clock=lambda: 1000.0,
+                    boot_id_reader=lambda: BOOT,
+                )
+            finally:
+                MODULE.require_qbzd_pcm_idle = original_idle
+                MODULE.require_qbzd_pcm_paused = original_paused
+
+            self.assertEqual(result, "blocked:qconnect-pcm-mode-changed")
+            self.assertEqual(qconnect.commands, [])
+
+    def test_production_effect_edge_blocks_reopen_during_idle_recheck(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            state_path = root / "state.json"
+            MODULE._store_state(state_path, candidate_state())
+            proc_root, asound_root, target_status = real_gate_tree(root)
+            stuck = status(qconnect="retrying", opened=True)
+            qconnect = FakeQconnectRunner()
+            idle_checks = 0
+            original_idle = MODULE.require_qbzd_pcm_idle
+            original_paused = MODULE.require_qbzd_pcm_paused
+
+            def idle_then_reopen(service, **_kwargs):
+                nonlocal idle_checks
+                original_idle(
+                    service, asound_root=asound_root, proc_root=proc_root
+                )
+                idle_checks += 1
+                if idle_checks == 4:
+                    target_status.write_text(
+                        f"state: PAUSED\nowner_pid: {SERVICE.pid}\n",
+                        encoding="utf-8",
+                    )
+
+            def bound_paused(service, **_kwargs):
+                return original_paused(
+                    service, asound_root=asound_root, proc_root=proc_root
+                )
+
+            MODULE.require_qbzd_pcm_idle = idle_then_reopen
+            MODULE.require_qbzd_pcm_paused = bound_paused
+            try:
+                result = MODULE.reconcile_once(
+                    state_path=state_path,
+                    status_reader=SequenceReader([stuck, stuck, stuck, stuck]),
+                    service_reader=SequenceReader([SERVICE] * 4),
+                    qconnect_action_runner=qconnect,
+                    proc_root=proc_root,
+                    sleeper=lambda _seconds: None,
+                    monotonic_clock=SequenceReader([200.0, 202.0, 203.0]),
+                    wall_clock=lambda: 1000.0,
+                    boot_id_reader=lambda: BOOT,
+                )
+            finally:
+                MODULE.require_qbzd_pcm_idle = original_idle
+                MODULE.require_qbzd_pcm_paused = original_paused
+
+            self.assertEqual(result, "blocked:qconnect-pcm-mode-changed")
+            self.assertEqual(idle_checks, 4)
+            self.assertEqual(qconnect.commands, [])
+
+    def test_closed_idle_fallback_uses_real_alsa_gates_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            proc_root = root / "proc"
+            asound_root = root / "asound"
+
+            process = proc_root / str(SERVICE.pid)
+            process.mkdir(parents=True)
+            fields = ["S", *(["1"] * 18), str(SERVICE.start_ticks)]
+            (process / "stat").write_text(
+                f"{SERVICE.pid} (qbzd) " + " ".join(fields) + "\n",
+                encoding="utf-8",
+            )
+            (process / "cgroup").write_text(
+                f"0::{SERVICE.cgroup}\n", encoding="utf-8"
+            )
+
+            target = asound_root / "card2"
+            target_status = target / "pcm0p" / "sub0" / "status"
+            target_status.parent.mkdir(parents=True)
+            (target / "id").write_text("M2\n", encoding="utf-8")
+            target_status.write_text("closed\n", encoding="utf-8")
+
+            def production_idle(service):
+                return MODULE.require_qbzd_pcm_idle(
+                    service, asound_root=asound_root, proc_root=proc_root
+                )
+
+            def production_paused(service):
+                return MODULE.require_qbzd_pcm_paused(
+                    service, asound_root=asound_root, proc_root=proc_root
+                )
+
+            self.assertEqual(
+                MODULE.require_qconnect_pcm_safe(
+                    SERVICE,
+                    pcm_idle_checker=production_idle,
+                    pcm_paused_checker=production_paused,
+                ),
+                MODULE.QCONNECT_PCM_MODE_CLOSED_IDLE,
+            )
+
+            other_status = asound_root / "card3" / "pcm0p" / "sub0" / "status"
+            other_status.parent.mkdir(parents=True)
+            other_status.write_text(
+                "state: RUNNING\nowner_pid: 222\n", encoding="utf-8"
+            )
+            qbzd_owner = proc_root / "222"
+            qbzd_owner.mkdir(parents=True)
+            (qbzd_owner / "status").write_text(
+                f"Name:\tqbzd\nTgid:\t{SERVICE.pid}\n", encoding="utf-8"
+            )
+            (qbzd_owner / "cgroup").write_text(
+                f"0::{SERVICE.cgroup}\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(MODULE.RecoveryError, "qbzd-pcm-open"):
+                MODULE.require_qconnect_pcm_safe(
+                    SERVICE,
+                    pcm_idle_checker=production_idle,
+                    pcm_paused_checker=production_paused,
+                )
+
+            other_status.write_text("closed\n", encoding="utf-8")
+            target_status.write_text(
+                "state: PAUSED\nowner_pid: 444\n", encoding="utf-8"
+            )
+            foreign_owner = proc_root / "444"
+            foreign_owner.mkdir(parents=True)
+            (foreign_owner / "status").write_text(
+                "Name:\tpipewire\nTgid:\t444\n", encoding="utf-8"
+            )
+            (foreign_owner / "cgroup").write_text(
+                "0::/user.slice/user-1000.slice/user@1000.service/"
+                "session.slice/pipewire.service\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                MODULE.RecoveryError, "qbzd-target-pcm-owner-mismatch"
+            ):
+                MODULE.require_qconnect_pcm_safe(
+                    SERVICE,
+                    pcm_idle_checker=production_idle,
+                    pcm_paused_checker=production_paused,
+                )
 
 
 if __name__ == "__main__":
