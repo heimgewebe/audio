@@ -373,6 +373,7 @@ def prepare(material_id: str, master_name: str,
                 if not _matches_at(existing_fd, "input.wav", master["bytes"], master["sha256"],
                                    owner=True):
                     raise EditError("Arbeitskopie wurde verändert; kein automatisches Überschreiben.")
+                os.fsync(working_fd)  # finalize a prior publish whose last fsync failed
         except FileNotFoundError:
             _atomic_dir_publish(
                 working_fd, manifest["edit_id"], manifest, master_fd, master_name, "input.wav",
@@ -504,6 +505,7 @@ def finish(edit_id: str, *, library_root: Path = h2_ingest.DEFAULT_LIBRARY_ROOT,
                         raise EditError("Archivergebnis hat eine unvereinbare vorhandene Bindung.")
                     if not _matches_at(existing_fd, "audio.wav", size, sha):
                         raise EditError("Archivergebnis weicht vom Hashbeleg ab.")
+                    os.fsync(renders_fd)  # bind an existing render to a durable parent
             except FileNotFoundError:
                 _atomic_dir_publish(renders_fd, derivative_id, archive_manifest,
                                     workspace_fd, "render.wav", "audio.wav",

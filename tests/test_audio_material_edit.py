@@ -53,6 +53,80 @@ class EditorRoundtripTests(unittest.TestCase):
     def finish(self, edit_id):
         return EDIT.finish(edit_id, library_root=self.library, edit_root=self.edit_root)
 
+    def test_prepare_retry_resyncs_parent_after_failed_publish_fsync(self):
+        from unittest import mock
+
+        actual_fsync = os.fsync
+        interrupted = [False]
+
+        def fail_first_publish_fsync(fd):
+            metadata = os.fstat(fd)
+            working = self.edit_root / "working"
+            if working.exists() and (metadata.st_dev, metadata.st_ino) == (
+                working.stat().st_dev, working.stat().st_ino
+            ) and not interrupted[0]:
+                interrupted[0] = True
+                raise OSError("injected working publication fsync error")
+            return actual_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=fail_first_publish_fsync):
+            with self.assertRaisesRegex(OSError, "working publication fsync"):
+                self.prepare()
+        self.assertTrue(interrupted[0])
+        working = self.edit_root / "working"
+        self.assertEqual(len([p for p in working.iterdir() if len(p.name) == 24]), 1)
+        observed = set()
+
+        def recorded(fd):
+            metadata = os.fstat(fd)
+            observed.add((metadata.st_dev, metadata.st_ino))
+            return actual_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=recorded):
+            retry = self.prepare()
+        info = working.stat()
+        self.assertIn((info.st_dev, info.st_ino), observed)
+        self.assertTrue(Path(retry["working_copy"]).is_file())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
+    def test_finish_retry_resyncs_parent_after_failed_publish_fsync(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        actual_fsync = os.fsync
+        interrupted = [False]
+
+        def fail_first_publish_fsync(fd):
+            metadata = os.fstat(fd)
+            renders = self.edit_root / "renders"
+            if renders.exists() and (metadata.st_dev, metadata.st_ino) == (
+                renders.stat().st_dev, renders.stat().st_ino
+            ) and not interrupted[0]:
+                interrupted[0] = True
+                raise OSError("injected renders publication fsync error")
+            return actual_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=fail_first_publish_fsync):
+            with self.assertRaisesRegex(OSError, "renders publication fsync"):
+                self.finish(prepared["edit_id"])
+        self.assertTrue(interrupted[0])
+        renders = self.edit_root / "renders"
+        self.assertEqual(len([p for p in renders.iterdir() if len(p.name) == 24]), 1)
+        observed = set()
+
+        def recorded(fd):
+            metadata = os.fstat(fd)
+            observed.add((metadata.st_dev, metadata.st_ino))
+            return actual_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=recorded):
+            retry = self.finish(prepared["edit_id"])
+        info = renders.stat()
+        self.assertIn((info.st_dev, info.st_ino), observed)
+        self.assertTrue(Path(retry["audio"]).is_file())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
     def test_prepare_fsyncs_new_directory_entries_in_their_parents(self):
         from unittest import mock
 

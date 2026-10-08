@@ -56,6 +56,9 @@ Standardroot: ~/Music/Audio-Aufnahmen/H2-Bearbeitungen/
 - Neu angelegte `working`-/`renders`- und übergeordnete Verzeichniseinträge
   werden mittels `fsync` des jeweiligen Parent-Deskriptors dauerhaft gebunden.
   Schlägt dieser Schritt fehl, meldet die CLI keinen erfolgreichen Export.
+  Beim erneuten Öffnen eines bereits publizierten Workspaces oder Renderings
+  synchronisiert der idempotente Retry das Elternverzeichnis ebenfalls, bevor
+  er Erfolg meldet.
 - Verzeichniszugriffe verwenden unter Linux geprüfte `O_NOFOLLOW`-Deskriptoren;
   die Veröffentlichung nutzt `renameat2(RENAME_NOREPLACE)` und bricht ab, falls
   die atomare No-Replace-Operation nicht verfügbar ist. Nach Directory-Swap
