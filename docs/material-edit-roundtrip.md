@@ -58,8 +58,14 @@ Standardroot: ~/Music/Audio-Aufnahmen/H2-Bearbeitungen/
   erzeugen einen neuen, an die Ursprungsdatei gebundenen Renderdatensatz.
 - Änderungen der Arbeitskopie, ungültiges WAV oder modifizierte Originale
   blockieren die Archivierung.
-- Ein Prozessabbruch kann private .audio-edit-staging-Verzeichnisse hinterlassen.
-  Vorhandene Nutzerdateien werden nicht automatisch gelöscht.
+- Bei **jeder fehlgeschlagenen Vorbereitung oder Veröffentlichung** bleibt das
+  private `.audio-edit-staging-*`-Verzeichnis absichtlich erhalten. Auch ein
+  Prozessabbruch kann solche Reste hinterlassen. Eine sichere automatische
+  Identitätsprüfung bereits vor dem ersten Öffnen ist nicht möglich; daher
+  findet keine destruktive Fehlerbereinigung statt.
+- Stagingreste können bis zur Größe des kopierten WAVs Speicher belegen.
+  Freien Speicher beobachten; Reste nur nach separater Identitäts- und
+  Inhaltsprüfung manuell bereinigen. Die CLI löscht keine Nutzerdateien.
 - Nur eine lokal explizit ausgeführte CLI darf diesen Dateisystempfad benutzen.
   Die Audiozentrale-Remote-Bridge erhält keinerlei neue Schreibrechte.
 

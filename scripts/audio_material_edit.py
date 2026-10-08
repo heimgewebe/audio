@@ -260,46 +260,23 @@ def _rename_noreplace(source_fd: int, source: str, target_fd: int, target: str) 
 def _atomic_dir_publish(root_fd: int, final_name: str, manifest: dict,
                         source_fd: int, source_name: str, destination_name: str,
                         *, expected_size: int, expected_sha256: str) -> None:
-    """No path lookup after the root fd opens; staging and rename stay under it."""
+    """Publish atomically, never deleting a staging directory on failure.
+
+    mkdirat has no return descriptor: a same-user process could swap the name
+    before our first open. No failure-path unlink/rmdir can safely claim that
+    name belongs to us. Preserve failed staging for explicit later inspection.
+    """
     if not ID_RE.fullmatch(final_name):
         raise EditError("Ungültige Ziel-ID.")
     staging = ".audio-edit-staging-" + secrets.token_hex(16)
     os.mkdir(staging, mode=0o700, dir_fd=root_fd)
-    published = False
-    original_stage_identity: tuple[int, int] | None = None
-    try:
-        with _child_dir(root_fd, staging, private=True) as staging_fd:
-            staged = os.fstat(staging_fd)
-            original_stage_identity = (staged.st_dev, staged.st_ino)
-            _copy_checked_at(source_fd, source_name, staging_fd, destination_name,
-                             expected_sha256=expected_sha256, expected_size=expected_size)
-            _write_manifest_at(staging_fd, manifest)
-            os.fsync(staging_fd)
-        _rename_noreplace(root_fd, staging, root_fd, final_name)
-        published = True
-        os.fsync(root_fd)
-    finally:
-        if not published and original_stage_identity is not None:
-            # A same-user process may rename the staging directory and place
-            # another directory at its old name. Never clean that replacement.
-            try:
-                with _child_dir(root_fd, staging, private=True) as stage_fd:
-                    opened = os.fstat(stage_fd)
-                    named = os.stat(staging, dir_fd=root_fd, follow_symlinks=False)
-                    if (
-                        (opened.st_dev, opened.st_ino) == original_stage_identity
-                        and (named.st_dev, named.st_ino) == original_stage_identity
-                    ):
-                        for filename in (destination_name, "manifest.json"):
-                            try:
-                                os.unlink(filename, dir_fd=stage_fd)
-                            except FileNotFoundError:
-                                pass
-                        os.rmdir(staging, dir_fd=root_fd)
-            except (OSError, EditError):
-                # Preserve uncertain staging for manual recovery; never remove
-                # arbitrary user-created files on an untrusted path.
-                pass
+    with _child_dir(root_fd, staging, private=True) as staging_fd:
+        _copy_checked_at(source_fd, source_name, staging_fd, destination_name,
+                         expected_sha256=expected_sha256, expected_size=expected_size)
+        _write_manifest_at(staging_fd, manifest)
+        os.fsync(staging_fd)
+    _rename_noreplace(root_fd, staging, root_fd, final_name)
+    os.fsync(root_fd)
 
 
 def _roots(library_root: Path, edit_root: Path) -> tuple[Path, Path]:

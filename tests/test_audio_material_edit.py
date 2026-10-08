@@ -199,11 +199,14 @@ class EditorRoundtripTests(unittest.TestCase):
             with self.assertRaisesRegex(EDIT.EditError, "existiert"):
                 self.finish(prepared["edit_id"])
         renders = self.edit_root / "renders"
-        published = [entry for entry in renders.iterdir() if entry.is_dir()]
+        published = [entry for entry in renders.iterdir() if entry.is_dir() and len(entry.name) == 24]
         self.assertEqual(len(published), 1)
         self.assertEqual(list(published[0].iterdir()), [])
         self.assertFalse((published[0] / "audio.wav").exists())
-        self.assertFalse(list(renders.glob(".audio-edit-staging-*")))
+        staging = list(renders.glob(".audio-edit-staging-*"))
+        self.assertEqual(len(staging), 1)
+        self.assertTrue((staging[0] / "audio.wav").is_file())
+        self.assertTrue((staging[0] / "manifest.json").is_file())
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
 
     def test_failed_publication_never_cleans_replaced_staging_directory(self):
@@ -239,6 +242,38 @@ class EditorRoundtripTests(unittest.TestCase):
         self.assertTrue((moved[0] / "manifest.json").is_file())
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
 
+    def test_staging_swap_before_first_open_preserves_foreign_files(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        renders = self.edit_root / "renders"
+        actual_child = EDIT._child_dir
+        replacements = []
+
+        def swapped_before_open(root_fd, name, **kwargs):
+            if name.startswith(".audio-edit-staging-"):
+                original = renders / name
+                saved = renders / "unopened-original-stage"
+                original.rename(saved)
+                original.mkdir(mode=0o700)
+                (original / "audio.wav").write_bytes(b"external-audio")
+                (original / "manifest.json").write_bytes(b"external-manifest")
+                (original / "sentinel").write_bytes(b"external-marker")
+                replacements.append(original)
+            return actual_child(root_fd, name, **kwargs)
+
+        with mock.patch.object(EDIT, "_child_dir", side_effect=swapped_before_open):
+            with self.assertRaises(FileExistsError):
+                self.finish(prepared["edit_id"])
+
+        self.assertEqual(len(replacements), 1)
+        self.assertEqual((replacements[0] / "audio.wav").read_bytes(), b"external-audio")
+        self.assertEqual((replacements[0] / "manifest.json").read_bytes(), b"external-manifest")
+        self.assertEqual((replacements[0] / "sentinel").read_bytes(), b"external-marker")
+        self.assertTrue((renders / "unopened-original-stage").is_dir())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
     def test_prepare_cannot_replace_racing_empty_workspace(self):
         from unittest import mock
 
@@ -252,10 +287,13 @@ class EditorRoundtripTests(unittest.TestCase):
             with self.assertRaisesRegex(EDIT.EditError, "existiert"):
                 self.prepare()
         workspace_root = self.edit_root / "working"
-        preserved = [entry for entry in workspace_root.iterdir() if entry.is_dir()]
+        preserved = [entry for entry in workspace_root.iterdir() if entry.is_dir() and len(entry.name) == 24]
         self.assertEqual(len(preserved), 1)
         self.assertEqual(list(preserved[0].iterdir()), [])
-        self.assertFalse(list(workspace_root.glob(".audio-edit-staging-*")))
+        staging = list(workspace_root.glob(".audio-edit-staging-*"))
+        self.assertEqual(len(staging), 1)
+        self.assertTrue((staging[0] / "input.wav").is_file())
+        self.assertTrue((staging[0] / "manifest.json").is_file())
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
 
     def test_hardlinked_input_to_immutable_master_is_rejected(self):
@@ -371,7 +409,10 @@ class EditorRoundtripTests(unittest.TestCase):
             with self.assertRaisesRegex(EDIT.EditError, "vollständig geschrieben"):
                 self.prepare()
         working = self.edit_root / "working"
-        self.assertEqual(list(working.iterdir()), [])
+        staging = list(working.glob(".audio-edit-staging-*"))
+        self.assertEqual(len(staging), 1)
+        self.assertEqual((staging[0] / "input.wav").stat().st_size, 0)
+        self.assertFalse((staging[0] / "manifest.json").exists())
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
 
     def test_render_format_is_bounded(self):
