@@ -270,6 +270,28 @@ class EditorRoundtripTests(unittest.TestCase):
         self.assertTrue((self.edit_root / "working-moved" / prepared["edit_id"] / "input.wav").exists())
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
 
+    def test_fifo_render_rejects_without_blocking(self):
+        import subprocess
+
+        prepared = self.prepare()
+        fifo = Path(prepared["expected_render"])
+        os.mkfifo(fifo, mode=0o600)
+        result = subprocess.run(
+            [
+                sys.executable, str(ROOT / "scripts" / "audio-material-edit"),
+                "finish", prepared["edit_id"],
+                "--library-root", str(self.library),
+                "--edit-root", str(self.edit_root),
+            ],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        blocked = json.loads(result.stderr)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertIn("reguläre Datei", blocked["error"])
+        self.assertFalse((self.edit_root / "renders").exists())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
     def test_zero_byte_write_fails_without_publishing(self):
         from unittest import mock
 
