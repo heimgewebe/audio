@@ -58,7 +58,9 @@ Standardroot: ~/Music/Audio-Aufnahmen/H2-Bearbeitungen/
   Schlägt dieser Schritt fehl, meldet die CLI keinen erfolgreichen Export.
   Beim erneuten Öffnen eines bereits publizierten Workspaces oder Renderings
   synchronisiert der idempotente Retry das Elternverzeichnis ebenfalls, bevor
-  er Erfolg meldet.
+  er Erfolg meldet. Auch ein bereits existierendes `working`-/`renders`- oder
+  übergeordnetes Verzeichnis wird auf dem `create=True`-Pfad erneut mit einem
+  Parent-`fsync` abgesichert, falls ein früherer Erzeugungs-`fsync` scheiterte.
 - Verzeichniszugriffe verwenden unter Linux geprüfte `O_NOFOLLOW`-Deskriptoren;
   die Veröffentlichung nutzt `renameat2(RENAME_NOREPLACE)` und bricht ab, falls
   die atomare No-Replace-Operation nicht verfügbar ist. Nach Directory-Swap

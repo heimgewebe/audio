@@ -77,8 +77,10 @@ def _directory_tree(path: Path, *, create: bool = False, private: bool = False) 
                 except FileExistsError:
                     pass
                 next_fd = os.open(name, DIR_FLAGS, dir_fd=fd)
+            if create:
+                # This entry could survive a prior mkdir with a failed fsync.
                 try:
-                    os.fsync(fd)  # persist the newly created entry in its parent
+                    os.fsync(fd)
                 except BaseException:
                     os.close(next_fd)
                     raise
@@ -106,15 +108,17 @@ def _child_dir(parent_fd: int, name: str, *, create: bool = False,
         except FileExistsError:
             pass
         fd = os.open(name, DIR_FLAGS, dir_fd=parent_fd)
-        try:
-            os.fsync(parent_fd)  # persist working/renders entry before publication
-        except BaseException:
-            os.close(fd)
-            raise
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR):
             raise EditError("Verzeichnispfad ist nicht symlinkfrei.") from exc
         raise
+    if create:
+        # Also resync an existing entry left by an interrupted prior mkdir.
+        try:
+            os.fsync(parent_fd)
+        except BaseException:
+            os.close(fd)
+            raise
     try:
         if private:
             _private_dir(fd)

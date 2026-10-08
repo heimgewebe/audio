@@ -127,6 +127,74 @@ class EditorRoundtripTests(unittest.TestCase):
         self.assertTrue(Path(retry["audio"]).is_file())
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
 
+    def test_edit_root_retry_resyncs_parent_after_failed_creation_fsync(self):
+        from unittest import mock
+
+        real_fsync = os.fsync
+        original_parent = self.root.stat()
+        parent_id = (original_parent.st_dev, original_parent.st_ino)
+        failed = [False]
+
+        def fail_after_mkdir(fd):
+            st = os.fstat(fd)
+            if (st.st_dev, st.st_ino) == parent_id and self.edit_root.exists() and not failed[0]:
+                failed[0] = True
+                raise OSError("injected root-entry fsync failure")
+            return real_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=fail_after_mkdir):
+            with self.assertRaisesRegex(OSError, "root-entry fsync"):
+                self.prepare()
+        self.assertTrue(failed[0])
+        self.assertTrue(self.edit_root.is_dir())
+        observed = set()
+
+        def observed_fsync(fd):
+            st = os.fstat(fd)
+            observed.add((st.st_dev, st.st_ino))
+            return real_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=observed_fsync):
+            self.prepare()
+        self.assertIn(parent_id, observed)
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
+    def test_finish_retry_resyncs_existing_renders_dir_parent(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        real_fsync = os.fsync
+        info = self.edit_root.stat()
+        parent_id = (info.st_dev, info.st_ino)
+        failed = [False]
+
+        def fail_after_renders_mkdir(fd):
+            st = os.fstat(fd)
+            if ((st.st_dev, st.st_ino) == parent_id
+                    and (self.edit_root / "renders").exists() and not failed[0]):
+                failed[0] = True
+                raise OSError("injected renders-entry fsync failure")
+            return real_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=fail_after_renders_mkdir):
+            with self.assertRaisesRegex(OSError, "renders-entry fsync"):
+                self.finish(prepared["edit_id"])
+        self.assertTrue(failed[0])
+        self.assertEqual(list((self.edit_root / "renders").iterdir()), [])
+        observed = set()
+
+        def observed_fsync(fd):
+            st = os.fstat(fd)
+            observed.add((st.st_dev, st.st_ino))
+            return real_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=observed_fsync):
+            result = self.finish(prepared["edit_id"])
+        self.assertIn(parent_id, observed)
+        self.assertTrue(Path(result["audio"]).exists())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
     def test_prepare_fsyncs_new_directory_entries_in_their_parents(self):
         from unittest import mock
 
