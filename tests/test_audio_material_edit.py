@@ -182,6 +182,104 @@ class EditorRoundtripTests(unittest.TestCase):
         self.assertEqual(info["channels"], 2)
         self.assertEqual(info["sample_rate_hz"], 48000)
 
+    def test_atomic_publication_cannot_replace_racing_target(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        original_rename = EDIT._rename_noreplace
+
+        # An EMPTY preexisting directory is the dangerous Linux rename(2)
+        # case: the old check-then-rename implementation could replace it.
+        def race(source_fd, source, target_fd, target):
+            os.mkdir(target, mode=0o700, dir_fd=target_fd)
+            return original_rename(source_fd, source, target_fd, target)
+
+        with mock.patch.object(EDIT, "_rename_noreplace", side_effect=race):
+            with self.assertRaisesRegex(EDIT.EditError, "existiert"):
+                self.finish(prepared["edit_id"])
+        renders = self.edit_root / "renders"
+        published = [entry for entry in renders.iterdir() if entry.is_dir()]
+        self.assertEqual(len(published), 1)
+        self.assertEqual(list(published[0].iterdir()), [])
+        self.assertFalse((published[0] / "audio.wav").exists())
+        self.assertFalse(list(renders.glob(".audio-edit-staging-*")))
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
+    def test_prepare_cannot_replace_racing_empty_workspace(self):
+        from unittest import mock
+
+        original_rename = EDIT._rename_noreplace
+
+        def race(source_fd, source, target_fd, target):
+            os.mkdir(target, mode=0o700, dir_fd=target_fd)
+            return original_rename(source_fd, source, target_fd, target)
+
+        with mock.patch.object(EDIT, "_rename_noreplace", side_effect=race):
+            with self.assertRaisesRegex(EDIT.EditError, "existiert"):
+                self.prepare()
+        workspace_root = self.edit_root / "working"
+        preserved = [entry for entry in workspace_root.iterdir() if entry.is_dir()]
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(list(preserved[0].iterdir()), [])
+        self.assertFalse(list(workspace_root.glob(".audio-edit-staging-*")))
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
+    def test_swapped_renders_parent_cannot_redirect_publication(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        outside = self.root / "outside"
+        outside.mkdir()
+        original_rename = EDIT._rename_noreplace
+
+        def redirect_after_fd_was_opened(source_fd, source, target_fd, target):
+            self.assertTrue((self.edit_root / "renders").is_dir())
+            (self.edit_root / "renders").rename(self.edit_root / "renders-moved")
+            (self.edit_root / "renders").symlink_to(outside, target_is_directory=True)
+            return original_rename(source_fd, source, target_fd, target)
+
+        with mock.patch.object(EDIT, "_rename_noreplace", side_effect=redirect_after_fd_was_opened):
+            with self.assertRaises(EDIT.EditError):
+                self.finish(prepared["edit_id"])
+        self.assertEqual(list(outside.iterdir()), [])
+        detached = list((self.edit_root / "renders-moved").iterdir())
+        self.assertEqual(len(detached), 1)
+        self.assertEqual((detached[0] / "audio.wav").is_file(), True)
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
+    def test_swapped_working_parent_cannot_redirect_existing_input(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        outside = self.root / "outside"
+        outside.mkdir()
+        match_original = EDIT._matches_at
+
+        def replace_checked_parent(fd, filename, size, sha):
+            if filename == "input.wav":
+                (self.edit_root / "working").rename(self.edit_root / "working-moved")
+                (self.edit_root / "working").symlink_to(outside, target_is_directory=True)
+            return match_original(fd, filename, size, sha)
+
+        with mock.patch.object(EDIT, "_matches_at", side_effect=replace_checked_parent):
+            with self.assertRaises(EDIT.EditError):
+                self.prepare()
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertTrue((self.edit_root / "working-moved" / prepared["edit_id"] / "input.wav").exists())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
+    def test_zero_byte_write_fails_without_publishing(self):
+        from unittest import mock
+
+        with mock.patch.object(EDIT.os, "write", return_value=0):
+            with self.assertRaisesRegex(EDIT.EditError, "vollständig geschrieben"):
+                self.prepare()
+        working = self.edit_root / "working"
+        self.assertEqual(list(working.iterdir()), [])
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
     def test_render_format_is_bounded(self):
         prepared = self.prepare()
         render = Path(prepared["expected_render"])

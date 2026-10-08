@@ -50,6 +50,10 @@ Standardroot: ~/Music/Audio-Aufnahmen/H2-Bearbeitungen/
   Arbeitskopie und das Rendering erhalten eigene vollständige Hashprüfungen.
 - Keine Symlinks, keine beliebige Remote-Dateipfadübergabe, keine Überschreibung
   eines schon archivierten Ergebnisses.
+- Verzeichniszugriffe verwenden unter Linux geprüfte `O_NOFOLLOW`-Deskriptoren;
+  die Veröffentlichung nutzt `renameat2(RENAME_NOREPLACE)` und bricht ab, falls
+  die atomare No-Replace-Operation nicht verfügbar ist. Nach Directory-Swap
+  wird ein nicht mehr erreichbares Ergebnis nicht als erfolgreich ausgegeben.
 - Wiederholtes finish mit identischem Inhalt ist idempotent. Neue Renderingbytes
   erzeugen einen neuen, an die Ursprungsdatei gebundenen Renderdatensatz.
 - Änderungen der Arbeitskopie, ungültiges WAV oder modifizierte Originale
