@@ -225,6 +225,45 @@ class EditorRoundtripTests(unittest.TestCase):
         self.assertFalse(list(workspace_root.glob(".audio-edit-staging-*")))
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
 
+    def test_hardlinked_input_to_immutable_master_is_rejected(self):
+        prepared = self.prepare()
+        input_path = Path(prepared["working_copy"])
+        input_path.unlink()
+        os.link(self.original, input_path)
+        self.assertEqual(input_path.stat().st_ino, self.original.stat().st_ino)
+        self.assertGreater(self.original.stat().st_nlink, 1)
+
+        with self.assertRaisesRegex(EDIT.EditError, "Arbeitskopie"):
+            self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        with self.assertRaisesRegex(EDIT.EditError, "Arbeitskopie"):
+            self.finish(prepared["edit_id"])
+        self.assertFalse((self.edit_root / "renders").exists())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
+    def test_existing_workspace_rechecks_master_after_verify_directory_swap(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        master_directory = self.original.parent
+        preserved = master_directory.with_name("master-original")
+        original_verify = H2.verify_material
+
+        def verified_then_swapped(*args, **kwargs):
+            result = original_verify(*args, **kwargs)
+            master_directory.rename(preserved)
+            master_directory.mkdir(mode=0o700)
+            (master_directory / MASTER).write_bytes(b"replaced-after-verify")
+            return result
+
+        with mock.patch.object(H2, "verify_material", side_effect=verified_then_swapped):
+            with self.assertRaisesRegex(EDIT.EditError, "Master"):
+                self.prepare()
+        self.assertTrue(Path(prepared["working_copy"]).exists())
+        self.assertEqual(hashlib.sha256((preserved / MASTER).read_bytes()).hexdigest(),
+                         self.original_digest)
+        self.assertFalse((self.edit_root / "renders").exists())
+
     def test_swapped_renders_parent_cannot_redirect_publication(self):
         from unittest import mock
 
@@ -257,11 +296,11 @@ class EditorRoundtripTests(unittest.TestCase):
         outside.mkdir()
         match_original = EDIT._matches_at
 
-        def replace_checked_parent(fd, filename, size, sha):
+        def replace_checked_parent(fd, filename, size, sha, **kwargs):
             if filename == "input.wav":
                 (self.edit_root / "working").rename(self.edit_root / "working-moved")
                 (self.edit_root / "working").symlink_to(outside, target_is_directory=True)
-            return match_original(fd, filename, size, sha)
+            return match_original(fd, filename, size, sha, **kwargs)
 
         with mock.patch.object(EDIT, "_matches_at", side_effect=replace_checked_parent):
             with self.assertRaises(EDIT.EditError):

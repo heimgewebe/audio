@@ -156,9 +156,10 @@ def _digest_at(parent_fd: int, name: str, *, expected_size: int | None = None,
         return _hash_open(fd, opened)
 
 
-def _matches_at(parent_fd: int, name: str, size: int, sha256: str) -> bool:
+def _matches_at(parent_fd: int, name: str, size: int, sha256: str,
+                *, owner: bool = False) -> bool:
     try:
-        return _digest_at(parent_fd, name, expected_size=size) == sha256
+        return _digest_at(parent_fd, name, expected_size=size, owner=owner) == sha256
     except (EditError, OSError):
         return False
 
@@ -319,7 +320,7 @@ def _assert_visible(editing: Path, root_fd: int, section: str, section_fd: int,
                 raise EditError("Bearbeitungsunterverzeichnis wurde während der Aktion ausgetauscht.")
             with _child_dir(live_section, item_id, private=True) as live_item:
                 if (_read_manifest_at(live_item) != expected_manifest
-                    or not _matches_at(live_item, filename, size, sha)):
+                    or not _matches_at(live_item, filename, size, sha, owner=True)):
                     raise EditError("Veröffentlichtes Audio ist am erwarteten Pfad nicht mehr verifizierbar.")
 
 
@@ -357,7 +358,10 @@ def prepare(material_id: str, master_name: str,
             with _child_dir(working_fd, manifest["edit_id"], private=True) as existing_fd:
                 if _read_manifest_at(existing_fd) != manifest:
                     raise EditError("Vorhandener Arbeitsbereich besitzt eine fremde Bindung.")
-                if not _matches_at(existing_fd, "input.wav", master["bytes"], master["sha256"]):
+                if not _matches_at(master_fd, master_name, master["bytes"], master["sha256"]):
+                    raise EditError("Archivierter H2-Master änderte sich nach der Verifikation.")
+                if not _matches_at(existing_fd, "input.wav", master["bytes"], master["sha256"],
+                                   owner=True):
                     raise EditError("Arbeitskopie wurde verändert; kein automatisches Überschreiben.")
         except FileNotFoundError:
             _atomic_dir_publish(
@@ -477,7 +481,8 @@ def finish(edit_id: str, *, library_root: Path = h2_ingest.DEFAULT_LIBRARY_ROOT,
             if not _matches_at(master_fd, source["master_name"],
                                source["master_bytes"], source["master_sha256"]):
                 raise EditError("Ursprungs-Master änderte sich nach der Verifikation.")
-        if not _matches_at(workspace_fd, "input.wav", source["master_bytes"], source["master_sha256"]):
+        if not _matches_at(workspace_fd, "input.wav", source["master_bytes"], source["master_sha256"],
+                           owner=True):
             raise EditError("Arbeitskopie wurde verändert; Masterbindung ungültig.")
         wav, sha, size = _wave_info_at(workspace_fd, "render.wav")
         derivation = {"source": source, "render": {"sha256": sha, "bytes": size, "wav": wav}}
