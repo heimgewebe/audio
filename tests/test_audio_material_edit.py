@@ -53,6 +53,68 @@ class EditorRoundtripTests(unittest.TestCase):
     def finish(self, edit_id):
         return EDIT.finish(edit_id, library_root=self.library, edit_root=self.edit_root)
 
+    def test_prepare_fsyncs_new_directory_entries_in_their_parents(self):
+        from unittest import mock
+
+        observed = set()
+        actual_fsync = os.fsync
+
+        def recorded(fd):
+            metadata = os.fstat(fd)
+            observed.add((metadata.st_dev, metadata.st_ino))
+            return actual_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=recorded):
+            self.prepare()
+
+        parent = self.root.stat()
+        edit = self.edit_root.stat()
+        self.assertIn((parent.st_dev, parent.st_ino), observed)
+        self.assertIn((edit.st_dev, edit.st_ino), observed)
+
+    def test_first_finish_fsyncs_render_directory_parent(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        self.assertFalse((self.edit_root / "renders").exists())
+        observed = set()
+        actual_fsync = os.fsync
+
+        def recorded(fd):
+            metadata = os.fstat(fd)
+            observed.add((metadata.st_dev, metadata.st_ino))
+            return actual_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=recorded):
+            result = self.finish(prepared["edit_id"])
+
+        edit = self.edit_root.stat()
+        self.assertIn((edit.st_dev, edit.st_ino), observed)
+        self.assertTrue(Path(result["audio"]).exists())
+
+    def test_failed_parent_fsync_blocks_first_render_publication(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        edit = self.edit_root.stat()
+        actual_fsync = os.fsync
+
+        def failing_parent(fd):
+            metadata = os.fstat(fd)
+            if (metadata.st_dev, metadata.st_ino) == (edit.st_dev, edit.st_ino):
+                raise OSError("injected parent fsync failure")
+            return actual_fsync(fd)
+
+        with mock.patch.object(EDIT.os, "fsync", side_effect=failing_parent):
+            with self.assertRaisesRegex(OSError, "injected parent fsync failure"):
+                self.finish(prepared["edit_id"])
+
+        self.assertTrue((self.edit_root / "renders").is_dir())
+        self.assertEqual(list((self.edit_root / "renders").iterdir()), [])
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
     def test_full_roundtrip_preserves_master_and_writes_immutable_provenance(self):
         prepared = self.prepare()
         self.assertTrue(prepared["source_verified"])
