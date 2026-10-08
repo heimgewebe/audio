@@ -206,6 +206,39 @@ class EditorRoundtripTests(unittest.TestCase):
         self.assertFalse(list(renders.glob(".audio-edit-staging-*")))
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
 
+    def test_failed_publication_never_cleans_replaced_staging_directory(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        renders = self.edit_root / "renders"
+        replaced = []
+        moved = []
+
+        def replace_stage_then_fail(source_fd, source, target_fd, target):
+            original = renders / source
+            saved = renders / "original-stage-preserved"
+            original.rename(saved)
+            original.mkdir(mode=0o700)
+            (original / "audio.wav").write_bytes(b"user-created-audio")
+            (original / "manifest.json").write_bytes(b"user-created-manifest")
+            (original / "sentinel").write_bytes(b"must-preserve")
+            replaced.append(original)
+            moved.append(saved)
+            raise EDIT.EditError("injected publication failure")
+
+        with mock.patch.object(EDIT, "_rename_noreplace", side_effect=replace_stage_then_fail):
+            with self.assertRaisesRegex(EDIT.EditError, "injected publication failure"):
+                self.finish(prepared["edit_id"])
+
+        self.assertEqual(len(replaced), 1)
+        self.assertEqual((replaced[0] / "audio.wav").read_bytes(), b"user-created-audio")
+        self.assertEqual((replaced[0] / "manifest.json").read_bytes(), b"user-created-manifest")
+        self.assertEqual((replaced[0] / "sentinel").read_bytes(), b"must-preserve")
+        self.assertTrue((moved[0] / "audio.wav").is_file())
+        self.assertTrue((moved[0] / "manifest.json").is_file())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
     def test_prepare_cannot_replace_racing_empty_workspace(self):
         from unittest import mock
 

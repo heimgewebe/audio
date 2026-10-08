@@ -266,8 +266,11 @@ def _atomic_dir_publish(root_fd: int, final_name: str, manifest: dict,
     staging = ".audio-edit-staging-" + secrets.token_hex(16)
     os.mkdir(staging, mode=0o700, dir_fd=root_fd)
     published = False
+    original_stage_identity: tuple[int, int] | None = None
     try:
         with _child_dir(root_fd, staging, private=True) as staging_fd:
+            staged = os.fstat(staging_fd)
+            original_stage_identity = (staged.st_dev, staged.st_ino)
             _copy_checked_at(source_fd, source_name, staging_fd, destination_name,
                              expected_sha256=expected_sha256, expected_size=expected_size)
             _write_manifest_at(staging_fd, manifest)
@@ -276,14 +279,16 @@ def _atomic_dir_publish(root_fd: int, final_name: str, manifest: dict,
         published = True
         os.fsync(root_fd)
     finally:
-        if not published:
-            # Remove only our two known staging files, and only if the stage
-            # directory is still the same inode. Never recursively delete.
+        if not published and original_stage_identity is not None:
+            # A same-user process may rename the staging directory and place
+            # another directory at its old name. Never clean that replacement.
             try:
                 with _child_dir(root_fd, staging, private=True) as stage_fd:
-                    st = os.stat(staging, dir_fd=root_fd, follow_symlinks=False)
-                    if (st.st_dev, st.st_ino) == (
-                        os.fstat(stage_fd).st_dev, os.fstat(stage_fd).st_ino
+                    opened = os.fstat(stage_fd)
+                    named = os.stat(staging, dir_fd=root_fd, follow_symlinks=False)
+                    if (
+                        (opened.st_dev, opened.st_ino) == original_stage_identity
+                        and (named.st_dev, named.st_ino) == original_stage_identity
                     ):
                         for filename in (destination_name, "manifest.json"):
                             try:
