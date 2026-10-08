@@ -335,6 +335,52 @@ class EditorRoundtripTests(unittest.TestCase):
                          self.original_digest)
         self.assertFalse((self.edit_root / "renders").exists())
 
+    def test_existing_workspace_rechecks_sibling_master_after_directory_swap(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        master_directory = self.original.parent
+        saved = master_directory.with_name("master-before-swap")
+        original_verify = H2.verify_material
+
+        def verified_then_swapped(*args, **kwargs):
+            result = original_verify(*args, **kwargs)
+            master_directory.rename(saved)
+            master_directory.mkdir(mode=0o700)
+            for old_file in saved.iterdir():
+                if old_file.is_file():
+                    (master_directory / old_file.name).write_bytes(old_file.read_bytes())
+            # Only FRONT changes; the selected MIX remains byte-identical.
+            (master_directory / f"{SCENE}_FRONT.WAV").write_bytes(b"changed-sibling")
+            return result
+
+        with mock.patch.object(H2, "verify_material", side_effect=verified_then_swapped):
+            with self.assertRaisesRegex(EDIT.EditError, "Master-Set"):
+                self.prepare()
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+        self.assertTrue(Path(prepared["working_copy"]).exists())
+        self.assertFalse((self.edit_root / "renders").exists())
+
+    def test_finish_rejects_missing_sibling_master_after_verify(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        original_verify = H2.verify_material
+        sibling = self.original.parent / f"{SCENE}_FRONT.WAV"
+
+        def verified_then_missing(*args, **kwargs):
+            result = original_verify(*args, **kwargs)
+            os.chmod(sibling.parent, 0o700)  # simulate a same-owner directory mutation
+            sibling.unlink()
+            return result
+
+        with mock.patch.object(H2, "verify_material", side_effect=verified_then_missing):
+            with self.assertRaisesRegex(EDIT.EditError, "Master-Set"):
+                self.finish(prepared["edit_id"])
+        self.assertFalse((self.edit_root / "renders").exists())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(), self.original_digest)
+
     def test_swapped_renders_parent_cannot_redirect_publication(self):
         from unittest import mock
 
@@ -423,8 +469,3 @@ class EditorRoundtripTests(unittest.TestCase):
         render.write_bytes(data)
         with self.assertRaisesRegex(EDIT.EditError, "Kanäle"):
             self.finish(prepared["edit_id"])
-        self.assertFalse((self.edit_root / "renders").exists())
-
-
-if __name__ == "__main__":
-    unittest.main()

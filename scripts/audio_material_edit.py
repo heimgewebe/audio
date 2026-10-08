@@ -164,6 +164,25 @@ def _matches_at(parent_fd: int, name: str, size: int, sha256: str,
         return False
 
 
+def _verify_master_set_at(master_fd: int, verification: dict) -> None:
+    """Recheck every manifest-bound master through the SAME anchored directory."""
+    masters = verification.get("masters")
+    if (verification.get("verified_current") is not True
+        or not isinstance(masters, list) or not masters
+        or len(masters) > h2_ingest.MAX_SESSION_FILES):
+        raise EditError("H2-Master-Set hat keine vollständige Integritätsbindung.")
+    for master in masters:
+        if not isinstance(master, dict):
+            raise EditError("H2-Master-Set enthält ungültige Metadaten.")
+        name, size, sha = master.get("name"), master.get("bytes"), master.get("sha256")
+        if (not isinstance(name, str) or h2_ingest.ROLE_RE.fullmatch(name) is None
+            or type(size) is not int or not 0 < size <= (2**63 - 1)
+            or not isinstance(sha, str) or SHA_RE.fullmatch(sha) is None):
+            raise EditError("H2-Master-Set enthält eine ungültige Dateiidentität.")
+        if not _matches_at(master_fd, name, size, sha):
+            raise EditError("H2-Master-Set änderte sich nach der Archivverifikation.")
+
+
 def _write_all(fd: int, data: bytes | memoryview) -> None:
     remaining = memoryview(data)
     while remaining:
@@ -336,12 +355,11 @@ def prepare(material_id: str, master_name: str,
          _child_dir(material_fd, "master") as master_fd, \
          _directory_tree(editing, create=True, private=True) as edit_fd, \
          _child_dir(edit_fd, "working", create=True, private=True) as working_fd:
+        _verify_master_set_at(master_fd, verified)
         try:
             with _child_dir(working_fd, manifest["edit_id"], private=True) as existing_fd:
                 if _read_manifest_at(existing_fd) != manifest:
                     raise EditError("Vorhandener Arbeitsbereich besitzt eine fremde Bindung.")
-                if not _matches_at(master_fd, master_name, master["bytes"], master["sha256"]):
-                    raise EditError("Archivierter H2-Master änderte sich nach der Verifikation.")
                 if not _matches_at(existing_fd, "input.wav", master["bytes"], master["sha256"],
                                    owner=True):
                     raise EditError("Arbeitskopie wurde verändert; kein automatisches Überschreiben.")
@@ -460,9 +478,7 @@ def finish(edit_id: str, *, library_root: Path = h2_ingest.DEFAULT_LIBRARY_ROOT,
         with _directory_tree(library) as library_fd, \
              _child_dir(library_fd, source["material_id"]) as material_fd, \
              _child_dir(material_fd, "master") as master_fd:
-            if not _matches_at(master_fd, source["master_name"],
-                               source["master_bytes"], source["master_sha256"]):
-                raise EditError("Ursprungs-Master änderte sich nach der Verifikation.")
+            _verify_master_set_at(master_fd, verified)
         if not _matches_at(workspace_fd, "input.wav", source["master_bytes"], source["master_sha256"],
                            owner=True):
             raise EditError("Arbeitskopie wurde verändert; Masterbindung ungültig.")

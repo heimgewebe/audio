@@ -46,8 +46,11 @@ Standardroot: ~/Music/Audio-Aufnahmen/H2-Bearbeitungen/
       manifest.json                              # Herkunft inkl. Originalmaster
 
 - Kein Eingriff in H2-SD-Karte, Originalmaster, Annotationen, PipeWire oder Qobuz.
-- Originalmaster werden vor jedem Schritt vollständig verifiziert; die
-  Arbeitskopie und das Rendering erhalten eigene vollständige Hashprüfungen.
+- Vor `prepare` und `finish` verifiziert der bestehende H2-Ingest das
+  gesamte Master-Set. Anschließend werden **alle Masterdateien** über den
+  geprüften Archiv-Verzeichnisdeskriptor erneut vollständig gehasht;
+  die Arbeitskopie und das Rendering erhalten eigene Hashprüfungen.
+  Bei vielen oder mehrgigabytegroßen H2-Mastern verursacht das zusätzliche I/O.
 - Keine Symlinks, keine beliebige Remote-Dateipfadübergabe, keine Überschreibung
   eines schon archivierten Ergebnisses.
 - Verzeichniszugriffe verwenden unter Linux geprüfte `O_NOFOLLOW`-Deskriptoren;
