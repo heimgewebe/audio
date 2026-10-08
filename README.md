@@ -167,6 +167,7 @@ Fernstrecke noch lokale Audio- oder MIDI-Hardware sind belegt.
 - [Physische Verifikation](docs/physical-verification-workflow.md)
 - [Kalibrier- und Messworkflow](docs/calibration-workflow.md)
 - [Gehärtete Aufnahmesitzungen](docs/recording-session-workflow.md)
+- [H2-Material: lokaler Editor-Roundtrip](docs/material-edit-roundtrip.md)
 - [Verwalteter Produktions-Mixgraph](docs/production-mix-graph.md)
 - [Read-only Profilplanung](docs/profile-planning.md)
 - [Aktuelle Heim-PC-Baseline](baselines/heim-pc/2026-07-27/README.md)
