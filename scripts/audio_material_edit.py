@@ -521,17 +521,119 @@ def finish(edit_id: str, *, library_root: Path = h2_ingest.DEFAULT_LIBRARY_ROOT,
             "render_sha256": sha, "original_untouched": True, "verified_current": True}
 
 
+
+# Local metadata-only catalog. A list response never attests to current audio bytes.
+MAX_RENDER_CATALOG_ENTRIES = 4096
+MAX_RENDER_CATALOG_ITEMS = 64
+
+
+def _bounded_dir_names(directory_fd: int) -> list[str]:
+    names: list[str] = []
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            if len(names) >= MAX_RENDER_CATALOG_ENTRIES:
+                raise EditError("Bearbeitungsablage überschreitet das sichere Verzeichnisbudget.")
+            names.append(entry.name)
+    return sorted(names)
+
+
+def _render_catalog_item(item_fd: int, derived_id: str) -> dict:
+    manifest = _read_manifest_at(item_fd)
+    if (
+        set(manifest) != {"schema_version", "kind", "derived_id", "edit_id", "source", "render"}
+        or manifest.get("schema_version") != SCHEMA
+        or manifest.get("kind") != "audio_edit_render"
+        or manifest.get("derived_id") != derived_id
+        or not isinstance(manifest.get("edit_id"), str)
+        or ID_RE.fullmatch(manifest["edit_id"]) is None
+    ):
+        raise EditError("Renderarchiv enthält ein ungültiges Herkunftsmanifest.")
+    edit_id = manifest["edit_id"]
+    source = _valid_workspace_manifest(
+        {"schema_version": SCHEMA, "kind": "audio_edit_workspace",
+         "edit_id": edit_id, "source": manifest["source"]}, edit_id
+    )
+    render = manifest["render"]
+    if not isinstance(render, dict) or set(render) != {"sha256", "bytes", "wav"}:
+        raise EditError("Renderarchiv enthält ungültige Render-Metadaten.")
+    wav = render["wav"]
+    size = render["bytes"]
+    if (
+        not isinstance(render["sha256"], str)
+        or SHA_RE.fullmatch(render["sha256"]) is None
+        or type(size) is not int or not 44 <= size <= MAX_RENDER_BYTES
+        or not isinstance(wav, dict)
+        or set(wav) != {"codec", "channels", "sample_rate_hz", "frames"}
+        or wav["codec"] not in {"pcm16", "pcm24", "pcm32", "float32"}
+        or type(wav["channels"]) is not int or wav["channels"] not in (1, 2)
+        or type(wav["sample_rate_hz"]) is not int
+        or not 8000 <= wav["sample_rate_hz"] <= 192000
+        or type(wav["frames"]) is not int or wav["frames"] <= 0
+        or _id(b"audio-edit-render-v1", {"source": source, "render": render}) != derived_id
+    ):
+        raise EditError("Renderarchiv besitzt keine gültige abgeleitete Identität.")
+    with _file_at(item_fd, "audio.wav", owner=True) as (_, info):
+        if info.st_size != size:
+            raise EditError("Archivierte WAV-Dateigröße weicht vom Manifest ab.")
+    return {
+        "derived_id": derived_id, "edit_id": edit_id,
+        "material_id": source["material_id"], "master_name": source["master_name"],
+        "audio_bytes": size, "render_sha256_recorded": render["sha256"],
+        "wav": wav, "audio_bytes_verified": False,
+    }
+
+
+def list_renders(*, edit_root: Path = DEFAULT_EDIT_ROOT) -> dict:
+    """List only metadata within a bounded private root, without creating paths."""
+    result = {
+        "schema_version": SCHEMA, "kind": "audio_edit_render_inventory",
+        "read_only": True, "content_verification": "not_performed",
+        "count": 0, "total_count": 0, "truncated": False,
+        "staging_count": 0, "items": [],
+    }
+    opened_root = False
+    try:
+        with _directory_tree(edit_root, private=True) as root_fd:
+            opened_root = True
+            for section in ("working", "renders"):
+                opened_section = False
+                try:
+                    with _child_dir(root_fd, section, private=True) as section_fd:
+                        opened_section = True
+                        names = _bounded_dir_names(section_fd)
+                        result["staging_count"] += sum(
+                            name.startswith(".audio-edit-staging-") for name in names
+                        )
+                        if section != "renders":
+                            continue
+                        derivative_ids = [name for name in names if ID_RE.fullmatch(name)]
+                        result["total_count"] = len(derivative_ids)
+                        result["truncated"] = len(derivative_ids) > MAX_RENDER_CATALOG_ITEMS
+                        for derived_id in derivative_ids[:MAX_RENDER_CATALOG_ITEMS]:
+                            with _child_dir(section_fd, derived_id, private=True) as item_fd:
+                                result["items"].append(_render_catalog_item(item_fd, derived_id))
+                except FileNotFoundError:
+                    if opened_section:
+                        raise  # a disappeared manifest/audio is not an empty archive
+                    continue
+    except FileNotFoundError:
+        if opened_root:
+            raise  # only a wholly absent editing root is empty
+    result["count"] = len(result["items"])
+    return result
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "finish"):
+    for name in ("prepare", "finish", "list-renders"):
         command = sub.add_parser(name)
         if name == "prepare":
             command.add_argument("material_id")
             command.add_argument("master_name")
-        else:
+        elif name == "finish":
             command.add_argument("edit_id")
-        command.add_argument("--library-root", type=Path, default=h2_ingest.DEFAULT_LIBRARY_ROOT)
+        if name != "list-renders":
+            command.add_argument("--library-root", type=Path, default=h2_ingest.DEFAULT_LIBRARY_ROOT)
         command.add_argument("--edit-root", type=Path, default=DEFAULT_EDIT_ROOT)
     return parser
 
@@ -539,10 +641,13 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        result = (prepare(args.material_id, args.master_name,
-                          library_root=args.library_root, edit_root=args.edit_root)
-                  if args.command == "prepare" else
-                  finish(args.edit_id, library_root=args.library_root, edit_root=args.edit_root))
+        if args.command == "prepare":
+            result = prepare(args.material_id, args.master_name,
+                             library_root=args.library_root, edit_root=args.edit_root)
+        elif args.command == "finish":
+            result = finish(args.edit_id, library_root=args.library_root, edit_root=args.edit_root)
+        else:
+            result = list_renders(edit_root=args.edit_root)
     except (EditError, h2_ingest.H2IngestError, OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
