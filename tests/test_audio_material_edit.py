@@ -717,6 +717,35 @@ class EditorRoundtripTests(unittest.TestCase):
         with self.assertRaisesRegex(EDIT.EditError, "symlinkfrei"):
             EDIT.list_renders(edit_root=self.edit_root)
 
+    def test_render_inventory_rejects_hardlinked_manifest(self):
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        archive = Path(self.finish(prepared["edit_id"])["audio"])
+        manifest = archive.parent / "manifest.json"
+        outside = self.root / "alias-of-manifest.json"
+        os.link(manifest, outside)
+        with self.assertRaisesRegex(EDIT.EditError, "einzeln"):
+            EDIT.list_renders(edit_root=self.edit_root)
+        self.assertTrue(outside.is_file())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(),
+                         self.original_digest)
+
+    def test_render_inventory_rejects_corrupted_item_after_truncation(self):
+        prepared = self.prepare()
+        render = Path(prepared["expected_render"])
+        for frames in range(640, 705):
+            render_wave(render, frames=frames)
+            self.finish(prepared["edit_id"])
+        archives = sorted((self.edit_root / "renders").iterdir())
+        self.assertEqual(len(archives), 65)
+        manifest = archives[-1] / "manifest.json"
+        os.chmod(manifest, 0o600)
+        manifest.write_text("{}")
+        with self.assertRaisesRegex(EDIT.EditError, "Herkunftsmanifest"):
+            EDIT.list_renders(edit_root=self.edit_root)
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(),
+                         self.original_digest)
+
     def test_render_inventory_staging_count_no_cleanup(self):
         self.prepare()
         working = self.edit_root / "working"

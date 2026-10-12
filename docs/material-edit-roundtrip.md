@@ -95,7 +95,8 @@ Der Hash ist **nicht** erneut gegen die Audio-Bytes geprüft
 ein Metadateninventar und kein frischer Original- oder Audiointegritätsbeleg.
 
 Die Ausgabe ist auf 64 sortierte Renderings begrenzt, total_count und
-truncated kennzeichnen weitere benannte Kandidaten. Mehr als 4096
+truncated kennzeichnen weitere benannte Kandidaten. Sämtliche ID-Kandidaten
+werden auch jenseits der Ausgabegrenze manifest- und dateisicher geprüft. Mehr als 4096
 Verzeichniseinträge in einem Bereich blockieren die Liste. staging_count
 zählt sichtbare Stagingnamen in working und renders; es ist kein
 Speicherbeleg und löst niemals eine Bereinigung aus. Manipulierte

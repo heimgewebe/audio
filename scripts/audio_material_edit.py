@@ -234,8 +234,8 @@ def _copy_checked_at(source_fd: int, source_name: str, target_fd: int, target_na
             raise EditError("Zielkopie konnte nicht vollständig verifiziert werden.")
 
 
-def _read_manifest_at(fd: int) -> dict:
-    with _file_at(fd, "manifest.json") as (handle, info):
+def _read_manifest_at(fd: int, *, owner: bool = False) -> dict:
+    with _file_at(fd, "manifest.json", owner=owner) as (handle, info):
         if not 0 < info.st_size <= MAX_MANIFEST:
             raise EditError("Manifestgröße ist ungültig.")
         data = os.read(handle, MAX_MANIFEST + 1)
@@ -538,7 +538,7 @@ def _bounded_dir_names(directory_fd: int) -> list[str]:
 
 
 def _render_catalog_item(item_fd: int, derived_id: str) -> dict:
-    manifest = _read_manifest_at(item_fd)
+    manifest = _read_manifest_at(item_fd, owner=True)
     if (
         set(manifest) != {"schema_version", "kind", "derived_id", "edit_id", "source", "render"}
         or manifest.get("schema_version") != SCHEMA
@@ -609,9 +609,13 @@ def list_renders(*, edit_root: Path = DEFAULT_EDIT_ROOT) -> dict:
                         derivative_ids = [name for name in names if ID_RE.fullmatch(name)]
                         result["total_count"] = len(derivative_ids)
                         result["truncated"] = len(derivative_ids) > MAX_RENDER_CATALOG_ITEMS
-                        for derived_id in derivative_ids[:MAX_RENDER_CATALOG_ITEMS]:
+                        # Validate every candidate; the limit bounds JSON output,
+                        # not the security checks on later archive entries.
+                        for derived_id in derivative_ids:
                             with _child_dir(section_fd, derived_id, private=True) as item_fd:
-                                result["items"].append(_render_catalog_item(item_fd, derived_id))
+                                item = _render_catalog_item(item_fd, derived_id)
+                                if len(result["items"]) < MAX_RENDER_CATALOG_ITEMS:
+                                    result["items"].append(item)
                 except FileNotFoundError:
                     if opened_section:
                         raise  # a disappeared manifest/audio is not an empty archive
