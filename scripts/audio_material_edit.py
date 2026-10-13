@@ -583,6 +583,25 @@ def _render_catalog_item(item_fd: int, derived_id: str) -> dict:
     }
 
 
+def _assert_catalog_item_live(edit_root: Path, root_fd: int, section_fd: int,
+                              item_fd: int, derived_id: str, expected_item: dict) -> None:
+    """Read back the reachable root, section, entry and metadata after inspection.
+
+    No audio content hash is computed: this is a bounded metadata inventory.
+    """
+    with _directory_tree(edit_root, private=True) as live_root:
+        if _generation(os.fstat(live_root))[:2] != _generation(os.fstat(root_fd))[:2]:
+            raise EditError("Bearbeitungsroot wurde während der Inventur ausgetauscht.")
+        with _child_dir(live_root, "renders", private=True) as live_section:
+            if _generation(os.fstat(live_section))[:2] != _generation(os.fstat(section_fd))[:2]:
+                raise EditError("Renderverzeichnis wurde während der Inventur ausgetauscht.")
+            with _child_dir(live_section, derived_id, private=True) as live_item:
+                if _generation(os.fstat(live_item))[:2] != _generation(os.fstat(item_fd))[:2]:
+                    raise EditError("Renderdatensatz wurde während der Inventur ausgetauscht.")
+                if _render_catalog_item(live_item, derived_id) != expected_item:
+                    raise EditError("Render-Metadaten änderten sich während der Inventur.")
+
+
 def list_renders(*, edit_root: Path = DEFAULT_EDIT_ROOT) -> dict:
     """List only metadata within a bounded private root, without creating paths."""
     result = {
@@ -614,6 +633,9 @@ def list_renders(*, edit_root: Path = DEFAULT_EDIT_ROOT) -> dict:
                         for derived_id in derivative_ids:
                             with _child_dir(section_fd, derived_id, private=True) as item_fd:
                                 item = _render_catalog_item(item_fd, derived_id)
+                                _assert_catalog_item_live(
+                                    edit_root, root_fd, section_fd, item_fd, derived_id, item
+                                )
                                 if len(result["items"]) < MAX_RENDER_CATALOG_ITEMS:
                                     result["items"].append(item)
                 except FileNotFoundError:

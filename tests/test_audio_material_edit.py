@@ -746,6 +746,76 @@ class EditorRoundtripTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(),
                          self.original_digest)
 
+    def test_render_inventory_blocks_directory_swap_after_entry_open(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        archive = Path(self.finish(prepared["edit_id"])["audio"])
+        original = EDIT._render_catalog_item
+        saved = archive.parent.with_name("saved-render")
+
+        def swap_entry_after_inspection(fd, derived_id):
+            item = original(fd, derived_id)
+            archive.parent.rename(saved)
+            archive.parent.symlink_to(self.root, target_is_directory=True)
+            return item
+
+        with mock.patch.object(EDIT, "_render_catalog_item",
+                               side_effect=swap_entry_after_inspection):
+            with self.assertRaises(EDIT.EditError):
+                EDIT.list_renders(edit_root=self.edit_root)
+        self.assertTrue((saved / "audio.wav").is_file())
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(),
+                         self.original_digest)
+
+    def test_render_inventory_blocks_renders_parent_swap_after_entry_open(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        archive = Path(self.finish(prepared["edit_id"])["audio"])
+        renders = self.edit_root / "renders"
+        saved = self.edit_root / "renders-before-swap"
+        original = EDIT._render_catalog_item
+
+        def swap_parent_after_inspection(fd, derived_id):
+            item = original(fd, derived_id)
+            renders.rename(saved)
+            renders.mkdir(mode=0o700)
+            (renders / derived_id).mkdir(mode=0o700)
+            return item
+
+        with mock.patch.object(EDIT, "_render_catalog_item",
+                               side_effect=swap_parent_after_inspection):
+            with self.assertRaisesRegex(EDIT.EditError, "Renderverzeichnis"):
+                EDIT.list_renders(edit_root=self.edit_root)
+        self.assertTrue((saved / archive.parent.name / "audio.wav").is_file())
+
+    def test_render_inventory_rechecks_live_audio_file_metadata(self):
+        from unittest import mock
+
+        prepared = self.prepare()
+        render_wave(Path(prepared["expected_render"]))
+        archive = Path(self.finish(prepared["edit_id"])["audio"])
+        original = EDIT._render_catalog_item
+        calls = [0]
+
+        def swap_audio_once(fd, derived_id):
+            item = original(fd, derived_id)
+            if calls[0] == 0:
+                archive.unlink()
+                archive.symlink_to(self.root / "outside.wav")
+            calls[0] += 1
+            return item
+
+        with mock.patch.object(EDIT, "_render_catalog_item",
+                               side_effect=swap_audio_once):
+            with self.assertRaises(EDIT.EditError):
+                EDIT.list_renders(edit_root=self.edit_root)
+        self.assertEqual(hashlib.sha256(self.original.read_bytes()).hexdigest(),
+                         self.original_digest)
+
     def test_render_inventory_staging_count_no_cleanup(self):
         self.prepare()
         working = self.edit_root / "working"
