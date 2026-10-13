@@ -80,6 +80,29 @@ Standardroot: ~/Music/Audio-Aufnahmen/H2-Bearbeitungen/
 - Nur eine lokal explizit ausgeführte CLI darf diesen Dateisystempfad benutzen.
   Die Audiozentrale-Remote-Bridge erhält keinerlei neue Schreibrechte.
 
+## Lokales Renderinventar (ohne Medienexport)
+
+Die CLI listet bereits veröffentlichte Renderings ohne Dateisuche auf:
+
+    python3 scripts/audio-material-edit list-renders
+
+Der Aufruf verändert keine Datei und legt bei fehlendem Bearbeitungsroot
+auch kein Verzeichnis an. Mit --edit-root kann ein isolierter Testroot
+angegeben werden. Die JSON-Antwort liefert nur gebundene IDs, Material-ID,
+Mastername, WAV-Metadaten und den im Manifest hinterlegten SHA-256.
+Der Hash ist **nicht** erneut gegen die Audio-Bytes geprüft
+(content_verification = not_performed); das Ergebnis ist ausdrücklich nur
+ein Metadateninventar und kein frischer Original- oder Audiointegritätsbeleg.
+
+Die Ausgabe ist auf 64 sortierte Renderings begrenzt, total_count und
+truncated kennzeichnen weitere benannte Kandidaten. Sämtliche ID-Kandidaten
+werden auch jenseits der Ausgabegrenze manifest- und dateisicher geprüft. Mehr als 4096
+Verzeichniseinträge in einem Bereich blockieren die Liste. staging_count
+zählt sichtbare Stagingnamen in working und renders; es ist kein
+Speicherbeleg und löst niemals eine Bereinigung aus. Manipulierte
+Herkunftsmanifeste, Symlinks, Hardlinks und nicht reguläre Audiodateien
+blockieren die Liste. Keine neuen Browser-, Netzwerk- oder Mediendownloadrechte.
+
 ## Grenzen / späterer Produkt-Schnitt
 
 Bearbeitungsergebnisse erscheinen noch nicht automatisch in der Browser-
