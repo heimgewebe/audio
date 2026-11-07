@@ -1877,11 +1877,17 @@ def _identity_matches(expected: dict[str, Any]) -> bool:
     return observed == expected
 
 
+def _identity_retired(expected: dict[str, Any]) -> bool:
+    """An unrelated live image with the same PID/start time is not a stopped child."""
+    observed = _proc_identity(expected.get("pid"))
+    return observed is None or observed.get("start_ticks") != expected.get("start_ticks")
+
+
 def _terminate_exact_process(expected: dict[str, Any], *, grace_seconds: float) -> bool:
     if grace_seconds < 0:
         raise RecordingError("process termination grace must not be negative")
     if not _identity_matches(expected):
-        return True
+        return _identity_retired(expected)
     try:
         os.kill(expected["pid"], signal.SIGTERM)
     except ProcessLookupError:
@@ -1899,9 +1905,9 @@ def _terminate_exact_process(expected: dict[str, Any], *, grace_seconds: float) 
             return True
         for _ in range(100):
             if not _identity_matches(expected):
-                return True
+                return _identity_retired(expected)
             time.sleep(0.02)
-    return not _identity_matches(expected)
+    return _identity_retired(expected)
 
 
 def _valid_timestamp(value: Any) -> bool:
@@ -3377,13 +3383,22 @@ def start_session(
                 start_new_session=True,
                 close_fds=True,
             )
+            # Nix profile Python can exec-chain from its wrapper to the real
+            # interpreter after Popen returns. Do not persist that transient
+            # executable as a worker identity: stop/recovery would later
+            # mistake the still-running child for a terminated process.
+            interpreter_executable = os.readlink("/proc/self/exe")
             for _ in range(100):
-                process_identity = _proc_identity(process.pid)
-                if process_identity is not None:
+                observed_identity = _proc_identity(process.pid)
+                if (
+                    observed_identity is not None
+                    and observed_identity["executable"] == interpreter_executable
+                ):
+                    process_identity = observed_identity
                     break
                 if process.poll() is not None:
                     break
-                time.sleep(0.01)
+                time.sleep(0.02)
             if process_identity is None:
                 if process.poll() is None:
                     process.kill()
