@@ -120,7 +120,7 @@ class AudioLevelObserverTests(unittest.TestCase):
         binding = MODULE._motu_source_binding(motu_source())
         command = MODULE.build_pw_cat_command(binding["target"])
 
-        self.assertEqual(command[0], "/usr/bin/pw-cat")
+        self.assertEqual(command[0], str(MODULE.PW_CAT))
         self.assertIn("--record", command)
         self.assertEqual(command[command.index("--target") + 1], binding["target"])
         self.assertNotEqual(binding["target"], "auto")
@@ -135,7 +135,7 @@ class AudioLevelObserverTests(unittest.TestCase):
         absent = MODULE.SourceUnavailable("missing")
         sentinel = MODULE.ObserverError("sentinel-stop-after-retry")
         with (
-            mock.patch.object(MODULE, "PW_CAT", pathlib.Path("/usr/bin/true")),
+            mock.patch.object(MODULE, "PW_CAT", pathlib.Path(sys.executable)),
             mock.patch.object(MODULE, "remove_output"),
             mock.patch.object(MODULE.signal, "signal", return_value=MODULE.signal.SIG_DFL),
             mock.patch.object(
