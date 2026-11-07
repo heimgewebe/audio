@@ -12,6 +12,7 @@ import math
 import os
 import pathlib
 import selectors
+import shutil
 import signal
 import stat
 import subprocess
@@ -40,8 +41,8 @@ MOTU_CAPTURE_IDENTITY = load_motu_capture_identity()
 
 OBSERVER_ID = "audio-control-level-observer-v1"
 OBSERVER_MODE = "active-recorder-source-capture"
-PW_CAT = pathlib.Path("/usr/bin/pw-cat")
-PACTL = pathlib.Path("/usr/bin/pactl")
+PW_CAT = pathlib.Path(shutil.which("pw-cat") or "/usr/bin/pw-cat")
+PACTL = pathlib.Path(shutil.which("pactl") or "/usr/bin/pactl")
 SAMPLE_RATE_HZ = 48_000
 CHANNEL_NAMES = ("FL", "FR")
 CHANNEL_COUNT = len(CHANNEL_NAMES)

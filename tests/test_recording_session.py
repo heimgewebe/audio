@@ -12,6 +12,7 @@ import signal
 import struct
 import sys
 import tempfile
+import time
 import types
 import unittest
 import wave
@@ -1751,7 +1752,18 @@ class RecordingSessionTest(unittest.TestCase):
             start_new_session=True,
         )
         try:
-            identity = MODULE._proc_identity(process.pid)
+            # NixOS Python uses an exec wrapper; bind only the final Python
+            # executable, not the transient wrapper observed right after Popen.
+            identity = None
+            interpreter_executable = os.readlink("/proc/self/exe")
+            for _ in range(100):
+                candidate = MODULE._proc_identity(process.pid)
+                if candidate is not None and candidate["executable"] == interpreter_executable:
+                    identity = candidate
+                    break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.02)
             self.assertIsNotNone(identity)
             changed = dict(identity)
             changed["start_ticks"] += 1
@@ -1766,6 +1778,18 @@ class RecordingSessionTest(unittest.TestCase):
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
+
+    def test_exec_image_drift_does_not_falsely_claim_process_termination(self) -> None:
+        actual = MODULE._proc_identity(os.getpid())
+        self.assertIsNotNone(actual)
+        transitioned = dict(actual)
+        transitioned["executable"] = "/different/image-after-exec"
+        with (
+            mock.patch.object(MODULE, "_proc_identity", return_value=transitioned),
+            mock.patch.object(MODULE.os, "kill") as send_signal,
+        ):
+            self.assertFalse(MODULE._terminate_exact_process(actual, grace_seconds=0.0))
+            send_signal.assert_not_called()
 
     def test_recovery_preserves_partial_and_clears_active_pointer(self) -> None:
         MODULE.ensure_private_directory(self.state)
@@ -2302,7 +2326,7 @@ class RecordingSessionTest(unittest.TestCase):
         identity = {
             "pid": 43210,
             "start_ticks": 98765,
-            "executable": "/usr/bin/python3",
+            "executable": os.readlink("/proc/self/exe"),
             "cmdline_sha256": "c" * 64,
             "process_group": 43210,
         }
