@@ -2326,7 +2326,7 @@ class RecordingSessionTest(unittest.TestCase):
         identity = {
             "pid": 43210,
             "start_ticks": 98765,
-            "executable": "/usr/bin/python3",
+            "executable": os.readlink("/proc/self/exe"),
             "cmdline_sha256": "c" * 64,
             "process_group": 43210,
         }
