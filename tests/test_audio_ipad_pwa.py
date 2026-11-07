@@ -1920,6 +1920,7 @@ const state = {{
   h2WorkspaceError: null,
 }};
 const events = [];
+const SNAPSHOT_REFRESH_LOCK_NAME = "audio-test-core-snapshot-refresh";
 function backendAllowed() {{ return true; }}
 function setLoading(value) {{ state.loading = value; events.push("loading:" + String(value)); }}
 async function fetchJson(url) {{ events.push("fetch:" + url); return {{ kind: "audio_control_snapshot" }}; }}
