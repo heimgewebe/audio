@@ -1,5 +1,7 @@
 import hashlib
+import os
 import pathlib
+import subprocess
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -56,6 +58,31 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
 
         self.assertNotEqual(git_blob, LEGACY_INDEX_BLOB_SHA)
         self.assertRegex(payload.decode("utf-8"), DEPLOYMENT_CONTRACT_PATTERN)
+
+    def test_nixos_deploy_uses_declared_jsonschema_python_runtime(self):
+        deploy = DEPLOY_UNIT_PATH.read_text(encoding="utf-8")
+        interpreter = pathlib.Path("/etc/profiles/per-user/alex/bin/python3")
+        self.assertIn(
+            f"ExecStart={interpreter} %h/.local/libexec/audio-control-deploy.py sync",
+            deploy,
+        )
+        self.assertNotIn(
+            "ExecStart=/usr/bin/python3 %h/.local/libexec/audio-control-deploy.py sync",
+            deploy,
+        )
+        # CI outside this NixOS host checks the pinned service contract; on
+        # the target host, also exercise the exact interpreter and dependency.
+        if interpreter.is_file():
+            env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+            proc = subprocess.run(
+                [str(interpreter), "-c", "import jsonschema"],
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_deploy_unit_allows_only_required_address_families(self):
         self.assertEqual(

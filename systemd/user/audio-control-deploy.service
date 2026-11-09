@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=oneshot
 NotifyAccess=main
 EnvironmentFile=-%h/.config/audio-control-deploy.env
-ExecStart=/usr/bin/python3 %h/.local/libexec/audio-control-deploy.py sync
+# Release validation requires jsonschema from the declared NixOS user Python profile.
+ExecStart=/etc/profiles/per-user/alex/bin/python3 %h/.local/libexec/audio-control-deploy.py sync
 TimeoutStartSec=15min
 NoNewPrivileges=yes
 PrivateTmp=yes
