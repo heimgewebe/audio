@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=oneshot
 NotifyAccess=main
 EnvironmentFile=-%h/.config/audio-control-deploy.env
+Environment="GIT_SSH_COMMAND=ssh -F /dev/null -o BatchMode=yes"
 ExecStart=/usr/bin/python3 %h/.local/libexec/audio-control-deploy.py sync
 TimeoutStartSec=15min
 NoNewPrivileges=yes

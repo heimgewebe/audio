@@ -12,6 +12,24 @@ commitgebundener Release angelegt. Der Releasebeleg
 autoritative Commitidentität.
 
 ## Ablauf
+## NixOS systemd-User: Git-SSH ohne falsche Eigentümerprüfung
+
+Das systemd-User-Sandboxing mit `ProtectSystem=strict` und
+`ProtectHome=read-only` stellt die aus dem Nix-Store eingebundene globale
+OpenSSH-Konfiguration innerhalb der User-Namespace als UID 65534 statt root
+dar. OpenSSH lehnt deren `Include` mit `Bad owner or permissions` ab,
+auch wenn die Datei auf dem Host unverändert root:root und Modus 0444 ist.
+
+Nur der Git-basierte Deploydienst setzt daher
+`GIT_SSH_COMMAND=ssh -F /dev/null -o BatchMode=yes`. Der bestehende
+GitHub-SSH-Zugang wurde unter denselben drei systemd-Sandboxflags mit
+`git ls-remote` erfolgreich gegen den echten `audio`-Main geprüft.
+Identitätsdateien und `known_hosts` bleiben bei OpenSSH, ohne eine
+parallele Credentials- oder Proxy-Infrastruktur. Die übrigen
+Sandboxgrenzen sowie die revisionsgebundene Releaseprüfung bleiben erhalten.
+Eine abweichende SSH-Remote-Konfiguration muss vor Umstellung dieses
+Git-Deployremotes eigens auf Funktion geprüft werden.
+
 
 1. Der Timer `audio-control-deploy.timer` prüft `origin/main` jede Minute.
 2. Das private Bare-Repository holt den Zielbranch über einen auf SSH und HTTPS
