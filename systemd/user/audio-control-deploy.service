@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=oneshot
 NotifyAccess=main
 EnvironmentFile=-%h/.config/audio-control-deploy.env
+Environment="GIT_SSH_COMMAND=ssh -F /home/alex/.ssh/config -o BatchMode=yes"
 # Release validation requires jsonschema from the declared NixOS user Python profile.
 ExecStart=/usr/bin/env /etc/profiles/per-user/alex/bin/python3 %h/.local/libexec/audio-control-deploy.py sync
 TimeoutStartSec=15min
