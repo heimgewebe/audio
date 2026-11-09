@@ -96,7 +96,8 @@ wird nicht jede Minute neu gestartet.
 
 Der Deploydienst führt Release- und PWA-Validierungen mit dem im NixOS-Hostprofil
 bereits deklarierten Python aus:
-`/etc/profiles/per-user/alex/bin/python3`. Dort ist `jsonschema` über
+`/etc/profiles/per-user/alex/bin/python3`, über den auf NixOS und im CI-Runner
+vorhandenen Launcher `/usr/bin/env`. Dort ist `jsonschema` über
 `nixos/system/hosts/heim-pc/default.nix` in `heim-pc` eingebunden. Der früher
 verwendete `/usr/bin/python3` besitzt diese Abhängigkeit nicht und brach die
 Releasevalidierung mit `ModuleNotFoundError: jsonschema` ab. Die Unit muss den

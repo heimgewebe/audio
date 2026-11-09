@@ -63,7 +63,7 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         deploy = DEPLOY_UNIT_PATH.read_text(encoding="utf-8")
         interpreter = pathlib.Path("/etc/profiles/per-user/alex/bin/python3")
         self.assertIn(
-            f"ExecStart={interpreter} %h/.local/libexec/audio-control-deploy.py sync",
+            f"ExecStart=/usr/bin/env {interpreter} %h/.local/libexec/audio-control-deploy.py sync",
             deploy,
         )
         self.assertNotIn(
