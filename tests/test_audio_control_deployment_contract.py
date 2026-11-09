@@ -61,12 +61,14 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         deploy = DEPLOY_UNIT_PATH.read_text(encoding="utf-8")
         # In user-systemd ProtectSystem/ProtectHome, /nix/store files are
         # mapped from root to uid 65534; OpenSSH rejects the global Include.
-        # The GitHub deploy remote was verified with an empty SSH config
-        # under the otherwise unchanged service sandbox.
+        # Preserve the existing user-configured GitHub IdentityFile; /dev/null
+        # drops this identity and fails after the user's SSH agent restarts.
+        # The explicit user config avoids the invalid global systemd Include.
         self.assertIn(
-            'Environment="GIT_SSH_COMMAND=ssh -F /dev/null -o BatchMode=yes"',
+            'Environment="GIT_SSH_COMMAND=ssh -F /home/alex/.ssh/config -o BatchMode=yes"',
             deploy,
         )
+        self.assertNotIn("ssh -F /dev/null", deploy)
         self.assertIn("ProtectSystem=strict", deploy)
         self.assertIn("ProtectHome=read-only", deploy)
         self.assertIn("NoNewPrivileges=yes", deploy)

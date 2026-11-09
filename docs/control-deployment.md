@@ -19,15 +19,20 @@ OpenSSH-Konfiguration innerhalb der User-Namespace als UID 65534 statt root
 dar. OpenSSH lehnt deren `Include` mit `Bad owner or permissions` ab,
 auch wenn die Datei auf dem Host unverändert root:root und Modus 0444 ist.
 
-Nur der Git-basierte Deploydienst setzt daher
-`GIT_SSH_COMMAND=ssh -F /dev/null -o BatchMode=yes`. Der bestehende
-GitHub-SSH-Zugang wurde unter denselben drei systemd-Sandboxflags mit
-`git ls-remote` erfolgreich gegen den echten `audio`-Main geprüft.
-Identitätsdateien und `known_hosts` bleiben bei OpenSSH, ohne eine
-parallele Credentials- oder Proxy-Infrastruktur. Die übrigen
-Sandboxgrenzen sowie die revisionsgebundene Releaseprüfung bleiben erhalten.
-Eine abweichende SSH-Remote-Konfiguration muss vor Umstellung dieses
-Git-Deployremotes eigens auf Funktion geprüft werden.
+Nur der Git-basierte Deploydienst setzt deshalb
+`GIT_SSH_COMMAND=ssh -F /home/alex/.ssh/config -o BatchMode=yes`.
+Damit wird die ohnehin verwendete Benutzerkonfiguration einschließlich
+des bestehenden GitHub-`IdentityFile` geladen, aber **nicht** das
+globale fehlerhafte systemd-SSH-Include. Das zuerst versuchte
+`-F /dev/null` behob den Include-Fehler, verlor nach dem Neustart
+des systemd-Benutzermanagers jedoch den GitHub-Schlüssel und führte zu
+`Permission denied (publickey)`. Der dauerhaft richtige
+`git ls-remote`-Aufruf wurde unter denselben Sandboxbedingungen mit
+echter SSH-Authentifizierung erneut erfolgreich nachgewiesen.
+Die Konfiguration ist auf den Benutzer `alex` dieses Heim-PC gebunden,
+während `known_hosts`, bestehende Schlüssel und alle übrigen
+Sandboxgrenzen unverändert bleiben. Keine parallele Credential- oder
+Proxy-Infrastruktur aufbauen.
 
 ## Ablauf
 
