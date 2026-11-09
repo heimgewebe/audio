@@ -1964,6 +1964,32 @@ class AudioControlTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ControlError, "Unbekannte Dauersong-Aktion"):
             controller.perform_dauersong_action({"operation": "toggle"})
 
+    def test_absent_optional_dauersong_does_not_alarm_healthy_audio(self):
+        runner = FakeRunner()
+        previous_run = runner.run
+
+        def stopped_optional_service(argv, *, timeout):
+            result = previous_run(argv, timeout=timeout)
+            if (
+                len(argv) > 2
+                and pathlib.Path(argv[1]).name == "dauersong_live.py"
+                and argv[2] == "status"
+            ):
+                report = json.loads(result.stdout)
+                report["load_state"] = "not-found"
+                report["hardening_ready"] = False
+                report["source_binding_ready"] = False
+                return runner.result(argv, report)
+            return result
+
+        runner.run = stopped_optional_service
+        snapshot = self.controller(runner).snapshot(refresh=True)
+        self.assertEqual(snapshot["dauersong"]["status"], "ok")
+        self.assertFalse(snapshot["dauersong"]["service"]["active"])
+        self.assertFalse(snapshot["dauersong"]["actionable"])
+        self.assertEqual(snapshot["summary"]["runtime_state"], "healthy")
+        self.assertEqual(snapshot["summary"]["state"], "stable")
+
     def test_dauersong_unsafe_active_stream_stays_stoppable_and_marks_attention(self):
         runner = FakeRunner()
         runner.dauersong_active = True
