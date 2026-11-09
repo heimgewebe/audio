@@ -57,6 +57,22 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         self.assertNotEqual(git_blob, LEGACY_INDEX_BLOB_SHA)
         self.assertRegex(payload.decode("utf-8"), DEPLOYMENT_CONTRACT_PATTERN)
 
+    def test_deploy_git_ssh_avoids_unprivileged_user_namespace_root_owner_drift(self):
+        deploy = DEPLOY_UNIT_PATH.read_text(encoding="utf-8")
+        # In user-systemd ProtectSystem/ProtectHome, /nix/store files are
+        # mapped from root to uid 65534; OpenSSH rejects the global Include.
+        # Preserve the existing user-configured GitHub IdentityFile; /dev/null
+        # drops this identity and fails after the user's SSH agent restarts.
+        # The explicit user config avoids the invalid global systemd Include.
+        self.assertIn(
+            'Environment="GIT_SSH_COMMAND=ssh -F /home/alex/.ssh/config -o BatchMode=yes"',
+            deploy,
+        )
+        self.assertNotIn("ssh -F /dev/null", deploy)
+        self.assertIn("ProtectSystem=strict", deploy)
+        self.assertIn("ProtectHome=read-only", deploy)
+        self.assertIn("NoNewPrivileges=yes", deploy)
+
     def test_deploy_unit_allows_only_required_address_families(self):
         self.assertEqual(
             address_families(DEPLOY_UNIT_PATH),
