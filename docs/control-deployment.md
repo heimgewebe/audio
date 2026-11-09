@@ -11,6 +11,29 @@ commitgebundener Release angelegt. Der Releasebeleg
 `.audio-control-release.json` liefert dem laufenden Backend auch ohne `.git` die
 autoritative Commitidentität.
 
+## NixOS systemd-User: Git-SSH ohne falsche Eigentümerprüfung
+
+Das systemd-User-Sandboxing mit `ProtectSystem=strict` und
+`ProtectHome=read-only` stellt die aus dem Nix-Store eingebundene globale
+OpenSSH-Konfiguration innerhalb der User-Namespace als UID 65534 statt root
+dar. OpenSSH lehnt deren `Include` mit `Bad owner or permissions` ab,
+auch wenn die Datei auf dem Host unverändert root:root und Modus 0444 ist.
+
+Nur der Git-basierte Deploydienst setzt deshalb
+`GIT_SSH_COMMAND=ssh -F /home/alex/.ssh/config -o BatchMode=yes`.
+Damit wird die ohnehin verwendete Benutzerkonfiguration einschließlich
+des bestehenden GitHub-`IdentityFile` geladen, aber **nicht** das
+globale fehlerhafte systemd-SSH-Include. Das zuerst versuchte
+`-F /dev/null` behob den Include-Fehler, verlor nach dem Neustart
+des systemd-Benutzermanagers jedoch den GitHub-Schlüssel und führte zu
+`Permission denied (publickey)`. Der dauerhaft richtige
+`git ls-remote`-Aufruf wurde unter denselben Sandboxbedingungen mit
+echter SSH-Authentifizierung erneut erfolgreich nachgewiesen.
+Die Konfiguration ist auf den Benutzer `alex` dieses Heim-PC gebunden,
+während `known_hosts`, bestehende Schlüssel und alle übrigen
+Sandboxgrenzen unverändert bleiben. Keine parallele Credential- oder
+Proxy-Infrastruktur aufbauen.
+
 ## Ablauf
 
 1. Der Timer `audio-control-deploy.timer` prüft `origin/main` jede Minute.
