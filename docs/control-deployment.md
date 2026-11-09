@@ -115,6 +115,20 @@ Der normale Abstand zwischen Merge und beginnendem Deployment beträgt höchsten
 etwa 60 Sekunden zuzüglich lokaler Prüfung. Ein unveränderter, gesunder Release
 wird nicht jede Minute neu gestartet.
 
+## NixOS-Interpreter für Releasevalidierung
+
+Der Deploydienst führt Release- und PWA-Validierungen mit dem im NixOS-Hostprofil
+bereits deklarierten Python aus:
+`/etc/profiles/per-user/alex/bin/python3`, über den auf NixOS und im CI-Runner
+vorhandenen Launcher `/usr/bin/env`. Dort ist `jsonschema` über
+`nixos/system/hosts/heim-pc/default.nix` in `heim-pc` eingebunden. Der früher
+verwendete `/usr/bin/python3` besitzt diese Abhängigkeit nicht und brach die
+Releasevalidierung mit `ModuleNotFoundError: jsonschema` ab. Die Unit muss den
+Profilpfad selbst enthalten; ein manuelles systemd-Drop-in ist kein dauerhafter
+Quellvertrag. Für die Zielmaschine prüft der Unit-Regressionstest zusätzlich den
+realen `jsonschema`-Import mit genau diesem Interpreter (ohne geerbtes
+`PYTHONPATH`/`PYTHONHOME`). Keine zweite Python-Umgebung installieren.
+
 ## Installation und Bedienung
 
 ```text
