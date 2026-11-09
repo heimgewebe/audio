@@ -99,6 +99,7 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         self.assertIn("ProtectSystem=strict", deploy)
         self.assertIn("ProtectHome=read-only", deploy)
         self.assertIn("NoNewPrivileges=yes", deploy)
+
     def test_deploy_unit_allows_only_required_address_families(self):
         self.assertEqual(
             address_families(DEPLOY_UNIT_PATH),
