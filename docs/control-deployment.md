@@ -11,7 +11,6 @@ commitgebundener Release angelegt. Der Releasebeleg
 `.audio-control-release.json` liefert dem laufenden Backend auch ohne `.git` die
 autoritative Commitidentität.
 
-## Ablauf
 ## NixOS systemd-User: Git-SSH ohne falsche Eigentümerprüfung
 
 Das systemd-User-Sandboxing mit `ProtectSystem=strict` und
@@ -30,6 +29,7 @@ Sandboxgrenzen sowie die revisionsgebundene Releaseprüfung bleiben erhalten.
 Eine abweichende SSH-Remote-Konfiguration muss vor Umstellung dieses
 Git-Deployremotes eigens auf Funktion geprüft werden.
 
+## Ablauf
 
 1. Der Timer `audio-control-deploy.timer` prüft `origin/main` jede Minute.
 2. Das private Bare-Repository holt den Zielbranch über einen auf SSH und HTTPS
