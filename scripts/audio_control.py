@@ -5951,11 +5951,18 @@ class AudioControl:
             and qobuz_recovery.get("healthy") is not True
         )
         runtime_unavailable = doctor_status != "ok" or whale_status != "ok"
+        # Stopped optional music must not cause a global runtime incident.
+        # Keep unreadable status and actively unsafe playback as real alarms.
         dauersong_attention = (
             dauersong_status != "ok"
-            or dauersong.get("hardening_ready") is False
-            or dauersong.get("source_binding_ready") is False
-            or not dauersong_runtime_safe
+            or (
+                dauersong_active
+                and (
+                    dauersong.get("hardening_ready") is not True
+                    or dauersong.get("source_binding_ready") is not True
+                    or not dauersong_runtime_safe
+                )
+            )
         )
         runtime_attention = (
             runtime_unavailable
