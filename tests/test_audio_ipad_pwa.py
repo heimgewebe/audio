@@ -320,9 +320,26 @@ class InstallMetadataTests(unittest.TestCase):
         for relative in ("index.html", "app.js", "sw.js", "manifest.webmanifest"):
             with self.subTest(file=relative):
                 source = read(relative)
+                if relative == "index.html":
+                    # User-opened navigation is not a loaded dependency.
+                    source = source.replace(self.qobuz_webplayer_link(), "")
                 self.assertNotIn("http://", source.replace("http://127.0.0.1", ""))
                 self.assertNotIn("https://", source)
                 self.assertNotIn("cdn", source.lower())
+
+    @staticmethod
+    def qobuz_webplayer_link():
+        return ('<a class="primary-button" href="https://play.qobuz.com/" '
+                'target="_blank" rel="noopener noreferrer" '
+                'aria-describedby="qobuz-webplayer-hint">Qobuz im Webplayer öffnen</a>')
+
+    def test_qobuz_webplayer_is_visible_navigation_in_listening_panel(self):
+        panel = self.html.split('id="setup-listening"', 1)[1].split('</article>', 1)[0]
+        compact = panel.split('<div class="depth-detail" hidden>', 1)[0]
+        self.assertIn(self.qobuz_webplayer_link(), compact)
+        self.assertIn('id="qobuz-webplayer-hint"', compact)
+        self.assertIn('Desktop-/PipeWire-Mischpfad', compact)
+        self.assertIn('Qobuz-Connect/ALSA-Direktmodus ist nicht erforderlich', compact)
 
 
 class RuntimeModeTests(unittest.TestCase):
