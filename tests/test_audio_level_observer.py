@@ -122,6 +122,8 @@ class AudioLevelObserverTests(unittest.TestCase):
 
         self.assertEqual(command[0], str(MODULE.PW_CAT))
         self.assertIn("--record", command)
+        self.assertIn("--raw", command)
+        self.assertEqual(command[-1], "-")
         self.assertEqual(command[command.index("--target") + 1], binding["target"])
         self.assertNotEqual(binding["target"], "auto")
         self.assertEqual(command[command.index("--rate") + 1], "48000")
