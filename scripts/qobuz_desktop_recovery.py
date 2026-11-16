@@ -11,6 +11,7 @@ import math
 import os
 import pathlib
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -147,10 +148,12 @@ def _validate_command(argv: tuple[str, ...]) -> None:
 
 def run_command(argv: tuple[str, ...]) -> str:
     _validate_command(argv)
-    executable = pathlib.Path("/usr/bin") / argv[0]
+    executable = shutil.which(argv[0])
+    if executable is None:
+        raise RecoveryError(f"command-unavailable:{argv[0]}")
     try:
         completed = subprocess.run(  # noqa: S603 - fixed, validated argv contract
-            (str(executable), *argv[1:]),
+            (executable, *argv[1:]),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
