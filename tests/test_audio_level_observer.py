@@ -131,6 +131,33 @@ class AudioLevelObserverTests(unittest.TestCase):
         properties = json.loads(command[command.index("--properties") + 1])
         self.assertEqual(properties["node.name"], MODULE.OBSERVER_ID)
 
+    def test_float32_motu_source_is_bound_without_relaxing_capture_identity(self):
+        source = motu_source()
+        source["sample_specification"] = "float32le 2ch 48000Hz"
+        binding = MODULE._motu_source_binding(source)
+        self.assertIsNotNone(binding)
+        self.assertEqual(binding["target"], source["name"])
+        recorder_identity = VOICE_MODULE._source_identity(source)
+        self.assertEqual(recorder_identity["sample_format"], "float32le")
+        self.assertEqual(
+            binding["source_identity_sha256"],
+            VOICE_MODULE.LAB.canonical_value_sha256(recorder_identity),
+        )
+        command = MODULE.build_pw_cat_command(binding["target"])
+        self.assertEqual(command[command.index("--format") + 1], "f32")
+        self.assertEqual(command[command.index("--rate") + 1], "48000")
+        self.assertEqual(command[command.index("--channels") + 1], "2")
+
+        invalid = motu_source()
+        invalid["sample_specification"] = "s16le 2ch 48000Hz"
+        with self.assertRaisesRegex(ValueError, "capture contract"):
+            MODULE._motu_source_binding(invalid)
+        nonunity = motu_source()
+        nonunity["sample_specification"] = "float32le 2ch 48000Hz"
+        nonunity["volume"]["front-left"]["value"] = 32768
+        with self.assertRaisesRegex(ValueError, "capture contract"):
+            MODULE._motu_source_binding(nonunity)
+
     def test_missing_source_is_waited_for_inside_service_instead_of_failing_systemd(self):
         absent = MODULE.SourceUnavailable("missing")
         sentinel = MODULE.ObserverError("sentinel-stop-after-retry")

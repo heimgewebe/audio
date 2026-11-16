@@ -1,8 +1,8 @@
 [Unit]
 Description=Aktiver PipeWire-Pegelbeobachter der Audiozentrale
 Documentation=file:%h/.local/share/audio-control-ui/current/docs/audio-live-telemetry-v1.md
-After=pipewire.service wireplumber.service
-Wants=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service pipewire-pulse.service
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
 Before=audio-control-ui-v1.service
 PartOf=audio-control-ui-v1.service
 StartLimitIntervalSec=30
