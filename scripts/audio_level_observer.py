@@ -246,6 +246,7 @@ def build_pw_cat_command(target: str) -> list[str]:
     return [
         str(PW_CAT),
         "--record",
+        "--raw",  # stdout is PCM, not pw-cat container framing.
         "--target",
         target,
         "--rate",
