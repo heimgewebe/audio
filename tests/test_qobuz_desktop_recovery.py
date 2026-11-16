@@ -506,6 +506,32 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertNotIn(OBSERVER_STOP, runner.commands)
         self.assertNotIn(RESTART, runner.commands)
 
+    def test_pipewire_owner_uses_canonical_nixos_executable_identity(self):
+        with (
+            mock.patch.object(
+                MODULE.shutil,
+                "which",
+                return_value="/run/current-system/sw/bin/pipewire",
+            ) as lookup,
+            mock.patch.object(
+                MODULE.os.path,
+                "realpath",
+                return_value="/nix/store/pipewire-example/bin/pipewire",
+            ) as resolve,
+        ):
+            self.assertEqual(
+                MODULE._resolved_pipewire_executable(),
+                "/nix/store/pipewire-example/bin/pipewire",
+            )
+        lookup.assert_called_once_with("pipewire")
+        resolve.assert_called_once_with("/run/current-system/sw/bin/pipewire")
+
+        self.open_pcm("p", pid=7002, executable=MODULE.PIPEWIRE_EXECUTABLE)
+        self.assertTrue(MODULE._pipewire_owns(7002, self.proc))
+        (self.proc / "7002" / "exe").unlink()
+        (self.proc / "7002" / "exe").symlink_to("/opt/foreign-player/pipewire")
+        self.assertFalse(MODULE._pipewire_owns(7002, self.proc))
+
     def test_pipewire_owned_playback_on_another_card_permits_recovery(self):
         self.make_card(
             0,

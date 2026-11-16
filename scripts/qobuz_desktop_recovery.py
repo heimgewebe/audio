@@ -31,7 +31,13 @@ REQUIRED_SERVICES = (
 )
 WIREPLUMBER_UNIT = "wireplumber.service"
 LEVEL_OBSERVER_UNIT = "audio-control-level-observer-v1.service"
-PIPEWIRE_EXECUTABLE = "/usr/bin/pipewire"
+def _resolved_pipewire_executable() -> str:
+    """Use the canonical process binary, not a distro-specific /usr/bin path."""
+    found = shutil.which("pipewire")
+    return os.path.realpath(found) if found else "/usr/bin/pipewire"
+
+
+PIPEWIRE_EXECUTABLE = _resolved_pipewire_executable()
 DEFAULT_METADATA_COMMAND = ("pw-metadata", "-n", "default")
 CAPTURE_STREAMS_COMMAND = ("pactl", "--format=json", "list", "source-outputs")
 PIPEWIRE_GRAPH_COMMAND = ("pw-dump",)
