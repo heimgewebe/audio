@@ -194,6 +194,15 @@ class AudioControlDeploymentContractTests(unittest.TestCase):
         observer = LEVEL_OBSERVER_UNIT_PATH.read_text(encoding="utf-8")
         ui = UI_UNIT_PATH.read_text(encoding="utf-8")
         self.assertIn("PartOf=audio-control-ui-v1.service", observer)
+        # The observer uses pactl; its socket provider must be ready first.
+        self.assertIn(
+            "pipewire-pulse.service",
+            next(line for line in observer.splitlines() if line.startswith("After=")),
+        )
+        self.assertIn(
+            "pipewire-pulse.service",
+            next(line for line in observer.splitlines() if line.startswith("Wants=")),
+        )
         self.assertIn("RuntimeDirectory=audio-control-level-observer", observer)
         self.assertNotIn("--target auto", observer)
         self.assertIn("audio_level_observer.py run --output", observer)

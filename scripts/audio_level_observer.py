@@ -87,7 +87,9 @@ def _motu_source_binding(source: Any) -> dict[str, Any] | None:
     if identity is None:
         return None
     if (
-        identity["sample_format"] != "s32le"
+        # PipeWire may expose float32le source metadata while pw-cat
+        # negotiates its own explicitly fixed f32 capture stream.
+        identity["sample_format"] not in {"s32le", "float32le"}
         or identity["sample_rate_hz"] != SAMPLE_RATE_HZ
         or identity["channels"] != CHANNEL_COUNT
         or identity["muted"] is not False
