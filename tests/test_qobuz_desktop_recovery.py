@@ -1213,10 +1213,45 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         self.assertEqual(self.reconcile(runner), "noop:m2-absent")
         self.assertEqual(runner.commands, [])
 
+    def test_nixos_profile_executable_resolution_preserves_command_allowlist(self):
+        completed = mock.Mock(
+            returncode=0, stdout=b"Server Name: PipeWire\n", stderr=b""
+        )
+        with (
+            mock.patch.object(
+                MODULE.shutil,
+                "which",
+                return_value="/nix/store/pactl-example/bin/pactl",
+            ) as lookup,
+            mock.patch.object(MODULE.subprocess, "run", return_value=completed) as runner,
+        ):
+            self.assertEqual(MODULE.run_command(("pactl", "info")), "Server Name: PipeWire\n")
+        lookup.assert_called_once_with("pactl")
+        self.assertEqual(
+            runner.call_args.args[0], ("/nix/store/pactl-example/bin/pactl", "info")
+        )
+
+        with (
+            mock.patch.object(MODULE.shutil, "which", return_value=None) as lookup,
+            mock.patch.object(MODULE.subprocess, "run") as runner,
+        ):
+            with self.assertRaisesRegex(MODULE.RecoveryError, "command-unavailable:pactl"):
+                MODULE.run_command(("pactl", "info"))
+            lookup.assert_called_once_with("pactl")
+            runner.assert_not_called()
+            lookup.reset_mock()
+            with self.assertRaisesRegex(MODULE.RecoveryError, "command-not-allowed"):
+                MODULE.run_command(("pactl", "arbitrary-command"))
+            lookup.assert_not_called()
+            runner.assert_not_called()
+
     def test_pw_dump_has_dedicated_bounded_output_budget(self):
         above_general_limit = b"x" * (MODULE.MAX_COMMAND_OUTPUT_BYTES + 1)
         completed = mock.Mock(returncode=0, stdout=above_general_limit, stderr=b"")
-        with mock.patch.object(MODULE.subprocess, "run", return_value=completed):
+        with (
+            mock.patch.object(MODULE.shutil, "which", return_value="/nix/store/test/bin/pw-dump"),
+            mock.patch.object(MODULE.subprocess, "run", return_value=completed),
+        ):
             self.assertEqual(
                 len(MODULE.run_command(PIPEWIRE_GRAPH_COMMAND)),
                 len(above_general_limit),
@@ -1225,6 +1260,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
         above_graph_limit = b"x" * (MODULE.MAX_PIPEWIRE_GRAPH_OUTPUT_BYTES + 1)
         completed = mock.Mock(returncode=0, stdout=above_graph_limit, stderr=b"")
         with (
+            mock.patch.object(MODULE.shutil, "which", return_value="/nix/store/test/bin/pw-dump"),
             mock.patch.object(MODULE.subprocess, "run", return_value=completed),
             self.assertRaisesRegex(MODULE.RecoveryError, r"command-output-limit:pw-dump"),
         ):
@@ -1232,6 +1268,7 @@ class QobuzDesktopRecoveryTests(unittest.TestCase):
 
         completed = mock.Mock(returncode=0, stdout=above_general_limit, stderr=b"")
         with (
+            mock.patch.object(MODULE.shutil, "which", return_value="/nix/store/test/bin/pactl"),
             mock.patch.object(MODULE.subprocess, "run", return_value=completed),
             self.assertRaisesRegex(MODULE.RecoveryError, r"command-output-limit:pactl"),
         ):
